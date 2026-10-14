@@ -1132,7 +1132,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(9));
-    assert_eq!(claude.expected_version, 10);
+    assert_eq!(claude.expected_version, 11);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     install_claude().unwrap();
@@ -1141,7 +1141,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
         hook_path,
         CLAUDE_INTEGRATION_VERSION,
     );
-    assert_eq!(status.installed_version, Some(10));
+    assert_eq!(status.installed_version, Some(11));
     assert_eq!(status.state, IntegrationStatusKind::Current);
 
     std::env::remove_var("HOME");
@@ -1171,11 +1171,29 @@ fn claude_v2_integration_status_is_outdated() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(2));
-    assert_eq!(claude.expected_version, 10);
+    assert_eq!(claude.expected_version, 11);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn claude_windows_hook_decodes_stdin_as_utf8() {
+    // Windows PowerShell decodes `[Console]::In` with the console input code
+    // page, which corrupts UTF-8 hook payloads on non-UTF-8 locales such as
+    // Korean Windows (CP949) and makes the hook silently drop the session.
+    // The hook must read the raw stdin stream as UTF-8 instead. See #5253.
+    let asset = include_str!("assets/claude/herdr-agent-state.ps1");
+    assert!(
+        !asset.contains("[Console]::In.ReadToEnd()"),
+        "claude hook must not decode stdin with the console input code page"
+    );
+    assert!(
+        asset.contains("[Console]::OpenStandardInput()")
+            && asset.contains("[System.Text.Encoding]::UTF8"),
+        "claude hook must decode raw stdin as UTF-8"
+    );
 }
 
 #[test]
