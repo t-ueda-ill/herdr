@@ -239,6 +239,7 @@ impl HeadlessServer {
                 | Method::WorktreeCreate(_)
                 | Method::WorktreeOpen(_)
                 | Method::WorktreeRemove(_)
+                | Method::ContainerOpen(_)
         )
     }
 
@@ -280,6 +281,7 @@ impl HeadlessServer {
                 | Method::WorktreeCreate(_)
                 | Method::WorktreeOpen(_)
                 | Method::WorktreeRemove(_)
+                | Method::ContainerOpen(_)
         )
     }
 
@@ -308,19 +310,23 @@ impl HeadlessServer {
                 | Method::WorktreeCreate(_)
                 | Method::WorktreeOpen(_)
                 | Method::WorktreeRemove(_)
+                | Method::ContainerOpen(_)
         )
     }
 
     pub(super) fn deferred_endpoint_navigation_tab_id(response: &[u8]) -> Option<String> {
         let response = serde_json::from_slice::<serde_json::Value>(response).ok()?;
-        if !matches!(
-            response.pointer("/result/type")?.as_str()?,
-            "worktree_created" | "worktree_opened"
-        ) {
-            return None;
-        }
+        // Only deferred navigating requests buffer their response, so the
+        // synchronous create methods that share these result types never reach here.
+        let tab_id_pointer = match response.pointer("/result/type")?.as_str()? {
+            "worktree_created" | "worktree_opened" | "workspace_created" | "tab_created" => {
+                "/result/tab/tab_id"
+            }
+            "pane_info" => "/result/pane/tab_id",
+            _ => return None,
+        };
         response
-            .pointer("/result/tab/tab_id")?
+            .pointer(tab_id_pointer)?
             .as_str()
             .map(str::to_owned)
     }

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub mod agents;
 pub mod commands;
 pub mod common;
+pub mod containers;
 pub mod events;
 pub mod integrations;
 pub mod panes;
@@ -17,6 +18,7 @@ pub mod worktrees;
 pub use agents::*;
 pub use commands::*;
 pub use common::*;
+pub use containers::*;
 pub use events::*;
 pub use integrations::*;
 pub use panes::*;
@@ -101,6 +103,10 @@ pub enum Method {
     WorktreeOpen(WorktreeOpenParams),
     #[serde(rename = "worktree.remove")]
     WorktreeRemove(WorktreeRemoveParams),
+    #[serde(rename = "container.open")]
+    ContainerOpen(ContainerOpenParams),
+    #[serde(rename = "container.list")]
+    ContainerList(ContainerListParams),
     #[serde(rename = "tab.create")]
     TabCreate(TabCreateParams),
     #[serde(rename = "tab.list")]

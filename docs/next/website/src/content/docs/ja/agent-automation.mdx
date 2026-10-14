@@ -124,4 +124,11 @@ herdr pane run w1:p3 "just test --watch"
 herdr pane wait-output w1:p3 --regex "passed|failed" --timeout 120000
 ```
 
+コンテナを探して、その中でシェルを開きます:
+
+```bash
+herdr container list --json | jq -r '.result.containers[].reference'
+herdr pane split --current --direction right --container myapp/web
+```
+
 コマンドとオプションの完全な一覧は [CLI リファレンス](/ja/docs/cli-reference/) を参照してください。シェル補完でも同じコマンドツリーを対話的に確認できます。

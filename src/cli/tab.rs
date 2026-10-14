@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
 
+use super::container::WithContainer;
+
 pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_tab_help();
@@ -51,37 +53,53 @@ fn tab_list(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn tab_create(args: &[String]) -> std::io::Result<i32> {
+    match parse_tab_create_args(args) {
+        Ok(launch) => super::runtime::tab_create(launch),
+        Err(message) => {
+            eprintln!("{message}");
+            Ok(2)
+        }
+    }
+}
+
+fn parse_tab_create_args(args: &[String]) -> Result<WithContainer<TabCreateParams>, String> {
+    let args = super::expand_equals_args(args, &["--container"]);
     let mut workspace_id = None;
     let mut cwd = None;
     let mut focus = false;
     let mut label = None;
     let mut env = HashMap::new();
+    let mut container = None;
 
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--workspace" => {
                 let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --workspace");
-                    return Ok(2);
+                    return Err("missing value for --workspace".into());
                 };
                 workspace_id = Some(super::normalize_workspace_id(value));
                 index += 2;
             }
             "--cwd" => {
                 let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --cwd");
-                    return Ok(2);
+                    return Err("missing value for --cwd".into());
                 };
                 cwd = Some(value.clone());
                 index += 2;
             }
             "--label" => {
                 let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --label");
-                    return Ok(2);
+                    return Err("missing value for --label".into());
                 };
                 label = Some(value.clone());
+                index += 2;
+            }
+            "--container" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --container".into());
+                };
+                container = Some(value.clone());
                 index += 2;
             }
             "--focus" => {
@@ -94,32 +112,25 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
             }
             "--env" => {
                 let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --env");
-                    return Ok(2);
+                    return Err("missing value for --env".into());
                 };
-                let (key, value) = match super::parse_env_assignment(value) {
-                    Ok(pair) => pair,
-                    Err(err) => {
-                        eprintln!("{err}");
-                        return Ok(2);
-                    }
-                };
+                let (key, value) = super::parse_env_assignment(value)?;
                 env.insert(key, value);
                 index += 2;
             }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
+            other => return Err(format!("unknown option: {other}")),
         }
     }
 
-    super::runtime::tab_create(TabCreateParams {
-        workspace_id,
-        cwd,
-        focus,
-        label,
-        env,
+    Ok(WithContainer {
+        params: TabCreateParams {
+            workspace_id,
+            cwd,
+            focus,
+            label,
+            env,
+        },
+        container,
     })
 }
 
@@ -178,10 +189,59 @@ fn print_tab_help() {
     eprintln!("herdr tab commands:");
     eprintln!("  herdr tab list [--workspace <workspace_id>]");
     eprintln!(
-        "  herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]"
+        "  herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--container REF] [--focus] [--no-focus]"
     );
     eprintln!("  herdr tab get <tab_id>");
     eprintln!("  herdr tab focus <tab_id>");
     eprintln!("  herdr tab rename <tab_id> <label>");
     eprintln!("  herdr tab close <tab_id>");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn tab_create_parses_container_option() {
+        let launch = parse_tab_create_args(&args(&[
+            "--workspace",
+            "w1",
+            "--container",
+            "worker",
+            "--cwd",
+            "/repo",
+        ]))
+        .unwrap();
+
+        assert_eq!(launch.container.as_deref(), Some("worker"));
+        assert_eq!(launch.params.workspace_id.as_deref(), Some("w1"));
+        assert_eq!(launch.params.cwd.as_deref(), Some("/repo"));
+    }
+
+    #[test]
+    fn tab_create_accepts_container_equals_form() {
+        let launch = parse_tab_create_args(&args(&["--container=app/web"])).unwrap();
+
+        assert_eq!(launch.container.as_deref(), Some("app/web"));
+    }
+
+    #[test]
+    fn tab_create_without_container_stays_a_plain_create() {
+        let launch = parse_tab_create_args(&args(&["--label", "logs"])).unwrap();
+
+        assert_eq!(launch.container, None);
+        assert_eq!(launch.params.label.as_deref(), Some("logs"));
+    }
+
+    #[test]
+    fn tab_create_rejects_container_without_value() {
+        assert_eq!(
+            parse_tab_create_args(&args(&["--container"])),
+            Err("missing value for --container".into())
+        );
+    }
 }

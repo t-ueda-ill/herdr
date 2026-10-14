@@ -703,6 +703,7 @@ mod tests {
             foreground_cwd: None,
             restore_error: None,
             label: None,
+            container: None,
             agent: None,
             title: None,
             terminal_title: None,

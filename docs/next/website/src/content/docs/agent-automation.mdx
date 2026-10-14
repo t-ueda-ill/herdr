@@ -124,4 +124,11 @@ herdr pane run w1:p3 "just test --watch"
 herdr pane wait-output w1:p3 --regex "passed|failed" --timeout 120000
 ```
 
+Find a container, then open a shell in it:
+
+```bash
+herdr container list --json | jq -r '.result.containers[].reference'
+herdr pane split --current --direction right --container myapp/web
+```
+
 See the [CLI reference](/docs/cli-reference/) for the complete command and option list. Shell completions expose the same command tree interactively.

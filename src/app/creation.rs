@@ -120,7 +120,7 @@ impl App {
         initial_cwd: PathBuf,
         focus: bool,
     ) -> std::io::Result<usize> {
-        self.create_workspace_with_launch_env(initial_cwd, focus, Vec::new())
+        self.create_workspace_with_launch_env(initial_cwd, focus, Vec::new(), None)
     }
 
     pub(crate) fn create_workspace_with_launch_env(
@@ -128,6 +128,7 @@ impl App {
         initial_cwd: PathBuf,
         focus: bool,
         extra_env: Vec<(String, String)>,
+        container: Option<&crate::container::ContainerLaunch>,
     ) -> std::io::Result<usize> {
         let (rows, cols) = self.state.new_pane_size(crate::ui::NewPanePlacement::Alone);
         let (ws, terminal, runtime) = Workspace::new_with_extra_env(
@@ -137,7 +138,8 @@ impl App {
             self.state.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
             self.state.host_terminal_appearance,
-            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
+            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode)
+                .with_container(container),
             self.event_tx.clone(),
             self.render_notify.clone(),
             self.render_dirty.clone(),
@@ -351,6 +353,10 @@ impl App {
                 .map(|cwd| cwd.display().to_string()),
             restore_error: terminal.restore_error.clone(),
             label: terminal.manual_label.clone(),
+            container: terminal
+                .container
+                .as_ref()
+                .map(|launch| launch.canonical.clone()),
             agent: terminal.effective_agent_label().map(str::to_string),
             title: presentation.title,
             terminal_title: terminal.terminal_title.clone(),

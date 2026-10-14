@@ -1,8 +1,9 @@
+use super::container::WithContainer;
 use crate::api::schema::{
-    EmptyParams, Method, PaneFocusDirectionParams, PaneInputSetParams, PaneMoveParams,
-    PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget,
-    PaneZoomParams, Request, TabCreateParams, TabListParams, TabRenameParams, TabTarget,
-    WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
+    ContainerOpenTarget, EmptyParams, Method, PaneFocusDirectionParams, PaneInputSetParams,
+    PaneMoveParams, PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams,
+    PaneTarget, PaneZoomParams, Request, TabCreateParams, TabListParams, TabRenameParams,
+    TabTarget, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
     WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
 };
 
@@ -20,8 +21,13 @@ pub(super) fn workspace_list() -> std::io::Result<i32> {
     )
 }
 
-pub(super) fn workspace_create(params: WorkspaceCreateParams) -> std::io::Result<i32> {
-    print_method_response("cli:workspace:create", Method::WorkspaceCreate(params))
+pub(super) fn workspace_create(
+    launch: WithContainer<WorkspaceCreateParams>,
+) -> std::io::Result<i32> {
+    print_method_response(
+        "cli:workspace:create",
+        launch.into_method(Method::WorkspaceCreate, ContainerOpenTarget::Workspace),
+    )
 }
 
 pub(super) fn workspace_get(workspace_id: String) -> std::io::Result<i32> {
@@ -50,8 +56,11 @@ pub(super) fn tab_list(params: TabListParams) -> std::io::Result<i32> {
     print_method_response("cli:tab:list", Method::TabList(params))
 }
 
-pub(super) fn tab_create(params: TabCreateParams) -> std::io::Result<i32> {
-    print_method_response("cli:tab:create", Method::TabCreate(params))
+pub(super) fn tab_create(launch: WithContainer<TabCreateParams>) -> std::io::Result<i32> {
+    print_method_response(
+        "cli:tab:create",
+        launch.into_method(Method::TabCreate, ContainerOpenTarget::Tab),
+    )
 }
 
 pub(super) fn tab_get(tab_id: String) -> std::io::Result<i32> {
@@ -106,8 +115,11 @@ pub(super) fn pane_input_set(params: PaneInputSetParams) -> std::io::Result<i32>
     print_method_response("cli:pane:input:set", Method::PaneInputSet(params))
 }
 
-pub(super) fn pane_split(params: PaneSplitParams) -> std::io::Result<i32> {
-    print_method_response("cli:pane:split", Method::PaneSplit(params))
+pub(super) fn pane_split(launch: WithContainer<PaneSplitParams>) -> std::io::Result<i32> {
+    print_method_response(
+        "cli:pane:split",
+        launch.into_method(Method::PaneSplit, ContainerOpenTarget::Split),
+    )
 }
 
 pub(super) fn pane_swap(params: PaneSwapParams) -> std::io::Result<i32> {

@@ -39,6 +39,7 @@ pub(super) fn command() -> Command {
         .subcommand(api_command())
         .subcommand(workspace_command())
         .subcommand(worktree_command())
+        .subcommand(container_command())
         .subcommand(tab_command())
         .subcommand(notification_command())
         .subcommand(agent_command())
@@ -205,6 +206,7 @@ fn workspace_command() -> Command {
                 .arg(path_option("cwd", "PATH"))
                 .arg(option("label", "TEXT"))
                 .arg(env_option())
+                .arg(container_option())
                 .arg(flag("focus"))
                 .arg(flag("no-focus")),
         )
@@ -273,6 +275,17 @@ fn worktree_command() -> Command {
         )
 }
 
+fn container_command() -> Command {
+    Command::new("container")
+        .about("Inspect Docker containers available for container shells")
+        .subcommand(
+            Command::new("list")
+                .about("List running containers and the workspaces they match")
+                .arg(option("workspace", "ID").help("Only show containers matching this workspace"))
+                .arg(flag("json").help("Print the raw API response as JSON")),
+        )
+}
+
 fn tab_command() -> Command {
     Command::new("tab")
         .about("Manage tabs over the socket API")
@@ -288,6 +301,7 @@ fn tab_command() -> Command {
                 .arg(path_option("cwd", "PATH"))
                 .arg(option("label", "TEXT"))
                 .arg(env_option())
+                .arg(container_option())
                 .arg(flag("focus"))
                 .arg(flag("no-focus")),
         )
@@ -555,6 +569,7 @@ fn pane_command() -> Command {
                 .arg(option("ratio", "FLOAT"))
                 .arg(path_option("cwd", "PATH"))
                 .arg(env_option())
+                .arg(container_option())
                 .arg(option("right-click", "TARGET").value_parser(["herdr", "pane"]))
                 .arg(flag("focus"))
                 .arg(flag("no-focus")),
@@ -989,6 +1004,12 @@ fn env_option() -> Arg {
         .help("Set an environment variable for the launched process")
 }
 
+fn container_option() -> Arg {
+    option("container", "REF").help(
+        "Start the shell in a running Docker container: project/service for Compose, otherwise a container name or ID",
+    )
+}
+
 fn flag(name: &'static str) -> Arg {
     Arg::new(name).long(name).action(ArgAction::SetTrue)
 }
@@ -1304,6 +1325,36 @@ mod tests {
         let cmd = super::command();
         let pane_read = command_path(&cmd, &["pane", "read"]);
         assert!(has_option(pane_read, "raw"));
+    }
+
+    #[test]
+    fn spec_offers_container_option_on_shell_creating_commands() {
+        let cmd = super::command();
+        for path in [
+            &["workspace", "create"][..],
+            &["tab", "create"],
+            &["pane", "split"],
+        ] {
+            let command = command_path(&cmd, path);
+            assert!(
+                has_option(command, "container"),
+                "herdr {} should accept --container",
+                path.join(" ")
+            );
+            assert!(
+                option_arg(command, "container").get_help().is_some(),
+                "herdr {} --container needs help text",
+                path.join(" ")
+            );
+        }
+    }
+
+    #[test]
+    fn spec_includes_container_list_with_workspace_filter_and_json() {
+        let cmd = super::command();
+        let list = command_path(&cmd, &["container", "list"]);
+        assert!(has_option(list, "workspace"));
+        assert!(has_option(list, "json"));
     }
 
     #[test]

@@ -1,0 +1,55 @@
+[
+  {
+    "Id": "aaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "Name": "/shop-db-1",
+    "State": {
+      "Status": "running"
+    },
+    "Config": {
+      "Labels": {
+        "com.docker.compose.config-hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.depends_on": "",
+        "com.docker.compose.image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.project": "shop",
+        "com.docker.compose.project.config_files": "/home/dev/src/shop/db/docker-compose.yml,/home/dev/src/shop/db/docker-compose.override.yml",
+        "com.docker.compose.project.working_dir": "/home/dev/src/shop/db",
+        "com.docker.compose.service": "db",
+        "com.docker.compose.version": "5.5.1",
+        "org.opencontainers.image.ref.name": "ubuntu",
+        "org.opencontainers.image.version": "24.04"
+      },
+      "WorkingDir": "/var/lib/postgresql/13/data",
+      "User": ""
+    },
+    "Mounts": [
+      {
+        "Type": "bind",
+        "Source": "/home/dev/src/shop/db/startup",
+        "Destination": "/usr/bin/startup",
+        "Mode": "rw",
+        "RW": true,
+        "Propagation": "rprivate"
+      },
+      {
+        "Type": "bind",
+        "Source": "/home/dev/src/shop/db/logs",
+        "Destination": "/var/log/postgresql",
+        "Mode": "rw",
+        "RW": true,
+        "Propagation": "rprivate"
+      },
+      {
+        "Type": "volume",
+        "Name": "shop_data",
+        "Source": "/var/lib/docker/volumes/shop_data/_data",
+        "Destination": "/var/lib/postgresql/13/data",
+        "Driver": "local",
+        "Mode": "rw",
+        "RW": true,
+        "Propagation": ""
+      }
+    ]
+  }
+]

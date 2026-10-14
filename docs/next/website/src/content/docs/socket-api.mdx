@@ -102,6 +102,7 @@ Raw socket method names use dot notation:
 | Session | `session.snapshot` |
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
+| Container | `container.open`, `container.list` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
 | Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
@@ -366,6 +367,59 @@ Use at most one of `workspace_id` or `cwd` for `worktree.list`, `worktree.create
 Worktree commands also emit lifecycle events. `worktree.create` emits `workspace.created`, `tab.created`, `pane.created`, and `worktree.created`. `worktree.open` emits `worktree.opened`, and it also emits workspace/tab/pane creation events when it opens a new Herdr workspace. `worktree.remove` emits `worktree.removed`; if the linked workspace is still open, it also emits `workspace.closed`.
 
 `workspace.close` rejects closing a primary workspace while linked-worktree workspaces are open unless its params include `"close_group": true`, returning `workspace_group_close_required` when explicit group intent is missing. An explicit group close emits one `workspace.closed` event for each workspace it closes.
+
+## Containers
+
+`container.open` starts a shell inside a running Docker container. `target` nests the ordinary create or split params under one of `workspace`, `tab`, or `split`; the result is the same as the nested method's. `container` is a Compose `project/service`, or a container name or ID.
+
+```json
+{
+  "id": "req_1",
+  "method": "container.open",
+  "params": {
+    "container": "myapp/web",
+    "target": { "tab": { "workspace_id": "w1", "focus": false } }
+  }
+}
+```
+
+`container.list` returns the running containers. `workspace_id` is optional and keeps only containers matching that workspace.
+
+```json
+{ "id": "req_2", "method": "container.list", "params": { "workspace_id": "w1" } }
+```
+
+```json
+{
+  "id": "req_2",
+  "result": {
+    "type": "container_list",
+    "containers": [
+      {
+        "reference": "myapp/web",
+        "id": "3f2a9c...",
+        "name": "myapp-web-1",
+        "project": "myapp",
+        "service": "web",
+        "working_dir": "/home/me/myapp",
+        "workspace_id": "w1",
+        "is_default": true
+      }
+    ]
+  }
+}
+```
+
+`project`, `service`, `working_dir`, and `workspace_id` are omitted when unknown. Errors:
+
+| Code | Meaning |
+| --- | --- |
+| `invalid_container` | `container` is empty or malformed |
+| `container_not_found` | no such container, including stopped ones |
+| `container_unavailable` | Docker is missing, failed, or took longer than 5 seconds |
+| `platform_unsupported` | the server runs on Windows |
+
+Create and split params stay unchanged; the container reference travels only in `container.open`.
 
 ## Agent view queries
 

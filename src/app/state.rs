@@ -899,6 +899,20 @@ impl AppState {
         self.pane_id_aliases.remove(&pane_id.raw());
     }
 
+    /// Respawns read the launch stored at creation rather than resolving the
+    /// container again: they run on the app thread, where a docker round trip
+    /// would stall rendering.
+    pub(crate) fn pane_shell_config_for_terminal(
+        &self,
+        terminal_id: &crate::terminal::TerminalId,
+    ) -> crate::pane::PaneShellConfig<'_> {
+        crate::pane::PaneShellConfig::new(&self.default_shell, self.shell_mode).with_container(
+            self.terminals
+                .get(terminal_id)
+                .and_then(|terminal| terminal.container.as_ref()),
+        )
+    }
+
     pub(crate) fn pane_exposes_host_cursor(
         &self,
         _ws_idx: usize,
@@ -1334,6 +1348,49 @@ mod tests {
         assert_eq!(
             state.new_pane_size(crate::ui::NewPanePlacement::Alone),
             (41, 132)
+        );
+    }
+
+    #[test]
+    fn pane_shell_config_for_terminal_reuses_stored_container_launch() {
+        let mut state = AppState::test_new();
+        state.default_shell = "/bin/zsh".into();
+        state.shell_mode = crate::config::ShellModeConfig::Login;
+        let launch = crate::container::ContainerLaunch {
+            reference: crate::container::ContainerRef::Name("scratch".into()),
+            canonical: "scratch".into(),
+            id: "cid".into(),
+            workdir: Some("/work".into()),
+            user: None,
+            shell: crate::container::ContainerShell::BashOrSh,
+        };
+        let container_terminal = crate::terminal::TerminalId::alloc();
+        state.terminals.insert(
+            container_terminal.clone(),
+            crate::terminal::TerminalState::new(container_terminal.clone(), "/host".into())
+                .with_container(launch.clone()),
+        );
+        let host_terminal = crate::terminal::TerminalId::alloc();
+        state.terminals.insert(
+            host_terminal.clone(),
+            crate::terminal::TerminalState::new(host_terminal.clone(), "/host".into()),
+        );
+
+        let config = state.pane_shell_config_for_terminal(&container_terminal);
+        assert_eq!(config.container, Some(&launch));
+        assert_eq!(config.default_shell, "/bin/zsh");
+        assert_eq!(config.mode, crate::config::ShellModeConfig::Login);
+        assert_eq!(
+            state
+                .pane_shell_config_for_terminal(&host_terminal)
+                .container,
+            None
+        );
+        assert_eq!(
+            state
+                .pane_shell_config_for_terminal(&crate::terminal::TerminalId::alloc())
+                .container,
+            None
         );
     }
 

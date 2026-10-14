@@ -44,7 +44,40 @@ impl App {
         encode_success(id, ResponseResult::TabInfo { tab })
     }
 
-    pub(super) fn handle_tab_create(&mut self, id: String, params: TabCreateParams) -> String {
+    /// Resolves the target workspace and launch cwd without spawning, so
+    /// `container.open` can plan the container workdir first.
+    pub(in crate::app) fn tab_create_location(
+        &self,
+        workspace_id: Option<&str>,
+        cwd: Option<&str>,
+    ) -> Result<(usize, PathBuf), (String, String)> {
+        let ws_idx = if let Some(workspace_id) = workspace_id {
+            self.parse_workspace_id(workspace_id).ok_or_else(|| {
+                (
+                    "workspace_not_found".to_string(),
+                    format!("workspace {workspace_id} not found"),
+                )
+            })?
+        } else if let Some(active) = self.state.active {
+            active
+        } else {
+            return Err((
+                "workspace_not_found".to_string(),
+                "no active workspace".to_string(),
+            ));
+        };
+        let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
+            self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
+        });
+        Ok((ws_idx, cwd))
+    }
+
+    pub(in crate::app) fn handle_tab_create(
+        &mut self,
+        id: String,
+        params: TabCreateParams,
+        container: Option<&crate::container::ContainerLaunch>,
+    ) -> String {
         let TabCreateParams {
             workspace_id,
             cwd,
@@ -52,19 +85,11 @@ impl App {
             label,
             env,
         } = params;
-        let ws_idx = if let Some(workspace_id) = workspace_id {
-            let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
-                return workspace_not_found(id, &workspace_id);
-            };
-            ws_idx
-        } else if let Some(active) = self.state.active {
-            active
-        } else {
-            return encode_error(id, "workspace_not_found", "no active workspace");
+        let (ws_idx, cwd) = match self.tab_create_location(workspace_id.as_deref(), cwd.as_deref())
+        {
+            Ok(location) => location,
+            Err((code, message)) => return encode_error(id, &code, message),
         };
-        let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
-            self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
-        });
         let (rows, cols) = self.state.new_pane_size(crate::ui::NewPanePlacement::Alone);
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
@@ -87,7 +112,8 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
+                    crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode)
+                        .with_container(container),
                     extra_env,
                 )
             });
@@ -466,6 +492,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
+            None,
         );
 
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();

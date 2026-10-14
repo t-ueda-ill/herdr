@@ -778,6 +778,12 @@
             "agent_status": {
               "$ref": "#/schemas/event/$defs/AgentStatus"
             },
+            "container": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -1758,6 +1764,73 @@
             "command_id"
           ],
           "type": "object"
+        },
+        "ContainerListParams": {
+          "properties": {
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "ContainerOpenParams": {
+          "properties": {
+            "container": {
+              "description": "Docker container to open the shell in: `project/service` for a Compose service, otherwise a container name or ID.",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/ContainerOpenTarget"
+            }
+          },
+          "required": [
+            "container",
+            "target"
+          ],
+          "type": "object"
+        },
+        "ContainerOpenTarget": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "workspace": {
+                  "$ref": "#/schemas/request/$defs/WorkspaceCreateParams"
+                }
+              },
+              "required": [
+                "workspace"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "tab": {
+                  "$ref": "#/schemas/request/$defs/TabCreateParams"
+                }
+              },
+              "required": [
+                "tab"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "split": {
+                  "$ref": "#/schemas/request/$defs/PaneSplitParams"
+                }
+              },
+              "required": [
+                "split"
+              ],
+              "type": "object"
+            }
+          ]
         },
         "EmptyParams": {
           "type": "object"
@@ -5132,6 +5205,38 @@
         {
           "properties": {
             "method": {
+              "const": "container.open",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ContainerOpenParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "container.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ContainerListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "tab.create",
               "type": "string"
             },
@@ -6792,6 +6897,53 @@
           ],
           "type": "string"
         },
+        "ContainerInfoDto": {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "is_default": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "project": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reference": {
+              "type": "string"
+            },
+            "service": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "working_dir": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "reference",
+            "id",
+            "name",
+            "is_default"
+          ],
+          "type": "object"
+        },
         "EventData": {
           "oneOf": [
             {
@@ -7885,6 +8037,12 @@
             },
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
+            },
+            "container": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cwd": {
               "type": [
@@ -9379,6 +9537,25 @@
                 "workspace_id",
                 "path",
                 "forced"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "containers": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ContainerInfoDto"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "container_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "containers"
               ],
               "type": "object"
             },

@@ -283,6 +283,25 @@ pub(super) fn spawn_herdr_with_config(
     path_override: Option<&Path>,
     config_toml: &str,
 ) -> SpawnedHerdr {
+    spawn_herdr_with_env(
+        config_home,
+        runtime_dir,
+        socket_path,
+        path_override,
+        config_toml,
+        &[],
+    )
+}
+
+/// `envs` reach the server process and, through inheritance, every pane it spawns.
+pub(super) fn spawn_herdr_with_env(
+    config_home: &Path,
+    runtime_dir: &Path,
+    socket_path: &Path,
+    path_override: Option<&Path>,
+    config_toml: &str,
+    envs: &[(&str, &Path)],
+) -> SpawnedHerdr {
     fs::create_dir_all(config_home.join(app_dir_name())).unwrap();
     fs::create_dir_all(runtime_dir).unwrap();
     register_runtime_dir(runtime_dir);
@@ -312,6 +331,9 @@ pub(super) fn spawn_herdr_with_config(
     cmd.env_remove("HERDR_ENV");
     if let Some(path) = path_override {
         cmd.env("PATH", path);
+    }
+    for (key, value) in envs {
+        cmd.env(key, value);
     }
 
     let child = pair.slave.spawn_command(cmd).unwrap();

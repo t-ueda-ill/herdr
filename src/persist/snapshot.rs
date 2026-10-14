@@ -111,6 +111,89 @@ pub struct PaneSnapshot {
     pub agent_resume: Option<PaneAgentResumeSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<PaneContainerSnapshot>,
+}
+
+/// Persisted mirror of `ContainerLaunch`.
+// Why not serialize `ContainerLaunch` directly: the session file is a
+// contract, so its wire names must not follow renames in the container module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneContainerSnapshot {
+    pub reference: PaneContainerRefSnapshot,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    pub shell: PaneContainerShellSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneContainerRefSnapshot {
+    Compose { project: String, service: String },
+    Name(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneContainerShellSnapshot {
+    Explicit(String),
+    BashOrSh,
+}
+
+impl From<&crate::container::ContainerLaunch> for PaneContainerSnapshot {
+    fn from(launch: &crate::container::ContainerLaunch) -> Self {
+        use crate::container::{ContainerRef, ContainerShell};
+        Self {
+            reference: match &launch.reference {
+                ContainerRef::Compose { project, service } => PaneContainerRefSnapshot::Compose {
+                    project: project.clone(),
+                    service: service.clone(),
+                },
+                ContainerRef::Name(name) => PaneContainerRefSnapshot::Name(name.clone()),
+            },
+            id: launch.id.clone(),
+            workdir: launch.workdir.clone(),
+            user: launch.user.clone(),
+            shell: match &launch.shell {
+                ContainerShell::Explicit(shell) => {
+                    PaneContainerShellSnapshot::Explicit(shell.clone())
+                }
+                ContainerShell::BashOrSh => PaneContainerShellSnapshot::BashOrSh,
+            },
+        }
+    }
+}
+
+impl From<&PaneContainerSnapshot> for crate::container::ContainerLaunch {
+    fn from(snapshot: &PaneContainerSnapshot) -> Self {
+        use crate::container::{ContainerRef, ContainerShell};
+        let reference = match &snapshot.reference {
+            PaneContainerRefSnapshot::Compose { project, service } => ContainerRef::Compose {
+                project: project.clone(),
+                service: service.clone(),
+            },
+            PaneContainerRefSnapshot::Name(name) => ContainerRef::Name(name.clone()),
+        };
+        // Why not persist `canonical`: it is derived from `reference`, and a
+        // stored copy could disagree with it after a hand edit.
+        let canonical = reference.canonical();
+        Self {
+            reference,
+            canonical,
+            id: snapshot.id.clone(),
+            workdir: snapshot.workdir.clone(),
+            user: snapshot.user.clone(),
+            shell: match &snapshot.shell {
+                PaneContainerShellSnapshot::Explicit(shell) => {
+                    ContainerShell::Explicit(shell.clone())
+                }
+                PaneContainerShellSnapshot::BashOrSh => ContainerShell::BashOrSh,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,6 +433,9 @@ fn capture_tab(
             })
             .unwrap_or_default();
         let launch_argv = terminal.and_then(|terminal| terminal.launch_argv.clone());
+        let container = terminal
+            .and_then(|terminal| terminal.container.as_ref())
+            .map(PaneContainerSnapshot::from);
         let agent_session = terminal.and_then(|terminal| {
             if let Some(authority) = terminal.hook_authority.as_ref() {
                 if let Some(session_ref) = authority.session_ref.as_ref() {
@@ -388,6 +474,7 @@ fn capture_tab(
                 agent_session,
                 agent_resume,
                 launch_argv,
+                container,
             },
         );
     }
@@ -707,6 +794,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                container: None,
             },
         );
         panes.insert(
@@ -719,6 +807,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                container: None,
             },
         );
 
@@ -778,6 +867,79 @@ mod tests {
         assert_eq!(restored.sidebar_section_split, Some(0.5));
     }
 
+    fn pane_snapshot_with_container(container: Option<PaneContainerSnapshot>) -> PaneSnapshot {
+        PaneSnapshot {
+            cwd: PathBuf::from("/home/can/Projects/shop"),
+            label: None,
+            agent_name: None,
+            managed_agent_kind: None,
+            agent_session: None,
+            agent_resume: None,
+            launch_argv: None,
+            container,
+        }
+    }
+
+    #[test]
+    fn round_trip_preserves_pane_container() {
+        let compose = PaneContainerSnapshot {
+            reference: PaneContainerRefSnapshot::Compose {
+                project: "shop".into(),
+                service: "db".into(),
+            },
+            id: "0123abcd".into(),
+            workdir: Some(PathBuf::from("/work")),
+            user: Some("dev".into()),
+            shell: PaneContainerShellSnapshot::Explicit("/bin/zsh".into()),
+        };
+        let named = PaneContainerSnapshot {
+            reference: PaneContainerRefSnapshot::Name("scratch".into()),
+            id: "4567ef".into(),
+            workdir: None,
+            user: None,
+            shell: PaneContainerShellSnapshot::BashOrSh,
+        };
+        let panes = HashMap::from([
+            (0, pane_snapshot_with_container(Some(compose.clone()))),
+            (1, pane_snapshot_with_container(Some(named.clone()))),
+            (2, pane_snapshot_with_container(None)),
+        ]);
+
+        let wire = |id: u32| serde_json::to_value(&panes[&id]).unwrap();
+        assert_eq!(
+            wire(0)["container"],
+            serde_json::json!({
+                "reference": {"compose": {"project": "shop", "service": "db"}},
+                "id": "0123abcd",
+                "workdir": "/work",
+                "user": "dev",
+                "shell": {"explicit": "/bin/zsh"},
+            })
+        );
+        assert_eq!(
+            wire(1)["container"],
+            serde_json::json!({
+                "reference": {"name": "scratch"},
+                "id": "4567ef",
+                "shell": "bash_or_sh",
+            })
+        );
+        assert!(
+            wire(2).get("container").is_none(),
+            "host panes must not grow a container key"
+        );
+
+        let restored: HashMap<u32, PaneSnapshot> =
+            serde_json::from_str(&serde_json::to_string(&panes).unwrap()).unwrap();
+        assert_eq!(restored[&0].container, Some(compose.clone()));
+        assert_eq!(restored[&1].container, Some(named));
+        assert_eq!(restored[&2].container, None);
+
+        let launch = crate::container::ContainerLaunch::from(&compose);
+        assert_eq!(launch.canonical, "shop/db");
+        assert_eq!(PaneContainerSnapshot::from(&launch), compose);
+    }
+
     #[test]
     fn current_session_fixture_parses() {
         let snap = parse_snapshot(session_fixture("current-herdr")).unwrap();
@@ -804,6 +966,20 @@ mod tests {
         assert_eq!(snap.sidebar_section_split, Some(0.4));
         assert_eq!(snap.workspaces[0].active_tab, 1);
         assert_eq!(snap.workspaces[1].tabs[0].panes.len(), 2);
+        assert_eq!(snap.workspaces[1].tabs[0].panes[&6].container, None);
+        let container = snap.workspaces[1].tabs[0].panes[&7]
+            .container
+            .as_ref()
+            .expect("container pane should parse");
+        assert_eq!(
+            container.reference,
+            PaneContainerRefSnapshot::Compose {
+                project: "project-a".into(),
+                service: "app".into(),
+            }
+        );
+        assert_eq!(container.workdir.as_deref(), Some("/work".as_ref()));
+        assert_eq!(container.shell, PaneContainerShellSnapshot::BashOrSh);
     }
 
     #[test]
@@ -1340,6 +1516,38 @@ mod tests {
     }
 
     #[test]
+    fn capture_contract_tracks_pane_container() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let host = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        let launch = crate::container::ContainerLaunch {
+            reference: crate::container::ContainerRef::Compose {
+                project: "shop".into(),
+                service: "db".into(),
+            },
+            canonical: "shop/db".into(),
+            id: "0123abcd".into(),
+            workdir: Some(PathBuf::from("/work")),
+            user: Some("dev".into()),
+            shell: crate::container::ContainerShell::BashOrSh,
+        };
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        state.terminals.get_mut(&terminal_id).unwrap().container = Some(launch.clone());
+
+        let snapshot = capture_from_state(&state);
+        let panes = &snapshot.workspaces[0].tabs[0].panes;
+        let captured = panes[&root.raw()]
+            .container
+            .as_ref()
+            .expect("container launch should be captured");
+        assert_eq!(crate::container::ContainerLaunch::from(captured), launch);
+        assert_eq!(panes[&host.raw()].container, None);
+    }
+
+    #[test]
     fn capture_contract_preserves_restored_agent_session() {
         let mut state = state_with_workspaces(&["one"]);
         let root = state.workspaces[0].tabs[0].root_pane;
@@ -1405,6 +1613,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                container: None,
             },
         );
         panes.insert(
@@ -1419,6 +1628,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                container: None,
             },
         );
 

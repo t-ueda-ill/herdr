@@ -158,6 +158,8 @@ pub struct TerminalState {
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
     pub respawn_shell_on_exit: bool,
+    /// Kept resolved so respawns reuse it instead of querying docker again.
+    pub container: Option<crate::container::ContainerLaunch>,
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
     agent_process_acquisition_pending: bool,
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
@@ -198,6 +200,7 @@ impl TerminalState {
             revision: 0,
             launch_argv: None,
             respawn_shell_on_exit: false,
+            container: None,
             recent_agent_process_exit: None,
             agent_process_acquisition_pending: false,
             pending_agent_resume_plan: None,
@@ -292,6 +295,11 @@ impl TerminalState {
 
     pub fn with_respawn_shell_on_exit(mut self) -> Self {
         self.respawn_shell_on_exit = true;
+        self
+    }
+
+    pub fn with_container(mut self, launch: crate::container::ContainerLaunch) -> Self {
+        self.container = Some(launch);
         self
     }
 
@@ -2498,6 +2506,24 @@ mod tests {
             agent: agent_label.into(),
             session_ref,
         });
+    }
+
+    #[test]
+    fn terminal_with_container_keeps_resolved_launch() {
+        let launch = crate::container::ContainerLaunch {
+            reference: crate::container::ContainerRef::Name("scratch".into()),
+            canonical: "scratch".into(),
+            id: "cid".into(),
+            workdir: Some("/work".into()),
+            user: Some("dev".into()),
+            shell: crate::container::ContainerShell::Explicit("/bin/zsh".into()),
+        };
+
+        assert_eq!(test_terminal().container, None);
+        assert_eq!(
+            test_terminal().with_container(launch.clone()).container,
+            Some(launch)
+        );
     }
 
     #[test]

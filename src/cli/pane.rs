@@ -9,6 +9,8 @@ use crate::api::schema::{
     SplitDirection,
 };
 
+use super::container::WithContainer;
+
 pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_pane_help();
@@ -616,22 +618,22 @@ fn parse_right_click_target(value: &str) -> Result<PaneRightClickTarget, String>
 
 fn pane_split(args: &[String]) -> std::io::Result<i32> {
     let env_pane_id = super::target::caller_pane_id();
-    let params = match parse_pane_split_args(args, env_pane_id.as_deref()) {
-        Ok(params) => params,
+    let launch = match parse_pane_split_args(args, env_pane_id.as_deref()) {
+        Ok(launch) => launch,
         Err(message) => {
             eprintln!("{message}");
             return Ok(2);
         }
     };
 
-    super::runtime::pane_split(params)
+    super::runtime::pane_split(launch)
 }
 
 fn parse_pane_split_args(
     args: &[String],
     env_pane_id: Option<&str>,
-) -> Result<PaneSplitParams, String> {
-    let args = super::expand_equals_args(args, &["--right-click"]);
+) -> Result<WithContainer<PaneSplitParams>, String> {
+    let args = super::expand_equals_args(args, &["--right-click", "--container"]);
     let mut env = std::collections::HashMap::new();
     let mut pane_id = env_pane_id.map(super::normalize_pane_id);
     let mut direction = None;
@@ -639,6 +641,7 @@ fn parse_pane_split_args(
     let mut cwd = None;
     let mut focus = false;
     let mut right_click = PaneRightClickTarget::Herdr;
+    let mut container = None;
 
     let mut index = 0;
     if args
@@ -700,6 +703,13 @@ fn parse_pane_split_args(
                 right_click = parse_right_click_target(value)?;
                 index += 2;
             }
+            "--container" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --container".into());
+                };
+                container = Some(value.clone());
+                index += 2;
+            }
             "--focus" => {
                 focus = true;
                 index += 1;
@@ -722,20 +732,23 @@ fn parse_pane_split_args(
 
     let Some(direction) = direction else {
         return Err(
-            "usage: herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus]"
+            "usage: herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--container REF] [--right-click herdr|pane] [--focus] [--no-focus]"
                 .into(),
         );
     };
 
-    Ok(PaneSplitParams {
-        workspace_id: None,
-        target_pane_id: pane_id,
-        direction,
-        ratio,
-        cwd,
-        focus,
-        right_click,
-        env,
+    Ok(WithContainer {
+        params: PaneSplitParams {
+            workspace_id: None,
+            target_pane_id: pane_id,
+            direction,
+            ratio,
+            cwd,
+            focus,
+            right_click,
+            env,
+        },
+        container,
     })
 }
 
@@ -1687,7 +1700,7 @@ fn print_pane_help() {
     eprintln!("  herdr pane read <pane_id> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
     eprintln!("  herdr pane input [<pane_id>|--pane ID|--current] --right-click herdr|pane");
     eprintln!(
-        "  herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus]"
+        "  herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--container REF] [--right-click herdr|pane] [--focus] [--no-focus]"
     );
     eprintln!("  herdr pane swap --direction left|right|up|down [--pane ID|--current]");
     eprintln!("  herdr pane swap --source-pane ID --target-pane ID");
@@ -1719,7 +1732,8 @@ mod tests {
             &args(&["issue-1", "--direction", "right", "--ratio", "0.333"]),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .params;
 
         assert_eq!(params.target_pane_id, Some("issue-1".into()));
         assert_eq!(params.direction, crate::api::schema::SplitDirection::Right);
@@ -1733,7 +1747,8 @@ mod tests {
             &args(&["--direction", "right", "--right-click", "pane"]),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .params;
 
         assert_eq!(params.right_click, PaneRightClickTarget::Pane);
     }
@@ -1771,7 +1786,8 @@ mod tests {
     fn parse_pane_split_args_accepts_equals_right_click_target() {
         let params =
             parse_pane_split_args(&args(&["--direction", "right", "--right-click=pane"]), None)
-                .unwrap();
+                .unwrap()
+                .params;
 
         assert_eq!(params.right_click, PaneRightClickTarget::Pane);
     }
@@ -1782,7 +1798,8 @@ mod tests {
             &args(&["--direction", "down", "--current"]),
             Some("issue-1"),
         )
-        .unwrap();
+        .unwrap()
+        .params;
 
         assert_eq!(params.target_pane_id, Some("issue-1".into()));
         assert_eq!(params.direction, crate::api::schema::SplitDirection::Down);
@@ -1799,7 +1816,8 @@ mod tests {
             &args(&["--no-focus", "--direction", "right", "--cwd", "/var/tmp"]),
             Some("w1:p2"),
         )
-        .unwrap();
+        .unwrap()
+        .params;
 
         assert_eq!(params.target_pane_id, Some("w1:p2".into()));
         assert!(!params.focus);
@@ -1807,7 +1825,9 @@ mod tests {
 
     #[test]
     fn parse_pane_split_args_without_caller_keeps_focused_fallback() {
-        let params = parse_pane_split_args(&args(&["--direction", "down"]), None).unwrap();
+        let params = parse_pane_split_args(&args(&["--direction", "down"]), None)
+            .unwrap()
+            .params;
 
         assert_eq!(params.target_pane_id, None);
     }
@@ -1817,10 +1837,58 @@ mod tests {
         for target in [args(&["w2:p3"]), args(&["--pane", "w2:p3"])] {
             let mut input = target;
             input.extend(args(&["--direction", "right"]));
-            let params = parse_pane_split_args(&input, Some("w1:p2")).unwrap();
+            let params = parse_pane_split_args(&input, Some("w1:p2")).unwrap().params;
 
             assert_eq!(params.target_pane_id, Some("w2:p3".into()));
         }
+    }
+
+    #[test]
+    fn pane_split_parses_container_option() {
+        let launch = parse_pane_split_args(
+            &args(&[
+                "w1:p1",
+                "--direction",
+                "down",
+                "--container",
+                "app/web",
+                "--cwd",
+                "/work",
+            ]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(launch.container.as_deref(), Some("app/web"));
+        assert_eq!(launch.params.target_pane_id, Some("w1:p1".into()));
+        assert_eq!(launch.params.direction, SplitDirection::Down);
+        assert_eq!(launch.params.cwd.as_deref(), Some("/work"));
+    }
+
+    #[test]
+    fn pane_split_accepts_container_equals_form() {
+        let launch = parse_pane_split_args(
+            &args(&["--direction", "right", "--container=app/web"]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(launch.container.as_deref(), Some("app/web"));
+    }
+
+    #[test]
+    fn pane_split_without_container_stays_a_plain_split() {
+        let launch = parse_pane_split_args(&args(&["--direction", "right"]), None).unwrap();
+
+        assert_eq!(launch.container, None);
+    }
+
+    #[test]
+    fn pane_split_rejects_container_without_value() {
+        assert_eq!(
+            parse_pane_split_args(&args(&["--direction", "right", "--container"]), None),
+            Err("missing value for --container".into())
+        );
     }
 
     #[test]

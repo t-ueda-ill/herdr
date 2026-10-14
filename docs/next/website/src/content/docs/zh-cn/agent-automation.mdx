@@ -124,4 +124,11 @@ herdr pane run w1:p3 "just test --watch"
 herdr pane wait-output w1:p3 --regex "passed|failed" --timeout 120000
 ```
 
+先查找容器,再在其中打开 shell:
+
+```bash
+herdr container list --json | jq -r '.result.containers[].reference'
+herdr pane split --current --direction right --container myapp/web
+```
+
 完整命令和选项列表见 [CLI 参考](/zh-cn/docs/cli-reference/)。Shell 补全也能以交互方式显示同一命令树。

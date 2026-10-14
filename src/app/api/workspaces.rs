@@ -36,36 +36,49 @@ impl App {
         )
     }
 
-    pub(super) fn handle_workspace_create(
+    /// Resolves the launch cwd without spawning, so `container.open` can plan
+    /// the container workdir before the workspace exists.
+    pub(in crate::app) fn workspace_create_cwd(
+        &self,
+        params: &WorkspaceCreateParams,
+    ) -> Result<PathBuf, (String, String)> {
+        if let Some(cwd) = &params.cwd {
+            return Ok(PathBuf::from(cwd));
+        }
+        let source_workspace_index = match params.source_workspace_id.as_deref() {
+            Some(workspace_id) => Some(
+                self.parse_workspace_id(workspace_id)
+                    .filter(|index| self.state.workspaces.get(*index).is_some())
+                    .ok_or_else(|| {
+                        (
+                            "workspace_not_found".to_string(),
+                            format!("workspace {workspace_id} not found"),
+                        )
+                    })?,
+            ),
+            None => self.workspace_creation_source(),
+        };
+        Ok(source_workspace_index.map_or_else(
+            || self.resolve_new_terminal_cwd(None),
+            |index| self.resolved_new_workspace_cwd_from(index),
+        ))
+    }
+
+    pub(in crate::app) fn handle_workspace_create(
         &mut self,
         id: String,
         params: WorkspaceCreateParams,
+        container: Option<&crate::container::ContainerLaunch>,
     ) -> String {
-        let source_workspace_index = if params.cwd.is_some() {
-            None
-        } else {
-            match params.source_workspace_id.as_deref() {
-                Some(workspace_id) => match self
-                    .parse_workspace_id(workspace_id)
-                    .filter(|index| self.state.workspaces.get(*index).is_some())
-                {
-                    Some(index) => Some(index),
-                    None => return workspace_not_found(id, workspace_id),
-                },
-                None => self.workspace_creation_source(),
-            }
+        let cwd = match self.workspace_create_cwd(&params) {
+            Ok(cwd) => cwd,
+            Err((code, message)) => return encode_error(id, &code, message),
         };
-        let cwd = params.cwd.map(PathBuf::from).unwrap_or_else(|| {
-            source_workspace_index.map_or_else(
-                || self.resolve_new_terminal_cwd(None),
-                |index| self.resolved_new_workspace_cwd_from(index),
-            )
-        });
         let extra_env = match super::env::normalize_launch_env(params.env) {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
         };
-        match self.create_workspace_with_launch_env(cwd, params.focus, extra_env) {
+        match self.create_workspace_with_launch_env(cwd, params.focus, extra_env, container) {
             Ok(index) => {
                 if let Some(label) = params.label {
                     if let Some(workspace) = self.state.workspaces.get_mut(index) {
@@ -419,6 +432,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
+            None,
         );
         let _: SuccessResponse = serde_json::from_str(&response).unwrap();
         // Drop runtimes so cwd resolution deterministically uses cached state.
@@ -449,6 +463,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
+            None,
         );
 
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
@@ -510,6 +525,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
+            None,
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         assert!(matches!(
@@ -530,6 +546,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
+            None,
         );
         let error: ErrorResponse = serde_json::from_str(&invalid).unwrap();
         assert_eq!(error.error.code, "workspace_not_found");
@@ -543,6 +560,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
+            None,
         );
         let success: SuccessResponse = serde_json::from_str(&captured).unwrap();
         assert!(matches!(

@@ -297,6 +297,7 @@ fn validate_machine_command(args: &[String]) -> Result<(), String> {
                         .any(|arg| arg == "--file" || arg.starts_with("--file=")))
         }
         "api" => subcommand == "snapshot",
+        "container" => subcommand == "list",
         "status" => subcommand == "server",
         "plugin" => matches!(
             subcommand,
@@ -449,6 +450,7 @@ mod tests {
             &["integration", "install", "pi"],
             &["api", "schema", "--output", "schema.json"],
             &["status", "client"],
+            &["container", "open", "app/web"],
         ] {
             let mut input = args(&["herdr"]);
             input.extend(args(command));
@@ -463,6 +465,7 @@ mod tests {
             &["tab", "list"],
             &["api", "snapshot"],
             &["server", "stop"],
+            &["container", "list", "--json"],
         ] {
             let mut input = args(&["herdr"]);
             input.extend(args(command));

@@ -25,6 +25,7 @@ macro_rules! println {
 mod agent;
 mod api;
 mod completion;
+mod container;
 mod integration;
 mod machine;
 mod notification;
@@ -122,6 +123,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "machine" => machine::run_machine_command(&args[2..])?,
         "workspace" => workspace::run_workspace_command(&args[2..])?,
         "worktree" => worktree::run_worktree_command(&args[2..])?,
+        "container" => container::run_container_command(&args[2..])?,
         "tab" => tab::run_tab_command(&args[2..])?,
         "notification" => notification::run_notification_command(&args[2..])?,
         "agent" => agent::run_agent_command(&args[2..])?,

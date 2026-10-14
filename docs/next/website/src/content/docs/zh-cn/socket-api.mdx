@@ -98,6 +98,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 会话 | `session.snapshot` |
 | 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
+| 容器 | `container.open`, `container.list` |
 | 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | 弹窗 | `popup.close` |
@@ -291,6 +292,59 @@ Worktree 方法把 Git 检出作为 Herdr 工作区管理。`worktree.create` �
 Worktree 命令也发出生命周期事件。`worktree.create` 发出 `workspace.created`、`tab.created`、`pane.created` 和 `worktree.created`。`worktree.open` 发出 `worktree.opened`,并在打开新的 Herdr 工作区时同时发出工作区/标签页/窗格创建事件。`worktree.remove` 发出 `worktree.removed`;如果关联的工作区仍然打开,还会发出 `workspace.closed`。
 
 当关联的 worktree 工作区仍然打开时，父工作区只有在 `workspace.close` 的 params 中包含 `"close_group": true` 时才会被关闭；缺少显式关闭组意图时会返回 `workspace_group_close_required`。显式关闭组时，每个被关闭的工作区都会发出一个 `workspace.closed` 事件。
+
+## 容器
+
+`container.open` 在正在运行的 Docker 容器内启动 shell。`target` 把普通的创建或拆分参数嵌套在 `workspace`、`tab`、`split` 之一下,结果与被嵌套方法相同。`container` 是 Compose 的 `project/service`,或容器名称、ID。
+
+```json
+{
+  "id": "req_1",
+  "method": "container.open",
+  "params": {
+    "container": "myapp/web",
+    "target": { "tab": { "workspace_id": "w1", "focus": false } }
+  }
+}
+```
+
+`container.list` 返回正在运行的容器。`workspace_id` 可选,指定后只返回与该工作区匹配的容器。
+
+```json
+{ "id": "req_2", "method": "container.list", "params": { "workspace_id": "w1" } }
+```
+
+```json
+{
+  "id": "req_2",
+  "result": {
+    "type": "container_list",
+    "containers": [
+      {
+        "reference": "myapp/web",
+        "id": "3f2a9c...",
+        "name": "myapp-web-1",
+        "project": "myapp",
+        "service": "web",
+        "working_dir": "/home/me/myapp",
+        "workspace_id": "w1",
+        "is_default": true
+      }
+    ]
+  }
+}
+```
+
+`project`、`service`、`working_dir`、`workspace_id` 未知时省略。错误码如下:
+
+| 错误码 | 含义 |
+| --- | --- |
+| `invalid_container` | `container` 为空或格式不正确 |
+| `container_not_found` | 没有该容器(包括已停止的) |
+| `container_unavailable` | Docker 缺失、失败或超过 5 秒 |
+| `platform_unsupported` | 服务器运行在 Windows 上 |
+
+创建和拆分参数保持不变,容器引用只通过 `container.open` 传递。
 
 ## 智能体视图查询
 

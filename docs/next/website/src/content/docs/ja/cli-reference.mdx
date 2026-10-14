@@ -150,7 +150,7 @@ herdr session delete <name> [--json]
 
 ```bash
 herdr workspace list
-herdr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr workspace create [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
@@ -185,7 +185,7 @@ Git はデフォルトで、別のユーザーが所有するリポジトリを�
 
 ```bash
 herdr tab list [--workspace <workspace_id>]
-herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr tab create [--workspace <workspace_id>] [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
@@ -212,7 +212,7 @@ herdr pane focus --direction left|right|up|down [--pane ID|--current]
 herdr pane resize --direction left|right|up|down [--amount FLOAT] [--pane ID|--current]
 herdr pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]
 herdr pane rename <pane_id> <label>|--clear
-herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--cwd PATH] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr pane swap --direction left|right|up|down [--pane ID|--current]
 herdr pane swap --source-pane ID --target-pane ID
 herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]
@@ -309,6 +309,33 @@ herdr pane report-metadata <pane_id> \
 `--token` は名前付き表示値を設定し、`--clear-token` は削除します。指定しなかったトークンは変わりません。ペイントークンはエージェントサイドバー行で `$name` として、ワークスペーストークンはスペース行で使えます。TTL は、その呼び出しで更新した各トークンキーに個別に適用されます。
 
 `--source` と `--applies-to-source` は 80 文字以下で、ASCII の英字、数字、コロン、ドット、アンダースコア、ハイフンのみを含められます。`--ttl-ms` はメタデータを自動失効させ、`1` から `86400000` ミリ秒の間でなければなりません。置き換え・クリア・ペインまたはワークスペースのクローズまで残るべきメタデータでは省略してください。`--seq` により、Herdr は同じ `--source` からの古い報告を無視できます。古い報告は API には受理されますが、ペイン状態には無視されます。ペインまたはワークスペースが存続する間、シーケンス付きトークン報告を送れる異なるソースは最大 32 個で、クリアや失効でもその枠は解放されません。
+
+## コンテナ
+
+```bash
+herdr workspace create --container REF [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr tab create --container REF [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr pane split --container REF [<pane_id>|--pane ID|--current] --direction right|down [--env KEY=VALUE]
+herdr container list [--workspace ID] [--json]
+```
+
+`--container REF` を指定すると、新しいシェルをホストではなく実行中の Docker コンテナ内で開きます。`REF` には Compose の `project/service`、またはコンテナ名か ID を指定します。Herdr は次の方針で `docker exec -it` を実行します。
+
+- **シェル:** `herdr.shell` ラベル。なければ `bash` があれば `bash`、なければ `sh`。
+- **作業ディレクトリ:** `herdr.workdir` ラベル、次にホストの cwd を bind mount で逆引きしたパス、最後にコンテナの `WorkingDir`。
+- **ユーザー:** `herdr.user` ラベルがあればそれ。
+- **環境変数:** `TERM` 系、`HERDR_*`、`--env KEY=VALUE` で指定したものだけを転送します。
+
+`container list` は実行中のコンテナを表で表示します。`--json` を付けると生の応答を表示します。Compose の `working_dir` または `config_files` がワークスペースのリポジトリルートと一致するコンテナには、その `workspace_id` が付きます。`--workspace ID` を指定すると、一致するものだけを表示します。`herdr.default` ラベルのコンテナは先頭に並びます。
+
+```bash
+herdr container list
+herdr tab create --container myapp/web --label web
+```
+
+存在しないコンテナや停止中のコンテナは `container_not_found` を返します。Docker CLI がない、デーモンが失敗する、呼び出しが 5 秒を超えた場合は `container_unavailable` を返します。Windows ホストでは `platform_unsupported` を返します。
+
+セッション復元ではコンテナ情報は保持されますが、プレーンなホストシェルで起動します。再アタッチは未実装です。`agent start --container` は未対応です。
 
 ## エージェント
 

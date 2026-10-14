@@ -3056,6 +3056,18 @@ impl HeadlessServer {
             );
             return changed | (deferred_changed && !read_only);
         }
+        if matches!(
+            &msg.request.method,
+            api::schema::Method::ContainerOpen(_) | api::schema::Method::ContainerList(_)
+        ) {
+            let read_only = matches!(&msg.request.method, api::schema::Method::ContainerList(_));
+            let deferred_changed = self.app.handle_deferred_container_api_request(
+                msg.request,
+                msg.respond_to,
+                client_local,
+            );
+            return changed | (deferred_changed && !read_only);
+        }
         if self.foreground_client_id.is_some_and(|client_id| {
             self.clients
                 .get(&client_id)

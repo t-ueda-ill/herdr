@@ -451,6 +451,10 @@ fn unavailable_restored_terminal(
     if let Some(pane) = pane {
         terminal.manual_label = pane.label.clone();
         terminal.launch_argv = pane.launch_argv.clone();
+        terminal.container = pane
+            .container
+            .as_ref()
+            .map(crate::container::ContainerLaunch::from);
         if let Some(session) = restored_terminal_agent_session(pane.agent_session.as_ref(), false) {
             terminal.set_persisted_agent_session(session);
         }
@@ -538,6 +542,12 @@ fn restore_tab(
             .and_then(|pane| pane.managed_agent_kind.as_deref())
             .and_then(crate::detect::parse_canonical_agent_label);
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
+        // Why not gate this on `was_imported` like `launch_argv`: the container
+        // is pane identity, not a live process detail, so it survives cold
+        // restores even though they relaunch a plain host shell.
+        let saved_container = saved_pane
+            .and_then(|p| p.container.as_ref())
+            .map(crate::container::ContainerLaunch::from);
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
         let saved_agent_resume = saved_pane.and_then(saved_reported_resume);
         let saved_history =
@@ -595,6 +605,9 @@ fn restore_tab(
                 .with_pending_agent_resume_plan(plan);
             if let Some(label) = saved_label {
                 terminal.set_manual_label(label);
+            }
+            if let Some(launch) = saved_container {
+                terminal = terminal.with_container(launch);
             }
             if let Some(session) = restored_agent_session {
                 terminal.set_persisted_agent_session(session);
@@ -695,6 +708,9 @@ fn restore_tab(
                 }
                 if let Some(label) = saved_label {
                     terminal.set_manual_label(label);
+                }
+                if let Some(launch) = saved_container {
+                    terminal = terminal.with_container(launch);
                 }
                 if let Some(session) = restored_agent_session {
                     terminal.set_persisted_agent_session(session);
@@ -1522,6 +1538,238 @@ mod tests {
         }
     }
 
+    fn test_container_snapshot(name: &str) -> super::super::snapshot::PaneContainerSnapshot {
+        super::super::snapshot::PaneContainerSnapshot {
+            reference: super::super::snapshot::PaneContainerRefSnapshot::Name(name.into()),
+            id: format!("herdr-test-{name}-id"),
+            workdir: Some(PathBuf::from("/work")),
+            user: None,
+            shell: super::super::snapshot::PaneContainerShellSnapshot::BashOrSh,
+        }
+    }
+
+    fn single_pane_session(pane: super::super::snapshot::PaneSnapshot) -> SessionSnapshot {
+        SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: pane.cwd.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(0, pane)]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_cold_restore_preserves_pane_container() {
+        for missing_shell in [false, true] {
+            let mut snapshot: SessionSnapshot = serde_json::from_str(include_str!(
+                "../../tests/fixtures/session/current-herdr-session.json"
+            ))
+            .unwrap();
+            let cwd = std::env::current_dir().unwrap();
+            let missing = cwd.join("__herdr_missing_restore_directory__");
+            assert!(!missing.exists());
+            for workspace in &mut snapshot.workspaces {
+                workspace.identity_cwd = cwd.clone();
+                for tab in &mut workspace.tabs {
+                    for pane in tab.panes.values_mut() {
+                        pane.cwd = cwd.clone();
+                    }
+                }
+            }
+            let unavailable = snapshot.workspaces[0].tabs[0].panes.get_mut(&1).unwrap();
+            unavailable.cwd = missing.clone();
+            unavailable.container = Some(test_container_snapshot("unavailable"));
+            snapshot.workspaces[1].tabs[0]
+                .panes
+                .get_mut(&3)
+                .unwrap()
+                .container = Some(test_container_snapshot("healthy"));
+            let (events, _rx) = mpsc::channel(32);
+
+            let (workspaces, terminals, runtimes) = restore(
+                &snapshot,
+                None,
+                24,
+                80,
+                0,
+                if missing_shell {
+                    "__herdr_missing_restore_shell__"
+                } else {
+                    test_restore_shell()
+                },
+                crate::config::ShellModeConfig::NonLogin,
+                false,
+                events,
+                Arc::new(Notify::new()),
+                Arc::new(RenderSignal::new()),
+            );
+
+            let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+            let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+            let only_pane = |workspace: usize| {
+                captured.workspaces[workspace].tabs[0]
+                    .panes
+                    .values()
+                    .next()
+                    .unwrap()
+                    .container
+                    .clone()
+            };
+            assert_eq!(
+                only_pane(0),
+                Some(test_container_snapshot("unavailable")),
+                "a pane whose directory vanished must keep its container intent"
+            );
+            assert_eq!(
+                only_pane(1),
+                Some(test_container_snapshot("healthy")),
+                "a pane must keep its container intent whether or not its shell starts"
+            );
+            let healthy = workspaces[1].tabs[0]
+                .terminal_id(workspaces[1].tabs[0].root_pane)
+                .unwrap();
+            assert_eq!(terminals[healthy].restore_error.is_some(), missing_shell);
+            let mut state = crate::app::AppState::test_new();
+            state.workspaces = workspaces;
+            state.terminals = terminals;
+            state.active = Some(0);
+            state.assert_invariants_for_test();
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn cold_restore_keeps_container_metadata_but_launches_plain_shell() {
+        let snapshot = single_pane_session(super::super::snapshot::PaneSnapshot {
+            cwd: std::env::current_dir().unwrap(),
+            label: None,
+            agent_name: None,
+            managed_agent_kind: None,
+            agent_session: None,
+            agent_resume: None,
+            launch_argv: None,
+            container: Some(test_container_snapshot("scratch")),
+        });
+        let (events, _event_rx) = mpsc::channel(8);
+
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let terminal = terminals.values().next().expect("terminal should restore");
+        assert_eq!(
+            terminal.container,
+            Some(crate::container::ContainerLaunch {
+                reference: crate::container::ContainerRef::Name("scratch".into()),
+                canonical: "scratch".into(),
+                id: "herdr-test-scratch-id".into(),
+                workdir: Some(PathBuf::from("/work")),
+                user: None,
+                shell: crate::container::ContainerShell::BashOrSh,
+            })
+        );
+        assert_eq!(terminal.restore_error, None);
+        let runtime = runtimes
+            .get(&terminal.id)
+            .expect("cold restore should start a runtime");
+        // A docker exec against the made-up id could never evaluate shell
+        // arithmetic, so the computed marker proves a host shell is running.
+        runtime
+            .try_send_bytes(bytes::Bytes::from_static(b"echo herdr-plain-$((40+2))\n"))
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime.visible_text().contains("herdr-plain-42") {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cold restore should run the plain host shell");
+        let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
+
+        let mut state = crate::app::AppState::test_new();
+        state.workspaces = workspaces;
+        state.terminals = terminals;
+        state.active = Some(0);
+        state.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    async fn native_agent_restore_keeps_pane_container() {
+        let snapshot = single_pane_session(super::super::snapshot::PaneSnapshot {
+            cwd: std::env::current_dir().unwrap(),
+            label: None,
+            agent_name: None,
+            managed_agent_kind: None,
+            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                source: "herdr:codex".into(),
+                agent: "codex".into(),
+                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                value: "codex-session".into(),
+            }),
+            agent_resume: None,
+            launch_argv: None,
+            container: Some(test_container_snapshot("agent")),
+        });
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let terminal = terminals.values().next().expect("terminal should restore");
+        assert!(terminal.pending_agent_resume_plan.is_some());
+        assert!(runtimes.is_empty());
+        assert_eq!(
+            terminal.container.as_ref().map(|launch| launch.id.as_str()),
+            Some("herdr-test-agent-id")
+        );
+        let mut state = crate::app::AppState::test_new();
+        state.workspaces = workspaces;
+        state.terminals = terminals;
+        state.active = Some(0);
+        state.assert_invariants_for_test();
+    }
+
     #[tokio::test]
     async fn restore_carries_persisted_agent_session_metadata() {
         let cwd = std::env::current_dir().unwrap();
@@ -1554,6 +1802,7 @@ mod tests {
                             }),
                             agent_resume: None,
                             launch_argv: None,
+                            container: None,
                         },
                     )]),
                     zoomed: false,
@@ -1636,6 +1885,7 @@ mod tests {
                                 agent_session: None,
                                 agent_resume: None,
                                 launch_argv: None,
+                                container: None,
                             },
                         ),
                         (
@@ -1648,6 +1898,7 @@ mod tests {
                                 agent_session: None,
                                 agent_resume: None,
                                 launch_argv: None,
+                                container: None,
                             },
                         ),
                     ]),
@@ -1702,6 +1953,7 @@ mod tests {
                     agent_session: None,
                     agent_resume: None,
                     launch_argv: None,
+                    container: None,
                 },
             )
         };
@@ -1718,6 +1970,7 @@ mod tests {
             }),
             agent_resume: None,
             launch_argv: None,
+            container: None,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1870,6 +2123,7 @@ mod tests {
                             }),
                             agent_resume: None,
                             launch_argv: None,
+                            container: None,
                         },
                     )]),
                     zoomed: false,
@@ -2176,6 +2430,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                container: None,
             },
         );
         let mut history = SessionHistorySnapshot {
