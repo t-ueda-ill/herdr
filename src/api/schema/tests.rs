@@ -1665,3 +1665,9 @@ fn container_methods_report_the_same_api_method_name_as_their_wire_tag() {
         "container.list"
     );
 }
+
+#[test]
+fn read_choices_cover_every_api_value() {
+    crate::cli::projection::assert_choices_cover_api_enum(READ_SOURCES);
+    crate::cli::projection::assert_choices_cover_api_enum(READ_FORMATS);
+}

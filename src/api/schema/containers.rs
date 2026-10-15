@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::cli::projection::{cli_params, Field};
+
 use super::panes::PaneSplitParams;
 use super::tabs::TabCreateParams;
 use super::workspaces::WorkspaceCreateParams;
@@ -31,10 +33,14 @@ impl ContainerOpenTarget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
-pub struct ContainerListParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
+cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+    pub struct ContainerListParams => ContainerListProjection {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub workspace_id: Option<String> => Field::new(None).input(
+            super::tabs::workspace_option("ID").help("Only show containers matching this workspace"),
+        ),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

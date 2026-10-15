@@ -1,103 +1,23 @@
-use crate::api::schema::{
-    ContainerInfoDto, ContainerListParams, ContainerOpenParams, ContainerOpenTarget, Method,
-    Request, ResponseResult, SuccessResponse,
-};
+#[path = "container_bindings.rs"]
+pub(crate) mod bindings;
 
-const CONTAINER_LIST_USAGE: &str = "usage: herdr container list [--workspace ID] [--json]";
+pub(crate) use bindings::command;
 
-/// Fully parsed create/split params plus the `--container REF` that may reroute them.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct WithContainer<P> {
-    pub(super) params: P,
-    pub(super) container: Option<String>,
-}
+use crate::api::schema::{ContainerInfoDto, ResponseResult, SuccessResponse};
 
-impl<P> WithContainer<P> {
-    // Not a `container` field on the create/split params: those shapes are frozen, and an
-    // older server would ignore the field and start a host shell, so the reference travels
-    // in `container.open` with the unchanged params nested inside.
-    pub(super) fn into_method(
-        self,
-        plain: fn(P) -> Method,
-        nested: fn(P) -> ContainerOpenTarget,
-    ) -> Method {
-        match self.container {
-            Some(container) => Method::ContainerOpen(ContainerOpenParams {
-                container,
-                target: nested(self.params),
-            }),
-            None => plain(self.params),
-        }
-    }
-}
+use super::projection::ParseError;
 
 pub(super) fn run_container_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(String::as_str) else {
-        print_container_help();
-        return Ok(2);
-    };
-
-    match subcommand {
-        "list" => container_list(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_container_help();
-            Ok(0)
-        }
-        _ => {
-            print_container_help();
-            Ok(2)
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct ContainerListArgs {
-    params: ContainerListParams,
-    json: bool,
-}
-
-fn parse_container_list_args(args: &[String]) -> Result<ContainerListArgs, String> {
-    let args = super::expand_equals_args(args, &["--workspace"]);
-    let mut workspace_id = None;
-    let mut json = false;
-
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--workspace" => {
-                let Some(value) = args.get(index + 1) else {
-                    return Err("missing value for --workspace".into());
-                };
-                workspace_id = Some(super::normalize_workspace_id(value));
-                index += 2;
-            }
-            "--json" => {
-                json = true;
-                index += 1;
-            }
-            other => return Err(format!("unknown option: {other}")),
-        }
-    }
-
-    Ok(ContainerListArgs {
-        params: ContainerListParams { workspace_id },
-        json,
-    })
-}
-
-fn container_list(args: &[String]) -> std::io::Result<i32> {
-    let ContainerListArgs { params, json } = match parse_container_list_args(args) {
+    let (request, json) = match bindings::request(args) {
         Ok(parsed) => parsed,
-        Err(message) => {
+        Err(ParseError::Usage(message)) => {
             eprintln!("{message}");
-            eprintln!("{CONTAINER_LIST_USAGE}");
             return Ok(2);
         }
+        Err(ParseError::Io(error)) => return Err(error),
+        Err(ParseError::Clap(error)) => return super::print_clap_error(&error),
     };
-    let response = super::send_request(&Request {
-        id: "cli:container:list".into(),
-        method: Method::ContainerList(params),
-    })?;
+    let response = super::send_request(&request)?;
     if json {
         return super::print_response(&response);
     }
@@ -166,34 +86,9 @@ fn format_container_table(containers: &[ContainerInfoDto]) -> String {
     table
 }
 
-fn print_container_help() {
-    eprintln!("herdr container commands:");
-    eprintln!("  {}", CONTAINER_LIST_USAGE.trim_start_matches("usage: "));
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
-    use crate::api::schema::{PaneRightClickTarget, PaneSplitParams, SplitDirection};
-
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_string()).collect()
-    }
-
-    fn split_params() -> PaneSplitParams {
-        PaneSplitParams {
-            workspace_id: None,
-            target_pane_id: Some("w1:p1".into()),
-            direction: SplitDirection::Right,
-            ratio: None,
-            cwd: None,
-            focus: false,
-            right_click: PaneRightClickTarget::Herdr,
-            env: HashMap::new(),
-        }
-    }
 
     fn container(reference: &str, name: &str) -> ContainerInfoDto {
         ContainerInfoDto {
@@ -206,74 +101,6 @@ mod tests {
             workspace_id: None,
             is_default: false,
         }
-    }
-
-    #[test]
-    fn container_reference_nests_unchanged_params_in_container_open() {
-        let method = WithContainer {
-            params: split_params(),
-            container: Some("app/web".into()),
-        }
-        .into_method(Method::PaneSplit, ContainerOpenTarget::Split);
-
-        assert_eq!(
-            method,
-            Method::ContainerOpen(ContainerOpenParams {
-                container: "app/web".into(),
-                target: ContainerOpenTarget::Split(split_params()),
-            })
-        );
-    }
-
-    #[test]
-    fn missing_container_reference_keeps_the_plain_method() {
-        let method = WithContainer {
-            params: split_params(),
-            container: None,
-        }
-        .into_method(Method::PaneSplit, ContainerOpenTarget::Split);
-
-        assert_eq!(method, Method::PaneSplit(split_params()));
-    }
-
-    #[test]
-    fn container_list_defaults_to_all_workspaces_and_text_output() {
-        let parsed = parse_container_list_args(&[]).unwrap();
-
-        assert_eq!(
-            parsed,
-            ContainerListArgs {
-                params: ContainerListParams { workspace_id: None },
-                json: false,
-            }
-        );
-    }
-
-    #[test]
-    fn container_list_parses_workspace_filter_and_json_flag() {
-        let parsed = parse_container_list_args(&args(&["--workspace", "w2", "--json"])).unwrap();
-
-        assert_eq!(parsed.params.workspace_id.as_deref(), Some("w2"));
-        assert!(parsed.json);
-    }
-
-    #[test]
-    fn container_list_accepts_workspace_equals_form() {
-        let parsed = parse_container_list_args(&args(&["--workspace=w3"])).unwrap();
-
-        assert_eq!(parsed.params.workspace_id.as_deref(), Some("w3"));
-    }
-
-    #[test]
-    fn container_list_rejects_missing_workspace_value_and_unknown_options() {
-        assert_eq!(
-            parse_container_list_args(&args(&["--workspace"])),
-            Err("missing value for --workspace".into())
-        );
-        assert_eq!(
-            parse_container_list_args(&args(&["--all"])),
-            Err("unknown option: --all".into())
-        );
     }
 
     #[test]
