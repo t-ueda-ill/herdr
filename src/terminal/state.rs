@@ -166,6 +166,23 @@ pub struct TerminalState {
     pub restore_error: Option<String>,
 }
 
+/// Picks the directory a new pane should inherit.
+///
+/// Why not trust the runtime path for container panes: the shell reports a
+/// path inside the container (e.g. `/work`), which does not exist on the host.
+/// `plan_launch` maps the host launch cwd through the bind mounts instead.
+pub fn inherited_cwd(
+    has_container: bool,
+    runtime_cwd: Option<PathBuf>,
+    launch_cwd: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if has_container {
+        launch_cwd
+    } else {
+        runtime_cwd.or(launch_cwd)
+    }
+}
+
 impl TerminalState {
     pub fn new(id: TerminalId, cwd: PathBuf) -> Self {
         Self {
@@ -2461,6 +2478,27 @@ pub(crate) fn stabilize_agent_detection(detection: crate::detect::AgentDetection
 mod tests {
     use super::*;
     use crate::detect::AgentDetection;
+
+    #[test]
+    fn inherited_cwd_uses_runtime_path_for_host_terminals() {
+        assert_eq!(
+            inherited_cwd(false, Some("/rt".into()), Some("/launch".into())),
+            Some("/rt".into())
+        );
+        assert_eq!(
+            inherited_cwd(false, None, Some("/launch".into())),
+            Some("/launch".into())
+        );
+    }
+
+    #[test]
+    fn inherited_cwd_uses_launch_path_for_container_terminals() {
+        assert_eq!(
+            inherited_cwd(true, Some("/work".into()), Some("/host".into())),
+            Some("/host".into())
+        );
+        assert_eq!(inherited_cwd(true, Some("/work".into()), None), None);
+    }
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())

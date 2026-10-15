@@ -913,6 +913,13 @@ impl AppState {
         )
     }
 
+    /// Why not reuse `pane_shell_config_for_terminal`: cold restore starts a
+    /// plain host shell and keeps the container metadata only, because
+    /// re-attaching to the stored container is not implemented yet.
+    pub(crate) fn cold_restore_shell_config(&self) -> crate::pane::PaneShellConfig<'_> {
+        crate::pane::PaneShellConfig::new(&self.default_shell, self.shell_mode)
+    }
+
     pub(crate) fn pane_exposes_host_cursor(
         &self,
         _ws_idx: usize,
@@ -1392,6 +1399,18 @@ mod tests {
                 .container,
             None
         );
+    }
+
+    #[test]
+    fn cold_restore_shell_config_ignores_stored_container_launch() {
+        let mut state = AppState::test_new();
+        state.default_shell = "/bin/zsh".into();
+        state.shell_mode = crate::config::ShellModeConfig::Login;
+
+        let config = state.cold_restore_shell_config();
+        assert_eq!(config.container, None);
+        assert_eq!(config.default_shell, "/bin/zsh");
+        assert_eq!(config.mode, crate::config::ShellModeConfig::Login);
     }
 
     #[test]

@@ -558,6 +558,24 @@ impl Tab {
             })
     }
 
+    /// Why not reuse `cwd_for_pane`: it reports the shell's own location, which
+    /// for container panes is a path inside the container. Host launches need
+    /// the host directory the pane was started from instead.
+    pub fn host_cwd_for_pane(
+        &self,
+        pane_id: PaneId,
+        terminals: &HashMap<TerminalId, TerminalState>,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+    ) -> Option<PathBuf> {
+        let terminal_id = self.terminal_id(pane_id)?;
+        let terminal = terminals.get(terminal_id);
+        crate::terminal::inherited_cwd(
+            terminal.is_some_and(|terminal| terminal.container.is_some()),
+            terminal_runtimes.get(terminal_id).and_then(|rt| rt.cwd()),
+            terminal.map(|terminal| terminal.cwd.clone()),
+        )
+    }
+
     pub fn foreground_cwd_for_pane(
         &self,
         pane_id: PaneId,
@@ -604,6 +622,24 @@ mod tests {
         assert_eq!(terminal.container, Some(launch));
         assert_eq!(terminal.cwd, PathBuf::from("/host"));
         assert_eq!(terminal.launch_argv, None);
+    }
+
+    #[test]
+    fn host_cwd_for_pane_uses_launch_cwd_for_container_terminals() {
+        let workspace = crate::workspace::Workspace::test_new("host-cwd");
+        let tab = &workspace.tabs[0];
+        let terminal_id = tab.terminal_id(tab.root_pane).cloned().unwrap();
+        let mut terminals = HashMap::new();
+        terminals.insert(
+            terminal_id.clone(),
+            TerminalState::new(terminal_id, PathBuf::from("/host")).with_container(launch()),
+        );
+        let runtimes = TerminalRuntimeRegistry::new();
+
+        assert_eq!(
+            tab.host_cwd_for_pane(tab.root_pane, &terminals, &runtimes),
+            Some(PathBuf::from("/host"))
+        );
     }
 
     #[test]

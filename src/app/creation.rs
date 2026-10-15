@@ -35,14 +35,14 @@ pub(super) fn launch_cwd_for_terminal(
     >,
     terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
 ) -> Option<PathBuf> {
-    terminal_runtimes
-        .get(terminal_id)
-        .and_then(|runtime| runtime.follow_cwd())
-        .or_else(|| {
-            terminals
-                .get(terminal_id)
-                .map(|terminal| terminal.cwd.clone())
-        })
+    let terminal = terminals.get(terminal_id);
+    crate::terminal::inherited_cwd(
+        terminal.is_some_and(|terminal| terminal.container.is_some()),
+        terminal_runtimes
+            .get(terminal_id)
+            .and_then(|runtime| runtime.follow_cwd()),
+        terminal.map(|terminal| terminal.cwd.clone()),
+    )
 }
 
 impl App {

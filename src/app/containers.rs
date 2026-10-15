@@ -189,6 +189,10 @@ impl App {
         params: ContainerListParams,
         respond_to: Sender<String>,
     ) {
+        if let Err((code, message)) = ensure_container_platform_supported() {
+            let _ = respond_to.send(encode_error(id, &code, message));
+            return;
+        }
         let (filter_workspace_id, probes) =
             match self.container_list_probes(params.workspace_id.as_deref()) {
                 Ok(captured) => captured,
@@ -322,7 +326,7 @@ impl App {
     }
 }
 
-fn parse_container_reference(text: &str) -> Result<ContainerRef, ApiFailure> {
+fn ensure_container_platform_supported() -> Result<(), ApiFailure> {
     // Why not attempt it: docker exec login flags and cwd normalization are
     // unverified on Windows hosts, so a pane could start in the wrong shell.
     if cfg!(windows) {
@@ -331,6 +335,11 @@ fn parse_container_reference(text: &str) -> Result<ContainerRef, ApiFailure> {
             "container panes are not supported on Windows hosts".into(),
         ));
     }
+    Ok(())
+}
+
+fn parse_container_reference(text: &str) -> Result<ContainerRef, ApiFailure> {
+    ensure_container_platform_supported()?;
     ContainerRef::parse(text).ok_or_else(|| {
         (
             "invalid_container".into(),
@@ -724,7 +733,7 @@ mod tests {
         let response = response_rx
             .try_recv()
             .expect("an unknown workspace is rejected without a docker lookup");
-        assert_eq!(error_code(&response), "workspace_not_found");
+        assert_eq!(error_code(&response), platform_or("workspace_not_found"));
     }
 
     #[test]
