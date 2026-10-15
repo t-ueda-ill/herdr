@@ -156,7 +156,7 @@ Use `default` as the session name when you need to stop the default session expl
 
 ```bash
 herdr workspace list
-herdr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr workspace create [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
@@ -191,7 +191,7 @@ Git rejects repositories owned by another user by default. If you have independe
 
 ```bash
 herdr tab list [--workspace <workspace_id>]
-herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr tab create [--workspace <workspace_id>] [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
@@ -219,7 +219,7 @@ herdr pane resize --direction left|right|up|down [--amount FLOAT] [--pane ID|--c
 herdr pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]
 herdr pane rename <pane_id> <label>|--clear
 herdr pane input [<pane_id>|--pane ID|--current] --right-click herdr|pane
-herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus]
+herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus]
 herdr pane swap --direction left|right|up|down [--pane ID|--current]
 herdr pane swap --source-pane ID --target-pane ID
 herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]
@@ -332,6 +332,33 @@ Metadata text is normalized before storage. Herdr trims surrounding whitespace, 
 `--token` patches one named display value; `--clear-token` removes one. Unmentioned tokens remain unchanged. Pane tokens are available to Agent sidebar rows as `$name`; workspace tokens are available to Space rows. TTL applies independently to the token keys updated by that call.
 
 `--source` and `--applies-to-source` must be 80 characters or fewer and may contain only ASCII letters, digits, colon, dot, underscore, and hyphen. `--ttl-ms` makes metadata expire automatically and must be between `1` and `86400000` milliseconds. Omit it for metadata that should stay until replaced, cleared, or the pane closes. `--seq` lets Herdr ignore stale reports from the same `--source`; stale reports are accepted by the API but ignored by pane state. A pane or workspace accepts sequenced token reports from at most 32 distinct sources during its lifetime; clearing or expiry does not release those source slots.
+
+## Containers
+
+```bash
+herdr workspace create --container REF [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr tab create --container REF [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr pane split --container REF [<pane_id>|--pane ID|--current] --direction right|down [--env KEY=VALUE]
+herdr container list [--workspace ID] [--json]
+```
+
+`--container REF` opens the new shell inside a running Docker container instead of on the host. `REF` is a Compose `project/service`, or a container name or ID. Herdr runs `docker exec -it` with these choices:
+
+- **Shell:** the `herdr.shell` label, otherwise `bash` if the container has it, otherwise `sh`.
+- **Working directory:** the `herdr.workdir` label, then the host cwd mapped back through a bind mount, then the container's `WorkingDir`.
+- **User:** the `herdr.user` label, when set.
+- **Environment:** only `TERM`-family variables, `HERDR_*`, and each `--env KEY=VALUE` are forwarded.
+
+`container list` prints the running containers as a table, or the raw response with `--json`. A container whose Compose `working_dir` or `config_files` matches a workspace's repository root carries that `workspace_id`; `--workspace ID` keeps only those. A container labeled `herdr.default` is listed first.
+
+```bash
+herdr container list
+herdr tab create --container myapp/web --label web
+```
+
+An unknown or stopped container returns `container_not_found`. A missing Docker CLI, a failing daemon, or a call that exceeds 5 seconds returns `container_unavailable`. Windows hosts return `platform_unsupported`.
+
+Session restore keeps the container reference but starts a plain host shell; re-attaching is not implemented yet. `agent start --container` is not supported.
 
 ## Agents
 

@@ -133,11 +133,14 @@ Windows clients also recover text when WezTerm wraps a complete sequence of Win3
 | Capability | Status |
 | --- | --- |
 | Direct terminal attach (`herdr terminal attach`) | unsupported |
+| Container shells (`--container`, `herdr container`) | unsupported |
 | Live server handoff | unsupported |
 | Unix file-descriptor handoff | unsupported |
 | Unix foreground process groups | unsupported |
 | Herdr clipboard image bridge in local native panes | unsupported |
 | Signed binary / SmartScreen avoidance | unsupported |
+
+Container shells need a Unix host; on Windows they return `platform_unsupported`.
 
 From Windows Terminal, use the same remote command as Linux and macOS:
 

@@ -1,0 +1,48 @@
+[
+  {
+    "Id": "ccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "Name": "/scratch",
+    "State": {
+      "Status": "running"
+    },
+    "Config": {
+      "Labels": {
+        "herdr.shell": "/bin/zsh",
+        "herdr.workdir": "/srv/app",
+        "herdr.user": "dev",
+        "herdr.default": "true",
+        "org.opencontainers.image.version": "24.04"
+      },
+      "WorkingDir": "/",
+      "User": "1000:1000"
+    },
+    "Mounts": [
+      {
+        "Type": "bind",
+        "Source": "/home/dev/src/scratch",
+        "Destination": "/work",
+        "Mode": "rw",
+        "RW": true,
+        "Propagation": "rprivate"
+      },
+      {
+        "Type": "bind",
+        "Source": "/home/dev/src",
+        "Destination": "/all",
+        "Mode": "rw",
+        "RW": true,
+        "Propagation": "rprivate"
+      },
+      {
+        "Type": "volume",
+        "Name": "scratch_data",
+        "Source": "/var/lib/docker/volumes/scratch_data/_data",
+        "Destination": "/data",
+        "Driver": "local",
+        "Mode": "z",
+        "RW": true,
+        "Propagation": ""
+      }
+    ]
+  }
+]

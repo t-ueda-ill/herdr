@@ -314,6 +314,9 @@ impl HeadlessServer {
             {
                 Some(&mut result.respond_to)
             }
+            AppEvent::ContainerOpenFinished(result) if result.params.target.focus() => {
+                Some(&mut result.respond_to)
+            }
             _ => None,
         };
         let mut focused_worktree_response = focus_response.map(|respond_to| {
@@ -579,17 +582,26 @@ impl HeadlessServer {
             {
                 self.app.handle_internal_event_with_render_impact(ev)
             }
-            AppEvent::WorktreeAddFinished(_) | AppEvent::WorktreeReadFinished(_) => {
+            AppEvent::ContainerListFinished(_) => {
+                self.app.handle_internal_event_with_render_impact(ev)
+            }
+            AppEvent::WorktreeAddFinished(_)
+            | AppEvent::WorktreeReadFinished(_)
+            | AppEvent::ContainerOpenFinished(_) => {
                 let deferred_request_id = match &ev {
                     AppEvent::WorktreeAddFinished(result) => result
                         .api_request
                         .as_ref()
                         .map(|request| request.id.as_str()),
                     AppEvent::WorktreeReadFinished(result) => Some(result.request.id.as_str()),
+                    AppEvent::ContainerOpenFinished(result) => Some(result.id.as_str()),
                     _ => None,
                 };
-                let client_local =
-                    matches!(&ev, AppEvent::WorktreeReadFinished(result) if result.client_local);
+                let client_local = match &ev {
+                    AppEvent::WorktreeReadFinished(result) => result.client_local,
+                    AppEvent::ContainerOpenFinished(result) => result.client_local,
+                    _ => false,
+                };
                 let shell_navigation_pending = client_local
                     || deferred_request_id.is_some_and(|request_id| {
                         self.clients.values().any(|client| {

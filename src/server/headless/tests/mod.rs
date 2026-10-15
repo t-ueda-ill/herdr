@@ -3436,6 +3436,64 @@ async fn worktree_discovery_does_not_block_client_typing() {
 }
 
 #[tokio::test]
+async fn container_open_rejects_invalid_reference_through_deferred_dispatch() {
+    let mut server = test_headless_server();
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+
+    server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+        request: api::schema::Request {
+            id: "bad-container".into(),
+            method: api::schema::Method::ContainerOpen(api::schema::ContainerOpenParams {
+                container: "a/b/c".into(),
+                target: api::schema::ContainerOpenTarget::Tab(api::schema::TabCreateParams {
+                    workspace_id: None,
+                    cwd: None,
+                    focus: true,
+                    label: None,
+                    env: Default::default(),
+                }),
+            }),
+        },
+        respond_to,
+        response_write_complete: None,
+    });
+
+    let response: api::schema::ErrorResponse =
+        serde_json::from_str(&response_rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+    let expected = if cfg!(windows) {
+        "platform_unsupported"
+    } else {
+        "invalid_container"
+    };
+    assert_eq!(response.error.code, expected);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[test]
+fn deferred_endpoint_navigation_reads_container_open_results() {
+    for result in [
+        serde_json::json!({"type": "workspace_created", "tab": {"tab_id": "w1:t2"}}),
+        serde_json::json!({"type": "tab_created", "tab": {"tab_id": "w1:t2"}}),
+        serde_json::json!({"type": "pane_info", "pane": {"tab_id": "w1:t2"}}),
+    ] {
+        let response = serde_json::json!({"id": "open", "result": result});
+        assert_eq!(
+            HeadlessServer::deferred_endpoint_navigation_tab_id(
+                &serde_json::to_vec(&response).unwrap()
+            )
+            .as_deref(),
+            Some("w1:t2"),
+            "{response}"
+        );
+    }
+    let error = serde_json::json!({"id": "open", "error": {"code": "container_not_found", "message": "gone"}});
+    assert_eq!(
+        HeadlessServer::deferred_endpoint_navigation_tab_id(&serde_json::to_vec(&error).unwrap()),
+        None
+    );
+}
+
+#[tokio::test]
 async fn deferred_worktree_open_disconnect_keeps_other_clients_focus() {
     let mut server = test_headless_server();
     let mut source = crate::workspace::Workspace::test_new("pending-open-source");

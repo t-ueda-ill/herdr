@@ -828,6 +828,7 @@ fn worktree_request_and_response_round_trip() {
                 foreground_cwd: None,
                 restore_error: None,
                 label: None,
+                container: None,
                 agent: None,
                 title: None,
                 terminal_title: None,
@@ -1257,6 +1258,7 @@ fn create_response_round_trips_with_root_pane() {
                 foreground_cwd: None,
                 restore_error: None,
                 label: None,
+                container: None,
                 agent: None,
                 title: None,
                 terminal_title: None,
@@ -1457,6 +1459,210 @@ fn pane_link_resolve_round_trips() {
     assert_eq!(
         serde_json::from_value::<ResponseResult>(json).unwrap(),
         result
+    );
+}
+
+fn container_open_targets() -> Vec<(&'static str, ContainerOpenTarget)> {
+    vec![
+        (
+            "workspace",
+            ContainerOpenTarget::Workspace(WorkspaceCreateParams {
+                source_workspace_id: None,
+                cwd: Some("/repo/shop".into()),
+                focus: true,
+                label: Some("db".into()),
+                env: HashMap::from([("PGUSER".into(), "dev".into())]),
+            }),
+        ),
+        (
+            "tab",
+            ContainerOpenTarget::Tab(TabCreateParams {
+                workspace_id: Some("w1".into()),
+                cwd: None,
+                focus: false,
+                label: None,
+                env: HashMap::new(),
+            }),
+        ),
+        (
+            "split",
+            ContainerOpenTarget::Split(PaneSplitParams {
+                workspace_id: None,
+                target_pane_id: Some("w1:p1".into()),
+                direction: SplitDirection::Right,
+                ratio: Some(0.5),
+                cwd: None,
+                focus: true,
+                right_click: PaneRightClickTarget::Herdr,
+                env: HashMap::new(),
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn container_open_request_round_trips_for_each_target() {
+    for (tag, target) in container_open_targets() {
+        let request = Request {
+            id: format!("req_container_open_{tag}"),
+            method: Method::ContainerOpen(ContainerOpenParams {
+                container: "shop/db".into(),
+                target,
+            }),
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["method"], "container.open");
+        assert_eq!(json["params"]["container"], "shop/db");
+        let target_keys: Vec<&String> = json["params"]["target"]
+            .as_object()
+            .expect("container.open target is an object")
+            .keys()
+            .collect();
+        assert_eq!(target_keys, vec![tag]);
+        assert_eq!(serde_json::from_value::<Request>(json).unwrap(), request);
+    }
+}
+
+#[test]
+fn container_open_request_parses_nested_create_params_with_their_defaults() {
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "open",
+        "method": "container.open",
+        "params": {
+            "container": "web",
+            "target": { "split": { "target_pane_id": "w1:p1", "direction": "down" } }
+        }
+    }))
+    .unwrap();
+
+    let Method::ContainerOpen(params) = request.method else {
+        panic!("expected container.open");
+    };
+    assert_eq!(params.container, "web");
+    assert!(matches!(
+        params.target,
+        ContainerOpenTarget::Split(PaneSplitParams {
+            direction: SplitDirection::Down,
+            focus: false,
+            right_click: PaneRightClickTarget::Herdr,
+            ratio: None,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn container_open_request_without_target_or_with_unknown_target_is_rejected() {
+    let missing_target = serde_json::json!({
+        "id": "open",
+        "method": "container.open",
+        "params": { "container": "web" }
+    });
+    let unknown_target = serde_json::json!({
+        "id": "open",
+        "method": "container.open",
+        "params": { "container": "web", "target": { "popup": {} } }
+    });
+
+    assert!(serde_json::from_value::<Request>(missing_target).is_err());
+    assert!(serde_json::from_value::<Request>(unknown_target).is_err());
+}
+
+#[test]
+fn container_list_request_and_response_round_trip() {
+    let request = Request {
+        id: "req_containers".into(),
+        method: Method::ContainerList(ContainerListParams {
+            workspace_id: Some("w1".into()),
+        }),
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "container.list");
+    assert_eq!(json["params"]["workspace_id"], "w1");
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), request);
+
+    let unscoped: Request = serde_json::from_value(serde_json::json!({
+        "id": "req_containers",
+        "method": "container.list",
+        "params": {}
+    }))
+    .unwrap();
+    assert_eq!(
+        unscoped.method,
+        Method::ContainerList(ContainerListParams::default())
+    );
+
+    let response = SuccessResponse {
+        id: "req_containers".into(),
+        result: ResponseResult::ContainerList {
+            containers: vec![
+                ContainerInfoDto {
+                    reference: "shop/db".into(),
+                    id: "4f3c2b1a".into(),
+                    name: "shop-db-1".into(),
+                    project: Some("shop".into()),
+                    service: Some("db".into()),
+                    working_dir: Some("/repo/shop".into()),
+                    workspace_id: Some("w1".into()),
+                    is_default: true,
+                },
+                ContainerInfoDto {
+                    reference: "scratch".into(),
+                    id: "9e8d7c6b".into(),
+                    name: "scratch".into(),
+                    project: None,
+                    service: None,
+                    working_dir: None,
+                    workspace_id: None,
+                    is_default: false,
+                },
+            ],
+        },
+    };
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["result"]["type"], "container_list");
+    assert_eq!(json["result"]["containers"][0]["reference"], "shop/db");
+    assert_eq!(json["result"]["containers"][0]["is_default"], true);
+    let plain = json["result"]["containers"][1]
+        .as_object()
+        .expect("container entry is an object");
+    assert!(!plain.contains_key("project"));
+    assert!(!plain.contains_key("workspace_id"));
+    assert_eq!(plain["is_default"], false);
+    assert_eq!(
+        serde_json::from_value::<SuccessResponse>(json).unwrap(),
+        response
+    );
+}
+
+#[test]
+fn container_methods_report_the_same_api_method_name_as_their_wire_tag() {
+    let mut requests: Vec<Request> = container_open_targets()
+        .into_iter()
+        .map(|(tag, target)| Request {
+            id: format!("req_{tag}"),
+            method: Method::ContainerOpen(ContainerOpenParams {
+                container: "shop/db".into(),
+                target,
+            }),
+        })
+        .collect();
+    requests.push(Request {
+        id: "req_list".into(),
+        method: Method::ContainerList(ContainerListParams::default()),
+    });
+
+    for request in requests {
+        let wire_tag = serde_json::to_value(&request).unwrap()["method"].clone();
+        assert_eq!(
+            serde_json::Value::from(crate::api::api_method_name(&request.method)),
+            wire_tag
+        );
+    }
+    assert_eq!(
+        crate::api::api_method_name(&Method::ContainerList(ContainerListParams::default())),
+        "container.list"
     );
 }
 

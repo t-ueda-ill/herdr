@@ -6,8 +6,9 @@ use crate::api::schema::workspaces::{
     WorkspaceCloseProjection, WorkspaceCreateProjection, WorkspaceMetadataProjection,
     WorkspaceRenameProjection,
 };
-use crate::api::schema::{EmptyParams, Method, Request, WorkspaceTarget};
+use crate::api::schema::{ContainerOpenTarget, EmptyParams, Method, Request, WorkspaceTarget};
 
+use super::container::bindings::{into_method, with_container};
 use super::projection::{cli_projection, Field, Input, ParseError};
 
 pub(crate) use super::projection::{boolean, optional_text};
@@ -139,9 +140,14 @@ pub(crate) const LEAVES: [Leaf; 7] = [
         about: "Create a workspace",
         id: "cli:workspace:create",
         quiet: false,
-        arguments: WorkspaceCreateProjection::arguments,
+        arguments: || with_container(WorkspaceCreateProjection::arguments()),
         method: |matches| {
-            WorkspaceCreateProjection::from_matches(matches).map(Method::WorkspaceCreate)
+            into_method(
+                matches,
+                WorkspaceCreateProjection::from_matches(matches)?,
+                Method::WorkspaceCreate,
+                ContainerOpenTarget::Workspace,
+            )
         },
     },
     Leaf {
@@ -311,6 +317,64 @@ mod tests {
         );
         assert!(
             matches!(request("report-metadata", &["id", "--source", "valid"]), Err(ParseError::Usage(message)) if message == "missing token to set or clear")
+        );
+    }
+
+    #[test]
+    fn workspace_create_with_container_nests_the_create_params_in_container_open() {
+        assert_eq!(
+            serde_json::to_value(
+                request(
+                    "create",
+                    &[
+                        "--container",
+                        "app/web",
+                        "--label",
+                        "api",
+                        "--env",
+                        "MODE=dev",
+                        "--focus",
+                    ]
+                )
+                .unwrap()
+            )
+            .unwrap(),
+            serde_json::json!({
+                "id": "cli:workspace:create", "method": "container.open",
+                "params": {
+                    "container": "app/web",
+                    "target": {"workspace": {"label": "api", "env": {"MODE": "dev"}, "focus": true}}
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_create_accepts_container_equals_form() {
+        assert_eq!(
+            serde_json::to_value(request("create", &["--container=app/web"]).unwrap()).unwrap(),
+            serde_json::json!({
+                "id": "cli:workspace:create", "method": "container.open",
+                "params": {"container": "app/web", "target": {"workspace": {"focus": false}}}
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_create_without_container_stays_a_plain_create() {
+        assert_eq!(
+            serde_json::to_value(request("create", &["--cwd", "/repo"]).unwrap()).unwrap(),
+            serde_json::json!({
+                "id": "cli:workspace:create", "method": "workspace.create",
+                "params": {"cwd": "/repo", "focus": false}
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_create_rejects_container_without_value() {
+        assert!(
+            matches!(request("create", &["--container"]), Err(ParseError::Clap(error)) if error.exit_code() == 2)
         );
     }
 

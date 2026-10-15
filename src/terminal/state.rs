@@ -158,10 +158,29 @@ pub struct TerminalState {
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
     pub respawn_shell_on_exit: bool,
+    /// Kept resolved so respawns reuse it instead of querying docker again.
+    pub container: Option<crate::container::ContainerLaunch>,
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
     agent_process_acquisition_pending: bool,
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
     pub restore_error: Option<String>,
+}
+
+/// Picks the directory a new pane should inherit.
+///
+/// Why not trust the runtime path for container panes: the shell reports a
+/// path inside the container (e.g. `/work`), which does not exist on the host.
+/// `plan_launch` maps the host launch cwd through the bind mounts instead.
+pub fn inherited_cwd(
+    has_container: bool,
+    runtime_cwd: Option<PathBuf>,
+    launch_cwd: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if has_container {
+        launch_cwd
+    } else {
+        runtime_cwd.or(launch_cwd)
+    }
 }
 
 impl TerminalState {
@@ -198,6 +217,7 @@ impl TerminalState {
             revision: 0,
             launch_argv: None,
             respawn_shell_on_exit: false,
+            container: None,
             recent_agent_process_exit: None,
             agent_process_acquisition_pending: false,
             pending_agent_resume_plan: None,
@@ -292,6 +312,11 @@ impl TerminalState {
 
     pub fn with_respawn_shell_on_exit(mut self) -> Self {
         self.respawn_shell_on_exit = true;
+        self
+    }
+
+    pub fn with_container(mut self, launch: crate::container::ContainerLaunch) -> Self {
+        self.container = Some(launch);
         self
     }
 
@@ -731,15 +756,6 @@ impl TerminalState {
             FullLifecycleHookReportRoute::Ignore => return None,
         };
         if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
-            return None;
-        }
-        if (source.as_str(), agent_label.as_str()) == ("herdr:codex", "codex")
-            && session_ref.as_ref().is_some_and(|incoming| {
-                self.current_session_identity_for_persistence().is_some_and(
-                    |(_, _, kind, value)| kind != incoming.kind || value != incoming.value,
-                )
-            })
-        {
             return None;
         }
         let owner_conflicts = self.current_session_owner_conflicts(&source, &agent_label);
@@ -1660,16 +1676,6 @@ impl TerminalState {
         let previous_state = self.state;
         let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
         let previous_session = self.current_session_identity_for_persistence();
-        if (source.as_str(), agent_label.as_str()) == ("herdr:codex", "codex")
-            && session_replacement_allowed
-            && self.hook_authority.as_ref().is_some_and(|authority| {
-                authority.source == source
-                    && authority.agent_label == agent_label
-                    && authority.session_ref.as_ref() != Some(&session_ref)
-            })
-        {
-            self.hook_authority = None;
-        }
         if session_replacement_allowed || foreground_takeover_allowed {
             self.forget_stale_full_lifecycle_hook_session(&source, &agent_label, &session_ref);
         }
@@ -2473,6 +2479,27 @@ mod tests {
     use super::*;
     use crate::detect::AgentDetection;
 
+    #[test]
+    fn inherited_cwd_uses_runtime_path_for_host_terminals() {
+        assert_eq!(
+            inherited_cwd(false, Some("/rt".into()), Some("/launch".into())),
+            Some("/rt".into())
+        );
+        assert_eq!(
+            inherited_cwd(false, None, Some("/launch".into())),
+            Some("/launch".into())
+        );
+    }
+
+    #[test]
+    fn inherited_cwd_uses_launch_path_for_container_terminals() {
+        assert_eq!(
+            inherited_cwd(true, Some("/work".into()), Some("/host".into())),
+            Some("/host".into())
+        );
+        assert_eq!(inherited_cwd(true, Some("/work".into()), None), None);
+    }
+
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())
     }
@@ -2498,6 +2525,24 @@ mod tests {
             agent: agent_label.into(),
             session_ref,
         });
+    }
+
+    #[test]
+    fn terminal_with_container_keeps_resolved_launch() {
+        let launch = crate::container::ContainerLaunch {
+            reference: crate::container::ContainerRef::Name("scratch".into()),
+            canonical: "scratch".into(),
+            id: "cid".into(),
+            workdir: Some("/work".into()),
+            user: Some("dev".into()),
+            shell: crate::container::ContainerShell::Explicit("/bin/zsh".into()),
+        };
+
+        assert_eq!(test_terminal().container, None);
+        assert_eq!(
+            test_terminal().with_container(launch.clone()).container,
+            Some(launch)
+        );
     }
 
     #[test]

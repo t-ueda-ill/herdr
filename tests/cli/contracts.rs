@@ -7,6 +7,10 @@ struct Capture {
 }
 
 fn capture(args: &[&str], response: Value) -> Capture {
+    capture_with_env(args, response, &[])
+}
+
+fn capture_with_env(args: &[&str], response: Value, envs: &[(&str, &str)]) -> Capture {
     let base = unique_test_dir();
     fs::create_dir_all(&base).unwrap();
     let socket = base.join("contract.sock");
@@ -21,6 +25,7 @@ fn capture(args: &[&str], response: Value) -> Capture {
         .env_remove("HERDR_ENV")
         .env_remove("HERDR_PANE_ID")
         .env_remove("HERDR_SESSION")
+        .envs(envs.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -294,6 +299,10 @@ fn workspace_legacy_rejections_do_not_connect() {
             "error: unexpected argument '--unknown' found",
         ),
         (
+            vec!["workspace", "create", "--container"],
+            "error: a value is required for '--container <REF>' but none was supplied",
+        ),
+        (
             vec!["workspace", "close", "w1", "extra"],
             "error: unexpected argument 'extra' found",
         ),
@@ -448,6 +457,7 @@ fn workspace_help_preserves_public_and_runtime_grammar_split() {
                 "--cwd <PATH>",
                 "--label <TEXT>",
                 "--env <KEY=VALUE>",
+                "--container <REF>",
                 "--focus",
                 "--no-focus",
             ],
@@ -483,6 +493,149 @@ fn workspace_help_preserves_public_and_runtime_grammar_split() {
         if leaf == "close" {
             assert!(!help.contains("--group"), "{help}");
         }
+    }
+}
+
+#[test]
+fn container_cli_request_contract_matrix() {
+    let cases: Vec<(Vec<&str>, Value)> = vec![
+        (
+            vec![
+                "workspace",
+                "create",
+                "--container",
+                "shop/web",
+                "--label",
+                "api",
+            ],
+            json!({"id":"cli:workspace:create","method":"container.open","params":{"container":"shop/web","target":{"workspace":{"label":"api","focus":false}}}}),
+        ),
+        (
+            vec![
+                "tab",
+                "create",
+                "--workspace",
+                "w:7",
+                "--container=scratch",
+                "--focus",
+            ],
+            json!({"id":"cli:tab:create","method":"container.open","params":{"container":"scratch","target":{"tab":{"workspace_id":"w:7","focus":true}}}}),
+        ),
+        (
+            vec![
+                "pane",
+                "split",
+                "p:7",
+                "--direction",
+                "down",
+                "--container",
+                "c0ffee",
+                "--env",
+                "KEY=value",
+            ],
+            json!({"id":"cli:pane:split","method":"container.open","params":{"container":"c0ffee","target":{"split":{"target_pane_id":"p:7","direction":"down","focus":false,"right_click":"herdr","env":{"KEY":"value"}}}}}),
+        ),
+        (
+            vec!["container", "list", "--json"],
+            json!({"id":"cli:container:list","method":"container.list","params":{}}),
+        ),
+        (
+            vec!["container", "list", "--workspace", "w:7", "--json"],
+            json!({"id":"cli:container:list","method":"container.list","params":{"workspace_id":"w:7"}}),
+        ),
+    ];
+    for (args, request) in cases {
+        assert_request(&args, request);
+    }
+}
+
+#[test]
+fn pane_split_container_targets_the_caller_pane() {
+    for args in [
+        vec![
+            "pane",
+            "split",
+            "--direction",
+            "right",
+            "--container",
+            "shop/web",
+        ],
+        vec![
+            "pane",
+            "split",
+            "--current",
+            "--direction",
+            "right",
+            "--container",
+            "shop/web",
+        ],
+    ] {
+        let captured = capture_with_env(
+            &args,
+            json!({"id":"cli:pane:split","result":{"type":"ok"}}),
+            &[("HERDR_PANE_ID", "p:caller")],
+        );
+        assert_eq!(
+            captured.output.status.code(),
+            Some(0),
+            "{args:?}: {:?}",
+            captured.output
+        );
+        assert_eq!(
+            captured.requests.get(1),
+            Some(
+                &json!({"id":"cli:pane:split","method":"container.open","params":{"container":"shop/web","target":{"split":{"target_pane_id":"p:caller","direction":"right","focus":false,"right_click":"herdr"}}}})
+            ),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn container_list_text_table_and_error_envelope_contract() {
+    let listed = capture(
+        &["container", "list"],
+        json!({"id":"cli:container:list","result":{"type":"container_list","containers":[
+            {"reference":"shop/web","id":"c0ffee","name":"shop-web-1","project":"shop","service":"web","workspace_id":"w:7","is_default":true},
+            {"reference":"scratch","id":"5c7a7c","name":"scratch","is_default":false}
+        ]}}),
+    );
+    assert_eq!(listed.output.status.code(), Some(0), "{:?}", listed.output);
+    assert!(listed.output.stderr.is_empty(), "{:?}", listed.output);
+    assert_eq!(
+        String::from_utf8(listed.output.stdout).unwrap(),
+        concat!(
+            "reference  name        project/service  workspace  default\n",
+            "shop/web   shop-web-1  shop/web         w:7        *\n",
+            "scratch    scratch     -                -\n",
+        )
+    );
+
+    let empty = capture(
+        &["container", "list"],
+        json!({"id":"cli:container:list","result":{"type":"container_list","containers":[]}}),
+    );
+    assert_eq!(empty.output.status.code(), Some(0), "{:?}", empty.output);
+    assert_eq!(empty.output.stdout, b"No running containers.\n");
+
+    let error = json!({"id":"cli:container:list","error":{"code":"container_unavailable","message":"docker is not running"}});
+    for args in [
+        vec!["container", "list"],
+        vec!["container", "list", "--json"],
+    ] {
+        let captured = capture(&args, error.clone());
+        assert_eq!(captured.output.status.code(), Some(1), "{args:?}");
+        assert!(captured.output.stdout.is_empty(), "{args:?}");
+        assert_eq!(
+            captured.output.stderr,
+            format!("{error}\n").as_bytes(),
+            "{args:?}"
+        );
+        assert_eq!(
+            captured.requests.get(1),
+            Some(&json!({"id":"cli:container:list","method":"container.list","params":{}})),
+            "{args:?}"
+        );
     }
 }
 

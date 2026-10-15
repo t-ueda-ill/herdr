@@ -14,6 +14,7 @@ mod api;
 #[cfg(test)]
 pub(crate) use api::test_support::exiting_test_command;
 mod api_helpers;
+mod containers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod creation;
 mod custom_commands;
@@ -2299,9 +2300,34 @@ mod tests {
                 },
             ),
         };
+        let container_list = crate::api::schema::Request {
+            id: "req_13".into(),
+            method: crate::api::schema::Method::ContainerList(
+                crate::api::schema::ContainerListParams::default(),
+            ),
+        };
+        let container_open = crate::api::schema::Request {
+            id: "req_14".into(),
+            method: crate::api::schema::Method::ContainerOpen(
+                crate::api::schema::ContainerOpenParams {
+                    container: "shop/db".into(),
+                    target: crate::api::schema::ContainerOpenTarget::Tab(
+                        crate::api::schema::TabCreateParams {
+                            workspace_id: Some("w1".into()),
+                            cwd: None,
+                            focus: false,
+                            label: None,
+                            env: Default::default(),
+                        },
+                    ),
+                },
+            ),
+        };
 
         assert!(!crate::api::request_changes_ui(&read_only));
         assert!(!crate::api::request_changes_ui(&worktree_list));
+        assert!(!crate::api::request_changes_ui(&container_list));
+        assert!(crate::api::request_changes_ui(&container_open));
         assert!(crate::api::request_changes_ui(&mutating));
         assert!(crate::api::request_changes_ui(&pane_rename));
         assert!(crate::api::request_changes_ui(&worktree_create));

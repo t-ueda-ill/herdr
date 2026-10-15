@@ -98,6 +98,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | セッション | `session.snapshot` |
 | ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
+| コンテナ | `container.open`, `container.list` |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
@@ -291,6 +292,59 @@ Worktree メソッドは Git チェックアウトを Herdr ワークスペー�
 worktree コマンドはライフサイクルイベントも発行します。`worktree.create` は `workspace.created`、`tab.created`、`pane.created`、`worktree.created` を発行します。`worktree.open` は `worktree.opened` を発行し、新しい Herdr ワークスペースを開いた場合はワークスペース/タブ/ペインの作成イベントも発行します。`worktree.remove` は `worktree.removed` を発行し、リンクされたワークスペースがまだ開いている場合は `workspace.closed` も発行します。
 
 リンクされた worktree ワークスペースが開いている親ワークスペースを `workspace.close` で閉じるには、params に `"close_group": true` が必要です。明示的なグループクローズ指定がない場合は `workspace_group_close_required` を返します。明示的なグループクローズは、閉じた各ワークスペースについて `workspace.closed` イベントを 1 件ずつ発行します。
+
+## コンテナ
+
+`container.open` は、実行中の Docker コンテナ内でシェルを開きます。`target` には通常の作成・分割パラメーターを `workspace`、`tab`、`split` のいずれかの下にネストして渡します。結果はネストしたメソッドと同じです。`container` は Compose の `project/service`、またはコンテナ名か ID です。
+
+```json
+{
+  "id": "req_1",
+  "method": "container.open",
+  "params": {
+    "container": "myapp/web",
+    "target": { "tab": { "workspace_id": "w1", "focus": false } }
+  }
+}
+```
+
+`container.list` は実行中のコンテナを返します。`workspace_id` は省略可能で、指定するとそのワークスペースに一致するコンテナだけを返します。
+
+```json
+{ "id": "req_2", "method": "container.list", "params": { "workspace_id": "w1" } }
+```
+
+```json
+{
+  "id": "req_2",
+  "result": {
+    "type": "container_list",
+    "containers": [
+      {
+        "reference": "myapp/web",
+        "id": "3f2a9c...",
+        "name": "myapp-web-1",
+        "project": "myapp",
+        "service": "web",
+        "working_dir": "/home/me/myapp",
+        "workspace_id": "w1",
+        "is_default": true
+      }
+    ]
+  }
+}
+```
+
+`project`、`service`、`working_dir`、`workspace_id` は不明な場合は省略されます。エラーコードは次のとおりです。
+
+| コード | 意味 |
+| --- | --- |
+| `invalid_container` | `container` が空、または形式が不正 |
+| `container_not_found` | 該当コンテナがない（停止中のものを含む） |
+| `container_unavailable` | Docker がない、失敗した、または 5 秒を超えた |
+| `platform_unsupported` | サーバーが Windows 上で動作している |
+
+作成・分割パラメーターは変更されず、コンテナ参照は `container.open` でのみ渡されます。
 
 ## エージェントビューのクエリ
 

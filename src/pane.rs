@@ -230,6 +230,7 @@ struct SpawnInitialState<'a> {
     detected_agent: Option<Agent>,
     history_ansi: Option<&'a str>,
     windows_powershell_prompt_cwd_reporting: bool,
+    in_container: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1507,6 +1508,7 @@ pub struct PaneRuntime {
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
     cwd_process_exited: Arc<AtomicBool>,
     child_wait_completed: Option<Arc<AtomicBool>>,
+    in_container: bool,
     kitty_keyboard_flags: Arc<AtomicU16>,
     content_seq: Arc<AtomicU64>,
     content_write_lock: Arc<Mutex<()>>,
@@ -1987,6 +1989,7 @@ fn default_pane_shell() -> String {
 pub(crate) struct PaneShellConfig<'a> {
     pub(crate) default_shell: &'a str,
     pub(crate) mode: crate::config::ShellModeConfig,
+    pub(crate) container: Option<&'a crate::container::ContainerLaunch>,
 }
 
 impl<'a> PaneShellConfig<'a> {
@@ -1994,7 +1997,16 @@ impl<'a> PaneShellConfig<'a> {
         Self {
             default_shell,
             mode,
+            container: None,
         }
+    }
+
+    pub(crate) fn with_container(
+        mut self,
+        container: Option<&'a crate::container::ContainerLaunch>,
+    ) -> Self {
+        self.container = container;
+        self
     }
 }
 
@@ -2124,6 +2136,12 @@ fn pane_shell_command_builder_for_target(
     shell_config: PaneShellConfig<'_>,
     target: ShellLaunchTarget,
 ) -> io::Result<CommandBuilder> {
+    // Container panes return before the login branch: the default-program
+    // builder cannot wrap `docker exec`, and the host login shell is irrelevant
+    // inside the container.
+    if shell_config.container.is_some() {
+        return Ok(CommandBuilder::new("docker"));
+    }
     let shell = pane_shell(shell_config.default_shell);
     // Unix login shells go through portable-pty's default-program builder so
     // they receive the login argv0 convention. Windows has no such convention
@@ -2151,8 +2169,46 @@ fn pane_shell_command_builder_for_target(
     Ok(cmd)
 }
 
-fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> io::Result<CommandBuilder> {
-    pane_shell_command_builder_for_target(shell_config, ShellLaunchTarget::current())
+const CONTAINER_TERMINAL_ENV_KEYS: [&str; 4] =
+    ["TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
+
+/// Values come from `cmd` rather than `launch_env.extra` so later overrides
+/// (pane identity, terminal identity) win exactly as they do for host shells.
+fn container_forward_env(
+    cmd: &CommandBuilder,
+    launch_env: &PaneLaunchEnv,
+) -> Vec<(String, String)> {
+    // Not the full environment: the inherited host env (PATH, HOME, sockets)
+    // describes the host, not the container, so only explicitly set
+    // terminal, herdr, and `--env` keys cross the boundary.
+    cmd.iter_extra_env_as_str()
+        .filter(|(key, _)| {
+            CONTAINER_TERMINAL_ENV_KEYS.contains(key)
+                || key.starts_with("HERDR_")
+                || launch_env.extra.iter().any(|(extra, _)| extra == key)
+        })
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+fn pane_shell_spawn_command_for_target(
+    shell_config: PaneShellConfig<'_>,
+    target: ShellLaunchTarget,
+    cwd: &Path,
+    launch_env: &PaneLaunchEnv,
+) -> io::Result<CommandBuilder> {
+    let mut cmd = pane_shell_command_builder_for_target(shell_config, target)?;
+    // Not the container workdir: this is where the host docker CLI starts, so
+    // it must exist on the host. The in-container directory travels as `-w`.
+    cmd.cwd(crate::platform::normalize_cwd_for_launch(cwd));
+    apply_pane_terminal_env(&mut cmd);
+    apply_pane_launch_env(&mut cmd, launch_env);
+    if let Some(launch) = shell_config.container {
+        let env = container_forward_env(&cmd, launch_env);
+        let login = shell_mode_uses_login_shell(shell_config.mode, target);
+        *cmd.get_argv_mut() = crate::container::launch::docker_exec_argv(launch, login, &env);
+    }
+    Ok(cmd)
 }
 
 /// True when panes launch an interactive PowerShell directly on Windows.
@@ -2170,6 +2226,7 @@ fn uses_windows_powershell_pane_shell_for_target(
     // so login PowerShell panes are launched directly and can carry the same
     // prompt-based cwd reporting as non-login panes.
     target == ShellLaunchTarget::Windows
+        && shell_config.container.is_none()
         && is_powershell_shell(&pane_shell(shell_config.default_shell))
 }
 
@@ -2188,8 +2245,10 @@ fn is_powershell_shell(shell: &str) -> bool {
     )
 }
 
-fn usable_reported_cwd(cwd: std::path::PathBuf) -> Option<std::path::PathBuf> {
-    (cwd.is_absolute() && cwd.is_dir()).then_some(cwd)
+fn usable_reported_cwd(cwd: std::path::PathBuf, in_container: bool) -> Option<std::path::PathBuf> {
+    // Container paths are not checked with `is_dir()`: the host filesystem
+    // cannot confirm or refute a directory inside the container.
+    (cwd.is_absolute() && (in_container || cwd.is_dir())).then_some(cwd)
 }
 
 fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<AppEvent>) {
@@ -2210,9 +2269,10 @@ fn publish_reported_cwd(
     pane_id: PaneId,
     cwd: std::path::PathBuf,
     reported_cwd: &Arc<Mutex<Option<std::path::PathBuf>>>,
+    in_container: bool,
     events: &mpsc::Sender<AppEvent>,
 ) {
-    let Some(cwd) = usable_reported_cwd(cwd) else {
+    let Some(cwd) = usable_reported_cwd(cwd, in_container) else {
         return;
     };
     if let Ok(mut current) = reported_cwd.lock() {
@@ -2388,10 +2448,12 @@ impl PaneRuntime {
     ) -> std::io::Result<Self> {
         let windows_powershell_prompt_cwd_reporting =
             uses_windows_powershell_pane_shell(shell_config);
-        let mut cmd = pane_shell_command_builder(shell_config)?;
-        cmd.cwd(crate::platform::normalize_cwd_for_launch(&cwd));
-        apply_pane_terminal_env(&mut cmd);
-        apply_pane_launch_env(&mut cmd, launch_env);
+        let cmd = pane_shell_spawn_command_for_target(
+            shell_config,
+            ShellLaunchTarget::current(),
+            &cwd,
+            launch_env,
+        )?;
         Self::spawn_command_builder(
             pane_id,
             rows,
@@ -2408,6 +2470,7 @@ impl PaneRuntime {
                 detected_agent: None,
                 history_ansi: initial_history_ansi,
                 windows_powershell_prompt_cwd_reporting,
+                in_container: shell_config.container.is_some(),
             },
             AgentDetection::Enabled,
         )
@@ -2609,7 +2672,7 @@ impl PaneRuntime {
                     });
                 }
                 if let Some(cwd) = result.reported_cwd.clone() {
-                    publish_reported_cwd(pane_id, cwd, &reported_cwd, &read_events);
+                    publish_reported_cwd(pane_id, cwd, &reported_cwd, false, &read_events);
                 }
                 for content in result.clipboard_writes {
                     if let Err(err) = read_events.try_send(AppEvent::ClipboardWrite { content }) {
@@ -2668,6 +2731,7 @@ impl PaneRuntime {
             persistence_cwd: Mutex::new(None),
             cwd_process_exited,
             child_wait_completed: None,
+            in_container: false,
             kitty_keyboard_flags,
             content_seq,
             content_write_lock,
@@ -2734,6 +2798,7 @@ impl PaneRuntime {
         let detection_content_seq = Arc::new(AtomicU64::new(0));
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         let self_reported_agent_active = Arc::new(AtomicBool::new(false));
+        let in_container = initial_state.in_container;
         {
             let child_pid = child_pid.clone();
             let child_wait_completed = child_wait_completed.clone();
@@ -2814,7 +2879,7 @@ impl PaneRuntime {
                     });
                 }
                 if let Some(cwd) = result.reported_cwd.clone() {
-                    publish_reported_cwd(pane_id, cwd, &reported_cwd, &events);
+                    publish_reported_cwd(pane_id, cwd, &reported_cwd, in_container, &events);
                 }
                 for content in result.clipboard_writes {
                     if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
@@ -3281,6 +3346,7 @@ impl PaneRuntime {
             persistence_cwd: Mutex::new(None),
             cwd_process_exited: child_wait_completed.clone(),
             child_wait_completed: Some(child_wait_completed),
+            in_container,
             kitty_keyboard_flags,
             content_seq,
             content_write_lock,
@@ -3805,13 +3871,13 @@ impl PaneRuntime {
 
     /// Get the current working directory of the child shell process.
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
-        if let Some(cwd) = self
-            .reported_cwd
-            .lock()
-            .ok()
-            .and_then(|reported_cwd| reported_cwd.clone())
-        {
+        if let Some(cwd) = self.reported_cwd() {
             return Some(cwd);
+        }
+        // The child is the host docker CLI, whose process cwd says nothing
+        // about where the container shell is.
+        if self.in_container {
+            return None;
         }
 
         let pid = self.child_pid.load(Ordering::Relaxed);
@@ -3832,11 +3898,26 @@ impl PaneRuntime {
             }
             return Some(cwd);
         }
+        // Container panes never fall back to the reported cwd: it is a path
+        // inside the container, and restore needs a host directory.
         self.persistence_cwd
             .lock()
             .ok()
             .and_then(|cwd| cwd.clone())
-            .or_else(|| self.reported_cwd.lock().ok().and_then(|cwd| cwd.clone()))
+            .or_else(|| {
+                if self.in_container {
+                    None
+                } else {
+                    self.reported_cwd()
+                }
+            })
+    }
+
+    fn reported_cwd(&self) -> Option<std::path::PathBuf> {
+        self.reported_cwd
+            .lock()
+            .ok()
+            .and_then(|reported_cwd| reported_cwd.clone())
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -3845,6 +3926,9 @@ impl PaneRuntime {
     }
 
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
+        if self.in_container {
+            return self.reported_cwd();
+        }
         #[cfg(unix)]
         {
             let leader_cwd = self
@@ -3862,6 +3946,11 @@ impl PaneRuntime {
 
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
+        // Host process groups only show the docker CLI, so the shell's own
+        // report is the only source for container panes.
+        if self.in_container {
+            return self.reported_cwd();
+        }
         #[cfg(unix)]
         {
             let pid = self.child_pid.load(Ordering::Acquire);
@@ -4074,6 +4163,7 @@ impl PaneRuntime {
                 persistence_cwd: Mutex::new(None),
                 cwd_process_exited: Arc::new(AtomicBool::new(false)),
                 child_wait_completed: None,
+                in_container: false,
                 kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
                 content_seq: Arc::new(AtomicU64::new(0)),
                 content_write_lock: Arc::new(Mutex::new(())),
@@ -4481,7 +4571,13 @@ mod tests {
 
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let (events, _event_rx) = mpsc::channel(1);
-        publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
+        publish_reported_cwd(
+            runtime.pane_id,
+            cwd.clone(),
+            &runtime.reported_cwd,
+            runtime.in_container,
+            &events,
+        );
         assert_eq!(
             runtime.reported_cwd.lock().unwrap().as_ref(),
             Some(&cwd),
@@ -5190,13 +5286,277 @@ mod tests {
 
     #[test]
     fn non_login_shell_builder_execs_resolved_shell_directly() {
-        let cmd = pane_shell_command_builder(PaneShellConfig::new(
-            "/bin/sh",
-            crate::config::ShellModeConfig::NonLogin,
-        ))
+        let cmd = pane_shell_command_builder_for_target(
+            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
+            ShellLaunchTarget::current(),
+        )
         .unwrap();
         assert!(!cmd.is_default_prog());
         assert_eq!(cmd.get_argv(), &[std::ffi::OsString::from("/bin/sh")]);
+    }
+
+    fn test_container_launch() -> crate::container::ContainerLaunch {
+        crate::container::ContainerLaunch {
+            reference: crate::container::ContainerRef::Compose {
+                project: "shop".into(),
+                service: "db".into(),
+            },
+            canonical: "shop/db".into(),
+            id: "cid".into(),
+            workdir: Some("/work".into()),
+            user: None,
+            shell: crate::container::ContainerShell::BashOrSh,
+        }
+    }
+
+    fn argv_strings(cmd: &CommandBuilder) -> Vec<String> {
+        cmd.get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn container_shell_builder_starts_docker_without_default_prog() {
+        let launch = test_container_launch();
+        for mode in [
+            crate::config::ShellModeConfig::Login,
+            crate::config::ShellModeConfig::Auto,
+            crate::config::ShellModeConfig::NonLogin,
+        ] {
+            for target in [
+                ShellLaunchTarget::OtherUnix,
+                ShellLaunchTarget::Macos,
+                ShellLaunchTarget::Windows,
+            ] {
+                let cmd = pane_shell_command_builder_for_target(
+                    PaneShellConfig::new("herdr-missing-login-shell", mode)
+                        .with_container(Some(&launch)),
+                    target,
+                )
+                .unwrap();
+                assert!(!cmd.is_default_prog(), "{mode:?} {target:?}");
+                assert_eq!(cmd.get_argv(), &[std::ffi::OsString::from("docker")]);
+            }
+        }
+    }
+
+    #[test]
+    fn container_forward_env_keeps_only_terminal_and_herdr_keys() {
+        let launch_env = PaneLaunchEnv::from_extra(vec![("PROJECT_MODE".into(), "dev".into())])
+            .with_identity("w1".into(), "w1:t1".into(), "w1:p1".into());
+        let mut cmd = CommandBuilder::new("docker");
+        cmd.env("DISPLAY", ":42");
+        apply_pane_terminal_env(&mut cmd);
+        apply_pane_launch_env(&mut cmd, &launch_env);
+
+        let forwarded = container_forward_env(&cmd, &launch_env);
+
+        let keys: Vec<&str> = forwarded.iter().map(|(key, _)| key.as_str()).collect();
+        for expected in [
+            "TERM",
+            "COLORTERM",
+            "TERM_PROGRAM",
+            "TERM_PROGRAM_VERSION",
+            crate::HERDR_ENV_VAR,
+            crate::integration::HERDR_WORKSPACE_ID_ENV_VAR,
+            crate::integration::HERDR_TAB_ID_ENV_VAR,
+            crate::integration::HERDR_PANE_ID_ENV_VAR,
+            "PROJECT_MODE",
+        ] {
+            assert!(
+                keys.contains(&expected),
+                "{expected} must reach the container"
+            );
+        }
+        for key in &keys {
+            assert!(
+                matches!(
+                    *key,
+                    "TERM" | "COLORTERM" | "TERM_PROGRAM" | "TERM_PROGRAM_VERSION" | "PROJECT_MODE"
+                ) || key.starts_with("HERDR_"),
+                "{key} must stay on the host"
+            );
+        }
+        for host_only in ["DISPLAY", "SSH_AUTH_SOCK", "PATH", "HOME"] {
+            assert!(
+                !keys.contains(&host_only),
+                "{host_only} must stay on the host"
+            );
+        }
+        assert!(forwarded.contains(&("PROJECT_MODE".into(), "dev".into())));
+        assert!(forwarded.contains(&("TERM".into(), PANE_TERM.into())));
+        assert!(forwarded.contains(&(
+            crate::integration::HERDR_PANE_ID_ENV_VAR.into(),
+            "w1:p1".into()
+        )));
+    }
+
+    #[test]
+    fn container_shell_spawn_command_execs_docker_with_forwarded_env_in_host_cwd() {
+        let launch = test_container_launch();
+        let host_cwd = std::env::temp_dir();
+        let launch_env = PaneLaunchEnv::from_extra(vec![("PROJECT_MODE".into(), "dev".into())]);
+
+        let cmd = pane_shell_spawn_command_for_target(
+            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::Login)
+                .with_container(Some(&launch)),
+            ShellLaunchTarget::OtherUnix,
+            &host_cwd,
+            &launch_env,
+        )
+        .unwrap();
+
+        let argv = argv_strings(&cmd);
+        assert_eq!(&argv[..5], ["docker", "exec", "-it", "-w", "/work"]);
+        let id = argv.iter().position(|arg| arg == "cid").unwrap();
+        let options = &argv[..id];
+        assert!(options
+            .windows(2)
+            .any(|pair| pair == ["-e", "PROJECT_MODE=dev"]));
+        let term = format!("TERM={PANE_TERM}");
+        assert!(options
+            .windows(2)
+            .any(|pair| pair[0] == "-e" && pair[1] == term));
+        assert!(!options
+            .iter()
+            .any(|arg| arg.starts_with("PATH=") || arg.starts_with("HOME=")));
+        assert_eq!(&argv[id + 1..id + 3], ["sh", "-c"]);
+        assert_eq!(argv.last().map(String::as_str), Some("-l"));
+        assert_eq!(
+            cmd.get_cwd(),
+            Some(&crate::platform::normalize_cwd_for_launch(&host_cwd).into_os_string())
+        );
+    }
+
+    #[test]
+    fn container_shell_spawn_command_omits_login_flag_for_non_login_mode() {
+        let launch = test_container_launch();
+        let cmd = pane_shell_spawn_command_for_target(
+            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin)
+                .with_container(Some(&launch)),
+            ShellLaunchTarget::OtherUnix,
+            &std::env::temp_dir(),
+            &PaneLaunchEnv::default(),
+        )
+        .unwrap();
+
+        let argv = argv_strings(&cmd);
+        assert_eq!(argv.first().map(String::as_str), Some("docker"));
+        assert_ne!(argv.last().map(String::as_str), Some("-l"));
+    }
+
+    #[test]
+    fn host_shell_spawn_command_keeps_shell_argv_cwd_and_pane_env() {
+        let host_cwd = std::env::temp_dir();
+        let cmd = pane_shell_spawn_command_for_target(
+            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
+            ShellLaunchTarget::OtherUnix,
+            &host_cwd,
+            &PaneLaunchEnv::from_extra(vec![("PROJECT_MODE".into(), "dev".into())]),
+        )
+        .unwrap();
+
+        assert_eq!(cmd.get_argv(), &[std::ffi::OsString::from("/bin/sh")]);
+        assert_eq!(
+            cmd.get_cwd(),
+            Some(&crate::platform::normalize_cwd_for_launch(&host_cwd).into_os_string())
+        );
+        assert_eq!(cmd.get_env("TERM"), Some(OsStr::new(PANE_TERM)));
+        assert_eq!(cmd.get_env("PROJECT_MODE"), Some(OsStr::new("dev")));
+    }
+
+    #[test]
+    fn uses_windows_powershell_pane_shell_is_false_inside_container() {
+        let launch = test_container_launch();
+        let pwsh = PaneShellConfig::new("pwsh.exe", crate::config::ShellModeConfig::NonLogin);
+        assert!(uses_windows_powershell_pane_shell_for_target(
+            pwsh,
+            ShellLaunchTarget::Windows
+        ));
+        assert!(!uses_windows_powershell_pane_shell_for_target(
+            pwsh.with_container(Some(&launch)),
+            ShellLaunchTarget::Windows
+        ));
+    }
+
+    #[tokio::test]
+    async fn container_pane_accepts_reported_cwd_without_host_directory() {
+        let container_cwd = std::path::PathBuf::from("/herdr-container-only/work");
+        assert!(
+            !container_cwd.exists(),
+            "test path must be absent on the host"
+        );
+        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let (events, mut event_rx) = mpsc::channel(4);
+
+        publish_reported_cwd(
+            runtime.pane_id,
+            container_cwd.clone(),
+            &runtime.reported_cwd,
+            runtime.in_container,
+            &events,
+        );
+        assert_eq!(*runtime.reported_cwd.lock().unwrap(), None);
+
+        runtime.in_container = true;
+        publish_reported_cwd(
+            runtime.pane_id,
+            container_cwd.clone(),
+            &runtime.reported_cwd,
+            runtime.in_container,
+            &events,
+        );
+
+        assert_eq!(runtime.cwd(), Some(container_cwd.clone()));
+        match event_rx.try_recv() {
+            Ok(AppEvent::TerminalCwdReported { cwd, .. }) => assert_eq!(cwd, container_cwd),
+            other => panic!("expected a container cwd report, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn container_pane_cwd_ignores_host_process_cwd() {
+        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        runtime
+            .child_pid
+            .store(std::process::id(), Ordering::Release);
+        assert!(
+            runtime.cwd().is_some(),
+            "host panes read the docker CLI process cwd"
+        );
+
+        runtime.in_container = true;
+        assert_eq!(runtime.cwd(), None);
+        assert_eq!(runtime.follow_cwd(), None);
+        assert_eq!(runtime.foreground_cwd(), None);
+
+        let container_cwd = std::path::PathBuf::from("/work/app");
+        *runtime.reported_cwd.lock().unwrap() = Some(container_cwd.clone());
+        assert_eq!(runtime.cwd(), Some(container_cwd.clone()));
+        assert_eq!(runtime.follow_cwd(), Some(container_cwd.clone()));
+        assert_eq!(runtime.foreground_cwd(), Some(container_cwd));
+    }
+
+    #[tokio::test]
+    async fn container_pane_persistence_cwd_never_falls_back_to_reported_container_path() {
+        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        runtime.cwd_process_exited.store(true, Ordering::Release);
+        let container_cwd = std::path::PathBuf::from("/work/app");
+        *runtime.reported_cwd.lock().unwrap() = Some(container_cwd.clone());
+        assert_eq!(
+            runtime.cwd_for_persistence(),
+            Some(container_cwd),
+            "host panes keep the reported cwd fallback"
+        );
+
+        runtime.in_container = true;
+        assert_eq!(runtime.cwd_for_persistence(), None);
+
+        let host_cwd = std::env::temp_dir();
+        *runtime.persistence_cwd.lock().unwrap() = Some(host_cwd.clone());
+        assert_eq!(runtime.cwd_for_persistence(), Some(host_cwd));
     }
 
     #[cfg(unix)]
@@ -5427,6 +5787,7 @@ mod tests {
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
+            in_container: false,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
@@ -5467,6 +5828,7 @@ mod tests {
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
+            in_container: false,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),

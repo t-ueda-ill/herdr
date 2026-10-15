@@ -4,9 +4,11 @@ use clap::{ArgMatches, Command};
 
 use crate::api::schema::panes::*;
 use crate::api::schema::{
-    Method, OutputMatch, PaneAgentState, PaneDirection, PaneTarget, PaneWaitForOutputParams,
-    ReadFormat, ReadSource, Request, SplitDirection, READ_FORMATS, READ_SOURCES,
+    ContainerOpenTarget, Method, OutputMatch, PaneAgentState, PaneDirection, PaneTarget,
+    PaneWaitForOutputParams, ReadFormat, ReadSource, Request, SplitDirection, READ_FORMATS,
+    READ_SOURCES,
 };
+use crate::cli::container::bindings::{into_method, with_container};
 pub(crate) use crate::cli::projection::parse_choice;
 use crate::cli::projection::{choices, choices_where, Choice};
 
@@ -616,7 +618,7 @@ pub(super) const LEAVES: &[Leaf] = &[
         about: "Split a pane",
         id: "cli:pane:split",
         output: Output::Json,
-        arguments: PaneSplitProjection::arguments,
+        arguments: || with_container(PaneSplitProjection::arguments()),
         method: |matches| {
             let mut params = PaneSplitProjection::from_matches(matches)?;
             params.target_pane_id = super::caller_target(
@@ -626,7 +628,12 @@ pub(super) const LEAVES: &[Leaf] = &[
                 true,
                 true,
             )?;
-            Ok(Method::PaneSplit(params))
+            into_method(
+                matches,
+                params,
+                Method::PaneSplit,
+                ContainerOpenTarget::Split,
+            )
         },
     },
     Leaf {

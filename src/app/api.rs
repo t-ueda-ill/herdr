@@ -46,6 +46,14 @@ impl App {
                 self.handle_api_worktree_read_finished(*result);
                 changes_workspace
             }
+            AppEvent::ContainerOpenFinished(result) => {
+                self.handle_container_open_finished(*result);
+                true
+            }
+            AppEvent::ContainerListFinished(result) => {
+                self.handle_container_list_finished(*result);
+                false
+            }
             ev @ AppEvent::TerminalBell { .. } => {
                 self.handle_internal_event(ev);
                 false
@@ -194,6 +202,16 @@ impl App {
 
         if let AppEvent::WorktreeReadFinished(result) = ev {
             self.handle_api_worktree_read_finished(*result);
+            return Vec::new();
+        }
+
+        if let AppEvent::ContainerOpenFinished(result) = ev {
+            self.handle_container_open_finished(*result);
+            return Vec::new();
+        }
+
+        if let AppEvent::ContainerListFinished(result) = ev {
+            self.handle_container_list_finished(*result);
             return Vec::new();
         }
 
@@ -569,10 +587,10 @@ impl App {
                 return false;
             }
 
-            crate::pane::uses_windows_powershell_pane_shell(crate::pane::PaneShellConfig::new(
-                &self.state.default_shell,
-                self.state.shell_mode,
-            ))
+            crate::pane::uses_windows_powershell_pane_shell(
+                crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode)
+                    .with_container(terminal.container.as_ref()),
+            )
         }
     }
 
@@ -612,7 +630,7 @@ impl App {
             self.state.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
             self.state.host_terminal_appearance,
-            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
+            self.state.pane_shell_config_for_terminal(&terminal_id),
             &launch_env,
             self.event_tx.clone(),
             self.render_notify.clone(),
@@ -1062,7 +1080,7 @@ impl App {
             Method::WorkspaceList(_) => return self.handle_workspace_list(request.id),
             Method::WorkspaceGet(target) => return self.handle_workspace_get(request.id, target),
             Method::WorkspaceCreate(params) => {
-                return self.handle_workspace_create(request.id, params);
+                return self.handle_workspace_create(request.id, params, None);
             }
             Method::WorkspaceFocus(target) => {
                 return self.handle_workspace_focus(request.id, target);
@@ -1089,6 +1107,13 @@ impl App {
                     "worktree discovery is handled asynchronously by the app runtime",
                 );
             }
+            Method::ContainerOpen(_) | Method::ContainerList(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "container lookups are handled asynchronously by the app runtime",
+                );
+            }
             Method::WorktreeCreate(params) => {
                 let _ = params;
                 return responses::encode_error(
@@ -1107,7 +1132,7 @@ impl App {
             }
             Method::TabList(params) => return self.handle_tab_list(request.id, params),
             Method::TabGet(target) => return self.handle_tab_get(request.id, target),
-            Method::TabCreate(params) => return self.handle_tab_create(request.id, params),
+            Method::TabCreate(params) => return self.handle_tab_create(request.id, params, None),
             Method::TabFocus(target) => return self.handle_tab_focus(request.id, target),
             Method::TabRename(params) => return self.handle_tab_rename(request.id, params),
             Method::TabMove(params) => return self.handle_tab_move(request.id, params),
@@ -1140,7 +1165,7 @@ impl App {
             Method::AgentSendKeys(params) => {
                 return self.handle_agent_send_keys(request.id, params);
             }
-            Method::PaneSplit(params) => return self.handle_pane_split(request.id, params),
+            Method::PaneSplit(params) => return self.handle_pane_split(request.id, params, None),
             Method::PaneSwap(params) => return self.handle_pane_swap(request.id, params),
             Method::PaneMove(params) => return self.handle_pane_move(request.id, params),
             Method::PaneZoom(params) => return self.handle_pane_zoom(request.id, params),

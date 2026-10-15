@@ -31,7 +31,12 @@ use super::super::api_helpers::{METADATA_SOURCE_MAX_CHARS, METADATA_TTL_MAX_MS};
 use super::responses::{encode_error, encode_success};
 
 impl App {
-    pub(super) fn handle_pane_split(&mut self, id: String, params: PaneSplitParams) -> String {
+    /// Resolves the split target and launch cwd without spawning, so
+    /// `container.open` can plan the container workdir first.
+    pub(in crate::app) fn pane_split_location(
+        &self,
+        params: &PaneSplitParams,
+    ) -> Result<(usize, PaneId, std::path::PathBuf), (String, String)> {
         let target = if let Some(target_pane_id) = params.target_pane_id.as_deref() {
             self.parse_pane_id(target_pane_id)
         } else if let Some(workspace_id) = params.workspace_id.as_deref() {
@@ -46,7 +51,28 @@ impl App {
             })
         };
         let Some((ws_idx, target_pane_id)) = target else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return Err(("pane_not_found".to_string(), "pane not found".to_string()));
+        };
+        let cwd = params
+            .cwd
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
+                self.resolve_new_terminal_cwd(follow_cwd)
+            });
+        Ok((ws_idx, target_pane_id, cwd))
+    }
+
+    pub(in crate::app) fn handle_pane_split(
+        &mut self,
+        id: String,
+        params: PaneSplitParams,
+        container: Option<&crate::container::ContainerLaunch>,
+    ) -> String {
+        let (ws_idx, target_pane_id, split_cwd) = match self.pane_split_location(&params) {
+            Ok(location) => location,
+            Err((code, message)) => return encode_error(id, &code, message),
         };
         let extra_env = match super::env::normalize_launch_env(params.env) {
             Ok(env) => env,
@@ -64,10 +90,6 @@ impl App {
                 direction,
                 ratio: params.ratio.unwrap_or(0.5),
             });
-        let split_cwd = params.cwd.map(std::path::PathBuf::from).or_else(|| {
-            let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
-            Some(self.resolve_new_terminal_cwd(follow_cwd))
-        });
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
@@ -76,7 +98,9 @@ impl App {
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let shell_config = crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode);
+        let shell_config = crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode)
+            .with_container(container);
+        let split_cwd = Some(split_cwd);
         let split_result = match params.ratio {
             Some(ratio) => ws.split_pane_with_ratio(
                 target_pane_id,
@@ -2344,6 +2368,52 @@ mod tests {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
         (app, public_pane_id)
+    }
+
+    #[test]
+    fn api_pane_get_reports_container_canonical_reference() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("terminal id");
+
+        let host = app.handle_pane_get(
+            "req".into(),
+            PaneTarget {
+                pane_id: public_pane_id.clone(),
+            },
+        );
+        assert!(!host.contains("\"container\""), "{host}");
+
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("terminal")
+            .container = Some(crate::container::ContainerLaunch {
+            reference: crate::container::ContainerRef::Compose {
+                project: "shop".into(),
+                service: "db".into(),
+            },
+            canonical: "shop/db".into(),
+            id: "cid".into(),
+            workdir: None,
+            user: None,
+            shell: crate::container::ContainerShell::BashOrSh,
+        });
+        let response = app.handle_pane_get(
+            "req".into(),
+            PaneTarget {
+                pane_id: public_pane_id,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane } = success.result else {
+            panic!("expected pane info response");
+        };
+        assert_eq!(pane.container.as_deref(), Some("shop/db"));
     }
 
     #[test]

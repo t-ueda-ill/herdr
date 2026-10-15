@@ -152,7 +152,7 @@ herdr session delete <name> [--json]
 
 ```bash
 herdr workspace list
-herdr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr workspace create [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
@@ -187,7 +187,7 @@ Git 默认拒绝由其他用户拥有的仓库。如果你已独立验证该仓�
 
 ```bash
 herdr tab list [--workspace <workspace_id>]
-herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr tab create [--workspace <workspace_id>] [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
@@ -214,7 +214,7 @@ herdr pane focus --direction left|right|up|down [--pane ID|--current]
 herdr pane resize --direction left|right|up|down [--amount FLOAT] [--pane ID|--current]
 herdr pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]
 herdr pane rename <pane_id> <label>|--clear
-herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--cwd PATH] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr pane swap --direction left|right|up|down [--pane ID|--current]
 herdr pane swap --source-pane ID --target-pane ID
 herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]
@@ -311,6 +311,33 @@ herdr pane report-metadata <pane_id> \
 `--token` 设置一个命名展示值,`--clear-token` 删除一个值。未提及的令牌保持不变。窗格令牌可在智能体侧边栏行中写成 `$name`;工作区令牌可用于空间行。TTL 分别应用于该次调用更新的每个令牌键。
 
 `--source` 和 `--applies-to-source` 必须不超过 80 个字符,并且只能包含 ASCII 字母、数字、冒号、点、下划线和连字符。`--ttl-ms` 让元数据自动过期,取值必须在 `1` 到 `86400000` 毫秒之间。想让元数据一直保留到被替换、清除或窗格或工作区关闭时,省略它。`--seq` 让 Herdr 忽略来自同一 `--source` 的过期上报;过期上报会被 API 接受,但被窗格状态忽略。每个窗格或工作区在其生命周期内最多接受来自 32 个不同来源的带序号令牌上报,清除或过期不会释放这些来源名额。
+
+## 容器
+
+```bash
+herdr workspace create --container REF [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr tab create --container REF [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr pane split --container REF [<pane_id>|--pane ID|--current] --direction right|down [--env KEY=VALUE]
+herdr container list [--workspace ID] [--json]
+```
+
+`--container REF` 会在正在运行的 Docker 容器内(而不是主机上)打开新的 shell。`REF` 可以是 Compose 的 `project/service`,也可以是容器名称或 ID。Herdr 按以下规则执行 `docker exec -it`:
+
+- **Shell:** 使用 `herdr.shell` 标签;没有则优先 `bash`(容器内存在时),否则 `sh`。
+- **工作目录:** 依次为 `herdr.workdir` 标签、通过 bind mount 反推的主机 cwd、容器的 `WorkingDir`。
+- **用户:** 设置了 `herdr.user` 标签时使用它。
+- **环境变量:** 只转发 `TERM` 系列、`HERDR_*` 以及 `--env KEY=VALUE` 指定的变量。
+
+`container list` 以表格显示正在运行的容器,加 `--json` 则输出原始响应。Compose 的 `working_dir` 或 `config_files` 与工作区仓库根目录一致的容器会带上该 `workspace_id`;`--workspace ID` 只显示这些容器。带 `herdr.default` 标签的容器排在最前。
+
+```bash
+herdr container list
+herdr tab create --container myapp/web --label web
+```
+
+容器不存在或已停止时返回 `container_not_found`。Docker CLI 缺失、守护进程失败或调用超过 5 秒时返回 `container_unavailable`。Windows 主机返回 `platform_unsupported`。
+
+会话恢复会保留容器信息,但以普通主机 shell 启动;重新附加尚未实现。`agent start --container` 暂不支持。
 
 ## 智能体
 

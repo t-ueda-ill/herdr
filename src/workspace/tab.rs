@@ -13,6 +13,22 @@ use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, Term
 
 pub(crate) type DetachedPane = (PaneId, TerminalId);
 
+fn spawned_terminal_state(
+    terminal_id: TerminalId,
+    cwd: PathBuf,
+    launch_argv: Option<Vec<String>>,
+    shell_config: crate::pane::PaneShellConfig<'_>,
+) -> TerminalState {
+    let mut terminal = TerminalState::new(terminal_id, cwd);
+    if let Some(argv) = launch_argv {
+        terminal = terminal.with_launch_argv(argv);
+    }
+    if let Some(launch) = shell_config.container {
+        terminal = terminal.with_container(launch.clone());
+    }
+    terminal
+}
+
 pub(crate) struct MovedPane {
     pub pane_id: PaneId,
     pub pane_state: PaneState,
@@ -169,12 +185,12 @@ impl Tab {
         };
 
         let terminal_id = TerminalId::alloc();
-        let terminal = match argv {
-            Some(argv) => {
-                TerminalState::new(terminal_id.clone(), initial_cwd).with_launch_argv(argv.to_vec())
-            }
-            None => TerminalState::new(terminal_id.clone(), initial_cwd),
-        };
+        let terminal = spawned_terminal_state(
+            terminal_id.clone(),
+            initial_cwd,
+            argv.map(<[String]>::to_vec),
+            shell_config,
+        );
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new(terminal_id));
 
@@ -399,12 +415,8 @@ impl Tab {
             }
         };
         let terminal_id = TerminalId::alloc();
-        let terminal = match launch_argv {
-            Some(argv) => {
-                TerminalState::new(terminal_id.clone(), actual_cwd).with_launch_argv(argv)
-            }
-            None => TerminalState::new(terminal_id.clone(), actual_cwd),
-        };
+        let terminal =
+            spawned_terminal_state(terminal_id.clone(), actual_cwd, launch_argv, shell_config);
         if focus_new_pane {
             self.layout.focus_pane(new_id);
         }
@@ -546,6 +558,24 @@ impl Tab {
             })
     }
 
+    /// Why not reuse `cwd_for_pane`: it reports the shell's own location, which
+    /// for container panes is a path inside the container. Host launches need
+    /// the host directory the pane was started from instead.
+    pub fn host_cwd_for_pane(
+        &self,
+        pane_id: PaneId,
+        terminals: &HashMap<TerminalId, TerminalState>,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+    ) -> Option<PathBuf> {
+        let terminal_id = self.terminal_id(pane_id)?;
+        let terminal = terminals.get(terminal_id);
+        crate::terminal::inherited_cwd(
+            terminal.is_some_and(|terminal| terminal.container.is_some()),
+            terminal_runtimes.get(terminal_id).and_then(|rt| rt.cwd()),
+            terminal.map(|terminal| terminal.cwd.clone()),
+        )
+    }
+
     pub fn foreground_cwd_for_pane(
         &self,
         pane_id: PaneId,
@@ -555,5 +585,74 @@ impl Tab {
         terminal_runtimes
             .get(terminal_id)
             .and_then(|rt| rt.foreground_cwd())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn launch() -> crate::container::ContainerLaunch {
+        crate::container::ContainerLaunch {
+            reference: crate::container::ContainerRef::Compose {
+                project: "shop".into(),
+                service: "db".into(),
+            },
+            canonical: "shop/db".into(),
+            id: "cid".into(),
+            workdir: Some("/work".into()),
+            user: None,
+            shell: crate::container::ContainerShell::BashOrSh,
+        }
+    }
+
+    #[test]
+    fn spawned_terminal_state_keeps_shell_config_container_launch() {
+        let launch = launch();
+        let shell_config =
+            crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin);
+
+        let terminal = spawned_terminal_state(
+            TerminalId::alloc(),
+            PathBuf::from("/host"),
+            None,
+            shell_config.with_container(Some(&launch)),
+        );
+
+        assert_eq!(terminal.container, Some(launch));
+        assert_eq!(terminal.cwd, PathBuf::from("/host"));
+        assert_eq!(terminal.launch_argv, None);
+    }
+
+    #[test]
+    fn host_cwd_for_pane_uses_launch_cwd_for_container_terminals() {
+        let workspace = crate::workspace::Workspace::test_new("host-cwd");
+        let tab = &workspace.tabs[0];
+        let terminal_id = tab.terminal_id(tab.root_pane).cloned().unwrap();
+        let mut terminals = HashMap::new();
+        terminals.insert(
+            terminal_id.clone(),
+            TerminalState::new(terminal_id, PathBuf::from("/host")).with_container(launch()),
+        );
+        let runtimes = TerminalRuntimeRegistry::new();
+
+        assert_eq!(
+            tab.host_cwd_for_pane(tab.root_pane, &terminals, &runtimes),
+            Some(PathBuf::from("/host"))
+        );
+    }
+
+    #[test]
+    fn spawned_terminal_state_without_container_keeps_launch_argv_only() {
+        let argv = vec!["claude".to_string()];
+        let terminal = spawned_terminal_state(
+            TerminalId::alloc(),
+            PathBuf::from("/host"),
+            Some(argv.clone()),
+            crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
+        );
+
+        assert_eq!(terminal.container, None);
+        assert_eq!(terminal.launch_argv, Some(argv));
     }
 }

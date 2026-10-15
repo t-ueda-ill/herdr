@@ -73,6 +73,33 @@ pub(crate) struct WorktreeReadData {
     pub entries: Vec<crate::worktree::ExistingWorktree>,
 }
 
+/// Container lookup for a `container.open` request, resolved off the app thread.
+#[derive(Debug)]
+pub struct ContainerOpenResult {
+    pub(crate) id: String,
+    /// Target params with the host cwd and target ids pinned at request time.
+    pub(crate) params: crate::api::schema::ContainerOpenParams,
+    pub(crate) client_local: bool,
+    pub(crate) result: Result<crate::container::ContainerLaunch, (String, String)>,
+    pub(crate) respond_to: std::sync::mpsc::Sender<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceRepoRoot {
+    pub(crate) workspace_id: String,
+    pub(crate) repo_root: Option<std::path::PathBuf>,
+}
+
+/// Running containers for a `container.list` request, listed off the app thread.
+#[derive(Debug)]
+pub struct ContainerListResult {
+    pub(crate) id: String,
+    pub(crate) filter_workspace_id: Option<String>,
+    pub(crate) workspaces: Vec<WorkspaceRepoRoot>,
+    pub(crate) result: Result<Vec<crate::container::ContainerInfo>, (String, String)>,
+    pub(crate) respond_to: std::sync::mpsc::Sender<String>,
+}
+
 /// An event from a background task to the main loop.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -217,4 +244,8 @@ pub enum AppEvent {
     WorktreeRemoveFinished(Box<WorktreeRemoveResult>),
     /// Background worktree discovery completed for an API list/open request.
     WorktreeReadFinished(Box<WorktreeReadResult>),
+    /// Background container lookup completed for an API `container.open` request.
+    ContainerOpenFinished(Box<ContainerOpenResult>),
+    /// Background container listing completed for an API `container.list` request.
+    ContainerListFinished(Box<ContainerListResult>),
 }

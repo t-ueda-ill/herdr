@@ -3,8 +3,9 @@ use clap::Command;
 use crate::api::schema::tabs::{
     tab_id, TabCreateProjection, TabListProjection, TabRenameProjection,
 };
-use crate::api::schema::{Method, Request, TabTarget};
+use crate::api::schema::{ContainerOpenTarget, Method, Request, TabTarget};
 
+use super::super::container::bindings::{into_method, with_container};
 use super::super::projection::{self, cli_projection, Field, Leaf, ParseError};
 
 cli_projection! {
@@ -25,8 +26,15 @@ const LEAVES: [Leaf; 6] = [
         name: "create",
         about: "Create a tab",
         id: "cli:tab:create",
-        arguments: TabCreateProjection::arguments,
-        method: |matches| TabCreateProjection::from_matches(matches).map(Method::TabCreate),
+        arguments: || with_container(TabCreateProjection::arguments()),
+        method: |matches| {
+            into_method(
+                matches,
+                TabCreateProjection::from_matches(matches)?,
+                Method::TabCreate,
+                ContainerOpenTarget::Tab,
+            )
+        },
     },
     Leaf {
         name: "get",
@@ -135,6 +143,61 @@ mod tests {
         }
         assert!(
             matches!(parse(&["create", "--env", "=value"]), Err(ParseError::Usage(message)) if message == "env key must not be empty")
+        );
+    }
+
+    #[test]
+    fn tab_create_with_container_nests_the_create_params_in_container_open() {
+        assert_eq!(
+            serde_json::to_value(
+                parse(&[
+                    "create",
+                    "--workspace",
+                    "w1",
+                    "--container",
+                    "worker",
+                    "--cwd",
+                    "/repo",
+                ])
+                .unwrap()
+            )
+            .unwrap(),
+            serde_json::json!({
+                "id": "cli:tab:create", "method": "container.open",
+                "params": {
+                    "container": "worker",
+                    "target": {"tab": {"workspace_id": "w1", "cwd": "/repo", "focus": false}}
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn tab_create_accepts_container_equals_form() {
+        assert_eq!(
+            serde_json::to_value(parse(&["create", "--container=worker"]).unwrap()).unwrap(),
+            serde_json::json!({
+                "id": "cli:tab:create", "method": "container.open",
+                "params": {"container": "worker", "target": {"tab": {"focus": false}}}
+            })
+        );
+    }
+
+    #[test]
+    fn tab_create_without_container_stays_a_plain_create() {
+        assert_eq!(
+            serde_json::to_value(parse(&["create", "--workspace", "w1"]).unwrap()).unwrap(),
+            serde_json::json!({
+                "id": "cli:tab:create", "method": "tab.create",
+                "params": {"workspace_id": "w1", "focus": false}
+            })
+        );
+    }
+
+    #[test]
+    fn tab_create_rejects_container_without_value() {
+        assert!(
+            matches!(parse(&["create", "--container"]), Err(ParseError::Clap(error)) if error.exit_code() == 2)
         );
     }
 

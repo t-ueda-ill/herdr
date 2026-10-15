@@ -39,6 +39,7 @@ pub(super) fn command() -> Command {
         .subcommand(api_command())
         .subcommand(workspace_command())
         .subcommand(worktree_command())
+        .subcommand(container_command())
         .subcommand(tab_command())
         .subcommand(notification_command())
         .subcommand(agent_command())
@@ -202,6 +203,10 @@ fn workspace_command() -> Command {
 
 fn worktree_command() -> Command {
     super::worktree::command()
+}
+
+fn container_command() -> Command {
+    super::container::command()
 }
 
 fn tab_command() -> Command {
@@ -638,6 +643,36 @@ mod tests {
         let cmd = super::command();
         let pane_read = command_path(&cmd, &["pane", "read"]);
         assert!(has_option(pane_read, "raw"));
+    }
+
+    #[test]
+    fn spec_offers_container_option_on_shell_creating_commands() {
+        let cmd = super::command();
+        for path in [
+            &["workspace", "create"][..],
+            &["tab", "create"],
+            &["pane", "split"],
+        ] {
+            let command = command_path(&cmd, path);
+            assert!(
+                has_option(command, "container"),
+                "herdr {} should accept --container",
+                path.join(" ")
+            );
+            assert!(
+                option_arg(command, "container").get_help().is_some(),
+                "herdr {} --container needs help text",
+                path.join(" ")
+            );
+        }
+    }
+
+    #[test]
+    fn spec_includes_container_list_with_workspace_filter_and_json() {
+        let cmd = super::command();
+        let list = command_path(&cmd, &["container", "list"]);
+        assert!(has_option(list, "workspace"));
+        assert!(has_option(list, "json"));
     }
 
     #[test]

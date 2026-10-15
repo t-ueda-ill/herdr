@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::agents::AgentInfo;
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
+use super::containers::ContainerInfoDto;
 use super::events::EventEnvelope;
 use super::integrations::{
     IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult,
@@ -83,6 +84,9 @@ pub enum ResponseResult {
         workspace_id: String,
         path: String,
         forced: bool,
+    },
+    ContainerList {
+        containers: Vec<ContainerInfoDto>,
     },
     TabInfo {
         tab: TabInfo,

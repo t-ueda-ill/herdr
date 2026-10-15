@@ -58,7 +58,18 @@
           },
           "panes": {
             "7": {
-              "cwd": "/home/test/projects/project-a"
+              "cwd": "/home/test/projects/project-a",
+              "container": {
+                "reference": {
+                  "compose": {
+                    "project": "project-a",
+                    "service": "app"
+                  }
+                },
+                "id": "3f1c9a0e5b7d2c4f6a8e0b1d3c5e7f9a1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a",
+                "workdir": "/work",
+                "shell": "bash_or_sh"
+              }
             },
             "6": {
               "cwd": "/home/test/projects/project-c"

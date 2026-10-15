@@ -20,6 +20,7 @@ mod checksum;
 mod cli;
 mod client;
 mod config;
+mod container;
 mod copy_mode;
 mod detect;
 mod events;
