@@ -20,9 +20,11 @@ mod creation;
 mod custom_commands;
 mod git_refresh;
 mod ids;
+mod open_targets;
 mod popup;
 mod runtime;
 mod session;
+mod ssh_hosts;
 pub mod state;
 mod tab_bar_status;
 mod terminal_targets;
@@ -2326,8 +2328,31 @@ mod tests {
 
         assert!(!crate::api::request_changes_ui(&read_only));
         assert!(!crate::api::request_changes_ui(&worktree_list));
+        let ssh_hosts = crate::api::schema::Request {
+            id: "req_15".into(),
+            method: crate::api::schema::Method::SshHosts(
+                crate::api::schema::SshHostsParams::default(),
+            ),
+        };
+        let ssh_open = crate::api::schema::Request {
+            id: "req_16".into(),
+            method: crate::api::schema::Method::SshOpen(crate::api::schema::SshOpenParams {
+                host: "prod".into(),
+                target: crate::api::schema::SshOpenTarget::Workspace(
+                    crate::api::schema::WorkspaceCreateParams {
+                        source_workspace_id: None,
+                        cwd: None,
+                        focus: true,
+                        label: Some("prod".into()),
+                        env: Default::default(),
+                    },
+                ),
+            }),
+        };
         assert!(!crate::api::request_changes_ui(&container_list));
         assert!(crate::api::request_changes_ui(&container_open));
+        assert!(!crate::api::request_changes_ui(&ssh_hosts));
+        assert!(crate::api::request_changes_ui(&ssh_open));
         assert!(crate::api::request_changes_ui(&mutating));
         assert!(crate::api::request_changes_ui(&pane_rename));
         assert!(crate::api::request_changes_ui(&worktree_create));

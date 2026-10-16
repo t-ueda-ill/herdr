@@ -1669,6 +1669,11 @@ impl AppState {
             AppEvent::WorktreeReadFinished(_) => Vec::new(),
             AppEvent::ContainerOpenFinished(_) => Vec::new(),
             AppEvent::ContainerListFinished(_) => Vec::new(),
+            // Client-owned result; the headless server pastes it before the
+            // app ever sees it.
+            AppEvent::ClipboardImageStaged(_) => Vec::new(),
+            AppEvent::SshOpenFinished(_) => Vec::new(),
+            AppEvent::SshHostsFinished(_) => Vec::new(),
             AppEvent::TabBarCommandFinished { .. } => Vec::new(),
             AppEvent::PluginCommandFinished { .. } => Vec::new(),
         }

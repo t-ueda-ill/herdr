@@ -594,6 +594,14 @@ impl TerminalRuntime {
         self.0.child_pid()
     }
 
+    pub fn in_container(&self) -> bool {
+        self.0.in_container()
+    }
+
+    pub fn in_ssh(&self) -> bool {
+        self.0.in_ssh()
+    }
+
     pub(crate) fn current_size(&self) -> (u16, u16) {
         self.0.current_size()
     }
@@ -605,6 +613,14 @@ impl TerminalRuntime {
 
 #[cfg(test)]
 impl TerminalRuntime {
+    pub(crate) fn test_set_in_container(&mut self, in_container: bool) {
+        self.0.test_set_in_container(in_container);
+    }
+
+    pub(crate) fn test_set_in_ssh(&mut self, in_ssh: bool) {
+        self.0.test_set_in_ssh(in_ssh);
+    }
+
     #[cfg(unix)]
     pub(crate) fn test_start_basic_detection(&mut self) -> mpsc::Receiver<crate::events::AppEvent> {
         self.0.test_start_basic_detection()

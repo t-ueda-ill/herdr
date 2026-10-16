@@ -1,21 +1,12 @@
-use std::io::{self, Read};
 use std::path::Path;
-use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use super::labels::parse_inspect_output;
 use super::{ContainerInfo, ContainerListError, ContainerRef};
+use crate::noninteractive_process::{run_with_deadline, ProcessOutput, RunError};
 
 /// Total budget for one resolution (`ps` followed by `inspect`).
 pub(crate) const DOCKER_CLI_TIMEOUT: Duration = Duration::from_secs(5);
-const POLL_INTERVAL: Duration = Duration::from_millis(25);
-
-#[derive(Debug)]
-struct DockerOutput {
-    status: Option<i32>,
-    stdout: String,
-    stderr: String,
-}
 
 pub(crate) fn list_running_containers() -> Result<Vec<ContainerInfo>, ContainerListError> {
     list_running_containers_with("docker", DOCKER_CLI_TIMEOUT)
@@ -58,7 +49,7 @@ fn inspect_reference_with(
         }
         ContainerRef::Name(name) => {
             let args = ["inspect", "--type", "container", name.as_str()];
-            let output = run_docker_with(program, &args, deadline)?;
+            let output = run_docker_with(program, &args, None, deadline)?;
             if output.status != Some(0) {
                 if output.stderr.contains("No such") {
                     return Ok(None);
@@ -80,7 +71,7 @@ fn running_ids(
         args.push("--filter");
         args.push(filter);
     }
-    let output = run_docker_with(program, &args, deadline)?;
+    let output = run_docker_with(program, &args, None, deadline)?;
     if output.status != Some(0) {
         return Err(failed(output));
     }
@@ -103,130 +94,57 @@ fn inspect_ids(
     }
     let mut args = vec!["inspect", "--type", "container"];
     args.extend(ids.iter().map(String::as_str));
-    let output = run_docker_with(program, &args, deadline)?;
+    let output = run_docker_with(program, &args, None, deadline)?;
     if output.status != Some(0) {
         return Err(failed(output));
     }
     parse_inspect_output(&output.stdout)
 }
 
-fn failed(output: DockerOutput) -> ContainerListError {
+fn failed(output: ProcessOutput) -> ContainerListError {
     ContainerListError::Failed {
         status: output.status,
         stderr: output.stderr.trim().to_owned(),
     }
 }
 
-fn run_docker_with(
+/// Runs one docker CLI call. `stdin` is streamed from its own thread so a
+/// child that never reads it cannot block past `deadline`.
+pub(super) fn run_docker_with(
     program: &Path,
     args: &[&str],
+    stdin: Option<Vec<u8>>,
     deadline: Instant,
-) -> Result<DockerOutput, ContainerListError> {
-    let mut child = crate::noninteractive_process::command(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| match err.kind() {
-            io::ErrorKind::NotFound => ContainerListError::DockerNotFound,
-            _ => ContainerListError::Failed {
-                status: None,
-                stderr: err.to_string(),
-            },
-        })?;
-
-    let stdout = drain(child.stdout.take(), "herdr-docker-stdout");
-    let stderr = drain(child.stderr.take(), "herdr-docker-stderr");
-
-    let status = match wait_until(&mut child, deadline) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
+) -> Result<ProcessOutput, ContainerListError> {
+    run_with_deadline(program, args, stdin, deadline).map_err(|err| match err {
+        RunError::NotFound => ContainerListError::DockerNotFound,
+        RunError::Timeout => {
             tracing::warn!(?program, "docker timed out");
-            return Err(ContainerListError::Timeout);
+            ContainerListError::Timeout
         }
-        Err(err) => {
-            return Err(ContainerListError::Failed {
-                status: None,
-                stderr: err.to_string(),
-            })
-        }
-    };
-    Ok(DockerOutput {
-        status: status.code(),
-        stdout: join_output(stdout),
-        stderr: join_output(stderr),
+        RunError::Failed { status, detail } => ContainerListError::Failed {
+            status,
+            stderr: detail,
+        },
     })
-}
-
-/// Polls instead of blocking in `wait` because std has no `wait_timeout`, and a
-/// tokio runtime is unavailable on the synchronous callers.
-fn wait_until(
-    child: &mut Child,
-    deadline: Instant,
-) -> io::Result<Option<std::process::ExitStatus>> {
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(None);
-        }
-        std::thread::sleep(POLL_INTERVAL.min(deadline - now));
-    }
-}
-
-type Reader = Option<std::thread::JoinHandle<Vec<u8>>>;
-
-fn drain<R: Read + Send + 'static>(stream: Option<R>, name: &str) -> Reader {
-    let mut stream = stream?;
-    crate::thread_spawn::spawn_named(name, move || {
-        let mut buf = Vec::new();
-        let _ = stream.read_to_end(&mut buf);
-        buf
-    })
-    .ok()
-}
-
-fn join_output(reader: Reader) -> String {
-    reader
-        .and_then(|handle| handle.join().ok())
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .unwrap_or_default()
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(super) mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use crate::noninteractive_process::fake_program::FakeProgram;
     use std::path::PathBuf;
 
-    struct Shim {
-        dir: PathBuf,
-    }
+    /// A fake `docker` executable shared with sibling container tests.
+    pub(in crate::container) struct Shim(FakeProgram);
 
     impl Shim {
-        fn new(name: &str, script: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("herdr-docker-shim-{}-{name}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let path = dir.join("docker");
-            std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            Self { dir }
+        pub(in crate::container) fn new(name: &str, script: &str) -> Self {
+            Self(FakeProgram::new("docker", name, script))
         }
 
-        fn program(&self) -> PathBuf {
-            self.dir.join("docker")
-        }
-    }
-
-    impl Drop for Shim {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
+        pub(in crate::container) fn program(&self) -> PathBuf {
+            self.0.program()
         }
     }
 
@@ -252,7 +170,8 @@ mod tests {
     #[test]
     fn run_docker_returns_stdout_on_success() {
         let shim = Shim::new("stdout", "echo hello; echo oops >&2");
-        let out = run_docker_with(&shim.program(), &["ps"], Instant::now() + secs(5)).unwrap();
+        let out =
+            run_docker_with(&shim.program(), &["ps"], None, Instant::now() + secs(5)).unwrap();
         assert_eq!(out.status, Some(0));
         assert_eq!(out.stdout, "hello\n");
         assert_eq!(out.stderr, "oops\n");
@@ -265,6 +184,7 @@ mod tests {
         let err = run_docker_with(
             &shim.program(),
             &["ps"],
+            None,
             Instant::now() + Duration::from_millis(200),
         )
         .unwrap_err();
@@ -278,9 +198,59 @@ mod tests {
             "bigerr",
             "head -c 131072 /dev/zero | tr '\\0' x >&2; echo done",
         );
-        let out = run_docker_with(&shim.program(), &["ps"], Instant::now() + secs(5)).unwrap();
+        let out =
+            run_docker_with(&shim.program(), &["ps"], None, Instant::now() + secs(5)).unwrap();
         assert_eq!(out.stdout, "done\n");
         assert_eq!(out.stderr.len(), 131072);
+    }
+
+    #[test]
+    fn run_docker_streams_input_to_stdin_and_closes_it() {
+        let shim = Shim::new("stdin", "cat");
+        let input = b"image\nbytes without a trailing newline".to_vec();
+        let out = run_docker_with(
+            &shim.program(),
+            &["exec"],
+            Some(input.clone()),
+            Instant::now() + secs(5),
+        )
+        .unwrap();
+        assert_eq!(out.status, Some(0));
+        assert_eq!(out.stdout.as_bytes(), input.as_slice());
+    }
+
+    #[test]
+    fn run_docker_times_out_when_child_never_reads_large_input() {
+        let shim = Shim::new("stdin-hang", "exec sleep 30");
+        let start = Instant::now();
+        let err = run_docker_with(
+            &shim.program(),
+            &["exec"],
+            Some(vec![0; 1 << 20]),
+            Instant::now() + Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContainerListError::Timeout));
+        assert!(start.elapsed() < secs(5));
+    }
+
+    #[test]
+    fn run_docker_rejects_success_when_child_skipped_part_of_the_input() {
+        let shim = Shim::new("stdin-skip", "exit 0");
+        let err = run_docker_with(
+            &shim.program(),
+            &["exec"],
+            Some(vec![0; 1 << 20]),
+            Instant::now() + secs(5),
+        )
+        .unwrap_err();
+        match err {
+            ContainerListError::Failed { status, stderr } => {
+                assert_eq!(status, Some(0));
+                assert!(stderr.contains("did not read all input"), "{stderr}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

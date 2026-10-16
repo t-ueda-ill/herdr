@@ -37,7 +37,7 @@ pub(super) fn launch_cwd_for_terminal(
 ) -> Option<PathBuf> {
     let terminal = terminals.get(terminal_id);
     crate::terminal::inherited_cwd(
-        terminal.is_some_and(|terminal| terminal.container.is_some()),
+        terminal.is_some_and(crate::terminal::TerminalState::shell_runs_off_host),
         terminal_runtimes
             .get(terminal_id)
             .and_then(|runtime| runtime.follow_cwd()),
@@ -120,7 +120,12 @@ impl App {
         initial_cwd: PathBuf,
         focus: bool,
     ) -> std::io::Result<usize> {
-        self.create_workspace_with_launch_env(initial_cwd, focus, Vec::new(), None)
+        self.create_workspace_with_launch_env(
+            initial_cwd,
+            focus,
+            Vec::new(),
+            crate::pane::PaneLaunchTarget::Host,
+        )
     }
 
     pub(crate) fn create_workspace_with_launch_env(
@@ -128,7 +133,7 @@ impl App {
         initial_cwd: PathBuf,
         focus: bool,
         extra_env: Vec<(String, String)>,
-        container: Option<&crate::container::ContainerLaunch>,
+        launch: crate::pane::PaneLaunchTarget<'_>,
     ) -> std::io::Result<usize> {
         let (rows, cols) = self.state.new_pane_size(crate::ui::NewPanePlacement::Alone);
         let (ws, terminal, runtime) = Workspace::new_with_extra_env(
@@ -139,7 +144,7 @@ impl App {
             self.state.host_terminal_theme,
             self.state.host_terminal_appearance,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode)
-                .with_container(container),
+                .with_launch_target(launch),
             self.event_tx.clone(),
             self.render_notify.clone(),
             self.render_dirty.clone(),
@@ -357,6 +362,7 @@ impl App {
                 .container
                 .as_ref()
                 .map(|launch| launch.canonical.clone()),
+            ssh_host: terminal.ssh.as_ref().map(|launch| launch.canonical.clone()),
             agent: terminal.effective_agent_label().map(str::to_string),
             title: presentation.title,
             terminal_title: terminal.terminal_title.clone(),

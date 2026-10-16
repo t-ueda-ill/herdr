@@ -333,6 +333,94 @@ mod tests {
         );
     }
 
+    fn snapshot_with_pane(container: Option<&str>) -> ClientShellSnapshot {
+        snapshot_with_off_host_pane(container, None)
+    }
+
+    fn snapshot_with_off_host_pane(
+        container: Option<&str>,
+        ssh_host: Option<&str>,
+    ) -> ClientShellSnapshot {
+        let mut snapshot = snapshot();
+        snapshot.panes.push(crate::protocol::ClientShellPane {
+            pane_id: "w1:p1".into(),
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            label: None,
+            cwd: None,
+            foreground_cwd: None,
+            focused: true,
+            right_click_passthrough: false,
+            container: container.map(str::to_owned),
+            ssh_host: ssh_host.map(str::to_owned),
+        });
+        snapshot
+    }
+
+    #[test]
+    fn snapshot_pane_container_round_trips_as_optional_json() {
+        for container in [Some("shop/db"), None] {
+            let snapshot = snapshot_with_pane(container);
+            let ServerMessage::EndpointControl { data, .. } = snapshot_message(&snapshot).unwrap()
+            else {
+                panic!("snapshot should use endpoint control");
+            };
+            let value = serde_json::from_str::<serde_json::Value>(&data).unwrap();
+            assert_eq!(
+                value["panes"][0]["container"],
+                container.map_or(serde_json::Value::Null, serde_json::Value::from)
+            );
+            assert_eq!(
+                serde_json::from_str::<ClientShellSnapshot>(&data).unwrap(),
+                snapshot
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_pane_without_container_field_decodes_as_host_pane() {
+        let mut value = serde_json::to_value(snapshot_with_pane(Some("shop/db"))).unwrap();
+        value["panes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("container");
+        let decoded: ClientShellSnapshot = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.panes[0].container, None);
+    }
+
+    #[test]
+    fn snapshot_pane_ssh_host_round_trips_as_optional_json() {
+        for ssh_host in [Some("prod"), None] {
+            let snapshot = snapshot_with_off_host_pane(None, ssh_host);
+            let ServerMessage::EndpointControl { data, .. } = snapshot_message(&snapshot).unwrap()
+            else {
+                panic!("snapshot should use endpoint control");
+            };
+            let value = serde_json::from_str::<serde_json::Value>(&data).unwrap();
+            assert_eq!(
+                value["panes"][0]["ssh_host"],
+                ssh_host.map_or(serde_json::Value::Null, serde_json::Value::from)
+            );
+            assert_eq!(
+                serde_json::from_str::<ClientShellSnapshot>(&data).unwrap(),
+                snapshot
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_pane_without_ssh_host_field_decodes_as_host_pane() {
+        let mut value =
+            serde_json::to_value(snapshot_with_off_host_pane(None, Some("prod"))).unwrap();
+        value["panes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("ssh_host");
+        let decoded: ClientShellSnapshot = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.panes[0].ssh_host, None);
+        assert_eq!(decoded.panes[0].container, None);
+    }
+
     #[test]
     fn snapshot_json_tolerates_future_fields_and_command_actions() {
         let mut snapshot = match snapshot_message(&snapshot()).unwrap() {

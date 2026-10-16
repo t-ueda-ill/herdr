@@ -14,6 +14,53 @@ pub(super) fn snapshot(
     snapshot_with_completions(app, boot_id, revision, config_diagnostic, location).0
 }
 
+/// Where a terminal's shell runs right now when that is not the server host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RunningOffHostShell<'a> {
+    Container(&'a crate::container::ContainerLaunch),
+    Ssh(&'a crate::ssh_host::SshLaunch),
+}
+
+/// Why not read `TerminalState.container` or `.ssh` alone: a cold restore
+/// keeps them while the pane runs a plain host shell.
+pub(super) fn running_off_host_shell<'a>(
+    app: &'a app::App,
+    runtime: &crate::terminal::TerminalRuntime,
+    terminal_id: &crate::terminal::TerminalId,
+) -> Option<RunningOffHostShell<'a>> {
+    let terminal = app.state.terminals.get(terminal_id)?;
+    // Container panes are rejected on Windows hosts, so stored launch
+    // metadata there can never describe a running container shell.
+    if !cfg!(windows) && runtime.in_container() {
+        return terminal
+            .container
+            .as_ref()
+            .map(RunningOffHostShell::Container);
+    }
+    if runtime.in_ssh() {
+        return terminal.ssh.as_ref().map(RunningOffHostShell::Ssh);
+    }
+    None
+}
+
+pub(super) fn running_pane_off_host_shell(
+    app: &app::App,
+    workspace_index: usize,
+    pane_id: crate::layout::PaneId,
+) -> Option<RunningOffHostShell<'_>> {
+    let runtime = app.state.runtime_for_pane_in_workspace(
+        &app.terminal_runtimes,
+        workspace_index,
+        pane_id,
+    )?;
+    let terminal_id = app
+        .state
+        .workspaces
+        .get(workspace_index)?
+        .terminal_id(pane_id)?;
+    running_off_host_shell(app, runtime, terminal_id)
+}
+
 pub(super) fn snapshot_with_completions(
     app: &app::App,
     boot_id: &str,
@@ -127,8 +174,8 @@ pub(super) fn snapshot_with_completions(
         .map(|pane| {
             let pane_id = pane.pane_id;
             let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
-            let right_click_passthrough = app
-                .parse_pane_id(&pane_id)
+            let runtime_pane = app.parse_pane_id(&pane_id);
+            let right_click_passthrough = runtime_pane
                 .and_then(|(workspace_index, pane_id)| {
                     app.state
                         .workspaces
@@ -136,6 +183,18 @@ pub(super) fn snapshot_with_completions(
                         .pane_state(pane_id)
                 })
                 .is_some_and(|pane| pane.right_click_passthrough);
+            // Why not copy `pane.container` or `pane.ssh_host`: `PaneInfo`
+            // follows persisted metadata, and only running off-host shells
+            // need the bridge.
+            let (container, ssh_host) = match runtime_pane.and_then(|(workspace_index, pane_id)| {
+                running_pane_off_host_shell(app, workspace_index, pane_id)
+            }) {
+                Some(RunningOffHostShell::Container(launch)) => {
+                    (Some(launch.canonical.clone()), None)
+                }
+                Some(RunningOffHostShell::Ssh(launch)) => (None, Some(launch.canonical.clone())),
+                None => (None, None),
+            };
             protocol::ClientShellPane {
                 pane_id,
                 workspace_id: pane.workspace_id,
@@ -145,6 +204,8 @@ pub(super) fn snapshot_with_completions(
                 foreground_cwd: pane.foreground_cwd,
                 focused,
                 right_click_passthrough,
+                container,
+                ssh_host,
             }
         })
         .collect();

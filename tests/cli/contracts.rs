@@ -303,6 +303,21 @@ fn workspace_legacy_rejections_do_not_connect() {
             "error: a value is required for '--container <REF>' but none was supplied",
         ),
         (
+            vec!["workspace", "create", "--ssh"],
+            "error: a value is required for '--ssh <HOST>' but none was supplied",
+        ),
+        (
+            vec![
+                "workspace",
+                "create",
+                "--ssh",
+                "prod",
+                "--container",
+                "shop/web",
+            ],
+            "error: the argument '--ssh <HOST>' cannot be used with '--container <REF>'",
+        ),
+        (
             vec!["workspace", "close", "w1", "extra"],
             "error: unexpected argument 'extra' found",
         ),
@@ -458,6 +473,7 @@ fn workspace_help_preserves_public_and_runtime_grammar_split() {
                 "--label <TEXT>",
                 "--env <KEY=VALUE>",
                 "--container <REF>",
+                "--ssh <HOST>",
                 "--focus",
                 "--no-focus",
             ],
@@ -546,6 +562,109 @@ fn container_cli_request_contract_matrix() {
     ];
     for (args, request) in cases {
         assert_request(&args, request);
+    }
+}
+
+#[test]
+fn ssh_cli_request_contract_matrix() {
+    let cases: Vec<(Vec<&str>, Value)> = vec![
+        (
+            vec!["workspace", "create", "--ssh", "prod", "--label", "prod"],
+            json!({"id":"cli:workspace:create","method":"ssh.open","params":{"host":"prod","target":{"workspace":{"label":"prod","focus":false}}}}),
+        ),
+        (
+            vec![
+                "tab",
+                "create",
+                "--workspace",
+                "w:7",
+                "--ssh=deploy@prod",
+                "--focus",
+            ],
+            json!({"id":"cli:tab:create","method":"ssh.open","params":{"host":"deploy@prod","target":{"tab":{"workspace_id":"w:7","focus":true}}}}),
+        ),
+        (
+            vec![
+                "pane",
+                "split",
+                "p:7",
+                "--direction",
+                "down",
+                "--ssh",
+                "lab",
+                "--env",
+                "KEY=value",
+            ],
+            json!({"id":"cli:pane:split","method":"ssh.open","params":{"host":"lab","target":{"split":{"target_pane_id":"p:7","direction":"down","focus":false,"right_click":"herdr","env":{"KEY":"value"}}}}}),
+        ),
+        (
+            vec!["ssh", "hosts", "--json"],
+            json!({"id":"cli:ssh:hosts","method":"ssh.hosts","params":{}}),
+        ),
+    ];
+    for (args, request) in cases {
+        assert_request(&args, request);
+    }
+}
+
+#[test]
+fn pane_split_ssh_targets_the_caller_pane() {
+    let captured = capture_with_env(
+        &["pane", "split", "--direction", "right", "--ssh", "prod"],
+        json!({"id":"cli:pane:split","result":{"type":"ok"}}),
+        &[("HERDR_PANE_ID", "p:caller")],
+    );
+    assert_eq!(
+        captured.output.status.code(),
+        Some(0),
+        "{:?}",
+        captured.output
+    );
+    assert_eq!(
+        captured.requests.get(1),
+        Some(
+            &json!({"id":"cli:pane:split","method":"ssh.open","params":{"host":"prod","target":{"split":{"target_pane_id":"p:caller","direction":"right","focus":false,"right_click":"herdr"}}}})
+        )
+    );
+}
+
+#[test]
+fn ssh_hosts_text_table_and_error_envelope_contract() {
+    let listed = capture(
+        &["ssh", "hosts"],
+        json!({"id":"cli:ssh:hosts","result":{"type":"ssh_hosts","hosts":[
+            {"alias":"prod","hostname":"prod.example.com","user":"deploy"},
+            {"alias":"lab"}
+        ]}}),
+    );
+    assert_eq!(listed.output.status.code(), Some(0), "{:?}", listed.output);
+    assert!(listed.output.stderr.is_empty(), "{:?}", listed.output);
+    assert_eq!(
+        String::from_utf8(listed.output.stdout).unwrap(),
+        concat!(
+            "alias  hostname          user\n",
+            "prod   prod.example.com  deploy\n",
+            "lab    -                 -\n",
+        )
+    );
+
+    let empty = capture(
+        &["ssh", "hosts"],
+        json!({"id":"cli:ssh:hosts","result":{"type":"ssh_hosts","hosts":[]}}),
+    );
+    assert_eq!(empty.output.status.code(), Some(0), "{:?}", empty.output);
+    assert_eq!(empty.output.stdout, b"No ssh hosts in ~/.ssh/config.\n");
+
+    let error = json!({"id":"cli:ssh:hosts","error":{"code":"ssh_unavailable","message":"ssh executable not found on PATH"}});
+    for args in [vec!["ssh", "hosts"], vec!["ssh", "hosts", "--json"]] {
+        let captured = capture(&args, error.clone());
+        assert_eq!(captured.output.status.code(), Some(1), "{args:?}");
+        assert!(captured.output.stdout.is_empty(), "{args:?}");
+        assert_eq!(
+            captured.output.stderr,
+            format!("{error}\n").as_bytes(),
+            "{args:?}"
+        );
     }
 }
 

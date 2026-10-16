@@ -352,12 +352,11 @@ impl HeadlessServer {
         self.reject_queued_api_requests_for_shutdown();
 
         // Close all client connections.
-        let staged_files = self
-            .clients
-            .drain()
-            .flat_map(|(_, client)| client.staged_clipboard_files)
-            .collect::<Vec<_>>();
+        let (staged_files, off_host_files) = super::take_staged_clipboard_files(&mut self.clients);
         crate::server::clipboard_image::remove_files(staged_files);
+        // Why not wait for it: a hung docker daemon or ssh master must not
+        // stall shutdown, and the off-host age sweep removes anything this misses.
+        crate::server::clipboard_image::remove_off_host_files(off_host_files);
 
         // Remove socket files.
         self.cleanup_sockets()?;

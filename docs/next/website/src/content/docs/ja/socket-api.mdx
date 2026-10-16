@@ -99,6 +99,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | コンテナ | `container.open`, `container.list` |
+| SSH ホスト | `ssh.open`, `ssh.hosts` |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
@@ -345,6 +346,51 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 | `platform_unsupported` | サーバーが Windows 上で動作している |
 
 作成・分割パラメーターは変更されず、コンテナ参照は `container.open` でのみ渡されます。
+
+## SSH ホスト
+
+`ssh.open` は、SSH 経由でリモートホストのシェルを開きます。`host` は `~/.ssh/config` の `Host` エイリアスで、`user@alias` の形でも書けます。`target` には通常の作成・分割パラメーターを `workspace`、`tab`、`split` のうちちょうど一つの下にネストして渡します。結果はネストしたメソッドと同じです（`workspace_created`、`tab_created`、`pane_info`）。
+
+```json
+{
+  "id": "req_1",
+  "method": "ssh.open",
+  "params": {
+    "host": "prod",
+    "target": { "workspace": { "label": "prod", "focus": true } }
+  }
+}
+```
+
+`ssh.hosts` は空のパラメーターを受け取り、`~/.ssh/config` のリテラルな `Host` エイリアスを返します。
+
+```json
+{ "id": "req_2", "method": "ssh.hosts", "params": {} }
+```
+
+```json
+{
+  "id": "req_2",
+  "result": {
+    "type": "ssh_hosts",
+    "hosts": [
+      { "alias": "prod", "hostname": "prod.example.com", "user": "deploy" },
+      { "alias": "lab" }
+    ]
+  }
+}
+```
+
+エイリアス自身の `Host` ブロックで設定されていない場合、`hostname` と `user` は省略されます。ペイン情報には、`user@` を除いたエイリアスを持つ `ssh_host` が含まれます。エラー:
+
+| コード | 意味 |
+| --- | --- |
+| `invalid_ssh_host` | `host` が空、`-` で始まる、または `A-Z a-z 0-9 . _ @ -` 以外の文字を含む |
+| `ssh_host_not_found` | `~/.ssh/config` に該当するリテラルな `Host` エイリアスがない |
+| `ssh_unavailable` | `ssh` クライアントが `PATH` にない、または `~/.ssh/config` を読み取れない |
+| `platform_unsupported` | サーバーが Windows 上で動作している |
+
+作成・分割パラメーターは変更されず、SSH ホストは `ssh.open` でのみ渡されます。
 
 ## エージェントビューのクエリ
 

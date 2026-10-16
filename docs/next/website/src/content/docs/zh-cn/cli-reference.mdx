@@ -152,7 +152,7 @@ herdr session delete <name> [--json]
 
 ```bash
 herdr workspace list
-herdr workspace create [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr workspace create [--container REF] [--ssh HOST] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
@@ -187,7 +187,7 @@ Git 默认拒绝由其他用户拥有的仓库。如果你已独立验证该仓�
 
 ```bash
 herdr tab list [--workspace <workspace_id>]
-herdr tab create [--workspace <workspace_id>] [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr tab create [--workspace <workspace_id>] [--container REF] [--ssh HOST] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
@@ -214,7 +214,7 @@ herdr pane focus --direction left|right|up|down [--pane ID|--current]
 herdr pane resize --direction left|right|up|down [--amount FLOAT] [--pane ID|--current]
 herdr pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]
 herdr pane rename <pane_id> <label>|--clear
-herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--cwd PATH] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--ssh HOST] [--cwd PATH] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr pane swap --direction left|right|up|down [--pane ID|--current]
 herdr pane swap --source-pane ID --target-pane ID
 herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]
@@ -338,6 +338,30 @@ herdr tab create --container myapp/web --label web
 容器不存在或已停止时返回 `container_not_found`。Docker CLI 缺失、守护进程失败或调用超过 5 秒时返回 `container_unavailable`。Windows 主机返回 `platform_unsupported`。
 
 会话恢复会保留容器信息,但以普通主机 shell 启动;重新附加尚未实现。`agent start --container` 暂不支持。
+
+## SSH 主机
+
+```bash
+herdr workspace create --ssh HOST [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr tab create --ssh HOST [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr pane split --ssh HOST [<pane_id>|--pane ID|--current] --direction right|down [--env KEY=VALUE]
+herdr ssh hosts [--json]
+```
+
+`--ssh HOST` 会通过 SSH 在远程主机(而不是本机)上打开新的 shell。`HOST` 是 `~/.ssh/config` 中的 `Host` 别名,也可以写成 `user@alias`。它不能与 `--container` 同时使用。窗格运行 `ssh -C -S <herdr control path> -o ControlMaster=auto -o ControlPersist=600 -t HOST`,因此你自己的 SSH 配置会原样生效(Herdr 不会传 `-F`)。密码、口令和主机密钥的提示会显示在窗格中。`HERDR_*` 环境变量不会转发到远程 shell;`TERM` 由 `ssh` 自己发送。远程主机无需安装 Herdr,这与在远程运行 Herdr 服务器的[已保存的 SSH 机器](#已保存的-ssh-机器)和 `herdr --remote` 不同。
+
+`ssh hosts` 按文件顺序列出 `~/.ssh/config` 中字面的 `Host` 别名,以包含 `alias`、`hostname`、`user` 列的表格显示(未知时为 `-`),加 `--json` 则输出原始响应。包含 `*` 或 `?` 的模式以及否定的 `!` 模式会被跳过。`Include` 会被跟随;相对路径相对于 `~/.ssh/` 解析,并支持通配符。配置为空时输出 `No ssh hosts in ~/.ssh/config.`。错误会以 JSON 错误的形式打印到 stderr。
+
+```bash
+herdr ssh hosts
+herdr tab create --ssh deploy@prod --label prod
+```
+
+只有 `~/.ssh/config` 中存在的别名才能打开;未知名称会在创建任何窗格之前被拒绝。`pane get` 和 `pane list` 的窗格信息包含 `ssh_host`,即去掉 `user@` 前缀的别名。会话恢复会保留 SSH 主机,但服务器重启后窗格会以普通本地 shell 启动并保留 `ssh_host`;Herdr 不会自动重新连接。Windows 主机返回 `platform_unsupported`。
+
+在 TUI 中,可以从全局菜单选择 `open ssh host`,或为 `keys.open_ssh_workspace`(默认未设置)绑定按键,从同一列表中选择别名。`/` 用于筛选,Enter 会在以别名命名的新工作区中打开该主机并聚焦,Esc 关闭选择器。服务器版本过旧、无法列出 SSH 主机时,会改为显示 `Action unavailable` 通知。
+
+粘贴到 SSH 窗格的剪贴板图像会通过该窗格自身的 SSH 连接复制,因此需要 SSH 连接共享(ControlMaster);不可用时,粘贴会被拒绝并显示通知。
 
 ## 智能体
 

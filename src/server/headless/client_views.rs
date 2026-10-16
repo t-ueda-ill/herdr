@@ -240,6 +240,7 @@ impl HeadlessServer {
                 | Method::WorktreeOpen(_)
                 | Method::WorktreeRemove(_)
                 | Method::ContainerOpen(_)
+                | Method::SshOpen(_)
         )
     }
 
@@ -282,6 +283,7 @@ impl HeadlessServer {
                 | Method::WorktreeOpen(_)
                 | Method::WorktreeRemove(_)
                 | Method::ContainerOpen(_)
+                | Method::SshOpen(_)
         )
     }
 
@@ -311,6 +313,7 @@ impl HeadlessServer {
                 | Method::WorktreeOpen(_)
                 | Method::WorktreeRemove(_)
                 | Method::ContainerOpen(_)
+                | Method::SshOpen(_)
         )
     }
 

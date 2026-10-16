@@ -1064,6 +1064,16 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
+    /// Canonical container reference, set only while the pane's shell runs
+    /// inside that container. Clients bridge local images to such panes.
+    /// Why not `skip_serializing_if`: this struct also rides the legacy
+    /// bincode snapshot, which cannot skip fields.
+    #[serde(default)]
+    pub container: Option<String>,
+    /// Ssh config alias, set only while the pane's shell is that ssh login.
+    /// Clients bridge local images to such panes, like container panes.
+    #[serde(default)]
+    pub ssh_host: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2850,6 +2860,8 @@ mod tests {
                 foreground_cwd: Some("/repo".into()),
                 focused: true,
                 right_click_passthrough: false,
+                container: None,
+                ssh_host: None,
             }],
             agents: Vec::new(),
             commands: vec![ClientShellCommand {

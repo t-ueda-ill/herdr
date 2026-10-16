@@ -440,6 +440,15 @@ fn restore_workspace(
     )
 }
 
+fn restored_ssh_launch(pane: &super::snapshot::PaneSnapshot) -> Option<crate::ssh_host::SshLaunch> {
+    let saved = pane.ssh.as_ref()?;
+    let launch = saved.to_launch();
+    if launch.is_none() {
+        warn!(host = %saved.host, "dropping ssh pane metadata with an invalid host");
+    }
+    launch
+}
+
 fn unavailable_restored_terminal(
     pane: Option<&super::snapshot::PaneSnapshot>,
     cwd: PathBuf,
@@ -455,6 +464,7 @@ fn unavailable_restored_terminal(
             .container
             .as_ref()
             .map(crate::container::ContainerLaunch::from);
+        terminal.ssh = restored_ssh_launch(pane);
         if let Some(session) = restored_terminal_agent_session(pane.agent_session.as_ref(), false) {
             terminal.set_persisted_agent_session(session);
         }
@@ -543,11 +553,12 @@ fn restore_tab(
             .and_then(crate::detect::parse_canonical_agent_label);
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
         // Why not gate this on `was_imported` like `launch_argv`: the container
-        // is pane identity, not a live process detail, so it survives cold
-        // restores even though they relaunch a plain host shell.
+        // or ssh host is pane identity, not a live process detail, so it
+        // survives cold restores even though they relaunch a plain host shell.
         let saved_container = saved_pane
             .and_then(|p| p.container.as_ref())
             .map(crate::container::ContainerLaunch::from);
+        let saved_ssh = saved_pane.and_then(restored_ssh_launch);
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
         let saved_agent_resume = saved_pane.and_then(saved_reported_resume);
         let saved_history =
@@ -608,6 +619,9 @@ fn restore_tab(
             }
             if let Some(launch) = saved_container {
                 terminal = terminal.with_container(launch);
+            }
+            if let Some(launch) = saved_ssh {
+                terminal = terminal.with_ssh(launch);
             }
             if let Some(session) = restored_agent_session {
                 terminal.set_persisted_agent_session(session);
@@ -711,6 +725,9 @@ fn restore_tab(
                 }
                 if let Some(launch) = saved_container {
                     terminal = terminal.with_container(launch);
+                }
+                if let Some(launch) = saved_ssh {
+                    terminal = terminal.with_ssh(launch);
                 }
                 if let Some(session) = restored_agent_session {
                     terminal.set_persisted_agent_session(session);
@@ -1669,6 +1686,7 @@ mod tests {
             agent_resume: None,
             launch_argv: None,
             container: Some(test_container_snapshot("scratch")),
+            ssh: None,
         });
         let (events, _event_rx) = mpsc::channel(8);
 
@@ -1739,6 +1757,7 @@ mod tests {
             agent_resume: None,
             launch_argv: None,
             container: Some(test_container_snapshot("agent")),
+            ssh: None,
         });
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1768,6 +1787,258 @@ mod tests {
         state.terminals = terminals;
         state.active = Some(0);
         state.assert_invariants_for_test();
+    }
+
+    fn test_ssh_snapshot(host: &str) -> super::super::snapshot::PaneSshSnapshot {
+        super::super::snapshot::PaneSshSnapshot {
+            host: host.into(),
+            control_path: Some(PathBuf::from(format!("/tmp/hssh-test/{host}-%C"))),
+        }
+    }
+
+    fn ssh_pane(
+        ssh: Option<super::super::snapshot::PaneSshSnapshot>,
+    ) -> super::super::snapshot::PaneSnapshot {
+        super::super::snapshot::PaneSnapshot {
+            cwd: std::env::current_dir().unwrap(),
+            label: None,
+            agent_name: None,
+            managed_agent_kind: None,
+            agent_session: None,
+            agent_resume: None,
+            launch_argv: None,
+            container: None,
+            ssh,
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_cold_restore_preserves_pane_ssh() {
+        for missing_shell in [false, true] {
+            let mut snapshot: SessionSnapshot = serde_json::from_str(include_str!(
+                "../../tests/fixtures/session/current-herdr-session.json"
+            ))
+            .unwrap();
+            let cwd = std::env::current_dir().unwrap();
+            let missing = cwd.join("__herdr_missing_restore_directory__");
+            assert!(!missing.exists());
+            for workspace in &mut snapshot.workspaces {
+                workspace.identity_cwd = cwd.clone();
+                for tab in &mut workspace.tabs {
+                    for pane in tab.panes.values_mut() {
+                        pane.cwd = cwd.clone();
+                    }
+                }
+            }
+            let unavailable = snapshot.workspaces[0].tabs[0].panes.get_mut(&1).unwrap();
+            unavailable.cwd = missing.clone();
+            unavailable.ssh = Some(test_ssh_snapshot("unavailable"));
+            snapshot.workspaces[1].tabs[0]
+                .panes
+                .get_mut(&3)
+                .unwrap()
+                .ssh = Some(test_ssh_snapshot("healthy"));
+            let (events, _rx) = mpsc::channel(32);
+
+            let (workspaces, terminals, runtimes) = restore(
+                &snapshot,
+                None,
+                24,
+                80,
+                0,
+                if missing_shell {
+                    "__herdr_missing_restore_shell__"
+                } else {
+                    test_restore_shell()
+                },
+                crate::config::ShellModeConfig::NonLogin,
+                false,
+                events,
+                Arc::new(Notify::new()),
+                Arc::new(RenderSignal::new()),
+            );
+
+            let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+            let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+            let only_pane = |workspace: usize| {
+                captured.workspaces[workspace].tabs[0]
+                    .panes
+                    .values()
+                    .next()
+                    .unwrap()
+                    .ssh
+                    .clone()
+            };
+            assert_eq!(
+                only_pane(0),
+                Some(test_ssh_snapshot("unavailable")),
+                "a pane whose directory vanished must keep its ssh host"
+            );
+            assert_eq!(
+                only_pane(1),
+                Some(test_ssh_snapshot("healthy")),
+                "a pane must keep its ssh host whether or not its shell starts"
+            );
+            let mut state = crate::app::AppState::test_new();
+            state.workspaces = workspaces;
+            state.terminals = terminals;
+            state.active = Some(0);
+            state.assert_invariants_for_test();
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn cold_restore_keeps_ssh_metadata_but_launches_plain_shell() {
+        let snapshot = single_pane_session(ssh_pane(Some(test_ssh_snapshot("prod"))));
+        let (events, _event_rx) = mpsc::channel(8);
+
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let terminal = terminals.values().next().expect("terminal should restore");
+        assert_eq!(
+            terminal.ssh,
+            crate::ssh_host::SshLaunch::new(
+                "prod".into(),
+                Some(PathBuf::from("/tmp/hssh-test/prod-%C"))
+            )
+        );
+        assert_eq!(terminal.restore_error, None);
+        let runtime = runtimes
+            .get(&terminal.id)
+            .expect("cold restore should start a runtime");
+        // An ssh session to the made-up alias could never evaluate shell
+        // arithmetic locally, so the computed marker proves a host shell runs.
+        runtime
+            .try_send_bytes(bytes::Bytes::from_static(b"echo herdr-plain-$((40+2))\n"))
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime.visible_text().contains("herdr-plain-42") {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cold restore should run the plain host shell");
+        let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
+
+        let mut state = crate::app::AppState::test_new();
+        state.workspaces = workspaces;
+        state.terminals = terminals;
+        state.active = Some(0);
+        state.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    async fn restore_drops_ssh_metadata_with_a_host_ssh_would_misread() {
+        let snapshot = single_pane_session(ssh_pane(Some(test_ssh_snapshot("-oProxyCommand=sh"))));
+        let (events, _event_rx) = mpsc::channel(8);
+
+        let (workspaces, terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let terminal = terminals.values().next().expect("terminal should restore");
+        assert_eq!(terminal.ssh, None);
+        let mut state = crate::app::AppState::test_new();
+        state.workspaces = workspaces;
+        state.terminals = terminals;
+        state.active = Some(0);
+        state.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    async fn ssh_metadata_survives_capture_and_restore_of_adversarial_identity_state() {
+        let mut state = crate::app::AppState::test_with_adversarial_identity_state();
+        let launch = crate::ssh_host::SshLaunch::new(
+            "deploy@prod".into(),
+            Some(PathBuf::from("/tmp/hssh-test/prod-%C")),
+        )
+        .expect("valid destination");
+        let first_tab = &state.workspaces[0].tabs[0];
+        let ssh_terminal = first_tab
+            .terminal_id(first_tab.root_pane)
+            .cloned()
+            .expect("adversarial terminals");
+        state.terminals.get_mut(&ssh_terminal).unwrap().ssh = Some(launch.clone());
+        state.assert_invariants_for_test();
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut snapshot = crate::persist::capture(
+            &state.workspaces,
+            &state.terminals,
+            &runtimes,
+            state.active,
+            state.selected,
+        );
+        let cwd = std::env::current_dir().unwrap();
+        for workspace in &mut snapshot.workspaces {
+            workspace.identity_cwd = cwd.clone();
+            for tab in &mut workspace.tabs {
+                for pane in tab.panes.values_mut() {
+                    pane.cwd = cwd.clone();
+                }
+            }
+        }
+        let captured_ssh: Vec<_> = snapshot
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .flat_map(|tab| tab.panes.values())
+            .filter_map(|pane| pane.ssh.clone())
+            .collect();
+        assert_eq!(
+            captured_ssh,
+            vec![super::super::snapshot::PaneSshSnapshot::from(&launch)]
+        );
+        let (events, _event_rx) = mpsc::channel(64);
+
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            "__herdr_missing_restore_shell__",
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        drop(runtimes);
+        let restored: Vec<_> = terminals
+            .values()
+            .filter_map(|terminal| terminal.ssh.clone())
+            .collect();
+        assert_eq!(restored, vec![launch]);
+        let mut restored_state = crate::app::AppState::test_new();
+        restored_state.workspaces = workspaces;
+        restored_state.terminals = terminals;
+        restored_state.active = snapshot.active;
+        restored_state.selected = snapshot.selected;
+        restored_state.assert_invariants_for_test();
     }
 
     #[tokio::test]
@@ -1803,6 +2074,7 @@ mod tests {
                             agent_resume: None,
                             launch_argv: None,
                             container: None,
+                            ssh: None,
                         },
                     )]),
                     zoomed: false,
@@ -1886,6 +2158,7 @@ mod tests {
                                 agent_resume: None,
                                 launch_argv: None,
                                 container: None,
+                                ssh: None,
                             },
                         ),
                         (
@@ -1899,6 +2172,7 @@ mod tests {
                                 agent_resume: None,
                                 launch_argv: None,
                                 container: None,
+                                ssh: None,
                             },
                         ),
                     ]),
@@ -1954,6 +2228,7 @@ mod tests {
                     agent_resume: None,
                     launch_argv: None,
                     container: None,
+                    ssh: None,
                 },
             )
         };
@@ -1971,6 +2246,7 @@ mod tests {
             agent_resume: None,
             launch_argv: None,
             container: None,
+            ssh: None,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -2124,6 +2400,7 @@ mod tests {
                             agent_resume: None,
                             launch_argv: None,
                             container: None,
+                            ssh: None,
                         },
                     )]),
                     zoomed: false,
@@ -2431,6 +2708,7 @@ mod tests {
                 agent_resume: None,
                 launch_argv: None,
                 container: None,
+                ssh: None,
             },
         );
         let mut history = SessionHistorySnapshot {

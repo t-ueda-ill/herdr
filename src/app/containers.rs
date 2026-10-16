@@ -9,6 +9,7 @@ use crate::app::App;
 use crate::container::workdir::{compose_matches_repo_root, containers_for_repo_root};
 use crate::container::{ContainerInfo, ContainerLaunch, ContainerListError, ContainerRef};
 use crate::events::{AppEvent, ContainerListResult, ContainerOpenResult, WorkspaceRepoRoot};
+use crate::pane::PaneLaunchTarget;
 
 use super::api::responses::{encode_error, encode_success};
 
@@ -124,37 +125,11 @@ impl App {
         }
     }
 
-    /// Pins the host cwd and target ids at request time. Why not resolve them
-    /// on completion: the docker lookup can take seconds, and focus moving in
-    /// the meantime must not retarget the launch or its planned workdir.
     fn pin_container_open_target(
         &self,
         target: &mut ContainerOpenTarget,
     ) -> Result<PathBuf, ApiFailure> {
-        let (host_cwd, cwd_slot) = match target {
-            ContainerOpenTarget::Workspace(params) => {
-                (self.workspace_create_cwd(params)?, &mut params.cwd)
-            }
-            ContainerOpenTarget::Tab(params) => {
-                let (ws_idx, cwd) = self
-                    .tab_create_location(params.workspace_id.as_deref(), params.cwd.as_deref())?;
-                params.workspace_id = Some(self.public_workspace_id(ws_idx));
-                (cwd, &mut params.cwd)
-            }
-            ContainerOpenTarget::Split(params) => {
-                let (ws_idx, pane_id, cwd) = self.pane_split_location(params)?;
-                if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
-                    params.target_pane_id = Some(public_pane_id);
-                }
-                (cwd, &mut params.cwd)
-            }
-        };
-        // Why not to_string_lossy: a lossy path names a different directory.
-        // Leaving a non-UTF-8 cwd unset lets the create handler resolve it again.
-        if let Some(text) = host_cwd.to_str() {
-            *cwd_slot = Some(text.to_owned());
-        }
-        Ok(host_cwd)
+        self.pin_open_target(target.into())
     }
 
     pub(crate) fn handle_container_open_finished(&mut self, finished: ContainerOpenResult) {
@@ -170,13 +145,13 @@ impl App {
             Err((code, message)) => encode_error(id, &code, message),
             Ok(launch) => match params.target {
                 ContainerOpenTarget::Workspace(target) => {
-                    self.handle_workspace_create(id, target, Some(&launch))
+                    self.handle_workspace_create(id, target, PaneLaunchTarget::Container(&launch))
                 }
                 ContainerOpenTarget::Tab(target) => {
-                    self.handle_tab_create(id, target, Some(&launch))
+                    self.handle_tab_create(id, target, PaneLaunchTarget::Container(&launch))
                 }
                 ContainerOpenTarget::Split(target) => {
-                    self.handle_pane_split(id, target, Some(&launch))
+                    self.handle_pane_split(id, target, PaneLaunchTarget::Container(&launch))
                 }
             },
         };

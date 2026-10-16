@@ -113,6 +113,38 @@ pub struct PaneSnapshot {
     pub launch_argv: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<PaneContainerSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<PaneSshSnapshot>,
+}
+
+/// Persisted mirror of `SshLaunch`.
+// Why not serialize `SshLaunch` directly: the session file is a contract, so
+// its wire names must not follow renames in the ssh_host module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSshSnapshot {
+    pub host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_path: Option<PathBuf>,
+}
+
+impl From<&crate::ssh_host::SshLaunch> for PaneSshSnapshot {
+    fn from(launch: &crate::ssh_host::SshLaunch) -> Self {
+        Self {
+            host: launch.host.clone(),
+            control_path: launch.control_path.clone(),
+        }
+    }
+}
+
+impl PaneSshSnapshot {
+    /// `None` when the stored host is not a destination herdr would hand to
+    /// `ssh`. Why not trust it: the session file is user-editable, and a
+    /// respawn would put the value straight into `ssh`'s argv.
+    // Why not persist `canonical`: it is derived from `host`, and a stored
+    // copy could disagree with it after a hand edit.
+    pub(crate) fn to_launch(&self) -> Option<crate::ssh_host::SshLaunch> {
+        crate::ssh_host::SshLaunch::new(self.host.clone(), self.control_path.clone())
+    }
 }
 
 /// Persisted mirror of `ContainerLaunch`.
@@ -436,6 +468,9 @@ fn capture_tab(
         let container = terminal
             .and_then(|terminal| terminal.container.as_ref())
             .map(PaneContainerSnapshot::from);
+        let ssh = terminal
+            .and_then(|terminal| terminal.ssh.as_ref())
+            .map(PaneSshSnapshot::from);
         let agent_session = terminal.and_then(|terminal| {
             if let Some(authority) = terminal.hook_authority.as_ref() {
                 if let Some(session_ref) = authority.session_ref.as_ref() {
@@ -475,6 +510,7 @@ fn capture_tab(
                 agent_resume,
                 launch_argv,
                 container,
+                ssh,
             },
         );
     }
@@ -795,6 +831,7 @@ mod tests {
                 agent_resume: None,
                 launch_argv: None,
                 container: None,
+                ssh: None,
             },
         );
         panes.insert(
@@ -808,6 +845,7 @@ mod tests {
                 agent_resume: None,
                 launch_argv: None,
                 container: None,
+                ssh: None,
             },
         );
 
@@ -877,6 +915,68 @@ mod tests {
             agent_resume: None,
             launch_argv: None,
             container,
+            ssh: None,
+        }
+    }
+
+    #[test]
+    fn round_trip_preserves_pane_ssh() {
+        let multiplexed = PaneSshSnapshot {
+            host: "deploy@prod".into(),
+            control_path: Some(PathBuf::from("/tmp/hssh-1000/abc-%C")),
+        };
+        let plain = PaneSshSnapshot {
+            host: "lab".into(),
+            control_path: None,
+        };
+        let panes = HashMap::from([
+            (
+                0,
+                PaneSnapshot {
+                    ssh: Some(multiplexed.clone()),
+                    ..pane_snapshot_with_container(None)
+                },
+            ),
+            (
+                1,
+                PaneSnapshot {
+                    ssh: Some(plain.clone()),
+                    ..pane_snapshot_with_container(None)
+                },
+            ),
+            (2, pane_snapshot_with_container(None)),
+        ]);
+
+        let wire = |id: u32| serde_json::to_value(&panes[&id]).unwrap();
+        assert_eq!(
+            wire(0)["ssh"],
+            serde_json::json!({"host": "deploy@prod", "control_path": "/tmp/hssh-1000/abc-%C"})
+        );
+        assert_eq!(wire(1)["ssh"], serde_json::json!({"host": "lab"}));
+        assert!(
+            wire(2).get("ssh").is_none(),
+            "host panes must not grow an ssh key"
+        );
+
+        let restored: HashMap<u32, PaneSnapshot> =
+            serde_json::from_str(&serde_json::to_string(&panes).unwrap()).unwrap();
+        assert_eq!(restored[&0].ssh, Some(multiplexed.clone()));
+        assert_eq!(restored[&1].ssh, Some(plain));
+        assert_eq!(restored[&2].ssh, None);
+
+        let launch = multiplexed.to_launch().expect("valid stored host");
+        assert_eq!(launch.canonical, "prod");
+        assert_eq!(PaneSshSnapshot::from(&launch), multiplexed);
+    }
+
+    #[test]
+    fn pane_ssh_snapshot_drops_hosts_ssh_would_misread() {
+        for host in ["-oProxyCommand=sh", "prod;id", ""] {
+            let snapshot = PaneSshSnapshot {
+                host: host.into(),
+                control_path: None,
+            };
+            assert_eq!(snapshot.to_launch(), None, "{host:?}");
         }
     }
 
@@ -980,6 +1080,14 @@ mod tests {
         );
         assert_eq!(container.workdir.as_deref(), Some("/work".as_ref()));
         assert_eq!(container.shell, PaneContainerShellSnapshot::BashOrSh);
+        assert_eq!(snap.workspaces[0].tabs[0].panes[&1].ssh, None);
+        assert_eq!(
+            snap.workspaces[0].tabs[1].panes[&2].ssh,
+            Some(PaneSshSnapshot {
+                host: "deploy@prod".into(),
+                control_path: Some("/tmp/hssh-1000/0123456789abcdef01234567-%C".into()),
+            })
+        );
     }
 
     #[test]
@@ -1548,6 +1656,33 @@ mod tests {
     }
 
     #[test]
+    fn capture_contract_tracks_pane_ssh() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let host = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        let launch = crate::ssh_host::SshLaunch::new(
+            "deploy@prod".into(),
+            Some(PathBuf::from("/tmp/hssh-1000/abc-%C")),
+        )
+        .expect("valid destination");
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        state.terminals.get_mut(&terminal_id).unwrap().ssh = Some(launch.clone());
+
+        let snapshot = capture_from_state(&state);
+        let panes = &snapshot.workspaces[0].tabs[0].panes;
+        let captured = panes[&root.raw()]
+            .ssh
+            .as_ref()
+            .expect("ssh launch should be captured");
+        assert_eq!(captured.to_launch(), Some(launch));
+        assert_eq!(panes[&host.raw()].ssh, None);
+        assert_eq!(panes[&root.raw()].container, None);
+    }
+
+    #[test]
     fn capture_contract_preserves_restored_agent_session() {
         let mut state = state_with_workspaces(&["one"]);
         let root = state.workspaces[0].tabs[0].root_pane;
@@ -1614,6 +1749,7 @@ mod tests {
                 agent_resume: None,
                 launch_argv: None,
                 container: None,
+                ssh: None,
             },
         );
         panes.insert(
@@ -1629,6 +1765,7 @@ mod tests {
                 agent_resume: None,
                 launch_argv: None,
                 container: None,
+                ssh: None,
             },
         );
 

@@ -111,198 +111,31 @@ pub(super) fn render_worktree_open_overlay(
     open: &ClientWorktreeOpenOverlay,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    let popup_height = (open.entries.len().saturating_mul(2) + 7).clamp(12, 26) as u16;
-    let popup = popup(b.area, 96, popup_height)?;
-    let inner = panel(b, popup, p.accent, p.panel_bg)?;
-    put_text(
+    super::list_picker_overlay::render_list_picker_overlay(
         b,
-        inner.x,
-        inner.y,
-        inner.width,
-        "open worktree",
-        Style::default()
-            .fg(p.text)
-            .bg(p.panel_bg)
-            .add_modifier(Modifier::BOLD),
-    );
-    let search = Rect::new(inner.x, inner.y + 1, inner.width, 1);
-    let filtered = open.filtered_indices();
-    put_text(
-        b,
-        search.x,
-        search.y,
-        search.width,
-        &if open.search_focused {
-            " / ".to_owned()
-        } else if !open.query.is_empty() {
-            format!(" / {}", open.query)
-        } else {
-            " / filter worktrees".to_owned()
+        &super::list_picker_overlay::ListPicker {
+            title: "open worktree",
+            filter_hint: "filter worktrees",
+            count_noun: "checkouts",
+            empty_message: " no matching worktrees",
+            total: open.entries.len(),
+            filtered: open.filtered_indices(),
+            selected: open.selected,
+            query: &open.query,
+            search_focused: open.search_focused,
+            opening: open.opening,
+            error: open.error.as_deref(),
         },
-        Style::default()
-            .fg(if open.search_focused {
-                p.text
-            } else {
-                p.overlay0
-            })
-            .bg(p.panel_bg),
-    );
-    let count = if filtered.len() == open.entries.len() {
-        format!("{} checkouts", open.entries.len())
-    } else {
-        format!("{}/{} checkouts", filtered.len(), open.entries.len())
-    };
-    let cursor = if open.search_focused {
-        text_editor::render(
-            b,
-            Rect::new(
-                search.x + 3,
-                search.y,
-                search.width.saturating_sub(4 + display_width(&count)),
-                1,
-            ),
-            &open.query,
-            Style::default().fg(p.text).bg(p.panel_bg),
-        )
-    } else {
-        None
-    };
-    put_right_text(
-        b,
-        search,
-        search.y,
-        &count,
-        Style::default().fg(p.overlay0).bg(p.panel_bg),
-    );
-    put_text(
-        b,
-        inner.x,
-        inner.y + 2,
-        inner.width,
-        &"─".repeat(inner.width as usize),
-        Style::default().fg(p.surface1).bg(p.panel_bg),
-    );
-    let body = Rect::new(
-        inner.x,
-        inner.y + 3,
-        inner.width,
-        inner.height.saturating_sub(6),
-    );
-    let visible_count = (body.height / 2).max(1) as usize;
-    let selected_position = filtered
-        .iter()
-        .position(|index| *index == open.selected)
-        .unwrap_or(0);
-    let start = selected_position
-        .saturating_sub(visible_count.saturating_sub(1))
-        .min(filtered.len().saturating_sub(visible_count));
-    let mut row_hits = Vec::new();
-    for (visible, entry_index) in filtered
-        .iter()
-        .copied()
-        .skip(start)
-        .take(visible_count)
-        .enumerate()
-    {
-        let entry = &open.entries[entry_index];
-        let rect = Rect::new(body.x, body.y + visible as u16 * 2, body.width, 2);
-        row_hits.push((rect, entry_index));
-        let selected = entry_index == open.selected;
-        let style = if selected {
-            Style::default().fg(contrast(p)).bg(p.accent)
-        } else {
-            Style::default().fg(p.text).bg(p.panel_bg)
-        };
-        b.set_style(rect, style);
-        put_text(
-            b,
-            rect.x,
-            rect.y,
-            rect.width,
-            &format!(" {}", entry.label),
-            style.add_modifier(Modifier::BOLD),
-        );
-        let status = entry.status_label();
-        if !status.is_empty() {
-            put_right_text(b, rect, rect.y, status, style);
-        }
-        put_text(
-            b,
-            rect.x,
-            rect.y + 1,
-            rect.width,
-            &format!(" {}", entry.path),
-            if selected {
-                style
-            } else {
-                Style::default().fg(p.overlay0).bg(p.panel_bg)
-            },
-        );
-    }
-    if filtered.is_empty() {
-        put_text(
-            b,
-            body.x,
-            body.y,
-            body.width,
-            " no matching worktrees",
-            Style::default().fg(p.overlay0).bg(p.panel_bg),
-        );
-    }
-    if open.opening {
-        put_text(
-            b,
-            inner.x,
-            inner.bottom() - 3,
-            inner.width,
-            " opening…",
-            Style::default().fg(p.accent).bg(p.panel_bg),
-        );
-    } else if let Some(error) = open.error.as_deref() {
-        put_text(
-            b,
-            inner.x,
-            inner.bottom() - 3,
-            inner.width,
-            &format!(" {error}"),
-            Style::default().fg(p.red).bg(p.panel_bg),
-        );
-    }
-    let buttons = row(inner, &[10, 12], 2, inner.height.saturating_sub(1));
-    let [primary, cancel] = buttons.as_slice() else {
-        return None;
-    };
-    button(
-        b,
-        *primary,
-        " ↵ open ",
-        Style::default()
-            .fg(contrast(p))
-            .bg(p.accent)
-            .add_modifier(Modifier::BOLD),
-    );
-    button(
-        b,
-        *cancel,
-        " esc cancel ",
-        Style::default()
-            .fg(p.text)
-            .bg(p.surface0)
-            .add_modifier(Modifier::BOLD),
-    );
-    Some(OverlayRender {
-        area: popup,
-        primary: *primary,
-        clear: Rect::default(),
-        cancel: *cancel,
-        navigator_popup: Rect::default(),
-        navigator_search: Rect::default(),
-        navigator_rows: Vec::new(),
-        worktree_search: search,
-        worktree_rows: row_hits,
-        cursor: cursor.filter(|_| !open.opening),
-        ..OverlayRender::default()
-    })
+        |index| {
+            let entry = &open.entries[index];
+            super::list_picker_overlay::PickerRow {
+                title: &entry.label,
+                status: entry.status_label(),
+                detail: &entry.path,
+            }
+        },
+        p,
+    )
 }
 
 pub(super) fn render_worktree_remove_overlay(

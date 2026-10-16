@@ -152,7 +152,7 @@ herdr session delete <name> [--json]
 
 ```bash
 herdr workspace list
-herdr workspace create [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr workspace create [--container REF] [--ssh HOST] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
@@ -187,7 +187,7 @@ Git はデフォルトで、別のユーザーが所有するリポジトリを�
 
 ```bash
 herdr tab list [--workspace <workspace_id>]
-herdr tab create [--workspace <workspace_id>] [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr tab create [--workspace <workspace_id>] [--container REF] [--ssh HOST] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
@@ -214,7 +214,7 @@ herdr pane focus --direction left|right|up|down [--pane ID|--current]
 herdr pane resize --direction left|right|up|down [--amount FLOAT] [--pane ID|--current]
 herdr pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]
 herdr pane rename <pane_id> <label>|--clear
-herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--cwd PATH] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--ssh HOST] [--cwd PATH] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr pane swap --direction left|right|up|down [--pane ID|--current]
 herdr pane swap --source-pane ID --target-pane ID
 herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]
@@ -338,6 +338,30 @@ herdr tab create --container myapp/web --label web
 存在しないコンテナや停止中のコンテナは `container_not_found` を返します。Docker CLI がない、デーモンが失敗する、呼び出しが 5 秒を超えた場合は `container_unavailable` を返します。Windows ホストでは `platform_unsupported` を返します。
 
 セッション復元ではコンテナ情報は保持されますが、プレーンなホストシェルで起動します。再アタッチは未実装です。`agent start --container` は未対応です。
+
+## SSH ホスト
+
+```bash
+herdr workspace create --ssh HOST [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr tab create --ssh HOST [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr pane split --ssh HOST [<pane_id>|--pane ID|--current] --direction right|down [--env KEY=VALUE]
+herdr ssh hosts [--json]
+```
+
+`--ssh HOST` を指定すると、新しいシェルをローカルではなく SSH 経由のリモートホストで開きます。`HOST` には `~/.ssh/config` の `Host` エイリアスを指定し、`user@alias` の形でも書けます。`--container` とは併用できません。ペインでは `ssh -C -S <herdr control path> -o ControlMaster=auto -o ControlPersist=600 -t HOST` を実行するため、ユーザー自身の SSH 設定がそのまま適用されます（Herdr は `-F` を渡しません）。パスワード、パスフレーズ、ホスト鍵の確認はペイン内に表示されます。`HERDR_*` 環境変数はリモートシェルに転送されません。`TERM` は `ssh` 自身が送ります。リモート側に Herdr は不要です。リモートで Herdr サーバーを動かす[保存済み SSH マシン](#保存済み-ssh-マシン)や `herdr --remote` とは異なります。
+
+`ssh hosts` は `~/.ssh/config` にあるリテラルな `Host` エイリアスをファイル内の順に、`alias`、`hostname`、`user` の列を持つ表で表示します（不明な値は `-`）。`--json` を付けると生の応答を表示します。`*` や `?` を含むパターンと、否定の `!` パターンは対象外です。`Include` は辿ります。相対パスは `~/.ssh/` を基準に解決し、グロブも使えます。設定が空の場合は `No ssh hosts in ~/.ssh/config.` と表示します。エラーは JSON エラーとして標準エラー出力に表示します。
+
+```bash
+herdr ssh hosts
+herdr tab create --ssh deploy@prod --label prod
+```
+
+開けるのは `~/.ssh/config` にあるエイリアスだけで、未知の名前はペインを作る前に拒否されます。`pane get` と `pane list` のペイン情報には、`user@` を除いたエイリアスを持つ `ssh_host` が含まれます。セッション復元では SSH ホストは保持されますが、サーバーの再起動後はプレーンなローカルシェルで起動し、`ssh_host` だけが残ります。自動再接続はしません。Windows ホストでは `platform_unsupported` を返します。
+
+TUI では、グローバルメニューの `open ssh host`、または `keys.open_ssh_workspace`（既定では未設定）に割り当てたキーから、同じ一覧のエイリアスを選べます。`/` で絞り込み、Enter でエイリアス名の新しいワークスペースを開いてフォーカスし、Esc でピッカーを閉じます。SSH ホストを一覧できない古いサーバーでは、代わりに `Action unavailable` の通知が出ます。
+
+SSH ペインに貼り付けたクリップボード画像は、ペイン自身の SSH 接続を通じてコピーします。そのため SSH 接続の共有（ControlMaster）が必要で、使えない場合は通知とともに貼り付けを拒否します。
 
 ## エージェント
 

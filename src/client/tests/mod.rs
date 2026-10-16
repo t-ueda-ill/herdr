@@ -200,18 +200,44 @@ fn image_bridge_follows_the_selected_remote_endpoint() {
         crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
     );
 
-    assert!(endpoint_accepts_local_images(false, &remote, true));
+    assert!(endpoint_accepts_local_images(false, &remote, true, false));
     assert!(endpoint_accepts_local_images(
         true,
         &crate::client::endpoint::ClientEndpointId::Local,
         true,
+        false,
     ));
     assert!(!endpoint_accepts_local_images(
         false,
         &crate::client::endpoint::ClientEndpointId::Local,
         true,
+        false,
     ));
-    assert!(!endpoint_accepts_local_images(false, &remote, false));
+    assert!(!endpoint_accepts_local_images(false, &remote, false, false));
+}
+
+#[test]
+fn image_bridge_reaches_container_panes_through_a_local_endpoint() {
+    let local = crate::client::endpoint::ClientEndpointId::Local;
+    let remote = crate::client::endpoint::ClientEndpointId::Ssh(
+        crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+    );
+    // (remote client, endpoint, surface available, target needs bridge) -> bridge
+    let cases = [
+        (false, &local, true, true, true),
+        (false, &local, true, false, false),
+        (true, &local, true, false, true),
+        (false, &remote, true, false, true),
+        (true, &remote, true, true, true),
+        (false, &local, false, true, false),
+    ];
+    for (remote_client, endpoint, surface, needs_bridge, expected) in cases {
+        assert_eq!(
+            endpoint_accepts_local_images(remote_client, endpoint, surface, needs_bridge),
+            expected,
+            "remote_client={remote_client} endpoint={endpoint:?} surface={surface} needs_bridge={needs_bridge}"
+        );
+    }
 }
 
 #[cfg(unix)]

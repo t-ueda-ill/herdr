@@ -46,6 +46,11 @@ pub(super) fn global_menu_items(
             ClientGlobalMenuAction::WhatsNew,
         ));
     }
+    // Why not first: existing items keep their positions, and detach stays last.
+    items.push((
+        "open ssh host",
+        ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenSshWorkspace),
+    ));
     items.push((
         "detach",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::Detach),

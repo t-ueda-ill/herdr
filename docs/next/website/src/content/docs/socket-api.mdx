@@ -103,6 +103,7 @@ Raw socket method names use dot notation:
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Container | `container.open`, `container.list` |
+| SSH hosts | `ssh.open`, `ssh.hosts` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
 | Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
@@ -420,6 +421,51 @@ Worktree commands also emit lifecycle events. `worktree.create` emits `workspace
 | `platform_unsupported` | the server runs on Windows |
 
 Create and split params stay unchanged; the container reference travels only in `container.open`.
+
+## SSH hosts
+
+`ssh.open` starts a shell on a remote host over SSH. `host` is a `Host` alias from `~/.ssh/config`, optionally written as `user@alias`. `target` nests the ordinary create or split params under exactly one of `workspace`, `tab`, or `split`; the result is the same as the nested method's (`workspace_created`, `tab_created`, or `pane_info`).
+
+```json
+{
+  "id": "req_1",
+  "method": "ssh.open",
+  "params": {
+    "host": "prod",
+    "target": { "workspace": { "label": "prod", "focus": true } }
+  }
+}
+```
+
+`ssh.hosts` takes empty params and returns the literal `Host` aliases of `~/.ssh/config`.
+
+```json
+{ "id": "req_2", "method": "ssh.hosts", "params": {} }
+```
+
+```json
+{
+  "id": "req_2",
+  "result": {
+    "type": "ssh_hosts",
+    "hosts": [
+      { "alias": "prod", "hostname": "prod.example.com", "user": "deploy" },
+      { "alias": "lab" }
+    ]
+  }
+}
+```
+
+`hostname` and `user` are omitted when the alias's own `Host` block does not set them. Pane info includes `ssh_host`, the alias without any `user@` prefix. Errors:
+
+| Code | Meaning |
+| --- | --- |
+| `invalid_ssh_host` | `host` is empty, starts with `-`, or has characters outside `A-Z a-z 0-9 . _ @ -` |
+| `ssh_host_not_found` | no such literal `Host` alias in `~/.ssh/config` |
+| `ssh_unavailable` | the `ssh` client is not on `PATH`, or `~/.ssh/config` cannot be read |
+| `platform_unsupported` | the server runs on Windows |
+
+Create and split params stay unchanged; the SSH host travels only in `ssh.open`.
 
 ## Agent view queries
 

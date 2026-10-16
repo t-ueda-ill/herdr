@@ -43,6 +43,10 @@ impl ClientShellState {
                     self.begin_worktree_action(action, outcome);
                     return;
                 }
+                if action == crate::input::KeybindAction::OpenSshWorkspace {
+                    self.begin_ssh_open(outcome);
+                    return;
+                }
                 if action == crate::input::KeybindAction::OpenNavigator {
                     self.open_navigator_overlay();
                     outcome.repaint = true;
@@ -366,6 +370,7 @@ impl ClientShellState {
             crate::api::schema::Method::WorkspaceCreate(params) => params.focus,
             crate::api::schema::Method::TabCreate(params) => params.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
+            crate::api::schema::Method::SshOpen(params) => params.target.focus(),
             _ => false,
         };
         if changes_focus {
@@ -834,6 +839,9 @@ impl ClientShellState {
             kind @ (PendingEndpointKind::IntegrationList
             | PendingEndpointKind::IntegrationInstall) => {
                 return self.handle_settings_endpoint_result(kind, result);
+            }
+            kind @ (PendingEndpointKind::PrepareSshOpen | PendingEndpointKind::SshOpen) => {
+                return (self.handle_ssh_endpoint_result(kind, result), Vec::new());
             }
             kind => {
                 let mut outcome = ClientShellInput::default();

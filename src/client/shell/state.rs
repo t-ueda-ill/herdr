@@ -288,6 +288,7 @@ pub(super) enum ClientShellOverlayKind {
     WorktreeCreate,
     WorktreeOpen,
     WorktreeRemove,
+    SshOpen,
     ContextMenu,
     GlobalMenu,
     Settings,
@@ -499,6 +500,61 @@ impl ClientWorktreeOpenOverlay {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct ClientSshHostEntry {
+    pub(super) alias: String,
+    /// Where the alias connects, as far as its own `Host` block says.
+    pub(super) detail: String,
+}
+
+impl ClientSshHostEntry {
+    pub(super) fn new(alias: String, hostname: Option<String>, user: Option<String>) -> Self {
+        // ssh connects to the alias itself when the block names no HostName.
+        let detail = match (user, hostname) {
+            (Some(user), hostname) => format!("{user}@{}", hostname.as_deref().unwrap_or(&alias)),
+            (None, Some(hostname)) => hostname,
+            (None, None) => String::new(),
+        };
+        Self { alias, detail }
+    }
+
+    pub(super) fn matches_query(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        query.is_empty()
+            || format!("{} {}", self.alias, self.detail)
+                .to_lowercase()
+                .contains(&query)
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct ClientSshOpenOverlay {
+    pub(super) entries: Vec<ClientSshHostEntry>,
+    pub(super) selected: usize,
+    pub(super) query: TextEditor,
+    pub(super) search_focused: bool,
+    pub(super) error: Option<String>,
+    pub(super) opening: bool,
+}
+
+impl ClientSshOpenOverlay {
+    pub(super) fn filtered_indices(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.matches_query(&self.query).then_some(index))
+            .collect()
+    }
+
+    pub(super) fn selected_entry_index(&self) -> Option<usize> {
+        let filtered = self.filtered_indices();
+        filtered
+            .contains(&self.selected)
+            .then_some(self.selected)
+            .or_else(|| filtered.first().copied())
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ClientWorktreeRemoveOverlay {
     pub(super) workspace_id: String,
@@ -591,6 +647,7 @@ pub(super) enum ClientShellOverlay {
     WorktreeCreate(ClientWorktreeCreateOverlay),
     WorktreeOpen(ClientWorktreeOpenOverlay),
     WorktreeRemove(ClientWorktreeRemoveOverlay),
+    SshOpen(ClientSshOpenOverlay),
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
@@ -609,6 +666,7 @@ impl ClientShellOverlay {
             Self::WorktreeCreate(_) => ClientShellOverlayKind::WorktreeCreate,
             Self::WorktreeOpen(_) => ClientShellOverlayKind::WorktreeOpen,
             Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
+            Self::SshOpen(_) => ClientShellOverlayKind::SshOpen,
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
@@ -642,6 +700,8 @@ pub(super) enum PendingEndpointKind {
     WorktreeRemove {
         forced: bool,
     },
+    PrepareSshOpen,
+    SshOpen,
     SelectionCopy,
     PaneScroll {
         pane_id: String,

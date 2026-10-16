@@ -231,6 +231,7 @@ struct SpawnInitialState<'a> {
     history_ansi: Option<&'a str>,
     windows_powershell_prompt_cwd_reporting: bool,
     in_container: bool,
+    in_ssh: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1509,6 +1510,7 @@ pub struct PaneRuntime {
     cwd_process_exited: Arc<AtomicBool>,
     child_wait_completed: Option<Arc<AtomicBool>>,
     in_container: bool,
+    in_ssh: bool,
     kitty_keyboard_flags: Arc<AtomicU16>,
     content_seq: Arc<AtomicU64>,
     content_write_lock: Arc<Mutex<()>>,
@@ -1990,6 +1992,7 @@ pub(crate) struct PaneShellConfig<'a> {
     pub(crate) default_shell: &'a str,
     pub(crate) mode: crate::config::ShellModeConfig,
     pub(crate) container: Option<&'a crate::container::ContainerLaunch>,
+    pub(crate) ssh: Option<&'a crate::ssh_host::SshLaunch>,
 }
 
 impl<'a> PaneShellConfig<'a> {
@@ -1998,6 +2001,7 @@ impl<'a> PaneShellConfig<'a> {
             default_shell,
             mode,
             container: None,
+            ssh: None,
         }
     }
 
@@ -2008,6 +2012,31 @@ impl<'a> PaneShellConfig<'a> {
         self.container = container;
         self
     }
+
+    pub(crate) fn with_ssh(mut self, ssh: Option<&'a crate::ssh_host::SshLaunch>) -> Self {
+        self.ssh = ssh;
+        self
+    }
+
+    pub(crate) fn with_launch_target(self, target: PaneLaunchTarget<'a>) -> Self {
+        match target {
+            PaneLaunchTarget::Host => self,
+            PaneLaunchTarget::Container(launch) => self.with_container(Some(launch)),
+            PaneLaunchTarget::Ssh(launch) => self.with_ssh(Some(launch)),
+        }
+    }
+}
+
+/// Where a newly created pane's shell runs.
+///
+/// Why not one `Option` per kind on the create paths: a pane runs in exactly
+/// one place, and an enum cannot ask for a container and an ssh host at once.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) enum PaneLaunchTarget<'a> {
+    #[default]
+    Host,
+    Container(&'a crate::container::ContainerLaunch),
+    Ssh(&'a crate::ssh_host::SshLaunch),
 }
 
 /// Target platform for shell launch policy. Parameterized (instead of raw
@@ -2043,7 +2072,7 @@ fn shell_mode_uses_login_shell(
     }
 }
 
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
     };
@@ -2142,6 +2171,10 @@ fn pane_shell_command_builder_for_target(
     if shell_config.container.is_some() {
         return Ok(CommandBuilder::new("docker"));
     }
+    // Same for ssh panes: the remote side picks its own login shell.
+    if shell_config.ssh.is_some() {
+        return Ok(CommandBuilder::new("ssh"));
+    }
     let shell = pane_shell(shell_config.default_shell);
     // Unix login shells go through portable-pty's default-program builder so
     // they receive the login argv0 convention. Windows has no such convention
@@ -2208,6 +2241,11 @@ fn pane_shell_spawn_command_for_target(
         let login = shell_mode_uses_login_shell(shell_config.mode, target);
         *cmd.get_argv_mut() = crate::container::launch::docker_exec_argv(launch, login, &env);
     }
+    // Why not forward `HERDR_*` like containers: `SendEnv` only works when the
+    // server's `AcceptEnv` allows it, and ssh already sends `TERM` with the pty.
+    if let Some(launch) = shell_config.ssh {
+        *cmd.get_argv_mut() = crate::ssh_host::launch::ssh_argv(launch);
+    }
     Ok(cmd)
 }
 
@@ -2227,6 +2265,7 @@ fn uses_windows_powershell_pane_shell_for_target(
     // prompt-based cwd reporting as non-login panes.
     target == ShellLaunchTarget::Windows
         && shell_config.container.is_none()
+        && shell_config.ssh.is_none()
         && is_powershell_shell(&pane_shell(shell_config.default_shell))
 }
 
@@ -2245,10 +2284,13 @@ fn is_powershell_shell(shell: &str) -> bool {
     )
 }
 
-fn usable_reported_cwd(cwd: std::path::PathBuf, in_container: bool) -> Option<std::path::PathBuf> {
-    // Container paths are not checked with `is_dir()`: the host filesystem
-    // cannot confirm or refute a directory inside the container.
-    (cwd.is_absolute() && (in_container || cwd.is_dir())).then_some(cwd)
+fn usable_reported_cwd(
+    cwd: std::path::PathBuf,
+    shell_off_host: bool,
+) -> Option<std::path::PathBuf> {
+    // Container and ssh paths are not checked with `is_dir()`: this host's
+    // filesystem cannot confirm or refute a directory on the other side.
+    (cwd.is_absolute() && (shell_off_host || cwd.is_dir())).then_some(cwd)
 }
 
 fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<AppEvent>) {
@@ -2269,10 +2311,10 @@ fn publish_reported_cwd(
     pane_id: PaneId,
     cwd: std::path::PathBuf,
     reported_cwd: &Arc<Mutex<Option<std::path::PathBuf>>>,
-    in_container: bool,
+    shell_off_host: bool,
     events: &mpsc::Sender<AppEvent>,
 ) {
-    let Some(cwd) = usable_reported_cwd(cwd, in_container) else {
+    let Some(cwd) = usable_reported_cwd(cwd, shell_off_host) else {
         return;
     };
     if let Ok(mut current) = reported_cwd.lock() {
@@ -2471,6 +2513,7 @@ impl PaneRuntime {
                 history_ansi: initial_history_ansi,
                 windows_powershell_prompt_cwd_reporting,
                 in_container: shell_config.container.is_some(),
+                in_ssh: shell_config.ssh.is_some(),
             },
             AgentDetection::Enabled,
         )
@@ -2732,6 +2775,7 @@ impl PaneRuntime {
             cwd_process_exited,
             child_wait_completed: None,
             in_container: false,
+            in_ssh: false,
             kitty_keyboard_flags,
             content_seq,
             content_write_lock,
@@ -2799,6 +2843,8 @@ impl PaneRuntime {
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         let self_reported_agent_active = Arc::new(AtomicBool::new(false));
         let in_container = initial_state.in_container;
+        let in_ssh = initial_state.in_ssh;
+        let shell_off_host = in_container || in_ssh;
         {
             let child_pid = child_pid.clone();
             let child_wait_completed = child_wait_completed.clone();
@@ -2879,7 +2925,7 @@ impl PaneRuntime {
                     });
                 }
                 if let Some(cwd) = result.reported_cwd.clone() {
-                    publish_reported_cwd(pane_id, cwd, &reported_cwd, in_container, &events);
+                    publish_reported_cwd(pane_id, cwd, &reported_cwd, shell_off_host, &events);
                 }
                 for content in result.clipboard_writes {
                     if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
@@ -3347,6 +3393,7 @@ impl PaneRuntime {
             cwd_process_exited: child_wait_completed.clone(),
             child_wait_completed: Some(child_wait_completed),
             in_container,
+            in_ssh,
             kitty_keyboard_flags,
             content_seq,
             content_write_lock,
@@ -3874,9 +3921,9 @@ impl PaneRuntime {
         if let Some(cwd) = self.reported_cwd() {
             return Some(cwd);
         }
-        // The child is the host docker CLI, whose process cwd says nothing
-        // about where the container shell is.
-        if self.in_container {
+        // The child is the host docker or ssh CLI, whose process cwd says
+        // nothing about where the container or remote shell is.
+        if self.shell_runs_off_host() {
             return None;
         }
 
@@ -3898,19 +3945,23 @@ impl PaneRuntime {
             }
             return Some(cwd);
         }
-        // Container panes never fall back to the reported cwd: it is a path
-        // inside the container, and restore needs a host directory.
+        // Container and ssh panes never fall back to the reported cwd: it is a
+        // path on the other side, and restore needs a host directory.
         self.persistence_cwd
             .lock()
             .ok()
             .and_then(|cwd| cwd.clone())
             .or_else(|| {
-                if self.in_container {
+                if self.shell_runs_off_host() {
                     None
                 } else {
                     self.reported_cwd()
                 }
             })
+    }
+
+    fn shell_runs_off_host(&self) -> bool {
+        self.in_container || self.in_ssh
     }
 
     fn reported_cwd(&self) -> Option<std::path::PathBuf> {
@@ -3925,8 +3976,20 @@ impl PaneRuntime {
         (pid > 0).then_some(pid)
     }
 
+    /// Whether the running shell was launched inside a container. Restored
+    /// container metadata alone does not count: cold restore starts a host shell.
+    pub fn in_container(&self) -> bool {
+        self.in_container
+    }
+
+    /// Whether the running shell was launched as an ssh pane login. Restored
+    /// ssh metadata alone does not count: cold restore starts a host shell.
+    pub fn in_ssh(&self) -> bool {
+        self.in_ssh
+    }
+
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
-        if self.in_container {
+        if self.shell_runs_off_host() {
             return self.reported_cwd();
         }
         #[cfg(unix)]
@@ -3946,9 +4009,9 @@ impl PaneRuntime {
 
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
-        // Host process groups only show the docker CLI, so the shell's own
-        // report is the only source for container panes.
-        if self.in_container {
+        // Host process groups only show the docker or ssh CLI, so the shell's
+        // own report is the only source for container and ssh panes.
+        if self.shell_runs_off_host() {
             return self.reported_cwd();
         }
         #[cfg(unix)]
@@ -3978,6 +4041,14 @@ impl PaneRuntime {
 
 #[cfg(test)]
 impl PaneRuntime {
+    pub(crate) fn test_set_in_container(&mut self, in_container: bool) {
+        self.in_container = in_container;
+    }
+
+    pub(crate) fn test_set_in_ssh(&mut self, in_ssh: bool) {
+        self.in_ssh = in_ssh;
+    }
+
     #[cfg(unix)]
     pub(crate) fn test_enable_kitty_source_forwarding(&self) {
         let mut core = self.terminal.ghostty.core.lock().unwrap();
@@ -4164,6 +4235,7 @@ impl PaneRuntime {
                 cwd_process_exited: Arc::new(AtomicBool::new(false)),
                 child_wait_completed: None,
                 in_container: false,
+                in_ssh: false,
                 kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
                 content_seq: Arc::new(AtomicU64::new(0)),
                 content_write_lock: Arc::new(Mutex::new(())),
@@ -5480,6 +5552,163 @@ mod tests {
         ));
     }
 
+    fn test_ssh_launch() -> crate::ssh_host::SshLaunch {
+        crate::ssh_host::SshLaunch::new("prod".into(), Some("/tmp/hssh-1/abc-%C".into()))
+            .expect("valid destination")
+    }
+
+    #[test]
+    fn ssh_shell_builder_starts_ssh_without_default_prog() {
+        let launch = test_ssh_launch();
+        for mode in [
+            crate::config::ShellModeConfig::Login,
+            crate::config::ShellModeConfig::Auto,
+            crate::config::ShellModeConfig::NonLogin,
+        ] {
+            for target in [
+                ShellLaunchTarget::OtherUnix,
+                ShellLaunchTarget::Macos,
+                ShellLaunchTarget::Windows,
+            ] {
+                let cmd = pane_shell_command_builder_for_target(
+                    PaneShellConfig::new("herdr-missing-login-shell", mode).with_ssh(Some(&launch)),
+                    target,
+                )
+                .unwrap();
+                assert!(!cmd.is_default_prog(), "{mode:?} {target:?}");
+                assert_eq!(cmd.get_argv(), &[std::ffi::OsString::from("ssh")]);
+            }
+        }
+    }
+
+    #[test]
+    fn ssh_shell_spawn_command_execs_ssh_with_control_master_in_host_cwd() {
+        let launch = test_ssh_launch();
+        let host_cwd = std::env::temp_dir();
+        let launch_env = PaneLaunchEnv::from_extra(vec![("PROJECT_MODE".into(), "dev".into())]);
+
+        for mode in [
+            crate::config::ShellModeConfig::Login,
+            crate::config::ShellModeConfig::NonLogin,
+        ] {
+            let cmd = pane_shell_spawn_command_for_target(
+                PaneShellConfig::new("/bin/sh", mode).with_ssh(Some(&launch)),
+                ShellLaunchTarget::OtherUnix,
+                &host_cwd,
+                &launch_env,
+            )
+            .unwrap();
+
+            assert_eq!(
+                argv_strings(&cmd),
+                [
+                    "ssh",
+                    "-C",
+                    "-S",
+                    "/tmp/hssh-1/abc-%C",
+                    "-o",
+                    "ControlMaster=auto",
+                    "-o",
+                    "ControlPersist=600",
+                    "-t",
+                    "prod"
+                ],
+                "{mode:?}"
+            );
+            assert_eq!(
+                cmd.get_cwd(),
+                Some(&crate::platform::normalize_cwd_for_launch(&host_cwd).into_os_string())
+            );
+            // The ssh client process itself still gets the pane terminal env.
+            assert_eq!(cmd.get_env("TERM"), Some(OsStr::new(PANE_TERM)));
+            assert_eq!(cmd.get_env("PROJECT_MODE"), Some(OsStr::new("dev")));
+        }
+    }
+
+    #[test]
+    fn launch_target_selects_exactly_one_shell_location() {
+        let container = test_container_launch();
+        let ssh = test_ssh_launch();
+        let base = PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin);
+
+        let host = base.with_launch_target(PaneLaunchTarget::Host);
+        assert!(host.container.is_none() && host.ssh.is_none());
+        let in_container = base.with_launch_target(PaneLaunchTarget::Container(&container));
+        assert_eq!(in_container.container, Some(&container));
+        assert!(in_container.ssh.is_none());
+        let over_ssh = base.with_launch_target(PaneLaunchTarget::Ssh(&ssh));
+        assert_eq!(over_ssh.ssh, Some(&ssh));
+        assert!(over_ssh.container.is_none());
+    }
+
+    #[test]
+    fn uses_windows_powershell_pane_shell_is_false_over_ssh() {
+        let launch = test_ssh_launch();
+        let pwsh = PaneShellConfig::new("pwsh.exe", crate::config::ShellModeConfig::NonLogin);
+
+        assert!(!uses_windows_powershell_pane_shell_for_target(
+            pwsh.with_ssh(Some(&launch)),
+            ShellLaunchTarget::Windows
+        ));
+    }
+
+    #[tokio::test]
+    async fn ssh_pane_accepts_reported_cwd_without_host_directory() {
+        let remote_cwd = std::path::PathBuf::from("/herdr-remote-only/home/me");
+        assert!(!remote_cwd.exists(), "test path must be absent on the host");
+        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let (events, mut event_rx) = mpsc::channel(4);
+        runtime.in_ssh = true;
+
+        publish_reported_cwd(
+            runtime.pane_id,
+            remote_cwd.clone(),
+            &runtime.reported_cwd,
+            runtime.shell_runs_off_host(),
+            &events,
+        );
+
+        assert_eq!(runtime.cwd(), Some(remote_cwd.clone()));
+        match event_rx.try_recv() {
+            Ok(AppEvent::TerminalCwdReported { cwd, .. }) => assert_eq!(cwd, remote_cwd),
+            other => panic!("expected a remote cwd report, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ssh_pane_cwd_ignores_host_process_cwd() {
+        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        runtime
+            .child_pid
+            .store(std::process::id(), Ordering::Release);
+        runtime.in_ssh = true;
+
+        assert_eq!(runtime.cwd(), None);
+        assert_eq!(runtime.follow_cwd(), None);
+        assert_eq!(runtime.foreground_cwd(), None);
+
+        let remote_cwd = std::path::PathBuf::from("/home/me/app");
+        *runtime.reported_cwd.lock().unwrap() = Some(remote_cwd.clone());
+        assert_eq!(runtime.cwd(), Some(remote_cwd.clone()));
+        assert_eq!(runtime.follow_cwd(), Some(remote_cwd.clone()));
+        assert_eq!(runtime.foreground_cwd(), Some(remote_cwd));
+    }
+
+    #[tokio::test]
+    async fn ssh_pane_persistence_cwd_never_falls_back_to_reported_remote_path() {
+        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        runtime.cwd_process_exited.store(true, Ordering::Release);
+        *runtime.reported_cwd.lock().unwrap() = Some("/home/me/app".into());
+        runtime.in_ssh = true;
+
+        assert_eq!(runtime.cwd_for_persistence(), None);
+
+        let host_cwd = std::env::temp_dir();
+        *runtime.persistence_cwd.lock().unwrap() = Some(host_cwd.clone());
+        assert_eq!(runtime.cwd_for_persistence(), Some(host_cwd));
+    }
+
     #[tokio::test]
     async fn container_pane_accepts_reported_cwd_without_host_directory() {
         let container_cwd = std::path::PathBuf::from("/herdr-container-only/work");
@@ -5788,6 +6017,7 @@ mod tests {
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
             in_container: false,
+            in_ssh: false,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
@@ -5829,6 +6059,7 @@ mod tests {
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
             in_container: false,
+            in_ssh: false,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),

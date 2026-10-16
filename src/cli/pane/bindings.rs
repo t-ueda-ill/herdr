@@ -5,12 +5,12 @@ use clap::{ArgMatches, Command};
 use crate::api::schema::panes::*;
 use crate::api::schema::{
     ContainerOpenTarget, Method, OutputMatch, PaneAgentState, PaneDirection, PaneTarget,
-    PaneWaitForOutputParams, ReadFormat, ReadSource, Request, SplitDirection, READ_FORMATS,
-    READ_SOURCES,
+    PaneWaitForOutputParams, ReadFormat, ReadSource, Request, SplitDirection, SshOpenTarget,
+    READ_FORMATS, READ_SOURCES,
 };
-use crate::cli::container::bindings::{into_method, with_container};
 pub(crate) use crate::cli::projection::parse_choice;
 use crate::cli::projection::{choices, choices_where, Choice};
+use crate::cli::ssh::bindings::{into_method, with_launch_options};
 
 pub(crate) const DIRECTIONS: &[Choice<PaneDirection>] = &[
     Choice::new("left", PaneDirection::Left),
@@ -618,7 +618,7 @@ pub(super) const LEAVES: &[Leaf] = &[
         about: "Split a pane",
         id: "cli:pane:split",
         output: Output::Json,
-        arguments: || with_container(PaneSplitProjection::arguments()),
+        arguments: || with_launch_options(PaneSplitProjection::arguments()),
         method: |matches| {
             let mut params = PaneSplitProjection::from_matches(matches)?;
             params.target_pane_id = super::caller_target(
@@ -633,6 +633,7 @@ pub(super) const LEAVES: &[Leaf] = &[
                 params,
                 Method::PaneSplit,
                 ContainerOpenTarget::Split,
+                SshOpenTarget::Split,
             )
         },
     },

@@ -1,6 +1,8 @@
 use super::*;
 
+mod list_picker_overlay;
 mod settings_overlay;
+mod ssh_host_overlays;
 mod worktree_overlays;
 
 #[derive(Default)]
@@ -79,6 +81,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::WorktreeRemove(v) => {
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
+        ClientShellOverlay::SshOpen(v) => ssh_host_overlays::render_ssh_open_overlay(b, v, p),
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
 }

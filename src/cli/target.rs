@@ -302,6 +302,7 @@ fn validate_machine_command(args: &[String]) -> Result<(), String> {
         }
         "api" => subcommand == "snapshot",
         "container" => subcommand == "list",
+        "ssh" => subcommand == "hosts",
         "status" => subcommand == "server",
         "plugin" => matches!(
             subcommand,
@@ -455,6 +456,7 @@ mod tests {
             &["api", "schema", "--output", "schema.json"],
             &["status", "client"],
             &["container", "open", "app/web"],
+            &["ssh", "open", "prod"],
         ] {
             let mut input = args(&["herdr"]);
             input.extend(args(command));
@@ -470,6 +472,7 @@ mod tests {
             &["api", "snapshot"],
             &["server", "stop"],
             &["container", "list", "--json"],
+            &["ssh", "hosts", "--json"],
         ] {
             let mut input = args(&["herdr"]);
             input.extend(args(command));

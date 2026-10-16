@@ -349,6 +349,8 @@ pub struct KeysConfig {
     pub open_worktree: BindingConfig,
     /// Delete the selected managed worktree checkout after confirmation. Unset by default.
     pub remove_worktree: BindingConfig,
+    /// Pick a Host alias from ~/.ssh/config and open it in a new workspace. Unset by default.
+    pub open_ssh_workspace: BindingConfig,
     /// Rename the selected workspace. Default: "prefix+shift+w"
     pub rename_workspace: BindingConfig,
     /// Close the selected workspace. Default: "prefix+shift+d"
@@ -385,7 +387,7 @@ pub struct KeysConfig {
     pub next_agent: BindingConfig,
     /// Focus an agent by index 1-9. Unset by default.
     pub focus_agent: BindingConfig,
-    /// Local-client shortcut that sends a clipboard image to a remote Herdr session. Default: "ctrl+v".
+    /// Local-client shortcut that sends a clipboard image to a pane that cannot read the local clipboard: a remote Herdr session, a container pane, or an SSH pane. Default: "ctrl+v".
     pub remote_image_paste: String,
     /// Create a new tab in the active workspace. Default: "prefix+c"
     pub new_tab: BindingConfig,
@@ -486,6 +488,8 @@ pub(crate) struct KeysConfigOverlay {
     open_worktree: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     remove_worktree: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_ssh_workspace: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rename_workspace: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -650,6 +654,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(new_worktree);
         apply_field!(open_worktree);
         apply_field!(remove_worktree);
+        apply_field!(open_ssh_workspace);
         apply_field!(rename_workspace);
         apply_field!(close_workspace);
         apply_field!(workspace_picker);
@@ -755,6 +760,7 @@ impl KeysConfig {
         copy_effective_action_field!(new_worktree, keybinds.new_worktree);
         copy_effective_action_field!(open_worktree, keybinds.open_worktree);
         copy_effective_action_field!(remove_worktree, keybinds.remove_worktree);
+        copy_effective_action_field!(open_ssh_workspace, keybinds.open_ssh_workspace);
         copy_effective_action_field!(rename_workspace, keybinds.rename_workspace);
         copy_effective_action_field!(close_workspace, keybinds.close_workspace);
         copy_effective_action_field!(workspace_picker, keybinds.workspace_picker);
@@ -1127,6 +1133,7 @@ impl Default for KeysConfig {
             new_worktree: BindingConfig::one("prefix+shift+g"),
             open_worktree: BindingConfig::empty(),
             remove_worktree: BindingConfig::empty(),
+            open_ssh_workspace: BindingConfig::empty(),
             rename_workspace: BindingConfig::one("prefix+shift+w"),
             close_workspace: BindingConfig::one("prefix+shift+d"),
             workspace_picker: BindingConfig::one("prefix+w"),

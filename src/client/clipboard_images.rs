@@ -54,12 +54,28 @@ pub(super) fn client_remote_image_paste_key(
     }
 }
 
+/// Whether local images must be bridged because the receiving shell cannot
+/// read this machine's clipboard: the client is remote, the endpoint is not
+/// local, or the target pane runs inside a container or as an ssh login
+/// (`target_needs_bridge`).
+/// Local host panes stay unbridged so agents keep reading the clipboard.
 pub(super) fn endpoint_accepts_local_images(
     remote_client_process: bool,
     endpoint_id: &super::endpoint::ClientEndpointId,
     active_surface_available: bool,
+    target_needs_bridge: bool,
 ) -> bool {
-    active_surface_available && (remote_client_process || !endpoint_id.is_local())
+    active_surface_available
+        && (remote_client_process || !endpoint_id.is_local() || target_needs_bridge)
+}
+
+pub(super) fn clipboard_image_target_needs_bridge(
+    shell: Option<&super::shell::ClientShellState>,
+    target: Option<&ClientClipboardImageTarget>,
+) -> bool {
+    shell
+        .zip(target)
+        .is_some_and(|(shell, target)| shell.clipboard_image_target_needs_bridge(target))
 }
 
 #[cfg(unix)]

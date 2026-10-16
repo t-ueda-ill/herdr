@@ -60,6 +60,8 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             foreground_cwd: Some("/repo".into()),
             focused: true,
             right_click_passthrough: false,
+            container: None,
+            ssh_host: None,
         }],
         agents: Vec::new(),
         commands: Vec::new(),
@@ -186,6 +188,7 @@ fn pane_scroll_result(
             restore_error: None,
             label: None,
             container: None,
+            ssh_host: None,
             agent: None,
             title: None,
             terminal_title: None,
@@ -262,4 +265,5 @@ mod link_hover;
 mod mobile;
 mod mouse_selection;
 mod popup_focus_projection;
+mod ssh_hosts;
 mod startup_overlays;

@@ -68,7 +68,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneSplitParams,
-        container: Option<&crate::container::ContainerLaunch>,
+        launch: crate::pane::PaneLaunchTarget<'_>,
     ) -> String {
         let (ws_idx, target_pane_id, split_cwd) = match self.pane_split_location(&params) {
             Ok(location) => location,
@@ -99,7 +99,7 @@ impl App {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let shell_config = crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode)
-            .with_container(container);
+            .with_launch_target(launch);
         let split_cwd = Some(split_cwd);
         let split_result = match params.ratio {
             Some(ratio) => ws.split_pane_with_ratio(

@@ -133,6 +133,7 @@ pub(crate) fn keybind_help_groups(
                     binding_label(&keybinds.remove_worktree),
                     "delete worktree checkout",
                 ),
+                entry(binding_label(&keybinds.open_ssh_workspace), "open ssh host"),
                 entry(
                     binding_label(&keybinds.rename_workspace),
                     "rename workspace",

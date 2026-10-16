@@ -101,8 +101,8 @@ impl HeadlessServer {
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.shell_endpoint_command_in_flight = true;
             // A later source restore has a new projection revision. Keep this request's lease
-            // so a delayed worktree or container response cannot focus a pane after endpoint
-            // switching.
+            // so a delayed worktree, container or ssh response cannot focus a pane after
+            // endpoint switching.
             client.shell_endpoint_command_surface_revision = Some(client.shell_projection_revision);
             let deferred_request = matches!(
                 &request.method,
@@ -112,11 +112,14 @@ impl HeadlessServer {
                     | api::schema::Method::WorktreeOpen(_)
                     | api::schema::Method::ContainerOpen(_)
                     | api::schema::Method::ContainerList(_)
+                    | api::schema::Method::SshOpen(_)
+                    | api::schema::Method::SshHosts(_)
             );
             let deferred_navigation = match &request.method {
                 api::schema::Method::WorktreeCreate(params) => params.focus,
                 api::schema::Method::WorktreeOpen(params) => params.focus,
                 api::schema::Method::ContainerOpen(params) => params.target.focus(),
+                api::schema::Method::SshOpen(params) => params.target.focus(),
                 _ => false,
             };
             client.shell_deferred_navigation_request_id =

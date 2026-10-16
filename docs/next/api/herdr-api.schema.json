@@ -835,6 +835,13 @@
                 }
               ]
             },
+            "ssh_host": {
+              "description": "`Host` alias of the user's ssh config this pane's shell connects to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "state_labels": {
               "additionalProperties": {
                 "type": "string"
@@ -3973,6 +3980,65 @@
           ],
           "type": "string"
         },
+        "SshHostsParams": {
+          "type": "object"
+        },
+        "SshOpenParams": {
+          "properties": {
+            "host": {
+              "description": "`Host` alias from the user's ssh config, optionally prefixed with `user@`.",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/SshOpenTarget"
+            }
+          },
+          "required": [
+            "host",
+            "target"
+          ],
+          "type": "object"
+        },
+        "SshOpenTarget": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "workspace": {
+                  "$ref": "#/schemas/request/$defs/WorkspaceCreateParams"
+                }
+              },
+              "required": [
+                "workspace"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "tab": {
+                  "$ref": "#/schemas/request/$defs/TabCreateParams"
+                }
+              },
+              "required": [
+                "tab"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "split": {
+                  "$ref": "#/schemas/request/$defs/PaneSplitParams"
+                }
+              },
+              "required": [
+                "split"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "Subscription": {
           "oneOf": [
             {
@@ -5226,6 +5292,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/ContainerListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "ssh.open",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SshOpenParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "ssh.hosts",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SshHostsParams"
             }
           },
           "required": [
@@ -8095,6 +8193,13 @@
                 }
               ]
             },
+            "ssh_host": {
+              "description": "`Host` alias of the user's ssh config this pane's shell connects to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "state_labels": {
               "additionalProperties": {
                 "type": "string"
@@ -9561,6 +9666,25 @@
             },
             {
               "properties": {
+                "hosts": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/SshHostInfoDto"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "ssh_hosts",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "hosts"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "tab": {
                   "$ref": "#/schemas/success_response/$defs/TabInfo"
                 },
@@ -10710,6 +10834,29 @@
             "down"
           ],
           "type": "string"
+        },
+        "SshHostInfoDto": {
+          "properties": {
+            "alias": {
+              "type": "string"
+            },
+            "hostname": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "user": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "alias"
+          ],
+          "type": "object"
         },
         "TabInfo": {
           "properties": {

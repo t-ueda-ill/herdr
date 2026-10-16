@@ -530,6 +530,41 @@ mod tests {
     }
 
     #[test]
+    fn pane_split_with_ssh_nests_the_split_params_in_ssh_open() {
+        use serde_json::json;
+        for values in [
+            vec!["w1:p1", "--direction", "right", "--ssh", "prod"],
+            vec!["--pane", "w1:p1", "--direction", "right", "--ssh=prod"],
+        ] {
+            assert_eq!(
+                serde_json::to_value(request("split", &values).unwrap()).unwrap(),
+                json!({
+                    "id": "cli:pane:split", "method": "ssh.open",
+                    "params": {
+                        "host": "prod",
+                        "target": {"split": {
+                            "target_pane_id": "w1:p1", "direction": "right",
+                            "focus": false, "right_click": "herdr"
+                        }}
+                    }
+                }),
+                "{values:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pane_split_rejects_ssh_with_container() {
+        assert!(matches!(
+            request(
+                "split",
+                &["w1:p1", "--direction", "right", "--ssh", "prod", "--container", "app/web"]
+            ),
+            Err(ParseError::Clap(error)) if error.exit_code() == 2
+        ));
+    }
+
+    #[test]
     fn pane_split_without_container_stays_a_plain_split() {
         let json =
             serde_json::to_value(request("split", &["w1:p1", "--direction", "right"]).unwrap())

@@ -26,6 +26,9 @@ fn spawned_terminal_state(
     if let Some(launch) = shell_config.container {
         terminal = terminal.with_container(launch.clone());
     }
+    if let Some(launch) = shell_config.ssh {
+        terminal = terminal.with_ssh(launch.clone());
+    }
     terminal
 }
 
@@ -559,8 +562,9 @@ impl Tab {
     }
 
     /// Why not reuse `cwd_for_pane`: it reports the shell's own location, which
-    /// for container panes is a path inside the container. Host launches need
-    /// the host directory the pane was started from instead.
+    /// for container and ssh panes is a path inside the container or on the
+    /// remote host. Host launches need the host directory the pane was started
+    /// from instead.
     pub fn host_cwd_for_pane(
         &self,
         pane_id: PaneId,
@@ -570,7 +574,7 @@ impl Tab {
         let terminal_id = self.terminal_id(pane_id)?;
         let terminal = terminals.get(terminal_id);
         crate::terminal::inherited_cwd(
-            terminal.is_some_and(|terminal| terminal.container.is_some()),
+            terminal.is_some_and(TerminalState::shell_runs_off_host),
             terminal_runtimes.get(terminal_id).and_then(|rt| rt.cwd()),
             terminal.map(|terminal| terminal.cwd.clone()),
         )
@@ -642,6 +646,47 @@ mod tests {
         );
     }
 
+    fn ssh_launch() -> crate::ssh_host::SshLaunch {
+        crate::ssh_host::SshLaunch::new("prod".into(), Some(PathBuf::from("/tmp/ctl-%C")))
+            .expect("valid destination")
+    }
+
+    #[test]
+    fn spawned_terminal_state_keeps_shell_config_ssh_launch() {
+        let launch = ssh_launch();
+        let shell_config =
+            crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin);
+
+        let terminal = spawned_terminal_state(
+            TerminalId::alloc(),
+            PathBuf::from("/host"),
+            None,
+            shell_config.with_ssh(Some(&launch)),
+        );
+
+        assert_eq!(terminal.ssh, Some(launch));
+        assert_eq!(terminal.container, None);
+        assert_eq!(terminal.cwd, PathBuf::from("/host"));
+    }
+
+    #[test]
+    fn host_cwd_for_pane_uses_launch_cwd_for_ssh_terminals() {
+        let workspace = crate::workspace::Workspace::test_new("host-cwd");
+        let tab = &workspace.tabs[0];
+        let terminal_id = tab.terminal_id(tab.root_pane).cloned().unwrap();
+        let mut terminals = HashMap::new();
+        terminals.insert(
+            terminal_id.clone(),
+            TerminalState::new(terminal_id, PathBuf::from("/host")).with_ssh(ssh_launch()),
+        );
+        let runtimes = TerminalRuntimeRegistry::new();
+
+        assert_eq!(
+            tab.host_cwd_for_pane(tab.root_pane, &terminals, &runtimes),
+            Some(PathBuf::from("/host"))
+        );
+    }
+
     #[test]
     fn spawned_terminal_state_without_container_keeps_launch_argv_only() {
         let argv = vec!["claude".to_string()];
@@ -653,6 +698,7 @@ mod tests {
         );
 
         assert_eq!(terminal.container, None);
+        assert_eq!(terminal.ssh, None);
         assert_eq!(terminal.launch_argv, Some(argv));
     }
 }

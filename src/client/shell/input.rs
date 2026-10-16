@@ -580,6 +580,11 @@ impl ClientShellState {
                         ..
                     }
                 ))
+                | Some(ClientShellOverlay::SshOpen(ClientSshOpenOverlay {
+                    search_focused: true,
+                    opening: false,
+                    ..
+                }))
                 | Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
                     search_focused: true,
                     ..
@@ -1121,6 +1126,23 @@ impl ClientShellState {
         }
         self.focused_pane_id()
             .map(crate::protocol::ClientClipboardImageTarget::Pane)
+    }
+
+    /// Container and ssh panes cannot read this machine's clipboard even
+    /// through a local endpoint. Popups always run a host shell, so they never
+    /// qualify.
+    pub(crate) fn clipboard_image_target_needs_bridge(
+        &self,
+        target: &crate::protocol::ClientClipboardImageTarget,
+    ) -> bool {
+        let crate::protocol::ClientClipboardImageTarget::Pane(pane_id) = target else {
+            return false;
+        };
+        self.snapshot.as_deref().is_some_and(|snapshot| {
+            snapshot.panes.iter().any(|pane| {
+                &pane.pane_id == pane_id && (pane.container.is_some() || pane.ssh_host.is_some())
+            })
+        })
     }
 
     /// The tracked press for a release. A press that arrived as text ("A") is

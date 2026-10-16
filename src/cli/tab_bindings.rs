@@ -3,10 +3,10 @@ use clap::Command;
 use crate::api::schema::tabs::{
     tab_id, TabCreateProjection, TabListProjection, TabRenameProjection,
 };
-use crate::api::schema::{ContainerOpenTarget, Method, Request, TabTarget};
+use crate::api::schema::{ContainerOpenTarget, Method, Request, SshOpenTarget, TabTarget};
 
-use super::super::container::bindings::{into_method, with_container};
 use super::super::projection::{self, cli_projection, Field, Leaf, ParseError};
+use super::super::ssh::bindings::{into_method, with_launch_options};
 
 cli_projection! {
     pub(crate) TabTargetProjection for TabTarget {
@@ -26,13 +26,14 @@ const LEAVES: [Leaf; 6] = [
         name: "create",
         about: "Create a tab",
         id: "cli:tab:create",
-        arguments: || with_container(TabCreateProjection::arguments()),
+        arguments: || with_launch_options(TabCreateProjection::arguments()),
         method: |matches| {
             into_method(
                 matches,
                 TabCreateProjection::from_matches(matches)?,
                 Method::TabCreate,
                 ContainerOpenTarget::Tab,
+                SshOpenTarget::Tab,
             )
         },
     },
@@ -191,6 +192,30 @@ mod tests {
                 "id": "cli:tab:create", "method": "tab.create",
                 "params": {"workspace_id": "w1", "focus": false}
             })
+        );
+    }
+
+    #[test]
+    fn tab_create_with_ssh_nests_the_create_params_in_ssh_open() {
+        assert_eq!(
+            serde_json::to_value(
+                parse(&["create", "--workspace", "w1", "--ssh", "deploy@prod"]).unwrap()
+            )
+            .unwrap(),
+            serde_json::json!({
+                "id": "cli:tab:create", "method": "ssh.open",
+                "params": {
+                    "host": "deploy@prod",
+                    "target": {"tab": {"workspace_id": "w1", "focus": false}}
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn tab_create_rejects_ssh_with_container() {
+        assert!(
+            matches!(parse(&["create", "--ssh", "prod", "--container", "worker"]), Err(ParseError::Clap(error)) if error.exit_code() == 2)
         );
     }
 

@@ -76,7 +76,7 @@ impl App {
         &mut self,
         id: String,
         params: TabCreateParams,
-        container: Option<&crate::container::ContainerLaunch>,
+        launch: crate::pane::PaneLaunchTarget<'_>,
     ) -> String {
         let TabCreateParams {
             workspace_id,
@@ -113,7 +113,7 @@ impl App {
                     host_terminal_theme,
                     host_terminal_appearance,
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode)
-                        .with_container(container),
+                        .with_launch_target(launch),
                     extra_env,
                 )
             });
@@ -492,7 +492,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
-            None,
+            crate::pane::PaneLaunchTarget::Host,
         );
 
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();

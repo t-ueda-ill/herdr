@@ -156,7 +156,7 @@ Use `default` as the session name when you need to stop the default session expl
 
 ```bash
 herdr workspace list
-herdr workspace create [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr workspace create [--container REF] [--ssh HOST] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
@@ -191,7 +191,7 @@ Git rejects repositories owned by another user by default. If you have independe
 
 ```bash
 herdr tab list [--workspace <workspace_id>]
-herdr tab create [--workspace <workspace_id>] [--container REF] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr tab create [--workspace <workspace_id>] [--container REF] [--ssh HOST] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
@@ -219,7 +219,7 @@ herdr pane resize --direction left|right|up|down [--amount FLOAT] [--pane ID|--c
 herdr pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]
 herdr pane rename <pane_id> <label>|--clear
 herdr pane input [<pane_id>|--pane ID|--current] --right-click herdr|pane
-herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus]
+herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--ssh HOST] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus]
 herdr pane swap --direction left|right|up|down [--pane ID|--current]
 herdr pane swap --source-pane ID --target-pane ID
 herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]
@@ -359,6 +359,30 @@ herdr tab create --container myapp/web --label web
 An unknown or stopped container returns `container_not_found`. A missing Docker CLI, a failing daemon, or a call that exceeds 5 seconds returns `container_unavailable`. Windows hosts return `platform_unsupported`.
 
 Session restore keeps the container reference but starts a plain host shell; re-attaching is not implemented yet. `agent start --container` is not supported.
+
+## SSH hosts
+
+```bash
+herdr workspace create --ssh HOST [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr tab create --ssh HOST [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
+herdr pane split --ssh HOST [<pane_id>|--pane ID|--current] --direction right|down [--env KEY=VALUE]
+herdr ssh hosts [--json]
+```
+
+`--ssh HOST` opens the new shell on a remote host over SSH instead of on the local machine. `HOST` is a `Host` alias from your `~/.ssh/config`, optionally written as `user@alias`. It cannot be combined with `--container`. The pane runs `ssh -C -S <herdr control path> -o ControlMaster=auto -o ControlPersist=600 -t HOST`, so your own SSH config applies unchanged: Herdr does not pass `-F`. Password, passphrase, and host-key prompts appear in the pane. `HERDR_*` environment variables are not forwarded to the remote shell; `ssh` itself sends `TERM`. The remote host does not need Herdr installed, unlike [saved SSH machines](#saved-ssh-machines) and `herdr --remote`, which run a Herdr server remotely.
+
+`ssh hosts` lists the literal `Host` aliases of `~/.ssh/config` in file order, as a table with `alias`, `hostname`, and `user` columns (`-` when unknown), or the raw response with `--json`. Patterns containing `*` or `?` and negated `!` patterns are skipped. `Include` is followed; relative paths resolve against `~/.ssh/` and globs are allowed. An empty config prints `No ssh hosts in ~/.ssh/config.`. Errors are printed as the JSON error on stderr.
+
+```bash
+herdr ssh hosts
+herdr tab create --ssh deploy@prod --label prod
+```
+
+Only aliases present in `~/.ssh/config` can be opened; an unknown name is rejected before any pane is created. Pane info from `pane get` and `pane list` carries `ssh_host`, the alias without any `user@` prefix. Session restore keeps the SSH host, but after a server restart the pane starts a plain local shell and keeps `ssh_host`; Herdr does not reconnect automatically. Windows hosts return `platform_unsupported`.
+
+In the TUI, choose `open ssh host` from the global menu, or bind `keys.open_ssh_workspace` (unset by default), to pick an alias from the same list. `/` filters, Enter opens the host in a new focused workspace named after the alias, and Esc closes the picker. A server too old to list SSH hosts shows an `Action unavailable` notice instead.
+
+Clipboard images pasted into an SSH pane are copied over the pane's own SSH connection, so they require SSH connection sharing (ControlMaster); without it, the paste is rejected with a notice.
 
 ## Agents
 

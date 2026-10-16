@@ -357,6 +357,7 @@ pub struct Keybinds {
     pub new_worktree: ActionKeybinds,
     pub open_worktree: ActionKeybinds,
     pub remove_worktree: ActionKeybinds,
+    pub open_ssh_workspace: ActionKeybinds,
     pub rename_workspace: ActionKeybinds,
     pub close_workspace: ActionKeybinds,
     pub workspace_picker: ActionKeybinds,
@@ -540,6 +541,7 @@ impl Config {
             new_worktree: empty_action!(),
             open_worktree: empty_action!(),
             remove_worktree: empty_action!(),
+            open_ssh_workspace: empty_action!(),
             rename_workspace: empty_action!(),
             close_workspace: empty_action!(),
             workspace_picker: empty_action!(),
@@ -669,6 +671,7 @@ impl Config {
             apply_action!(keybinds.new_worktree, new_worktree, source);
             apply_action!(keybinds.open_worktree, open_worktree, source);
             apply_action!(keybinds.remove_worktree, remove_worktree, source);
+            apply_action!(keybinds.open_ssh_workspace, open_ssh_workspace, source);
             apply_action!(keybinds.rename_workspace, rename_workspace, source);
             apply_action!(keybinds.close_workspace, close_workspace, source);
             apply_action!(keybinds.workspace_picker, workspace_picker, source);
@@ -1692,6 +1695,19 @@ next_tab = "prefix+n"
         let kb = Config::default().keybinds();
         assert!(kb.open_worktree.bindings.is_empty());
         assert!(kb.remove_worktree.bindings.is_empty());
+    }
+
+    #[test]
+    fn open_ssh_workspace_keybind_is_unset_by_default_and_configurable() {
+        assert!(Config::default()
+            .keybinds()
+            .open_ssh_workspace
+            .bindings
+            .is_empty());
+
+        let config: Config = toml::from_str("[keys]\nopen_ssh_workspace = \"f9\"\n")
+            .expect("open_ssh_workspace parses");
+        assert!(!config.keybinds().open_ssh_workspace.bindings.is_empty());
     }
 
     #[test]

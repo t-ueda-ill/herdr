@@ -134,6 +134,8 @@ Herdr 的窗格文本复制在 Windows 上可用。在窗格内拖选文本即�
 | --- | --- |
 | 直接终端附加 (`herdr terminal attach`) | 不支持 |
 | 容器 shell (`--container`、`herdr container`) | 不支持 |
+| 容器窗格的剪贴板图像桥 | 不支持 |
+| SSH 窗格 (`--ssh`、`herdr ssh`) | 不支持 |
 | 实时服务器交接 | 不支持 |
 | Unix 文件描述符交接 | 不支持 |
 | Unix 前台进程组 | 不支持 |
@@ -141,6 +143,8 @@ Herdr 的窗格文本复制在 Windows 上可用。在窗格内拖选文本即�
 | 签名二进制 / 规避 SmartScreen | 不支持 |
 
 容器 shell 需要 Unix 主机;在 Windows 上返回 `platform_unsupported`。
+
+SSH 窗格需要 OpenSSH 的 ControlMaster,而 Windows OpenSSH 不提供;在 Windows 上返回 `platform_unsupported`。
 
 在 Windows Terminal 中,使用与 Linux 和 macOS 相同的远程命令:
 

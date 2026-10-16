@@ -11,5 +11,6 @@ mod plugins;
 mod protocol;
 mod protocol_guard;
 mod sessions;
+mod ssh_hosts;
 mod surface;
 mod workspace;
