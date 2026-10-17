@@ -159,6 +159,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # open_worktree = ""    # optional, unset by default
 # remove_worktree = ""  # optional, unset by default; opens confirmation
 # open_ssh_workspace = "" # optional, unset by default; picks a Host from ~/.ssh/config
+# open_container_workspace = "" # optional, unset by default; picks a running Docker container
 # rename_workspace = "prefix+shift+w"
 # close_workspace = "prefix+shift+d"
 # previous_workspace = "" # optional, unset by default

@@ -253,6 +253,7 @@ mod agents_worktrees_notifications;
 mod chrome_context;
 mod close_pane;
 mod close_tab;
+mod containers;
 mod copy;
 mod endpoint_requests;
 mod endpoints;

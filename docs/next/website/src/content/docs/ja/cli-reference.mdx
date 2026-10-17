@@ -330,6 +330,8 @@ herdr container list [--workspace ID] [--json]
 
 `container list` は実行中のコンテナを表で表示します。`--json` を付けると生の応答を表示します。Compose の `working_dir` または `config_files` がワークスペースのリポジトリルートと一致するコンテナには、その `workspace_id` が付きます。`--workspace ID` を指定すると、一致するものだけを表示します。`herdr.default` ラベルのコンテナは先頭に並びます。
 
+TUI では、グローバルメニューの `open container`、または `keys.open_container_workspace`（既定では未設定）に割り当てたキーから、実行中のコンテナを選べます。`/` で絞り込み、Enter でコンテナ名の新しいワークスペースを開いてコンテナ内のシェルにフォーカスし、Esc でピッカーを閉じます。コンテナを一覧できない古いサーバーでは、代わりに `Action unavailable` の通知が出ます。
+
 ```bash
 herdr container list
 herdr tab create --container myapp/web --label web

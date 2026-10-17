@@ -106,13 +106,13 @@ fn ssh_picker_lists_configured_hosts_with_their_destinations() {
 
     open_picker(&mut state);
 
-    let Some(ClientShellOverlay::SshOpen(open)) = &state.overlay else {
+    let Some(ClientShellOverlay::OpenPicker(open)) = &state.overlay else {
         panic!("the listing should open the ssh host picker");
     };
     let shown: Vec<(&str, &str)> = open
         .entries
         .iter()
-        .map(|entry| (entry.alias.as_str(), entry.detail.as_str()))
+        .map(|entry| (entry.title.as_str(), entry.detail.as_str()))
         .collect();
     assert_eq!(
         shown,
@@ -139,7 +139,7 @@ fn ssh_picker_enter_opens_the_selected_host_in_a_new_named_workspace() {
     assert_ssh_open_request(&open.actions, "lab");
     assert!(matches!(
         &state.overlay,
-        Some(ClientShellOverlay::SshOpen(open)) if open.opening
+        Some(ClientShellOverlay::OpenPicker(open)) if open.opening
     ));
     let [ClientShellAction::Endpoint { request, .. }] = &open.actions[..] else {
         unreachable!();
@@ -216,7 +216,7 @@ fn ssh_picker_keeps_the_rejection_and_allows_another_choice() {
         actions.is_empty(),
         "a rejection must not retry automatically"
     );
-    let Some(ClientShellOverlay::SshOpen(picker)) = &state.overlay else {
+    let Some(ClientShellOverlay::OpenPicker(picker)) = &state.overlay else {
         panic!("a rejected open keeps the picker");
     };
     assert!(!picker.opening);

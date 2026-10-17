@@ -330,6 +330,8 @@ herdr container list [--workspace ID] [--json]
 
 `container list` 以表格显示正在运行的容器,加 `--json` 则输出原始响应。Compose 的 `working_dir` 或 `config_files` 与工作区仓库根目录一致的容器会带上该 `workspace_id`;`--workspace ID` 只显示这些容器。带 `herdr.default` 标签的容器排在最前。
 
+在 TUI 中,可以从全局菜单选择 `open container`,或为 `keys.open_container_workspace`(默认未设置)绑定按键,选择正在运行的容器。`/` 用于筛选,Enter 会在以容器名命名的新工作区中打开该容器内的 shell 并聚焦,Esc 关闭选择器。服务器版本过旧、无法列出容器时,会改为显示 `Action unavailable` 通知。
+
 ```bash
 herdr container list
 herdr tab create --container myapp/web --label web

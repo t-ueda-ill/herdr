@@ -351,6 +351,8 @@ herdr container list [--workspace ID] [--json]
 
 `container list` prints the running containers as a table, or the raw response with `--json`. A container whose Compose `working_dir` or `config_files` matches a workspace's repository root carries that `workspace_id`; `--workspace ID` keeps only those. A container labeled `herdr.default` is listed first.
 
+In the TUI, choose `open container` from the global menu, or bind `keys.open_container_workspace` (unset by default), to pick a running container. `/` filters, Enter opens a shell in the container in a new focused workspace named after the container, and Esc closes the picker. A server too old to list containers shows an `Action unavailable` notice instead.
+
 ```bash
 herdr container list
 herdr tab create --container myapp/web --label web

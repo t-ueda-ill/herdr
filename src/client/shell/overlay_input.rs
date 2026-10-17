@@ -445,7 +445,7 @@ impl ClientShellState {
     }
 
     pub(super) fn insert_overlay_text(&mut self, text: &str) -> bool {
-        if self.insert_worktree_overlay_text(text) || self.insert_ssh_overlay_text(text) {
+        if self.insert_worktree_overlay_text(text) || self.insert_open_picker_overlay_text(text) {
             return true;
         }
         match self.overlay.as_mut() {
@@ -625,7 +625,8 @@ impl ClientShellState {
             return;
         }
 
-        if self.route_worktree_overlay_key(key, outcome) || self.route_ssh_overlay_key(key, outcome)
+        if self.route_worktree_overlay_key(key, outcome)
+            || self.route_open_picker_overlay_key(key, outcome)
         {
             return;
         }

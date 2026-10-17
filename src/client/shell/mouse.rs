@@ -1519,22 +1519,22 @@ impl ClientShellState {
             }
             return;
         }
-        if matches!(self.overlay, Some(ClientShellOverlay::SshOpen(_))) {
-            // The ssh picker renders through the shared list picker, so its
+        if matches!(self.overlay, Some(ClientShellOverlay::OpenPicker(_))) {
+            // The open picker renders through the shared list picker, so its
             // rows and filter land in the worktree picker's hit slots.
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
-                    self.move_ssh_open_selection(-1);
+                    self.move_open_picker_selection(-1);
                     outcome.repaint = true;
                 }
                 MouseEventKind::ScrollDown => {
-                    self.move_ssh_open_selection(1);
+                    self.move_open_picker_selection(1);
                     outcome.repaint = true;
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
                     let opening = matches!(
                         self.overlay,
-                        Some(ClientShellOverlay::SshOpen(ClientSshOpenOverlay {
+                        Some(ClientShellOverlay::OpenPicker(ClientOpenPickerOverlay {
                             opening: true,
                             ..
                         }))
@@ -1545,7 +1545,7 @@ impl ClientShellState {
                             outcome.repaint = true;
                         }
                     } else if super::contains(self.hits.worktree_search, point) {
-                        if let Some(ClientShellOverlay::SshOpen(open)) = self.overlay.as_mut() {
+                        if let Some(ClientShellOverlay::OpenPicker(open)) = self.overlay.as_mut() {
                             open.search_focused = true;
                             outcome.repaint = true;
                         }
@@ -1556,14 +1556,14 @@ impl ClientShellState {
                         .find(|(rect, _)| super::contains(*rect, point))
                         .copied()
                     {
-                        if let Some(ClientShellOverlay::SshOpen(open)) = self.overlay.as_mut() {
+                        if let Some(ClientShellOverlay::OpenPicker(open)) = self.overlay.as_mut() {
                             if !open.opening {
                                 open.selected = index;
                             }
                         }
-                        self.submit_ssh_open(outcome);
+                        self.submit_open_picker(outcome);
                     } else if super::contains(self.hits.overlay_primary, point) {
-                        self.submit_ssh_open(outcome);
+                        self.submit_open_picker(outcome);
                     }
                 }
                 _ => {}

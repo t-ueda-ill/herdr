@@ -351,6 +351,8 @@ pub struct KeysConfig {
     pub remove_worktree: BindingConfig,
     /// Pick a Host alias from ~/.ssh/config and open it in a new workspace. Unset by default.
     pub open_ssh_workspace: BindingConfig,
+    /// Pick a running Docker container and open a shell in it in a new workspace. Unset by default.
+    pub open_container_workspace: BindingConfig,
     /// Rename the selected workspace. Default: "prefix+shift+w"
     pub rename_workspace: BindingConfig,
     /// Close the selected workspace. Default: "prefix+shift+d"
@@ -490,6 +492,8 @@ pub(crate) struct KeysConfigOverlay {
     remove_worktree: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     open_ssh_workspace: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_container_workspace: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rename_workspace: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -655,6 +659,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(open_worktree);
         apply_field!(remove_worktree);
         apply_field!(open_ssh_workspace);
+        apply_field!(open_container_workspace);
         apply_field!(rename_workspace);
         apply_field!(close_workspace);
         apply_field!(workspace_picker);
@@ -761,6 +766,7 @@ impl KeysConfig {
         copy_effective_action_field!(open_worktree, keybinds.open_worktree);
         copy_effective_action_field!(remove_worktree, keybinds.remove_worktree);
         copy_effective_action_field!(open_ssh_workspace, keybinds.open_ssh_workspace);
+        copy_effective_action_field!(open_container_workspace, keybinds.open_container_workspace);
         copy_effective_action_field!(rename_workspace, keybinds.rename_workspace);
         copy_effective_action_field!(close_workspace, keybinds.close_workspace);
         copy_effective_action_field!(workspace_picker, keybinds.workspace_picker);
@@ -1134,6 +1140,7 @@ impl Default for KeysConfig {
             open_worktree: BindingConfig::empty(),
             remove_worktree: BindingConfig::empty(),
             open_ssh_workspace: BindingConfig::empty(),
+            open_container_workspace: BindingConfig::empty(),
             rename_workspace: BindingConfig::one("prefix+shift+w"),
             close_workspace: BindingConfig::one("prefix+shift+d"),
             workspace_picker: BindingConfig::one("prefix+w"),

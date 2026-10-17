@@ -530,6 +530,12 @@
           "description": "Pick a Host alias from ~/.ssh/config and open it in a new workspace. Unset by default."
         },
         {
+          "key": "keys.open_container_workspace",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Pick a running Docker container and open a shell in it in a new workspace. Unset by default."
+        },
+        {
           "key": "keys.rename_workspace",
           "type": "keybinding",
           "default": "\"prefix+shift+w\"",

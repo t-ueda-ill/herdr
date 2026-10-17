@@ -1,17 +1,31 @@
 use super::*;
 
-pub(super) fn render_ssh_open_overlay(
+pub(super) fn render_open_picker_overlay(
     b: &mut Buffer,
-    open: &ClientSshOpenOverlay,
+    open: &ClientOpenPickerOverlay,
     p: &Palette,
 ) -> Option<OverlayRender> {
+    let (title, filter_hint, count_noun, empty_message) = match open.source {
+        OpenPickerSource::SshHost => (
+            "open ssh host",
+            "filter hosts",
+            "hosts",
+            " no matching hosts",
+        ),
+        OpenPickerSource::Container => (
+            "open container",
+            "filter containers",
+            "containers",
+            " no matching containers",
+        ),
+    };
     super::list_picker_overlay::render_list_picker_overlay(
         b,
         &super::list_picker_overlay::ListPicker {
-            title: "open ssh host",
-            filter_hint: "filter hosts",
-            count_noun: "hosts",
-            empty_message: " no matching hosts",
+            title,
+            filter_hint,
+            count_noun,
+            empty_message,
             total: open.entries.len(),
             filtered: open.filtered_indices(),
             selected: open.selected,
@@ -23,8 +37,8 @@ pub(super) fn render_ssh_open_overlay(
         |index| {
             let entry = &open.entries[index];
             super::list_picker_overlay::PickerRow {
-                title: &entry.alias,
-                status: "",
+                title: &entry.title,
+                status: entry.status,
                 detail: &entry.detail,
             }
         },

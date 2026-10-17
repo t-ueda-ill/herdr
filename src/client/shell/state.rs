@@ -288,7 +288,7 @@ pub(super) enum ClientShellOverlayKind {
     WorktreeCreate,
     WorktreeOpen,
     WorktreeRemove,
-    SshOpen,
+    OpenPicker,
     ContextMenu,
     GlobalMenu,
     Settings,
@@ -500,36 +500,77 @@ impl ClientWorktreeOpenOverlay {
     }
 }
 
+/// What the shared open picker lists and which endpoint method opens a choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OpenPickerSource {
+    SshHost,
+    Container,
+}
+
+impl OpenPickerSource {
+    pub(super) fn for_action(action: crate::input::KeybindAction) -> Option<Self> {
+        match action {
+            crate::input::KeybindAction::OpenSshWorkspace => Some(Self::SshHost),
+            crate::input::KeybindAction::OpenContainerWorkspace => Some(Self::Container),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-pub(super) struct ClientSshHostEntry {
-    pub(super) alias: String,
-    /// Where the alias connects, as far as its own `Host` block says.
+pub(super) struct ClientOpenPickerEntry {
+    /// What the open method expects: an ssh alias or a container reference.
+    pub(super) id: String,
+    pub(super) title: String,
+    pub(super) status: &'static str,
     pub(super) detail: String,
 }
 
-impl ClientSshHostEntry {
-    pub(super) fn new(alias: String, hostname: Option<String>, user: Option<String>) -> Self {
+impl ClientOpenPickerEntry {
+    pub(super) fn ssh_host(alias: String, hostname: Option<String>, user: Option<String>) -> Self {
         // ssh connects to the alias itself when the block names no HostName.
         let detail = match (user, hostname) {
             (Some(user), hostname) => format!("{user}@{}", hostname.as_deref().unwrap_or(&alias)),
             (None, Some(hostname)) => hostname,
             (None, None) => String::new(),
         };
-        Self { alias, detail }
+        Self {
+            id: alias.clone(),
+            title: alias,
+            status: "",
+            detail,
+        }
+    }
+
+    pub(super) fn container(info: crate::api::schema::ContainerInfoDto) -> Self {
+        let detail = match (info.project, info.service, info.working_dir) {
+            (Some(project), Some(service), _) => format!("{project}/{service}"),
+            (_, _, Some(working_dir)) => working_dir,
+            _ => info.id.chars().take(12).collect(),
+        };
+        Self {
+            // The reference, not the name: it is what `container.open` resolves,
+            // and a Compose service is only addressable as project/service.
+            id: info.reference,
+            title: info.name,
+            status: if info.is_default { "default" } else { "" },
+            detail,
+        }
     }
 
     pub(super) fn matches_query(&self, query: &str) -> bool {
         let query = query.trim().to_lowercase();
         query.is_empty()
-            || format!("{} {}", self.alias, self.detail)
+            || format!("{} {}", self.title, self.detail)
                 .to_lowercase()
                 .contains(&query)
     }
 }
 
 #[derive(Debug)]
-pub(super) struct ClientSshOpenOverlay {
-    pub(super) entries: Vec<ClientSshHostEntry>,
+pub(super) struct ClientOpenPickerOverlay {
+    pub(super) source: OpenPickerSource,
+    pub(super) entries: Vec<ClientOpenPickerEntry>,
     pub(super) selected: usize,
     pub(super) query: TextEditor,
     pub(super) search_focused: bool,
@@ -537,7 +578,7 @@ pub(super) struct ClientSshOpenOverlay {
     pub(super) opening: bool,
 }
 
-impl ClientSshOpenOverlay {
+impl ClientOpenPickerOverlay {
     pub(super) fn filtered_indices(&self) -> Vec<usize> {
         self.entries
             .iter()
@@ -647,7 +688,7 @@ pub(super) enum ClientShellOverlay {
     WorktreeCreate(ClientWorktreeCreateOverlay),
     WorktreeOpen(ClientWorktreeOpenOverlay),
     WorktreeRemove(ClientWorktreeRemoveOverlay),
-    SshOpen(ClientSshOpenOverlay),
+    OpenPicker(ClientOpenPickerOverlay),
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
@@ -666,7 +707,7 @@ impl ClientShellOverlay {
             Self::WorktreeCreate(_) => ClientShellOverlayKind::WorktreeCreate,
             Self::WorktreeOpen(_) => ClientShellOverlayKind::WorktreeOpen,
             Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
-            Self::SshOpen(_) => ClientShellOverlayKind::SshOpen,
+            Self::OpenPicker(_) => ClientShellOverlayKind::OpenPicker,
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
@@ -700,8 +741,8 @@ pub(super) enum PendingEndpointKind {
     WorktreeRemove {
         forced: bool,
     },
-    PrepareSshOpen,
-    SshOpen,
+    PrepareOpenPicker(OpenPickerSource),
+    OpenPicker,
     SelectionCopy,
     PaneScroll {
         pane_id: String,

@@ -580,7 +580,7 @@ impl ClientShellState {
                         ..
                     }
                 ))
-                | Some(ClientShellOverlay::SshOpen(ClientSshOpenOverlay {
+                | Some(ClientShellOverlay::OpenPicker(ClientOpenPickerOverlay {
                     search_focused: true,
                     opening: false,
                     ..
