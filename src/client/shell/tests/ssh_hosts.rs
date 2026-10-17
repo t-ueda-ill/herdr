@@ -157,11 +157,21 @@ fn ssh_picker_filter_narrows_hosts_and_enter_opens_the_match() {
     let mut state = shell_state();
     open_picker(&mut state);
 
-    state.handle_input_bytes(b"/");
     state.handle_input_bytes(b"stag");
     let open = state.handle_input_bytes(b"\r");
 
     assert_ssh_open_request(&open.actions, "staging");
+}
+
+#[test]
+fn ssh_picker_moves_the_selection_with_ctrl_keys_while_typing() {
+    let mut state = shell_state();
+    open_picker(&mut state);
+
+    state.handle_input_bytes(b"\x0e");
+    let open = state.handle_input_bytes(b"\r");
+
+    assert_ssh_open_request(&open.actions, "lab");
 }
 
 #[test]

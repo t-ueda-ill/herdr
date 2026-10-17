@@ -189,9 +189,12 @@ pub(super) fn snapshot_with_completions(
             let (container, ssh_host) = match runtime_pane.and_then(|(workspace_index, pane_id)| {
                 running_pane_off_host_shell(app, workspace_index, pane_id)
             }) {
-                Some(RunningOffHostShell::Container(launch)) => {
-                    (Some(launch.canonical.clone()), None)
-                }
+                // A remote container also names its host, so clients can tell
+                // it from a local one.
+                Some(RunningOffHostShell::Container(launch)) => (
+                    Some(launch.canonical.clone()),
+                    launch.ssh.as_ref().map(|ssh| ssh.canonical.clone()),
+                ),
                 Some(RunningOffHostShell::Ssh(launch)) => (None, Some(launch.canonical.clone())),
                 None => (None, None),
             };

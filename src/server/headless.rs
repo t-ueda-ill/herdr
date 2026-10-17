@@ -1177,13 +1177,34 @@ impl HeadlessServer {
         target: &protocol::ClientClipboardImageTarget,
     ) -> Result<crate::server::clipboard_image::StageTarget, String> {
         use super::client_shell::RunningOffHostShell;
-        use crate::server::clipboard_image::{OffHostTarget, StageTarget};
+        use crate::server::clipboard_image::{
+            OffHostTarget, RemoteDockerHost as OffHostSsh, StageTarget,
+        };
         match self.client_clipboard_image_off_host_shell(client_id, target) {
             None => Ok(StageTarget::Host),
             Some(RunningOffHostShell::Container(launch)) => {
+                // Why not stage into the local docker when the connection is
+                // not shared: the id lives on the ssh host, and the stage
+                // CLI could not log in without a prompt.
+                let ssh =
+                    match &launch.ssh {
+                        None => None,
+                        Some(ssh) => match &ssh.control_path {
+                            Some(control_path) => Some(OffHostSsh {
+                                host: ssh.host.clone(),
+                                control_path: control_path.clone(),
+                            }),
+                            None => return Err(
+                                "Image could not be copied into the container on the ssh host: \
+                                 the connection is not shared (ControlMaster unavailable)"
+                                    .to_owned(),
+                            ),
+                        },
+                    };
                 Ok(StageTarget::OffHost(OffHostTarget::Container {
                     id: launch.id.clone(),
                     user: launch.user.clone(),
+                    ssh,
                 }))
             }
             // Why not stage on the host without a master: the remote shell

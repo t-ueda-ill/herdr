@@ -1541,7 +1541,7 @@ impl ClientShellState {
                     );
                     if super::contains(self.hits.overlay_cancel, point) {
                         if !opening {
-                            self.overlay = None;
+                            self.cancel_open_picker();
                             outcome.repaint = true;
                         }
                     } else if super::contains(self.hits.worktree_search, point) {

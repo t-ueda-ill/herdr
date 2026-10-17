@@ -307,17 +307,6 @@ fn workspace_legacy_rejections_do_not_connect() {
             "error: a value is required for '--ssh <HOST>' but none was supplied",
         ),
         (
-            vec![
-                "workspace",
-                "create",
-                "--ssh",
-                "prod",
-                "--container",
-                "shop/web",
-            ],
-            "error: the argument '--ssh <HOST>' cannot be used with '--container <REF>'",
-        ),
-        (
             vec!["workspace", "close", "w1", "extra"],
             "error: unexpected argument 'extra' found",
         ),
@@ -596,6 +585,21 @@ fn ssh_cli_request_contract_matrix() {
                 "KEY=value",
             ],
             json!({"id":"cli:pane:split","method":"ssh.open","params":{"host":"lab","target":{"split":{"target_pane_id":"p:7","direction":"down","focus":false,"right_click":"herdr","env":{"KEY":"value"}}}}}),
+        ),
+        (
+            vec![
+                "workspace",
+                "create",
+                "--ssh",
+                "prod",
+                "--container",
+                "shop/web",
+            ],
+            json!({"id":"cli:workspace:create","method":"container.open","params":{"container":"shop/web","ssh_host":"prod","target":{"workspace":{"focus":false}}}}),
+        ),
+        (
+            vec!["container", "list", "--ssh", "prod"],
+            json!({"id":"cli:container:list","method":"container.list","params":{"ssh_host":"prod"}}),
         ),
         (
             vec!["ssh", "hosts", "--json"],

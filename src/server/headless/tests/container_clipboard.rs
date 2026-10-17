@@ -3,7 +3,7 @@ use super::off_host_clipboard_fixture::{
     OffHostPaneFixture, OffHostShell, CLIENT, STAGED_PATH,
 };
 use super::*;
-use crate::server::clipboard_image::{test_cleanup, OffHostTarget};
+use crate::server::clipboard_image::{test_cleanup, OffHostTarget, RemoteDockerHost};
 
 const CONTAINER_ID: &str = "cid-1";
 
@@ -18,6 +18,7 @@ fn launch() -> crate::container::ContainerLaunch {
         workdir: None,
         user: Some("node".into()),
         shell: crate::container::ContainerShell::BashOrSh,
+        ssh: None,
     }
 }
 
@@ -29,6 +30,27 @@ fn container_target(container_id: &str) -> OffHostTarget {
     OffHostTarget::Container {
         id: container_id.into(),
         user: Some("node".into()),
+        ssh: None,
+    }
+}
+
+const REMOTE_CONTROL_PATH: &str = "/tmp/hssh-1000/0123abcd-%C";
+
+fn remote_launch(control_path: Option<&str>) -> crate::container::ContainerLaunch {
+    crate::container::ContainerLaunch {
+        ssh: crate::ssh_host::SshLaunch::new("deploy@prod".into(), control_path.map(Into::into)),
+        ..launch()
+    }
+}
+
+fn remote_container_target() -> OffHostTarget {
+    OffHostTarget::Container {
+        id: CONTAINER_ID.into(),
+        user: Some("node".into()),
+        ssh: Some(RemoteDockerHost {
+            host: "deploy@prod".into(),
+            control_path: REMOTE_CONTROL_PATH.into(),
+        }),
     }
 }
 
@@ -188,4 +210,83 @@ async fn client_shell_snapshot_advertises_only_running_container_panes() {
         );
         fixture.finish();
     }
+}
+
+// Why not on Windows: ssh and container panes are rejected there.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn staged_remote_container_image_pastes_the_path_and_tracks_the_remote_target() {
+    let mut fixture = OffHostPaneFixture::new(
+        OffHostShell::Container(remote_launch(Some(REMOTE_CONTROL_PATH))),
+        true,
+    );
+    let event = fixture.staged(remote_container_target(), Ok(staged_image()));
+
+    assert!(fixture.server.handle_internal_event_with_forwarding(event));
+
+    assert_eq!(
+        fixture.input_rx.try_recv().expect("pasted container path"),
+        Bytes::from_static(STAGED_PATH.as_bytes())
+    );
+    assert_eq!(
+        fixture.client().staged_off_host_clipboard_files,
+        vec![staged_file(remote_container_target())]
+    );
+    fixture.finish();
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn staged_remote_container_image_is_removed_when_the_pane_moved_to_the_local_docker() {
+    let mut fixture = container_pane(true);
+    let event = fixture.staged(remote_container_target(), Ok(staged_image()));
+    let stage_target = stage_target_of(&event);
+
+    assert!(!fixture.server.handle_internal_event_with_forwarding(event));
+
+    fixture.assert_nothing_pasted();
+    assert_eq!(test_cleanup::take(), cleanup_of(stage_target));
+    fixture.finish();
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn remote_container_pane_without_a_shared_connection_never_reaches_the_local_docker() {
+    let mut fixture = OffHostPaneFixture::new(OffHostShell::Container(remote_launch(None)), true);
+
+    assert!(!fixture.paste_image());
+
+    assert_eq!(
+        rejection(&fixture.control_rx),
+        "Paste rejected: Image could not be copied into the container on the ssh host: \
+         the connection is not shared (ControlMaster unavailable)"
+    );
+    fixture.assert_nothing_pasted();
+    let client = fixture.client();
+    assert!(client.staged_clipboard_files.is_empty());
+    assert!(client.staged_off_host_clipboard_files.is_empty());
+    fixture.finish();
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn client_shell_snapshot_names_the_ssh_host_of_a_remote_container_pane() {
+    let fixture = OffHostPaneFixture::new(
+        OffHostShell::Container(remote_launch(Some(REMOTE_CONTROL_PATH))),
+        true,
+    );
+
+    let snapshot =
+        crate::server::client_shell::snapshot(&fixture.server.app, "boot", 1, None, None);
+
+    assert_eq!(snapshot.panes[0].container.as_deref(), Some("shop/db"));
+    assert_eq!(snapshot.panes[0].ssh_host.as_deref(), Some("prod"));
+    assert_eq!(
+        fixture.server.app.session_snapshot().panes[0]
+            .ssh_host
+            .as_deref(),
+        Some("prod"),
+        "pane info shows the host that runs the container's docker"
+    );
+    fixture.finish();
 }

@@ -607,6 +607,7 @@ mod tests {
             workdir: Some("/work".into()),
             user: None,
             shell: crate::container::ContainerShell::BashOrSh,
+            ssh: None,
         }
     }
 

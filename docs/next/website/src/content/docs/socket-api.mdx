@@ -371,7 +371,7 @@ Worktree commands also emit lifecycle events. `worktree.create` emits `workspace
 
 ## Containers
 
-`container.open` starts a shell inside a running Docker container. `target` nests the ordinary create or split params under one of `workspace`, `tab`, or `split`; the result is the same as the nested method's. `container` is a Compose `project/service`, or a container name or ID.
+`container.open` starts a shell inside a running Docker container. `target` nests the ordinary create or split params under one of `workspace`, `tab`, or `split`; the result is the same as the nested method's. `container` is a Compose `project/service`, or a container name or ID. `ssh_host` is optional: a `Host` alias from `~/.ssh/config` whose Docker holds the container. The `docker` CLI then runs over ssh through the shared connection ssh panes use, which needs a key-based or already-shared login (open an ssh pane to the host first otherwise), and the in-container directory is the `herdr.workdir` label or the image `WorkingDir`, never a bind-mount mapping of `cwd`.
 
 ```json
 {
@@ -384,7 +384,7 @@ Worktree commands also emit lifecycle events. `worktree.create` emits `workspace
 }
 ```
 
-`container.list` returns the running containers. `workspace_id` is optional and keeps only containers matching that workspace.
+`container.list` returns the running containers. `workspace_id` is optional and keeps only containers matching that workspace. `ssh_host` lists the Docker of that ssh host instead; those containers carry `ssh_host` and no `workspace_id`, so combining it with `workspace_id` returns an empty list.
 
 ```json
 { "id": "req_2", "method": "container.list", "params": { "workspace_id": "w1" } }
@@ -411,13 +411,14 @@ Worktree commands also emit lifecycle events. `worktree.create` emits `workspace
 }
 ```
 
-`project`, `service`, `working_dir`, and `workspace_id` are omitted when unknown. Errors:
+`project`, `service`, `working_dir`, `workspace_id`, and `ssh_host` are omitted when unknown. Errors:
 
 | Code | Meaning |
 | --- | --- |
 | `invalid_container` | `container` is empty or malformed |
 | `container_not_found` | no such container, including stopped ones |
-| `container_unavailable` | Docker is missing, failed, or took longer than 5 seconds |
+| `container_unavailable` | Docker is missing, failed, or took longer than 5 seconds (20 seconds over ssh), or the ssh host needs a login first |
+| `invalid_ssh_host` | `ssh_host` is not a valid `Host` alias |
 | `platform_unsupported` | the server runs on Windows |
 
 Create and split params stay unchanged; the container reference travels only in `container.open`.

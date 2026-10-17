@@ -449,6 +449,20 @@ fn restored_ssh_launch(pane: &super::snapshot::PaneSnapshot) -> Option<crate::ss
     launch
 }
 
+fn restored_container_launch(
+    pane: &super::snapshot::PaneSnapshot,
+) -> Option<crate::container::ContainerLaunch> {
+    let saved = pane.container.as_ref()?;
+    let launch = saved.to_launch();
+    if launch.is_none() {
+        warn!(
+            container = ?saved.reference,
+            "dropping container pane metadata with an invalid ssh host"
+        );
+    }
+    launch
+}
+
 fn unavailable_restored_terminal(
     pane: Option<&super::snapshot::PaneSnapshot>,
     cwd: PathBuf,
@@ -460,10 +474,7 @@ fn unavailable_restored_terminal(
     if let Some(pane) = pane {
         terminal.manual_label = pane.label.clone();
         terminal.launch_argv = pane.launch_argv.clone();
-        terminal.container = pane
-            .container
-            .as_ref()
-            .map(crate::container::ContainerLaunch::from);
+        terminal.container = restored_container_launch(pane);
         terminal.ssh = restored_ssh_launch(pane);
         if let Some(session) = restored_terminal_agent_session(pane.agent_session.as_ref(), false) {
             terminal.set_persisted_agent_session(session);
@@ -555,9 +566,7 @@ fn restore_tab(
         // Why not gate this on `was_imported` like `launch_argv`: the container
         // or ssh host is pane identity, not a live process detail, so it
         // survives cold restores even though they relaunch a plain host shell.
-        let saved_container = saved_pane
-            .and_then(|p| p.container.as_ref())
-            .map(crate::container::ContainerLaunch::from);
+        let saved_container = saved_pane.and_then(restored_container_launch);
         let saved_ssh = saved_pane.and_then(restored_ssh_launch);
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
         let saved_agent_resume = saved_pane.and_then(saved_reported_resume);
@@ -1562,6 +1571,20 @@ mod tests {
             workdir: Some(PathBuf::from("/work")),
             user: None,
             shell: super::super::snapshot::PaneContainerShellSnapshot::BashOrSh,
+            ssh: None,
+        }
+    }
+
+    fn remote_container_snapshot(
+        name: &str,
+        host: &str,
+    ) -> super::super::snapshot::PaneContainerSnapshot {
+        super::super::snapshot::PaneContainerSnapshot {
+            ssh: Some(super::super::snapshot::PaneSshSnapshot {
+                host: host.into(),
+                control_path: Some(PathBuf::from("/tmp/hssh-1/abc-%C")),
+            }),
+            ..test_container_snapshot(name)
         }
     }
 
@@ -1714,6 +1737,7 @@ mod tests {
                 workdir: Some(PathBuf::from("/work")),
                 user: None,
                 shell: crate::container::ContainerShell::BashOrSh,
+                ssh: None,
             })
         );
         assert_eq!(terminal.restore_error, None);
@@ -1739,6 +1763,122 @@ mod tests {
         state.terminals = terminals;
         state.active = Some(0);
         state.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn cold_restore_keeps_remote_container_metadata_but_launches_plain_shell() {
+        let snapshot = single_pane_session(super::super::snapshot::PaneSnapshot {
+            cwd: std::env::current_dir().unwrap(),
+            label: None,
+            agent_name: None,
+            managed_agent_kind: None,
+            agent_session: None,
+            agent_resume: None,
+            launch_argv: None,
+            container: Some(remote_container_snapshot("scratch", "deploy@prod")),
+            ssh: None,
+        });
+        let (events, _event_rx) = mpsc::channel(8);
+
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let terminal = terminals.values().next().expect("terminal should restore");
+        assert_eq!(
+            terminal.container,
+            Some(crate::container::ContainerLaunch {
+                reference: crate::container::ContainerRef::Name("scratch".into()),
+                canonical: "scratch".into(),
+                id: "herdr-test-scratch-id".into(),
+                workdir: Some(PathBuf::from("/work")),
+                user: None,
+                shell: crate::container::ContainerShell::BashOrSh,
+                ssh: crate::ssh_host::SshLaunch::new(
+                    "deploy@prod".into(),
+                    Some(PathBuf::from("/tmp/hssh-1/abc-%C")),
+                ),
+            })
+        );
+        assert_eq!(
+            terminal.ssh, None,
+            "the pane runs no ssh login; only its container is remote"
+        );
+        assert_eq!(terminal.restore_error, None);
+        let runtime = runtimes
+            .get(&terminal.id)
+            .expect("cold restore should start a runtime");
+        // A docker exec against the made-up id could never evaluate shell
+        // arithmetic, so the computed marker proves a host shell is running.
+        runtime
+            .try_send_bytes(bytes::Bytes::from_static(b"echo herdr-plain-$((40+2))\n"))
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime.visible_text().contains("herdr-plain-42") {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cold restore should run the plain host shell");
+        let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
+
+        let mut state = crate::app::AppState::test_new();
+        state.workspaces = workspaces;
+        state.terminals = terminals;
+        state.active = Some(0);
+        state.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn cold_restore_drops_container_metadata_whose_ssh_host_is_invalid() {
+        let snapshot = single_pane_session(super::super::snapshot::PaneSnapshot {
+            cwd: std::env::current_dir().unwrap(),
+            label: None,
+            agent_name: None,
+            managed_agent_kind: None,
+            agent_session: None,
+            agent_resume: None,
+            launch_argv: None,
+            container: Some(remote_container_snapshot("scratch", "-oProxyCommand=sh")),
+            ssh: None,
+        });
+        let (events, _event_rx) = mpsc::channel(8);
+
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let terminal = terminals.values().next().expect("terminal should restore");
+        assert_eq!(
+            terminal.container, None,
+            "a container id that only exists on another machine must not be reused locally"
+        );
+        if let Some(runtime) = runtimes.get(&terminal.id) {
+            let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
+        }
+        drop(workspaces);
     }
 
     #[tokio::test]

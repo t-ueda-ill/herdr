@@ -362,7 +362,18 @@ impl App {
                 .container
                 .as_ref()
                 .map(|launch| launch.canonical.clone()),
-            ssh_host: terminal.ssh.as_ref().map(|launch| launch.canonical.clone()),
+            // A remote container pane keeps `terminal.ssh` empty, so the host
+            // comes from the container's own launch.
+            ssh_host: terminal
+                .ssh
+                .as_ref()
+                .or_else(|| {
+                    terminal
+                        .container
+                        .as_ref()
+                        .and_then(|container| container.ssh.as_ref())
+                })
+                .map(|launch| launch.canonical.clone()),
             agent: terminal.effective_agent_label().map(str::to_string),
             title: presentation.title,
             terminal_title: terminal.terminal_title.clone(),

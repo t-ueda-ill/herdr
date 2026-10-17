@@ -73,6 +73,12 @@ pub(crate) fn ssh_argv(launch: &SshLaunch) -> Vec<OsString> {
     argv
 }
 
+/// POSIX single quoting: the remote shell reads `text` back unchanged,
+/// including spaces, `$`, and embedded `'`.
+pub(crate) fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

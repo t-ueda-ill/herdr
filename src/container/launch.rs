@@ -3,8 +3,11 @@ use std::path::Path;
 
 use super::types::{ContainerInfo, ContainerLaunch, ContainerShell};
 use super::workdir::resolve_workdir;
+use crate::ssh_host::launch::{shell_quote, ssh_argv};
 
-pub(crate) fn plan_launch(info: &ContainerInfo, host_cwd: &Path) -> ContainerLaunch {
+/// `host_cwd` is `None` when docker runs on another machine, see `resolve_workdir`.
+/// The caller sets `ssh` afterwards: this only reads container facts.
+pub(crate) fn plan_launch(info: &ContainerInfo, host_cwd: Option<&Path>) -> ContainerLaunch {
     let reference = info.reference();
     ContainerLaunch {
         canonical: reference.canonical(),
@@ -16,6 +19,7 @@ pub(crate) fn plan_launch(info: &ContainerInfo, host_cwd: &Path) -> ContainerLau
             Some(shell) => ContainerShell::Explicit(shell.clone()),
             None => ContainerShell::BashOrSh,
         },
+        ssh: None,
     }
 }
 
@@ -61,6 +65,31 @@ pub(crate) fn docker_exec_argv(
     argv
 }
 
+/// The argv of the pane process: `docker exec ...` locally, or `ssh -t <host>`
+/// followed by one command string when the container's docker is remote.
+///
+/// Why one pre-quoted string: ssh joins its trailing arguments with spaces and
+/// hands them to the remote login shell, which would re-split `-c` scripts and
+/// env values. Every element is quoted because `-e KEY=VALUE` is arbitrary.
+pub(crate) fn container_shell_argv(
+    launch: &ContainerLaunch,
+    login: bool,
+    env: &[(String, String)],
+) -> Vec<OsString> {
+    let docker = docker_exec_argv(launch, login, env);
+    let Some(ssh) = &launch.ssh else {
+        return docker;
+    };
+    let command = docker
+        .iter()
+        .map(|arg| shell_quote(&arg.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut argv = ssh_argv(ssh);
+    argv.push(command.into());
+    argv
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +103,7 @@ mod tests {
             workdir: Some("/work".into()),
             user: Some("dev".into()),
             shell,
+            ssh: None,
         }
     }
 
@@ -165,7 +195,7 @@ mod tests {
 
     #[test]
     fn plan_launch_resolves_defaults_from_container_config() {
-        let planned = plan_launch(&info(), Path::new("/host"));
+        let planned = plan_launch(&info(), Some(Path::new("/host")));
         assert_eq!(planned.id, "cid");
         assert_eq!(planned.canonical, "scratch");
         assert_eq!(planned.reference, ContainerRef::Name("scratch".into()));
@@ -180,9 +210,85 @@ mod tests {
         labeled.herdr.shell = Some("/bin/zsh".into());
         labeled.herdr.user = Some("dev".into());
         labeled.herdr.workdir = Some("/srv".into());
-        let planned = plan_launch(&labeled, Path::new("/host"));
+        let planned = plan_launch(&labeled, Some(Path::new("/host")));
         assert_eq!(planned.shell, ContainerShell::Explicit("/bin/zsh".into()));
         assert_eq!(planned.user.as_deref(), Some("dev"));
         assert_eq!(planned.workdir, Some("/srv".into()));
+    }
+
+    #[test]
+    fn plan_launch_leaves_ssh_unset_and_ignores_bind_mounts_without_a_host_cwd() {
+        let mut mounted = info();
+        mounted.bind_mounts = vec![crate::container::types::BindMount {
+            source: "/host".into(),
+            destination: "/mnt".into(),
+        }];
+        let local = plan_launch(&mounted, Some(Path::new("/host/src")));
+        assert_eq!(local.workdir, Some("/mnt/src".into()));
+        assert_eq!(local.ssh, None);
+
+        let remote = plan_launch(&mounted, None);
+        assert_eq!(remote.workdir, Some("/image".into()));
+    }
+
+    fn remote(shell: ContainerShell) -> ContainerLaunch {
+        ContainerLaunch {
+            ssh: crate::ssh_host::SshLaunch::new("deploy@prod".into(), Some("/tmp/ctl-%C".into())),
+            ..launch(shell)
+        }
+    }
+
+    #[test]
+    fn container_shell_argv_is_plain_docker_for_a_local_container() {
+        let local = launch(ContainerShell::BashOrSh);
+        assert_eq!(
+            container_shell_argv(&local, true, &[]),
+            docker_exec_argv(&local, true, &[])
+        );
+    }
+
+    #[test]
+    fn container_shell_argv_runs_the_quoted_docker_command_over_ssh() {
+        let argv = strings(container_shell_argv(
+            &remote(ContainerShell::BashOrSh),
+            true,
+            &[("TERM".into(), "xterm-256color".into())],
+        ));
+        assert_eq!(
+            &argv[..10],
+            [
+                "ssh",
+                "-C",
+                "-S",
+                "/tmp/ctl-%C",
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                "ControlPersist=600",
+                "-t",
+                "deploy@prod"
+            ]
+        );
+        assert_eq!(argv.len(), 11, "docker travels as one ssh argument");
+        assert_eq!(
+            argv[10],
+            format!(
+                "'docker' 'exec' '-it' '-w' '/work' '-u' 'dev' '-e' 'TERM=xterm-256color' \
+                 'cid' 'sh' '-c' '{PROBE}' 'sh' '-l'"
+            )
+        );
+    }
+
+    #[test]
+    fn container_shell_argv_quotes_env_values_the_remote_shell_would_expand() {
+        let env = [("MSG".to_string(), "it's $HOME; id".to_string())];
+        let argv = strings(container_shell_argv(
+            &remote(ContainerShell::Explicit("/bin/zsh".into())),
+            false,
+            &env,
+        ));
+        let command = argv.last().unwrap();
+        assert!(command.contains(r"'MSG=it'\''s $HOME; id'"), "{command}");
+        assert!(command.ends_with("'cid' '/bin/zsh'"), "{command}");
     }
 }

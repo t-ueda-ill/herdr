@@ -296,7 +296,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 
 ## コンテナ
 
-`container.open` は、実行中の Docker コンテナ内でシェルを開きます。`target` には通常の作成・分割パラメーターを `workspace`、`tab`、`split` のいずれかの下にネストして渡します。結果はネストしたメソッドと同じです。`container` は Compose の `project/service`、またはコンテナ名か ID です。
+`container.open` は、実行中の Docker コンテナ内でシェルを開きます。`target` には通常の作成・分割パラメーターを `workspace`、`tab`、`split` のいずれかの下にネストして渡します。結果はネストしたメソッドと同じです。`container` は Compose の `project/service`、またはコンテナ名か ID です。 `ssh_host` は省略可能で、コンテナを持つ Docker の `~/.ssh/config` の `Host` エイリアスです。この場合、`docker` CLI は ssh ペインと同じ共有接続を通して ssh 経由で実行されるため、鍵認証か共有済みの接続が必要です（そうでなければ先にそのホストへの ssh ペインを開いてください）。コンテナ内のディレクトリは `herdr.workdir` ラベルかイメージの `WorkingDir` で、`cwd` の bind mount 変換は行いません。
 
 ```json
 {
@@ -309,7 +309,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 }
 ```
 
-`container.list` は実行中のコンテナを返します。`workspace_id` は省略可能で、指定するとそのワークスペースに一致するコンテナだけを返します。
+`container.list` は実行中のコンテナを返します。`workspace_id` は省略可能で、指定するとそのワークスペースに一致するコンテナだけを返します。`ssh_host` を指定すると、その ssh ホストの Docker を一覧します。この場合のコンテナには `ssh_host` が付き、`workspace_id` は付かないため、`workspace_id` と併用すると空の一覧を返します。
 
 ```json
 { "id": "req_2", "method": "container.list", "params": { "workspace_id": "w1" } }
@@ -336,13 +336,14 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 }
 ```
 
-`project`、`service`、`working_dir`、`workspace_id` は不明な場合は省略されます。エラーコードは次のとおりです。
+`project`、`service`、`working_dir`、`workspace_id`、`ssh_host` は不明な場合は省略されます。エラーコードは次のとおりです。
 
 | コード | 意味 |
 | --- | --- |
 | `invalid_container` | `container` が空、または形式が不正 |
 | `container_not_found` | 該当コンテナがない（停止中のものを含む） |
-| `container_unavailable` | Docker がない、失敗した、または 5 秒を超えた |
+| `container_unavailable` | Docker がない、失敗した、または 5 秒（ssh 経由は 20 秒）を超えた、あるいは ssh ホストに先にログインが必要 |
+| `invalid_ssh_host` | `ssh_host` が有効な `Host` エイリアスではない |
 | `platform_unsupported` | サーバーが Windows 上で動作している |
 
 作成・分割パラメーターは変更されず、コンテナ参照は `container.open` でのみ渡されます。

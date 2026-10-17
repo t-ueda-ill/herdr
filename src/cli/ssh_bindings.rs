@@ -1,7 +1,8 @@
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::api::schema::{
-    ContainerOpenTarget, Method, Request, SshHostsParams, SshOpenParams, SshOpenTarget,
+    ContainerOpenParams, ContainerOpenTarget, Method, Request, SshHostsParams, SshOpenParams,
+    SshOpenTarget,
 };
 
 use super::super::projection::{self, optional_text, Field, Leaf, ParseError};
@@ -9,9 +10,7 @@ use super::super::projection::{self, optional_text, Field, Leaf, ParseError};
 fn ssh() -> Field<Option<String>> {
     Field::new(None).input(
         optional_text("ssh", "HOST")
-            .help("Start the shell over ssh to a Host alias from ~/.ssh/config, optionally as user@alias")
-            // A pane runs in one place; clap reports the clash before any request is sent.
-            .configure(|argument| argument.conflicts_with("container")),
+            .help("Start the shell over ssh to a Host alias from ~/.ssh/config, optionally as user@alias; with --container, the container is looked up in the docker on that host"),
     )
 }
 
@@ -23,7 +22,8 @@ pub(crate) fn with_launch_options(arguments: Vec<Arg>) -> Vec<Arg> {
 }
 
 /// Sends fully parsed create/split params as-is, nested in `container.open` for
-/// `--container REF`, or nested in `ssh.open` for `--ssh HOST`.
+/// `--container REF` (with `ssh_host` when `--ssh HOST` names where its docker runs),
+/// or nested in `ssh.open` for `--ssh HOST` alone.
 pub(crate) fn into_method<P>(
     matches: &ArgMatches,
     params: P,
@@ -35,12 +35,23 @@ pub(crate) fn into_method<P>(
     ssh.read_matches(matches)?;
     // Not an `ssh` field on the create/split params: those shapes are frozen, and an
     // older server would ignore the field and start a host shell.
-    match ssh.finish()? {
-        Some(host) => Ok(Method::SshOpen(SshOpenParams {
+    let host = ssh.finish()?;
+    // Not a clap conflict: `--ssh` alone logs in to the host, but next to
+    // `--container` it only says where that container's docker runs.
+    match (
+        host,
+        super::super::container::bindings::read_container(matches)?,
+    ) {
+        (Some(host), Some(container)) => Ok(Method::ContainerOpen(ContainerOpenParams {
+            container,
+            ssh_host: Some(host),
+            target: in_container(params),
+        })),
+        (Some(host), None) => Ok(Method::SshOpen(SshOpenParams {
             host,
             target: over_ssh(params),
         })),
-        None => {
+        (None, _) => {
             super::super::container::bindings::into_method(matches, params, plain, in_container)
         }
     }
@@ -147,5 +158,39 @@ mod tests {
         assert!(arguments
             .iter()
             .any(|argument| argument.get_long() == Some("container")));
+    }
+
+    #[test]
+    fn ssh_option_next_to_container_says_where_the_containers_docker_runs() {
+        use crate::api::schema::WorkspaceCreateParams;
+        let command = Command::new("create").args(with_launch_options(Vec::new()));
+        let matches = command
+            .try_get_matches_from(["create", "--container", "app/web", "--ssh", "prod"])
+            .unwrap();
+        let params = WorkspaceCreateParams {
+            source_workspace_id: None,
+            cwd: None,
+            focus: false,
+            label: None,
+            env: Default::default(),
+        };
+
+        let method = into_method(
+            &matches,
+            params.clone(),
+            Method::WorkspaceCreate,
+            ContainerOpenTarget::Workspace,
+            SshOpenTarget::Workspace,
+        )
+        .unwrap();
+
+        assert_eq!(
+            method,
+            Method::ContainerOpen(ContainerOpenParams {
+                container: "app/web".into(),
+                ssh_host: Some("prod".into()),
+                target: ContainerOpenTarget::Workspace(params),
+            })
+        );
     }
 }

@@ -412,17 +412,31 @@ mod tests {
     }
 
     #[test]
-    fn workspace_create_rejects_ssh_with_container_or_without_value() {
+    fn workspace_create_with_ssh_and_container_opens_the_container_of_that_hosts_docker() {
         for args in [
-            vec!["--ssh", "prod", "--container", "app/web"],
-            vec!["--container=app/web", "--ssh=prod"],
-            vec!["--ssh"],
+            vec!["--ssh", "prod", "--container", "app/web", "--label", "api"],
+            vec!["--container=app/web", "--ssh=prod", "--label", "api"],
         ] {
-            assert!(
-                matches!(request("create", &args), Err(ParseError::Clap(error)) if error.exit_code() == 2),
+            assert_eq!(
+                serde_json::to_value(request("create", &args).unwrap()).unwrap(),
+                serde_json::json!({
+                    "id": "cli:workspace:create", "method": "container.open",
+                    "params": {
+                        "container": "app/web",
+                        "ssh_host": "prod",
+                        "target": {"workspace": {"label": "api", "focus": false}}
+                    }
+                }),
                 "{args:?}"
             );
         }
+    }
+
+    #[test]
+    fn workspace_create_rejects_ssh_without_value() {
+        assert!(
+            matches!(request("create", &["--ssh"]), Err(ParseError::Clap(error)) if error.exit_code() == 2)
+        );
     }
 
     #[test]

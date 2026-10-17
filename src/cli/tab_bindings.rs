@@ -213,10 +213,15 @@ mod tests {
     }
 
     #[test]
-    fn tab_create_rejects_ssh_with_container() {
-        assert!(
-            matches!(parse(&["create", "--ssh", "prod", "--container", "worker"]), Err(ParseError::Clap(error)) if error.exit_code() == 2)
-        );
+    fn tab_create_with_ssh_and_container_opens_the_container_of_that_hosts_docker() {
+        let json = serde_json::to_value(
+            parse(&["create", "--ssh", "prod", "--container", "worker"]).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(json["method"], "container.open");
+        assert_eq!(json["params"]["container"], "worker");
+        assert_eq!(json["params"]["ssh_host"], "prod");
     }
 
     #[test]

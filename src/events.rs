@@ -96,6 +96,8 @@ pub struct ContainerListResult {
     pub(crate) id: String,
     pub(crate) filter_workspace_id: Option<String>,
     pub(crate) workspaces: Vec<WorkspaceRepoRoot>,
+    /// The ssh `Host` alias whose docker was listed; `None` for the local docker.
+    pub(crate) ssh_host: Option<String>,
     pub(crate) result: Result<Vec<crate::container::ContainerInfo>, (String, String)>,
     pub(crate) respond_to: std::sync::mpsc::Sender<String>,
 }

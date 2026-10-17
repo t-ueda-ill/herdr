@@ -9,19 +9,60 @@ impl ClientShellState {
         source: OpenPickerSource,
         outcome: &mut ClientShellInput,
     ) {
-        use crate::api::schema::{ContainerListParams, Method, SshHostsParams};
+        use crate::api::schema::{Method, SshHostsParams};
 
-        let method = match source {
-            OpenPickerSource::SshHost => Method::SshHosts(SshHostsParams::default()),
-            // No workspace filter: the picker is about any running container.
-            OpenPickerSource::Container => Method::ContainerList(ContainerListParams::default()),
-        };
+        match source {
+            OpenPickerSource::SshHost => {
+                self.push_endpoint_method_with_kind(
+                    Method::SshHosts(SshHostsParams::default()),
+                    PendingEndpointKind::PrepareOpenPicker(source),
+                    outcome,
+                );
+            }
+            OpenPickerSource::ContainerHost | OpenPickerSource::Container => {
+                let hosts = Method::SshHosts(SshHostsParams::default());
+                // Checked up front, not through the push: an old server must
+                // fall back to local listing without an "Action unavailable" notice.
+                if self.supports_endpoint_method(&hosts) {
+                    self.push_endpoint_method_with_kind(
+                        hosts,
+                        PendingEndpointKind::PrepareOpenPicker(OpenPickerSource::ContainerHost),
+                        outcome,
+                    );
+                } else {
+                    self.list_local_containers(outcome);
+                }
+            }
+        }
+        outcome.repaint = true;
+    }
+
+    fn list_local_containers(&mut self, outcome: &mut ClientShellInput) {
+        use crate::api::schema::{ContainerListParams, Method};
+
+        // No workspace filter: the picker is about any running container.
         self.push_endpoint_method_with_kind(
-            method,
-            PendingEndpointKind::PrepareOpenPicker(source),
+            Method::ContainerList(ContainerListParams::default()),
+            PendingEndpointKind::PrepareOpenPicker(OpenPickerSource::Container),
             outcome,
         );
-        outcome.repaint = true;
+    }
+
+    /// Esc and the cancel button: one stage back when the host stage is
+    /// retained, otherwise close.
+    pub(super) fn cancel_open_picker(&mut self) {
+        let Some(ClientShellOverlay::OpenPicker(open)) = self.overlay.as_mut() else {
+            return;
+        };
+        let Some(stage) = open.host_stage.take() else {
+            self.overlay = None;
+            return;
+        };
+        open.source = OpenPickerSource::ContainerHost;
+        open.entries = stage.entries;
+        open.selected = stage.selected;
+        open.query = TextEditor::default();
+        open.error = None;
     }
 
     pub(super) fn insert_open_picker_overlay_text(&mut self, text: &str) -> bool {
@@ -60,7 +101,7 @@ impl ClientShellState {
         }
         match code {
             KeyCode::Esc if !opening => {
-                self.overlay = None;
+                self.cancel_open_picker();
                 outcome.repaint = true;
             }
             KeyCode::Enter => self.submit_open_picker(outcome),
@@ -115,16 +156,22 @@ impl ClientShellState {
             return;
         };
         let source = open.source;
-        let Some((id, title)) = open
+        let Some((id, title, entry_host)) = open
             .entries
             .get(index)
-            .map(|entry| (entry.id.clone(), entry.title.clone()))
+            .map(|entry| (entry.id.clone(), entry.title.clone(), entry.host.clone()))
         else {
             return;
         };
         open.selected = index;
         open.opening = true;
         open.error = None;
+        let ssh_host = open.host.ssh_alias();
+        // Remote rows share names across hosts, so the workspace label says which.
+        let title = match &ssh_host {
+            Some(alias) if source == OpenPickerSource::Container => format!("{title}@{alias}"),
+            _ => title,
+        };
         let target = crate::api::schema::WorkspaceCreateParams {
             source_workspace_id: None,
             cwd: None,
@@ -142,8 +189,29 @@ impl ClientShellState {
             OpenPickerSource::Container => {
                 crate::api::schema::Method::ContainerOpen(crate::api::schema::ContainerOpenParams {
                     container: id,
+                    ssh_host,
                     target: crate::api::schema::ContainerOpenTarget::Workspace(target),
                 })
+            }
+            OpenPickerSource::ContainerHost => {
+                let Some(host) = entry_host else {
+                    open.opening = false;
+                    return;
+                };
+                let kind = PendingEndpointKind::ListContainers(host.clone());
+                let method = crate::api::schema::Method::ContainerList(
+                    crate::api::schema::ContainerListParams {
+                        ssh_host: host.ssh_alias(),
+                        ..Default::default()
+                    },
+                );
+                if !self.push_endpoint_method_with_kind(method, kind, outcome) {
+                    if let Some(ClientShellOverlay::OpenPicker(open)) = self.overlay.as_mut() {
+                        open.opening = false;
+                    }
+                }
+                outcome.repaint = true;
+                return;
             }
         };
         if !self.push_endpoint_method_with_kind(method, PendingEndpointKind::OpenPicker, outcome) {
@@ -158,10 +226,71 @@ impl ClientShellState {
         &mut self,
         kind: PendingEndpointKind,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+        outcome: &mut ClientShellInput,
     ) -> bool {
         use crate::api::schema::ResponseResult;
 
         match (kind, result) {
+            (
+                PendingEndpointKind::PrepareOpenPicker(OpenPickerSource::ContainerHost),
+                Ok(ResponseResult::SshHosts { hosts }),
+            ) => {
+                if hosts.is_empty() {
+                    // A host stage with only "local" would cost a keystroke for nothing.
+                    self.list_local_containers(outcome);
+                    return true;
+                }
+                let mut entries = vec![ClientOpenPickerEntry::container_host(
+                    OpenPickerHost::Local,
+                    "this machine's docker".to_owned(),
+                )];
+                entries.extend(hosts.into_iter().map(|host| {
+                    let row = ClientOpenPickerEntry::ssh_host(host.alias, host.hostname, host.user);
+                    ClientOpenPickerEntry::container_host(
+                        OpenPickerHost::Ssh(row.title),
+                        row.detail,
+                    )
+                }));
+                self.overlay = Some(ClientShellOverlay::OpenPicker(
+                    ClientOpenPickerOverlay::new(OpenPickerSource::ContainerHost, entries),
+                ));
+                true
+            }
+            (PendingEndpointKind::ListContainers(host), result) => {
+                let Some(ClientShellOverlay::OpenPicker(open)) = self.overlay.as_mut() else {
+                    return true;
+                };
+                open.opening = false;
+                match result {
+                    Ok(ResponseResult::ContainerList { containers }) if containers.is_empty() => {
+                        open.error = Some(format!(
+                            "No running docker containers found on {}.",
+                            host.display_name()
+                        ));
+                    }
+                    Ok(ResponseResult::ContainerList { containers }) => {
+                        let entries = containers
+                            .into_iter()
+                            .map(ClientOpenPickerEntry::container)
+                            .collect();
+                        let mut next =
+                            ClientOpenPickerOverlay::new(OpenPickerSource::Container, entries);
+                        next.host = host;
+                        next.host_stage = Some(OpenPickerHostStage {
+                            entries: std::mem::take(&mut open.entries),
+                            selected: open.selected,
+                        });
+                        *open = next;
+                    }
+                    Ok(_) => {
+                        open.error =
+                            Some("endpoint returned an unexpected listing result".to_owned());
+                    }
+                    // Kept on the host stage so another host can be picked.
+                    Err(error) => open.error = Some(error.message),
+                }
+                true
+            }
             (PendingEndpointKind::PrepareOpenPicker(source), Ok(listing)) => {
                 let entries = match (source, listing) {
                     (OpenPickerSource::SshHost, ResponseResult::SshHosts { hosts }) => hosts
@@ -170,12 +299,13 @@ impl ClientShellState {
                             ClientOpenPickerEntry::ssh_host(host.alias, host.hostname, host.user)
                         })
                         .collect::<Vec<_>>(),
-                    (OpenPickerSource::Container, ResponseResult::ContainerList { containers }) => {
-                        containers
-                            .into_iter()
-                            .map(ClientOpenPickerEntry::container)
-                            .collect::<Vec<_>>()
-                    }
+                    (
+                        OpenPickerSource::Container | OpenPickerSource::ContainerHost,
+                        ResponseResult::ContainerList { containers },
+                    ) => containers
+                        .into_iter()
+                        .map(ClientOpenPickerEntry::container)
+                        .collect::<Vec<_>>(),
                     _ => {
                         self.set_endpoint_error("endpoint returned an unexpected listing result");
                         return true;
@@ -184,18 +314,14 @@ impl ClientShellState {
                 if entries.is_empty() {
                     self.set_endpoint_error(match source {
                         OpenPickerSource::SshHost => "No ssh hosts found in ~/.ssh/config.",
-                        OpenPickerSource::Container => "No running docker containers found.",
+                        OpenPickerSource::Container | OpenPickerSource::ContainerHost => {
+                            "No running docker containers found."
+                        }
                     });
                 } else {
-                    self.overlay = Some(ClientShellOverlay::OpenPicker(ClientOpenPickerOverlay {
-                        source,
-                        entries,
-                        selected: 0,
-                        query: TextEditor::default(),
-                        search_focused: false,
-                        error: None,
-                        opening: false,
-                    }));
+                    self.overlay = Some(ClientShellOverlay::OpenPicker(
+                        ClientOpenPickerOverlay::new(source, entries),
+                    ));
                 }
                 true
             }
@@ -210,6 +336,12 @@ impl ClientShellState {
                     open.opening = false;
                     open.error = Some(error.message);
                 }
+                true
+            }
+            // Why not stop at the notice the endpoint raised: a broken ssh
+            // config must not hide this machine's own containers.
+            (PendingEndpointKind::PrepareOpenPicker(OpenPickerSource::ContainerHost), Err(_)) => {
+                self.list_local_containers(outcome);
                 true
             }
             // The endpoint already raised a rejection notice for the listing.

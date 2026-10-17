@@ -17,19 +17,38 @@ pub(crate) enum StageTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OffHostTarget {
-    /// The pane shell runs inside this container, as `user` when set.
-    Container { id: String, user: Option<String> },
+    /// The pane shell runs inside this container, as `user` when set. `ssh`
+    /// names the host whose docker the container lives on; `None` is the
+    /// server's own docker.
+    Container {
+        id: String,
+        user: Option<String>,
+        ssh: Option<RemoteDockerHost>,
+    },
     /// The pane shell is an ssh login to `host` whose master listens on
     /// `control_path`.
     Ssh { host: String, control_path: PathBuf },
+}
+
+/// An ssh host that runs the docker CLI for a container pane, joined through
+/// the pane's master. Why a required `control_path`: without a shared
+/// connection every paste would need its own login, and batch mode cannot
+/// provide one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteDockerHost {
+    pub(crate) host: String,
+    pub(crate) control_path: PathBuf,
 }
 
 impl OffHostTarget {
     /// The client-facing reason a stage to this target failed.
     pub(crate) fn failure_detail(&self, err: &str) -> String {
         match self {
-            Self::Container { .. } => {
+            Self::Container { ssh: None, .. } => {
                 format!("Image could not be copied into the container: {err}")
+            }
+            Self::Container { ssh: Some(_), .. } => {
+                format!("Image could not be copied into the container on the ssh host: {err}")
             }
             Self::Ssh { .. } => format!("Image could not be copied to the ssh host: {err}"),
         }
@@ -104,8 +123,9 @@ pub(crate) fn stage_off_host(
     let attempt = NEXT_OFF_HOST_ATTEMPT.fetch_add(1, Ordering::Relaxed);
     let file_name = staged_file_name(client_id, extension, unique_stamp(), attempt);
     let path = match target {
-        OffHostTarget::Container { id, user } => {
-            crate::container::clipboard::stage_image(id, user.as_deref(), &file_name, data)
+        OffHostTarget::Container { id, user, ssh } => {
+            let host = docker_host(ssh.as_ref())?;
+            crate::container::clipboard::stage_image(&host, id, user.as_deref(), &file_name, data)
                 .map_err(|err| err.to_string())?
         }
         OffHostTarget::Ssh { host, control_path } => {
@@ -116,6 +136,33 @@ pub(crate) fn stage_off_host(
         path: PathBuf::from(&path),
         paste_text: path,
     })
+}
+
+/// Why not fall back to the local docker for a remote id: the id names a
+/// container on another machine, so a local `docker exec` would fail or,
+/// worse, hit an unrelated container.
+#[cfg(unix)]
+fn docker_host(
+    ssh: Option<&RemoteDockerHost>,
+) -> Result<crate::container::docker::DockerHost, String> {
+    use crate::container::docker::DockerHost;
+    Ok(match ssh {
+        Some(remote) => DockerHost::Ssh {
+            host: remote.host.clone(),
+            control_path: Some(remote.control_path.clone()),
+        },
+        None => DockerHost::Local,
+    })
+}
+
+#[cfg(windows)]
+fn docker_host(
+    ssh: Option<&RemoteDockerHost>,
+) -> Result<crate::container::docker::DockerHost, String> {
+    match ssh {
+        Some(_) => Err(SSH_SIDE_CHANNEL_UNSUPPORTED.to_owned()),
+        None => Ok(crate::container::docker::DockerHost::Local),
+    }
 }
 
 #[cfg(unix)]
@@ -167,8 +214,9 @@ pub(crate) fn remove_off_host_files(files: Vec<OffHostClipboardFile>) {
 /// Removes one batch on the calling thread; blocks for up to the CLI deadline.
 pub(crate) fn remove_off_host_batch(batch: &OffHostCleanupBatch) -> Result<(), String> {
     match &batch.target {
-        OffHostTarget::Container { id, user } => {
-            crate::container::clipboard::remove_images(id, user.as_deref(), &batch.paths)
+        OffHostTarget::Container { id, user, ssh } => {
+            let host = docker_host(ssh.as_ref())?;
+            crate::container::clipboard::remove_images(&host, id, user.as_deref(), &batch.paths)
                 .map_err(|err| err.to_string())
         }
         OffHostTarget::Ssh { host, control_path } => {
@@ -367,6 +415,23 @@ mod tests {
         OffHostTarget::Container {
             id: id.into(),
             user: user.map(str::to_owned),
+            ssh: None,
+        }
+    }
+
+    fn remote_container(
+        host: &str,
+        control_path: &str,
+        id: &str,
+        user: Option<&str>,
+    ) -> OffHostTarget {
+        OffHostTarget::Container {
+            id: id.into(),
+            user: user.map(str::to_owned),
+            ssh: Some(RemoteDockerHost {
+                host: host.into(),
+                control_path: control_path.into(),
+            }),
         }
     }
 
@@ -421,10 +486,49 @@ mod tests {
     }
 
     #[test]
+    fn off_host_cleanup_batches_remote_containers_per_host_master_id_and_user() {
+        let local = container("a", None);
+        let remote = remote_container("prod", "/tmp/x-%C", "a", None);
+        let other_host = remote_container("staging", "/tmp/z-%C", "a", None);
+        let other_master = remote_container("prod", "/tmp/y-%C", "a", None);
+        let other_user = remote_container("prod", "/tmp/x-%C", "a", Some("node"));
+        let other_id = remote_container("prod", "/tmp/x-%C", "b", None);
+        let batches = off_host_cleanup_batches(vec![
+            file(&remote, "/tmp/1.png"),
+            file(&local, "/tmp/2.png"),
+            file(&other_host, "/tmp/3.png"),
+            file(&other_master, "/tmp/4.png"),
+            file(&other_user, "/tmp/5.png"),
+            file(&other_id, "/tmp/6.png"),
+            file(&remote, "/tmp/7.png"),
+        ]);
+        let targets: Vec<_> = batches
+            .iter()
+            .map(|batch| (batch.target.clone(), batch.paths.clone()))
+            .collect();
+        let owned = |paths: &[&str]| paths.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            targets,
+            vec![
+                (remote, owned(&["/tmp/1.png", "/tmp/7.png"])),
+                (local, owned(&["/tmp/2.png"])),
+                (other_host, owned(&["/tmp/3.png"])),
+                (other_master, owned(&["/tmp/4.png"])),
+                (other_user, owned(&["/tmp/5.png"])),
+                (other_id, owned(&["/tmp/6.png"])),
+            ]
+        );
+    }
+
+    #[test]
     fn failure_detail_names_where_the_image_was_going() {
         assert_eq!(
             container("a", None).failure_detail("boom"),
             "Image could not be copied into the container: boom"
+        );
+        assert_eq!(
+            remote_container("prod", "/tmp/c", "a", None).failure_detail("boom"),
+            "Image could not be copied into the container on the ssh host: boom"
         );
         assert_eq!(
             ssh("prod", "/tmp/c").failure_detail("boom"),

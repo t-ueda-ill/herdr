@@ -318,7 +318,8 @@ herdr pane report-metadata <pane_id> \
 herdr workspace create --container REF [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
 herdr tab create --container REF [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE]
 herdr pane split --container REF [<pane_id>|--pane ID|--current] --direction right|down [--env KEY=VALUE]
-herdr container list [--workspace ID] [--json]
+herdr container list [--workspace ID] [--ssh HOST] [--json]
+herdr workspace create --container REF --ssh HOST [--label TEXT]
 ```
 
 `--container REF` を指定すると、新しいシェルをホストではなく実行中の Docker コンテナ内で開きます。`REF` には Compose の `project/service`、またはコンテナ名か ID を指定します。Herdr は次の方針で `docker exec -it` を実行します。
@@ -330,7 +331,9 @@ herdr container list [--workspace ID] [--json]
 
 `container list` は実行中のコンテナを表で表示します。`--json` を付けると生の応答を表示します。Compose の `working_dir` または `config_files` がワークスペースのリポジトリルートと一致するコンテナには、その `workspace_id` が付きます。`--workspace ID` を指定すると、一致するものだけを表示します。`herdr.default` ラベルのコンテナは先頭に並びます。
 
-TUI では、グローバルメニューの `open container`、または `keys.open_container_workspace`（既定では未設定）に割り当てたキーから、実行中のコンテナを選べます。`/` で絞り込み、Enter でコンテナ名の新しいワークスペースを開いてコンテナ内のシェルにフォーカスし、Esc でピッカーを閉じます。コンテナを一覧できない古いサーバーでは、代わりに `Action unavailable` の通知が出ます。
+`--container` または `container list` に `--ssh HOST` を付けると、ローカルではなくリモートホストの Docker を使います。`HOST` は `~/.ssh/config` の `Host` エイリアスです。Herdr は ssh ペインと同じ共有接続を通して `docker` CLI を ssh 経由で実行するため、鍵認証か共有済みの接続が必要です。そうでない場合は、先にそのホストへの ssh ペインを開いてください。一覧のコンテナにはホストが付き、`workspace_id` は付きません。作業ディレクトリは `herdr.workdir` ラベル、なければコンテナの `WorkingDir` で、bind mount による変換は行いません。
+
+TUI では、グローバルメニューの `open container`、または `keys.open_container_workspace`（既定では未設定）に割り当てたキーから、実行中のコンテナを選べます。先に Docker の場所（このマシン、または `~/.ssh/config` の ssh ホスト）を選びます（`ssh.hosts` のない古いサーバーではこの手順を省略します）。コンテナ一覧で Esc を押すとホスト一覧に戻ります。入力で絞り込み、Enter でコンテナ名の新しいワークスペースを開いてコンテナ内のシェルにフォーカスし、Esc でピッカーを閉じます。コンテナを一覧できない古いサーバーでは、代わりに `Action unavailable` の通知が出ます。
 
 ```bash
 herdr container list
@@ -350,7 +353,7 @@ herdr pane split --ssh HOST [<pane_id>|--pane ID|--current] --direction right|do
 herdr ssh hosts [--json]
 ```
 
-`--ssh HOST` を指定すると、新しいシェルをローカルではなく SSH 経由のリモートホストで開きます。`HOST` には `~/.ssh/config` の `Host` エイリアスを指定し、`user@alias` の形でも書けます。`--container` とは併用できません。ペインでは `ssh -C -S <herdr control path> -o ControlMaster=auto -o ControlPersist=600 -t HOST` を実行するため、ユーザー自身の SSH 設定がそのまま適用されます（Herdr は `-F` を渡しません）。パスワード、パスフレーズ、ホスト鍵の確認はペイン内に表示されます。`HERDR_*` 環境変数はリモートシェルに転送されません。`TERM` は `ssh` 自身が送ります。リモート側に Herdr は不要です。リモートで Herdr サーバーを動かす[保存済み SSH マシン](#保存済み-ssh-マシン)や `herdr --remote` とは異なります。
+`--ssh HOST` を指定すると、新しいシェルをローカルではなく SSH 経由のリモートホストで開きます。`HOST` には `~/.ssh/config` の `Host` エイリアスを指定し、`user@alias` の形でも書けます。`--container` と併用した場合は、そのコンテナを持つ Docker のホストを指定するだけです（[コンテナ](#コンテナ)を参照）。ペインでは `ssh -C -S <herdr control path> -o ControlMaster=auto -o ControlPersist=600 -t HOST` を実行するため、ユーザー自身の SSH 設定がそのまま適用されます（Herdr は `-F` を渡しません）。パスワード、パスフレーズ、ホスト鍵の確認はペイン内に表示されます。`HERDR_*` 環境変数はリモートシェルに転送されません。`TERM` は `ssh` 自身が送ります。リモート側に Herdr は不要です。リモートで Herdr サーバーを動かす[保存済み SSH マシン](#保存済み-ssh-マシン)や `herdr --remote` とは異なります。
 
 `ssh hosts` は `~/.ssh/config` にあるリテラルな `Host` エイリアスをファイル内の順に、`alias`、`hostname`、`user` の列を持つ表で表示します（不明な値は `-`）。`--json` を付けると生の応答を表示します。`*` や `?` を含むパターンと、否定の `!` パターンは対象外です。`Include` は辿ります。相対パスは `~/.ssh/` を基準に解決し、グロブも使えます。設定が空の場合は `No ssh hosts in ~/.ssh/config.` と表示します。エラーは JSON エラーとして標準エラー出力に表示します。
 

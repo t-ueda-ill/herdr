@@ -296,7 +296,7 @@ Worktree 命令也发出生命周期事件。`worktree.create` 发出 `workspace
 
 ## 容器
 
-`container.open` 在正在运行的 Docker 容器内启动 shell。`target` 把普通的创建或拆分参数嵌套在 `workspace`、`tab`、`split` 之一下,结果与被嵌套方法相同。`container` 是 Compose 的 `project/service`,或容器名称、ID。
+`container.open` 在正在运行的 Docker 容器内启动 shell。`target` 把普通的创建或拆分参数嵌套在 `workspace`、`tab`、`split` 之一下,结果与被嵌套方法相同。`container` 是 Compose 的 `project/service`,或容器名称、ID。 `ssh_host` 可选,是 `~/.ssh/config` 中持有该容器的 Docker 所在的 `Host` 别名。此时 `docker` CLI 通过 ssh 窗格所用的同一条共享连接经 ssh 运行,需要密钥登录或已共享的连接(否则请先打开到该主机的 ssh 窗格);容器内目录取 `herdr.workdir` 标签或镜像的 `WorkingDir`,不会对 `cwd` 做 bind mount 映射。
 
 ```json
 {
@@ -309,7 +309,7 @@ Worktree 命令也发出生命周期事件。`worktree.create` 发出 `workspace
 }
 ```
 
-`container.list` 返回正在运行的容器。`workspace_id` 可选,指定后只返回与该工作区匹配的容器。
+`container.list` 返回正在运行的容器。`workspace_id` 可选,指定后只返回与该工作区匹配的容器。指定 `ssh_host` 则列出该 ssh 主机的 Docker;这些容器带有 `ssh_host`、不带 `workspace_id`,因此与 `workspace_id` 同时使用会返回空列表。
 
 ```json
 { "id": "req_2", "method": "container.list", "params": { "workspace_id": "w1" } }
@@ -336,13 +336,14 @@ Worktree 命令也发出生命周期事件。`worktree.create` 发出 `workspace
 }
 ```
 
-`project`、`service`、`working_dir`、`workspace_id` 未知时省略。错误码如下:
+`project`、`service`、`working_dir`、`workspace_id`、`ssh_host` 未知时省略。错误码如下:
 
 | 错误码 | 含义 |
 | --- | --- |
 | `invalid_container` | `container` 为空或格式不正确 |
 | `container_not_found` | 没有该容器(包括已停止的) |
-| `container_unavailable` | Docker 缺失、失败或超过 5 秒 |
+| `container_unavailable` | Docker 缺失、失败或超过 5 秒(经 ssh 为 20 秒),或 ssh 主机需要先登录 |
+| `invalid_ssh_host` | `ssh_host` 不是有效的 `Host` 别名 |
 | `platform_unsupported` | 服务器运行在 Windows 上 |
 
 创建和拆分参数保持不变,容器引用只通过 `container.open` 传递。

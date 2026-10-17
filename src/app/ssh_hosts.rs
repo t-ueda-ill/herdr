@@ -159,7 +159,7 @@ impl App {
     }
 }
 
-fn ensure_ssh_platform_supported() -> Result<(), ApiFailure> {
+pub(super) fn ensure_ssh_platform_supported() -> Result<(), ApiFailure> {
     // Why not attempt it: Windows OpenSSH has no ControlMaster, so the pane
     // could never carry the side channel ssh panes exist for.
     if cfg!(windows) {
@@ -171,7 +171,7 @@ fn ensure_ssh_platform_supported() -> Result<(), ApiFailure> {
     Ok(())
 }
 
-fn validate_ssh_host(host: &str) -> Result<(), ApiFailure> {
+pub(super) fn validate_ssh_host(host: &str) -> Result<(), ApiFailure> {
     ensure_ssh_platform_supported()?;
     ssh_destination_alias(host).map(|_| ()).ok_or_else(|| {
         (
@@ -185,7 +185,7 @@ fn validate_ssh_host(host: &str) -> Result<(), ApiFailure> {
 
 /// Reads the ssh config and may create the control directory, so it must
 /// stay off the app thread.
-fn resolve_ssh_launch(host: &str) -> Result<SshLaunch, ApiFailure> {
+pub(super) fn resolve_ssh_launch(host: &str) -> Result<SshLaunch, ApiFailure> {
     let hosts = crate::ssh_host::hosts::list_configured_hosts().map_err(ssh_unavailable)?;
     launch_for_configured_host(host, &hosts, crate::ssh_host::control::pane_control_path)
 }

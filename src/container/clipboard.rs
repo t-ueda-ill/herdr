@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::docker::{run_docker_with, DOCKER_CLI_TIMEOUT};
+use super::docker::{program_for, run_docker_with, DockerHost};
 use super::ContainerListError;
 use crate::clipboard_stage_script::{staged_path_from_output, STAGE_SCRIPT};
 
@@ -41,23 +41,26 @@ fn push_user(argv: &mut Vec<String>, user: Option<&str>) {
 
 /// Streams `data` into the container and returns the in-container path.
 pub(crate) fn stage_image(
+    host: &DockerHost,
     container_id: &str,
     user: Option<&str>,
     file_name: &str,
     data: Vec<u8>,
 ) -> Result<String, ContainerListError> {
     stage_image_with(
-        "docker",
+        program_for(host),
+        host,
         container_id,
         user,
         file_name,
         data,
-        DOCKER_CLI_TIMEOUT,
+        host.timeout(),
     )
 }
 
 fn stage_image_with(
     program: impl AsRef<Path>,
+    host: &DockerHost,
     container_id: &str,
     user: Option<&str>,
     file_name: &str,
@@ -68,6 +71,7 @@ fn stage_image_with(
     let args = argv.iter().map(String::as_str).collect::<Vec<_>>();
     let output = run_docker_with(
         program.as_ref(),
+        host,
         &args,
         Some(data),
         Instant::now() + timeout,
@@ -83,15 +87,24 @@ fn stage_image_with(
 
 /// Removes staged files. Callers ignore the error: the container may be gone.
 pub(crate) fn remove_images(
+    host: &DockerHost,
     container_id: &str,
     user: Option<&str>,
     paths: &[String],
 ) -> Result<(), ContainerListError> {
-    remove_images_with("docker", container_id, user, paths, DOCKER_CLI_TIMEOUT)
+    remove_images_with(
+        program_for(host),
+        host,
+        container_id,
+        user,
+        paths,
+        host.timeout(),
+    )
 }
 
 fn remove_images_with(
     program: impl AsRef<Path>,
+    host: &DockerHost,
     container_id: &str,
     user: Option<&str>,
     paths: &[String],
@@ -102,7 +115,13 @@ fn remove_images_with(
     }
     let argv = cleanup_argv(container_id, user, paths);
     let args = argv.iter().map(String::as_str).collect::<Vec<_>>();
-    let output = run_docker_with(program.as_ref(), &args, None, Instant::now() + timeout)?;
+    let output = run_docker_with(
+        program.as_ref(),
+        host,
+        &args,
+        None,
+        Instant::now() + timeout,
+    )?;
     if output.status != Some(0) {
         return Err(ContainerListError::Failed {
             status: output.status,
@@ -214,7 +233,14 @@ mod tests {
             let file_name = "client-1-clipboard-42-0.png";
 
             // Alpine ships `guest` (uid 405), so the owner check is not root-only.
-            let path = stage_image(&container.0, Some("guest"), file_name, bytes.clone()).unwrap();
+            let path = stage_image(
+                &DockerHost::Local,
+                &container.0,
+                Some("guest"),
+                file_name,
+                bytes.clone(),
+            )
+            .unwrap();
             assert_eq!(path, format!("/tmp/herdr-clipboard-images-405/{file_name}"));
             let stat = docker_out(&[
                 "exec",
@@ -235,18 +261,31 @@ mod tests {
                 "the pane user reads the exact bytes"
             );
 
-            let root_path = stage_image(&container.0, None, file_name, b"root".to_vec()).unwrap();
+            let root_path = stage_image(
+                &DockerHost::Local,
+                &container.0,
+                None,
+                file_name,
+                b"root".to_vec(),
+            )
+            .unwrap();
             assert_eq!(
                 root_path,
                 format!("/tmp/herdr-clipboard-images-0/{file_name}")
             );
 
-            remove_images(&container.0, Some("guest"), std::slice::from_ref(&path)).unwrap();
+            remove_images(
+                &DockerHost::Local,
+                &container.0,
+                Some("guest"),
+                std::slice::from_ref(&path),
+            )
+            .unwrap();
             let gone = docker_out(&["exec", &container.0, "test", "-e", &path]);
             assert!(!gone.status.success(), "cleanup removes the staged file");
             drop(container);
             assert!(
-                remove_images(&name, None, &[root_path]).is_err(),
+                remove_images(&DockerHost::Local, &name, None, &[root_path]).is_err(),
                 "cleanup reports a vanished container; callers ignore it"
             );
         }
@@ -309,6 +348,7 @@ mod tests {
             fn stage(&self) -> Result<String, ContainerListError> {
                 stage_image_with(
                     self.shim.program(),
+                    &DockerHost::Local,
                     "abc123",
                     None,
                     NAME,
@@ -371,8 +411,16 @@ mod tests {
                 "clip-nosh",
                 "cat >/dev/null; echo 'exec: \"sh\": executable file not found' >&2; exit 126",
             );
-            let err = stage_image_with(shim.program(), "abc", None, NAME, vec![1, 2], secs(5))
-                .unwrap_err();
+            let err = stage_image_with(
+                shim.program(),
+                &DockerHost::Local,
+                "abc",
+                None,
+                NAME,
+                vec![1, 2],
+                secs(5),
+            )
+            .unwrap_err();
             match err {
                 ContainerListError::Failed { status, stderr } => {
                     assert_eq!(status, Some(126));
@@ -385,8 +433,16 @@ mod tests {
         #[test]
         fn stage_image_rejects_output_that_is_not_the_staged_file() {
             let shim = Shim::new("clip-garbage", "cat >/dev/null; printf %s /tmp/other.png");
-            let err =
-                stage_image_with(shim.program(), "abc", None, NAME, vec![1], secs(5)).unwrap_err();
+            let err = stage_image_with(
+                shim.program(),
+                &DockerHost::Local,
+                "abc",
+                None,
+                NAME,
+                vec![1],
+                secs(5),
+            )
+            .unwrap_err();
             assert!(matches!(err, ContainerListError::InvalidOutput(_)));
         }
 
@@ -396,6 +452,7 @@ mod tests {
             let start = std::time::Instant::now();
             let err = stage_image_with(
                 shim.program(),
+                &DockerHost::Local,
                 "abc",
                 None,
                 NAME,
@@ -409,7 +466,15 @@ mod tests {
 
         #[test]
         fn remove_images_skips_docker_when_nothing_was_staged() {
-            remove_images_with("/nonexistent/herdr-docker", "abc", None, &[], secs(5)).unwrap();
+            remove_images_with(
+                "/nonexistent/herdr-docker",
+                &DockerHost::Local,
+                "abc",
+                None,
+                &[],
+                secs(5),
+            )
+            .unwrap();
         }
 
         #[test]
@@ -418,13 +483,119 @@ mod tests {
                 std::env::temp_dir().join(format!("herdr-clip-rm-{}.log", std::process::id()));
             let shim = Shim::new("clip-rm", &format!("echo \"$@\" > {}", log.display()));
             let paths = vec!["/tmp/a.png".to_owned(), "/tmp/b.png".to_owned()];
-            remove_images_with(shim.program(), "abc", Some("node"), &paths, secs(5)).unwrap();
+            remove_images_with(
+                shim.program(),
+                &DockerHost::Local,
+                "abc",
+                Some("node"),
+                &paths,
+                secs(5),
+            )
+            .unwrap();
             let logged = std::fs::read_to_string(&log).unwrap();
             let _ = std::fs::remove_file(&log);
             assert_eq!(
                 logged.trim(),
                 "exec -u node abc rm -f /tmp/a.png /tmp/b.png"
             );
+        }
+
+        fn remote() -> DockerHost {
+            DockerHost::Ssh {
+                host: "deploy@prod".into(),
+                control_path: Some("/tmp/hssh-1/abc-%C".into()),
+            }
+        }
+
+        /// Fake `ssh` that records argv and runs the remote command string
+        /// through `sh`, with `docker` shadowed by a function that records
+        /// its arguments and consumes stdin.
+        fn remote_docker_shim(name: &str, log: &std::path::Path) -> Shim {
+            let script = format!(
+                "printf '%s\\n' \"$@\" > {log}.argv; for last; do :; done; \
+                 docker() {{ printf '%s\\n' \"$@\" > {log}.docker; cat > {log}.stdin; \
+                 printf %s /tmp/herdr-clipboard-images-0/{NAME}; }}; eval \"$last\"",
+                log = log.display()
+            );
+            Shim::named("ssh", name, &script)
+        }
+
+        #[test]
+        fn stage_image_over_ssh_streams_the_image_into_the_remote_container() {
+            let log =
+                std::env::temp_dir().join(format!("herdr-clip-ssh-stage-{}", std::process::id()));
+            let shim = remote_docker_shim("clip-ssh-stage", &log);
+
+            let path = stage_image_with(
+                shim.program(),
+                &remote(),
+                "abc123",
+                Some("node"),
+                NAME,
+                b"image-bytes".to_vec(),
+                secs(5),
+            )
+            .unwrap();
+
+            let read = |ext: &str| {
+                let file = std::path::PathBuf::from(format!("{}.{ext}", log.display()));
+                let text = std::fs::read(&file).unwrap_or_default();
+                let _ = std::fs::remove_file(file);
+                text
+            };
+            let (argv, docker, stdin) = (read("argv"), read("docker"), read("stdin"));
+            let argv = String::from_utf8(argv).unwrap();
+            assert_eq!(path, format!("/tmp/herdr-clipboard-images-0/{NAME}"));
+            assert_eq!(stdin, b"image-bytes");
+            assert!(argv.contains("ControlMaster=auto"), "{argv}");
+            assert!(argv.contains("deploy@prod"), "{argv}");
+            assert!(!argv.lines().any(|line| line == "-t"), "{argv}");
+            // The script survived the remote shell as a single `-c` word.
+            let docker = String::from_utf8(docker).unwrap();
+            assert_eq!(
+                docker,
+                format!("exec\n-i\n-u\nnode\nabc123\nsh\n-c\n{STAGE_SCRIPT}\nsh\n{NAME}\n")
+            );
+        }
+
+        #[test]
+        fn remove_images_over_ssh_runs_rm_inside_the_remote_container() {
+            let log =
+                std::env::temp_dir().join(format!("herdr-clip-ssh-rm-{}", std::process::id()));
+            let shim = remote_docker_shim("clip-ssh-rm", &log);
+            let paths = vec!["/tmp/a b.png".to_owned()];
+
+            remove_images_with(shim.program(), &remote(), "abc", None, &paths, secs(5)).unwrap();
+
+            let file = std::path::PathBuf::from(format!("{}.docker", log.display()));
+            let docker = std::fs::read_to_string(&file).unwrap();
+            for ext in ["argv", "docker", "stdin"] {
+                let _ = std::fs::remove_file(format!("{}.{ext}", log.display()));
+            }
+            assert_eq!(docker, "exec\nabc\nrm\n-f\n/tmp/a b.png\n");
+        }
+
+        #[test]
+        fn clipboard_over_ssh_reports_a_login_that_needs_a_prompt() {
+            let shim = Shim::named(
+                "ssh",
+                "clip-ssh-login",
+                "cat >/dev/null; echo 'Permission denied (publickey).' >&2; exit 255",
+            );
+            let err = stage_image_with(
+                shim.program(),
+                &remote(),
+                "abc",
+                None,
+                NAME,
+                vec![1],
+                secs(5),
+            )
+            .unwrap_err();
+            assert!(matches!(
+                err,
+                ContainerListError::SshLoginRequired { ref host } if host == "deploy@prod"
+            ));
         }
     }
 }

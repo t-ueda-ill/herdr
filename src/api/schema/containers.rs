@@ -10,6 +10,9 @@ use super::workspaces::WorkspaceCreateParams;
 pub struct ContainerOpenParams {
     /// Docker container to open the shell in: `project/service` for a Compose service, otherwise a container name or ID.
     pub container: String,
+    /// `Host` alias of the user's ssh config whose docker CLI runs the shell; the local docker when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_host: Option<String>,
     pub target: ContainerOpenTarget,
 }
 
@@ -40,6 +43,11 @@ cli_params! {
         pub workspace_id: Option<String> => Field::new(None).input(
             super::tabs::workspace_option("ID").help("Only show containers matching this workspace"),
         ),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub ssh_host: Option<String> => Field::new(None).input(
+            crate::cli::projection::optional_text("ssh", "HOST")
+                .help("List containers of the docker on this ssh Host alias instead of the local docker"),
+        ),
     }
 }
 
@@ -56,5 +64,8 @@ pub struct ContainerInfoDto {
     pub working_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// Set when the container runs on this ssh Host alias rather than the local docker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_host: Option<String>,
     pub is_default: bool,
 }

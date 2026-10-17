@@ -159,6 +159,9 @@ pub struct PaneContainerSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
     pub shell: PaneContainerShellSnapshot,
+    /// The host whose docker CLI runs the shell; absent for the local docker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<PaneSshSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,13 +198,22 @@ impl From<&crate::container::ContainerLaunch> for PaneContainerSnapshot {
                 }
                 ContainerShell::BashOrSh => PaneContainerShellSnapshot::BashOrSh,
             },
+            ssh: launch.ssh.as_ref().map(PaneSshSnapshot::from),
         }
     }
 }
 
-impl From<&PaneContainerSnapshot> for crate::container::ContainerLaunch {
-    fn from(snapshot: &PaneContainerSnapshot) -> Self {
+impl PaneContainerSnapshot {
+    /// `None` when the stored ssh host is invalid. Why not keep the container
+    /// without its host: the id belongs to the docker on that host, and
+    /// running it against the local docker would hit an unrelated container.
+    pub(crate) fn to_launch(&self) -> Option<crate::container::ContainerLaunch> {
         use crate::container::{ContainerRef, ContainerShell};
+        let snapshot = self;
+        let ssh = match &snapshot.ssh {
+            Some(saved) => Some(saved.to_launch()?),
+            None => None,
+        };
         let reference = match &snapshot.reference {
             PaneContainerRefSnapshot::Compose { project, service } => ContainerRef::Compose {
                 project: project.clone(),
@@ -212,7 +224,7 @@ impl From<&PaneContainerSnapshot> for crate::container::ContainerLaunch {
         // Why not persist `canonical`: it is derived from `reference`, and a
         // stored copy could disagree with it after a hand edit.
         let canonical = reference.canonical();
-        Self {
+        Some(crate::container::ContainerLaunch {
             reference,
             canonical,
             id: snapshot.id.clone(),
@@ -224,7 +236,8 @@ impl From<&PaneContainerSnapshot> for crate::container::ContainerLaunch {
                 }
                 PaneContainerShellSnapshot::BashOrSh => ContainerShell::BashOrSh,
             },
-        }
+            ssh,
+        })
     }
 }
 
@@ -991,6 +1004,7 @@ mod tests {
             workdir: Some(PathBuf::from("/work")),
             user: Some("dev".into()),
             shell: PaneContainerShellSnapshot::Explicit("/bin/zsh".into()),
+            ssh: None,
         };
         let named = PaneContainerSnapshot {
             reference: PaneContainerRefSnapshot::Name("scratch".into()),
@@ -998,6 +1012,7 @@ mod tests {
             workdir: None,
             user: None,
             shell: PaneContainerShellSnapshot::BashOrSh,
+            ssh: None,
         };
         let panes = HashMap::from([
             (0, pane_snapshot_with_container(Some(compose.clone()))),
@@ -1028,6 +1043,12 @@ mod tests {
             wire(2).get("container").is_none(),
             "host panes must not grow a container key"
         );
+        for id in [0, 1] {
+            assert!(
+                wire(id)["container"].get("ssh").is_none(),
+                "local container panes must not grow an ssh key"
+            );
+        }
 
         let restored: HashMap<u32, PaneSnapshot> =
             serde_json::from_str(&serde_json::to_string(&panes).unwrap()).unwrap();
@@ -1035,9 +1056,63 @@ mod tests {
         assert_eq!(restored[&1].container, Some(named));
         assert_eq!(restored[&2].container, None);
 
-        let launch = crate::container::ContainerLaunch::from(&compose);
+        let launch = compose.to_launch().expect("valid container snapshot");
         assert_eq!(launch.canonical, "shop/db");
         assert_eq!(PaneContainerSnapshot::from(&launch), compose);
+    }
+
+    #[test]
+    fn round_trip_preserves_container_pane_on_an_ssh_host() {
+        let remote = PaneContainerSnapshot {
+            reference: PaneContainerRefSnapshot::Name("scratch".into()),
+            id: "4567ef".into(),
+            workdir: Some("/srv".into()),
+            user: None,
+            shell: PaneContainerShellSnapshot::BashOrSh,
+            ssh: Some(PaneSshSnapshot {
+                host: "deploy@prod".into(),
+                control_path: Some("/tmp/hssh-1/abc-%C".into()),
+            }),
+        };
+        let panes = HashMap::from([(0, pane_snapshot_with_container(Some(remote.clone())))]);
+
+        let wire = serde_json::to_value(&panes[&0]).unwrap();
+        assert_eq!(
+            wire["container"]["ssh"],
+            serde_json::json!({"host": "deploy@prod", "control_path": "/tmp/hssh-1/abc-%C"})
+        );
+        assert!(
+            wire.get("ssh").is_none(),
+            "the pane itself runs no ssh login, so only the container carries the host"
+        );
+
+        let restored: HashMap<u32, PaneSnapshot> =
+            serde_json::from_str(&serde_json::to_string(&panes).unwrap()).unwrap();
+        assert_eq!(restored[&0].container, Some(remote.clone()));
+        let launch = remote.to_launch().expect("valid remote container snapshot");
+        assert_eq!(
+            launch.ssh.as_ref().map(|ssh| ssh.canonical.as_str()),
+            Some("prod")
+        );
+        assert_eq!(PaneContainerSnapshot::from(&launch), remote);
+    }
+
+    #[test]
+    fn container_snapshot_with_an_invalid_ssh_host_has_no_launch() {
+        for host in ["-oProxyCommand=sh", "prod;id", ""] {
+            let snapshot = PaneContainerSnapshot {
+                reference: PaneContainerRefSnapshot::Name("scratch".into()),
+                id: "4567ef".into(),
+                workdir: None,
+                user: None,
+                shell: PaneContainerShellSnapshot::BashOrSh,
+                ssh: Some(PaneSshSnapshot {
+                    host: host.into(),
+                    control_path: None,
+                }),
+            };
+            assert_eq!(snapshot.to_launch(), None, "{host:?}");
+        }
     }
 
     #[test]
@@ -1639,6 +1714,7 @@ mod tests {
             workdir: Some(PathBuf::from("/work")),
             user: Some("dev".into()),
             shell: crate::container::ContainerShell::BashOrSh,
+            ssh: None,
         };
         let terminal_id = state.workspaces[0].tabs[0].panes[&root]
             .attached_terminal_id
@@ -1651,7 +1727,7 @@ mod tests {
             .container
             .as_ref()
             .expect("container launch should be captured");
-        assert_eq!(crate::container::ContainerLaunch::from(captured), launch);
+        assert_eq!(captured.to_launch(), Some(launch.clone()));
         assert_eq!(panes[&host.raw()].container, None);
     }
 

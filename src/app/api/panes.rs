@@ -2401,6 +2401,7 @@ mod tests {
             workdir: None,
             user: None,
             shell: crate::container::ContainerShell::BashOrSh,
+            ssh: None,
         });
         let response = app.handle_pane_get(
             "req".into(),
@@ -2414,6 +2415,42 @@ mod tests {
             panic!("expected pane info response");
         };
         assert_eq!(pane.container.as_deref(), Some("shop/db"));
+        assert_eq!(pane.ssh_host, None);
+    }
+
+    #[test]
+    fn api_pane_get_reports_the_ssh_host_of_a_remote_container_pane() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("terminal id");
+        let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
+        terminal.container = Some(crate::container::ContainerLaunch {
+            reference: crate::container::ContainerRef::Name("scratch".into()),
+            canonical: "scratch".into(),
+            id: "cid".into(),
+            workdir: None,
+            user: None,
+            shell: crate::container::ContainerShell::BashOrSh,
+            ssh: crate::ssh_host::SshLaunch::new("deploy@prod".into(), None),
+        });
+        assert_eq!(terminal.ssh, None, "the pane itself runs no ssh login");
+
+        let response = app.handle_pane_get(
+            "req".into(),
+            PaneTarget {
+                pane_id: public_pane_id,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane } = success.result else {
+            panic!("expected pane info response");
+        };
+        assert_eq!(pane.container.as_deref(), Some("scratch"));
+        assert_eq!(pane.ssh_host.as_deref(), Some("prod"));
     }
 
     #[test]

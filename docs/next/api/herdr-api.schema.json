@@ -1774,6 +1774,12 @@
         },
         "ContainerListParams": {
           "properties": {
+            "ssh_host": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "workspace_id": {
               "type": [
                 "string",
@@ -1788,6 +1794,13 @@
             "container": {
               "description": "Docker container to open the shell in: `project/service` for a Compose service, otherwise a container name or ID.",
               "type": "string"
+            },
+            "ssh_host": {
+              "description": "`Host` alias of the user's ssh config whose docker CLI runs the shell; the local docker when unset.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "target": {
               "$ref": "#/schemas/request/$defs/ContainerOpenTarget"
@@ -7016,6 +7029,13 @@
               "type": "string"
             },
             "service": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ssh_host": {
+              "description": "Set when the container runs on this ssh Host alias rather than the local docker.",
               "type": [
                 "string",
                 "null"

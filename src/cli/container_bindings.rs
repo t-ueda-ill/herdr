@@ -18,6 +18,13 @@ pub(crate) fn with_container(mut arguments: Vec<Arg>) -> Vec<Arg> {
     arguments
 }
 
+/// The `--container REF` value, for callers that combine it with another launch option.
+pub(crate) fn read_container(matches: &ArgMatches) -> Result<Option<String>, ParseError> {
+    let mut container = container();
+    container.read_matches(matches)?;
+    container.finish()
+}
+
 /// Sends fully parsed create/split params as-is, or nested in `container.open` when
 /// `--container REF` was given.
 pub(crate) fn into_method<P>(
@@ -34,6 +41,7 @@ pub(crate) fn into_method<P>(
     Ok(match container.finish()? {
         Some(container) => Method::ContainerOpen(ContainerOpenParams {
             container,
+            ssh_host: None,
             target: nested(params),
         }),
         None => plain(params),
@@ -123,8 +131,29 @@ mod tests {
         assert_eq!(
             request.method,
             Method::ContainerList(crate::api::schema::ContainerListParams {
-                workspace_id: Some("w3".into())
+                workspace_id: Some("w3".into()),
+                ssh_host: None,
             })
+        );
+    }
+
+    #[test]
+    fn container_list_parses_the_ssh_host() {
+        for args in [vec!["list", "--ssh", "prod"], vec!["list", "--ssh=prod"]] {
+            let (request, _) = parse(&args).unwrap();
+
+            assert_eq!(
+                request.method,
+                Method::ContainerList(crate::api::schema::ContainerListParams {
+                    workspace_id: None,
+                    ssh_host: Some("prod".into()),
+                })
+            );
+        }
+        let (request, _) = parse(&["list", "--ssh", "prod"]).unwrap();
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({"id":"cli:container:list","method":"container.list","params":{"ssh_host":"prod"}})
         );
     }
 
@@ -132,6 +161,7 @@ mod tests {
     fn container_list_rejects_missing_workspace_value_and_unknown_options() {
         for args in [
             vec!["list", "--workspace"],
+            vec!["list", "--ssh"],
             vec!["list", "--all"],
             vec!["list", "extra"],
             vec![],

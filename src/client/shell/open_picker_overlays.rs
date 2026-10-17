@@ -5,6 +5,7 @@ pub(super) fn render_open_picker_overlay(
     open: &ClientOpenPickerOverlay,
     p: &Palette,
 ) -> Option<OverlayRender> {
+    let container_title = format!("open container · {}", open.host.display_name());
     let (title, filter_hint, count_noun, empty_message) = match open.source {
         OpenPickerSource::SshHost => (
             "open ssh host",
@@ -12,8 +13,14 @@ pub(super) fn render_open_picker_overlay(
             "hosts",
             " no matching hosts",
         ),
-        OpenPickerSource::Container => (
+        OpenPickerSource::ContainerHost => (
             "open container",
+            "filter hosts",
+            "hosts",
+            " no matching hosts",
+        ),
+        OpenPickerSource::Container => (
+            container_title.as_str(),
             "filter containers",
             "containers",
             " no matching containers",

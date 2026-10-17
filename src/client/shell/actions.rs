@@ -841,12 +841,12 @@ impl ClientShellState {
             | PendingEndpointKind::IntegrationInstall) => {
                 return self.handle_settings_endpoint_result(kind, result);
             }
-            kind
-            @ (PendingEndpointKind::PrepareOpenPicker(_) | PendingEndpointKind::OpenPicker) => {
-                return (
-                    self.handle_open_picker_endpoint_result(kind, result),
-                    Vec::new(),
-                );
+            kind @ (PendingEndpointKind::PrepareOpenPicker(_)
+            | PendingEndpointKind::ListContainers(_)
+            | PendingEndpointKind::OpenPicker) => {
+                let mut outcome = ClientShellInput::default();
+                let repaint = self.handle_open_picker_endpoint_result(kind, result, &mut outcome);
+                return (repaint || outcome.repaint, outcome.actions);
             }
             kind => {
                 let mut outcome = ClientShellInput::default();

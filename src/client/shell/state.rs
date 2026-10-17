@@ -504,7 +504,40 @@ impl ClientWorktreeOpenOverlay {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum OpenPickerSource {
     SshHost,
+    /// First stage of "open container": where docker runs.
+    ContainerHost,
     Container,
+}
+
+/// Where a container picker's docker daemon runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum OpenPickerHost {
+    Local,
+    Ssh(String),
+}
+
+impl OpenPickerHost {
+    pub(super) fn ssh_alias(&self) -> Option<String> {
+        match self {
+            Self::Local => None,
+            Self::Ssh(alias) => Some(alias.clone()),
+        }
+    }
+
+    pub(super) fn display_name(&self) -> &str {
+        match self {
+            Self::Local => "local",
+            Self::Ssh(alias) => alias,
+        }
+    }
+}
+
+/// Host-stage rows kept while the container stage is shown, so Esc returns
+/// without asking the server again.
+#[derive(Debug)]
+pub(super) struct OpenPickerHostStage {
+    pub(super) entries: Vec<ClientOpenPickerEntry>,
+    pub(super) selected: usize,
 }
 
 impl OpenPickerSource {
@@ -524,9 +557,21 @@ pub(super) struct ClientOpenPickerEntry {
     pub(super) title: String,
     pub(super) status: &'static str,
     pub(super) detail: String,
+    /// Set only on rows of the container host stage.
+    pub(super) host: Option<OpenPickerHost>,
 }
 
 impl ClientOpenPickerEntry {
+    pub(super) fn container_host(host: OpenPickerHost, detail: String) -> Self {
+        Self {
+            id: host.display_name().to_owned(),
+            title: host.display_name().to_owned(),
+            status: "",
+            detail,
+            host: Some(host),
+        }
+    }
+
     pub(super) fn ssh_host(alias: String, hostname: Option<String>, user: Option<String>) -> Self {
         // ssh connects to the alias itself when the block names no HostName.
         let detail = match (user, hostname) {
@@ -539,6 +584,7 @@ impl ClientOpenPickerEntry {
             title: alias,
             status: "",
             detail,
+            host: None,
         }
     }
 
@@ -555,6 +601,7 @@ impl ClientOpenPickerEntry {
             title: info.name,
             status: if info.is_default { "default" } else { "" },
             detail,
+            host: None,
         }
     }
 
@@ -576,9 +623,28 @@ pub(super) struct ClientOpenPickerOverlay {
     pub(super) search_focused: bool,
     pub(super) error: Option<String>,
     pub(super) opening: bool,
+    /// Docker host of the container stage; unused by the other stages.
+    pub(super) host: OpenPickerHost,
+    /// Present when the container stage was reached through the host stage.
+    pub(super) host_stage: Option<OpenPickerHostStage>,
 }
 
 impl ClientOpenPickerOverlay {
+    /// Opens with the filter focused so typing narrows the list at once.
+    pub(super) fn new(source: OpenPickerSource, entries: Vec<ClientOpenPickerEntry>) -> Self {
+        Self {
+            source,
+            entries,
+            selected: 0,
+            query: TextEditor::default(),
+            search_focused: true,
+            error: None,
+            opening: false,
+            host: OpenPickerHost::Local,
+            host_stage: None,
+        }
+    }
+
     pub(super) fn filtered_indices(&self) -> Vec<usize> {
         self.entries
             .iter()
@@ -742,6 +808,8 @@ pub(super) enum PendingEndpointKind {
         forced: bool,
     },
     PrepareOpenPicker(OpenPickerSource),
+    /// Lists one docker host's containers for the second picker stage.
+    ListContainers(OpenPickerHost),
     OpenPicker,
     SelectionCopy,
     PaneScroll {

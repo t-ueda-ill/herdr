@@ -534,6 +534,7 @@ impl ClientShellState {
                 | PendingEndpointKind::IntegrationList
                 | PendingEndpointKind::IntegrationInstall
                 | PendingEndpointKind::PrepareOpenPicker(_)
+                | PendingEndpointKind::ListContainers(_)
                 | PendingEndpointKind::OpenPicker
                 | PendingEndpointKind::SelectionCopy
                 | PendingEndpointKind::PaneScroll { .. }

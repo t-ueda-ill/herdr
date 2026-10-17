@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::clipboard_stage_script::{staged_path_from_output, STAGE_SCRIPT};
 use crate::noninteractive_process::{run_with_deadline, RunError};
+use crate::ssh_host::launch::shell_quote;
 
 /// Budget for one side-channel run, matching the container backend.
 const SSH_SIDE_CHANNEL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -94,12 +95,6 @@ fn cleanup_argv(host: &str, control_path: &Path, paths: &[String]) -> Vec<OsStri
     let mut argv = side_channel_argv(host, control_path);
     argv.push(command.into());
     argv
-}
-
-/// POSIX single quoting: the remote shell reads `text` back unchanged,
-/// including spaces, `$`, and embedded `'`.
-fn shell_quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// Streams `data` to the pane's ssh host and returns the remote path.

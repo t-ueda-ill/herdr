@@ -554,14 +554,28 @@ mod tests {
     }
 
     #[test]
-    fn pane_split_rejects_ssh_with_container() {
-        assert!(matches!(
+    fn pane_split_with_ssh_and_container_opens_the_container_of_that_hosts_docker() {
+        let json = serde_json::to_value(
             request(
                 "split",
-                &["w1:p1", "--direction", "right", "--ssh", "prod", "--container", "app/web"]
-            ),
-            Err(ParseError::Clap(error)) if error.exit_code() == 2
-        ));
+                &[
+                    "w1:p1",
+                    "--direction",
+                    "right",
+                    "--ssh",
+                    "prod",
+                    "--container",
+                    "app/web",
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(json["method"], "container.open");
+        assert_eq!(json["params"]["container"], "app/web");
+        assert_eq!(json["params"]["ssh_host"], "prod");
+        assert_eq!(json["params"]["target"]["split"]["target_pane_id"], "w1:p1");
     }
 
     #[test]

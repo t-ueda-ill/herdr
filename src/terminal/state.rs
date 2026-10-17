@@ -2551,6 +2551,7 @@ mod tests {
             workdir: Some("/work".into()),
             user: Some("dev".into()),
             shell: crate::container::ContainerShell::Explicit("/bin/zsh".into()),
+            ssh: None,
         };
 
         assert_eq!(test_terminal().container, None);

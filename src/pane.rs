@@ -2239,7 +2239,7 @@ fn pane_shell_spawn_command_for_target(
     if let Some(launch) = shell_config.container {
         let env = container_forward_env(&cmd, launch_env);
         let login = shell_mode_uses_login_shell(shell_config.mode, target);
-        *cmd.get_argv_mut() = crate::container::launch::docker_exec_argv(launch, login, &env);
+        *cmd.get_argv_mut() = crate::container::launch::container_shell_argv(launch, login, &env);
     }
     // Why not forward `HERDR_*` like containers: `SendEnv` only works when the
     // server's `AcceptEnv` allows it, and ssh already sends `TERM` with the pty.
@@ -5378,6 +5378,7 @@ mod tests {
             workdir: Some("/work".into()),
             user: None,
             shell: crate::container::ContainerShell::BashOrSh,
+            ssh: None,
         }
     }
 
@@ -5498,6 +5499,41 @@ mod tests {
         assert_eq!(
             cmd.get_cwd(),
             Some(&crate::platform::normalize_cwd_for_launch(&host_cwd).into_os_string())
+        );
+    }
+
+    #[test]
+    fn remote_container_shell_spawn_command_runs_one_quoted_docker_command_over_ssh() {
+        let launch = crate::container::ContainerLaunch {
+            ssh: crate::ssh_host::SshLaunch::new("deploy@prod".into(), Some("/tmp/ctl-%C".into())),
+            ..test_container_launch()
+        };
+        let host_cwd = std::env::temp_dir();
+        let launch_env = PaneLaunchEnv::from_extra(vec![("MSG".into(), "it's $HOME".into())]);
+
+        let cmd = pane_shell_spawn_command_for_target(
+            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::Login)
+                .with_container(Some(&launch)),
+            ShellLaunchTarget::OtherUnix,
+            &host_cwd,
+            &launch_env,
+        )
+        .unwrap();
+
+        let argv = argv_strings(&cmd);
+        assert_eq!(&argv[..3], ["ssh", "-C", "-S"]);
+        assert_eq!(argv[argv.len() - 2], "deploy@prod");
+        let command = argv.last().unwrap();
+        assert!(
+            command.starts_with("'docker' 'exec' '-it' '-w' '/work' "),
+            "{command}"
+        );
+        assert!(command.contains(r"'MSG=it'\''s $HOME'"), "{command}");
+        assert!(command.ends_with("'-l'"), "{command}");
+        assert_eq!(
+            cmd.get_cwd(),
+            Some(&crate::platform::normalize_cwd_for_launch(&host_cwd).into_os_string()),
+            "the local ssh client starts in the host cwd"
         );
     }
 

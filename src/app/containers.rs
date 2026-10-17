@@ -6,12 +6,15 @@ use crate::api::schema::{
     Request, ResponseResult,
 };
 use crate::app::App;
+use crate::container::docker::DockerHost;
 use crate::container::workdir::{compose_matches_repo_root, containers_for_repo_root};
 use crate::container::{ContainerInfo, ContainerLaunch, ContainerListError, ContainerRef};
 use crate::events::{AppEvent, ContainerListResult, ContainerOpenResult, WorkspaceRepoRoot};
 use crate::pane::PaneLaunchTarget;
+use crate::ssh_host::SshLaunch;
 
 use super::api::responses::{encode_error, encode_success};
+use super::ssh_hosts::{resolve_ssh_launch, validate_ssh_host};
 
 type ApiFailure = (String, String);
 
@@ -47,6 +50,8 @@ impl WorkspaceRepoProbe {
 
 struct ContainerListJob {
     id: String,
+    /// The validated `Host` value as sent; the worker resolves it to a launch.
+    ssh_host: Option<String>,
     filter_workspace_id: Option<String>,
     probes: Vec<WorkspaceRepoProbe>,
     respond_to: Sender<String>,
@@ -86,6 +91,12 @@ impl App {
                 return;
             }
         };
+        if let Some(host) = &params.ssh_host {
+            if let Err((code, message)) = validate_ssh_host(host) {
+                let _ = respond_to.send(encode_error(id, &code, message));
+                return;
+            }
+        }
         let host_cwd = match self.pin_container_open_target(&mut params.target) {
             Ok(host_cwd) => host_cwd,
             Err((code, message)) => {
@@ -104,7 +115,11 @@ impl App {
         let event_tx = self.event_tx.clone();
         let spawned =
             crate::thread_spawn::spawn_named_with("herdr-container-open", job, move |job| {
-                let result = resolve_container_launch(&job.reference, &job.host_cwd);
+                let result = resolve_container_launch(
+                    job.params.ssh_host.as_deref(),
+                    &job.reference,
+                    &job.host_cwd,
+                );
                 let _ = event_tx.blocking_send(AppEvent::ContainerOpenFinished(Box::new(
                     ContainerOpenResult {
                         id: job.id,
@@ -168,6 +183,12 @@ impl App {
             let _ = respond_to.send(encode_error(id, &code, message));
             return;
         }
+        if let Some(host) = &params.ssh_host {
+            if let Err((code, message)) = validate_ssh_host(host) {
+                let _ = respond_to.send(encode_error(id, &code, message));
+                return;
+            }
+        }
         let (filter_workspace_id, probes) =
             match self.container_list_probes(params.workspace_id.as_deref()) {
                 Ok(captured) => captured,
@@ -178,6 +199,7 @@ impl App {
             };
         let job = ContainerListJob {
             id,
+            ssh_host: params.ssh_host,
             filter_workspace_id,
             probes,
             respond_to,
@@ -185,18 +207,35 @@ impl App {
         let event_tx = self.event_tx.clone();
         let spawned =
             crate::thread_spawn::spawn_named_with("herdr-container-list", job, move |job| {
+                let remote = job.ssh_host.is_some();
                 let workspaces = job
                     .probes
                     .into_iter()
-                    .map(WorkspaceRepoProbe::resolve)
+                    .map(|probe| {
+                        // Why not run Git discovery for a remote listing:
+                        // its containers are never matched to local repos.
+                        if remote {
+                            WorkspaceRepoRoot {
+                                workspace_id: probe.workspace_id,
+                                repo_root: None,
+                            }
+                        } else {
+                            probe.resolve()
+                        }
+                    })
                     .collect();
-                let result = crate::container::docker::list_running_containers()
-                    .map_err(container_unavailable);
+                let ssh_alias = job
+                    .ssh_host
+                    .as_deref()
+                    .and_then(crate::ssh_host::launch::ssh_destination_alias)
+                    .map(str::to_owned);
+                let result = list_containers(job.ssh_host.as_deref());
                 let _ = event_tx.blocking_send(AppEvent::ContainerListFinished(Box::new(
                     ContainerListResult {
                         id: job.id,
                         filter_workspace_id: job.filter_workspace_id,
                         workspaces,
+                        ssh_host: ssh_alias,
                         result,
                         respond_to: job.respond_to,
                     },
@@ -261,6 +300,7 @@ impl App {
             id,
             filter_workspace_id,
             workspaces,
+            ssh_host,
             result,
             respond_to,
         } = finished;
@@ -291,7 +331,12 @@ impl App {
                     filter => encode_success(
                         id,
                         ResponseResult::ContainerList {
-                            containers: container_list_dtos(&containers, &open, filter.as_deref()),
+                            containers: container_list_dtos(
+                                &containers,
+                                &open,
+                                filter.as_deref(),
+                                ssh_host.as_deref(),
+                            ),
                         },
                     ),
                 }
@@ -323,23 +368,50 @@ fn parse_container_reference(text: &str) -> Result<ContainerRef, ApiFailure> {
     })
 }
 
-/// Runs docker, so it must stay off the app thread.
+/// Resolves the ssh host's control path and lists its docker, so it must stay
+/// off the app thread.
+fn list_containers(ssh_host: Option<&str>) -> Result<Vec<ContainerInfo>, ApiFailure> {
+    let ssh = ssh_host.map(resolve_ssh_launch).transpose()?;
+    crate::container::docker::list_running_containers(&DockerHost::for_launch(ssh.as_ref()))
+        .map_err(container_unavailable)
+}
+
+/// Runs docker (over ssh for a remote host), so it must stay off the app thread.
 fn resolve_container_launch(
+    ssh_host: Option<&str>,
     reference: &ContainerRef,
     host_cwd: &Path,
 ) -> Result<ContainerLaunch, ApiFailure> {
-    match crate::container::docker::inspect_reference(reference) {
+    let ssh = ssh_host.map(resolve_ssh_launch).transpose()?;
+    let host = DockerHost::for_launch(ssh.as_ref());
+    match crate::container::docker::inspect_reference(&host, reference) {
         // `docker inspect <name>` also reports stopped containers, which
         // `docker exec` would reject after the pane already exists.
-        Ok(Some(info)) if info.running => {
-            Ok(crate::container::launch::plan_launch(&info, host_cwd))
-        }
+        Ok(Some(info)) if info.running => Ok(launch_for_info(&info, ssh, host_cwd)),
         Ok(_) => Err((
             "container_not_found".into(),
-            format!("no running container matches {}", reference.canonical()),
+            match ssh_host {
+                Some(host) => format!(
+                    "no running container matches {} on {host}",
+                    reference.canonical()
+                ),
+                None => format!("no running container matches {}", reference.canonical()),
+            },
         )),
         Err(err) => Err(container_unavailable(err)),
     }
+}
+
+fn launch_for_info(
+    info: &ContainerInfo,
+    ssh: Option<SshLaunch>,
+    host_cwd: &Path,
+) -> ContainerLaunch {
+    // Why not map the local cwd on a remote host: its bind mounts are paths of
+    // another machine.
+    let mut launch = crate::container::launch::plan_launch(info, ssh.is_none().then_some(host_cwd));
+    launch.ssh = ssh;
+    launch
 }
 
 fn container_unavailable(err: ContainerListError) -> ApiFailure {
@@ -351,7 +423,25 @@ fn container_list_dtos(
     containers: &[ContainerInfo],
     workspaces: &[WorkspaceRepoRoot],
     filter_workspace_id: Option<&str>,
+    ssh_host: Option<&str>,
 ) -> Vec<ContainerInfoDto> {
+    if let Some(alias) = ssh_host {
+        // Why not match workspaces: compose directories on another machine
+        // say nothing about the repos opened here, and a coincidental path
+        // match would mark an unrelated container as a workspace's own.
+        if filter_workspace_id.is_some() {
+            return Vec::new();
+        }
+        let mut remote: Vec<&ContainerInfo> = containers.iter().collect();
+        remote.sort_by_key(|info| !info.herdr.default);
+        return remote
+            .into_iter()
+            .map(|info| ContainerInfoDto {
+                ssh_host: Some(alias.to_owned()),
+                ..container_info_dto(info, None)
+            })
+            .collect();
+    }
     if let Some(filter) = filter_workspace_id {
         let Some(repo_root) = workspaces
             .iter()
@@ -397,6 +487,7 @@ fn container_info_dto(info: &ContainerInfo, workspace_id: Option<&str>) -> Conta
             .and_then(|compose| compose.working_dir.as_deref())
             .map(|dir| dir.display().to_string()),
         workspace_id: workspace_id.map(str::to_owned),
+        ssh_host: None,
         is_default: info.herdr.default,
     }
 }
@@ -491,7 +582,7 @@ mod tests {
             workspace_root("w3", Some("/repo/shop")),
         ];
 
-        let dtos = container_list_dtos(&listed_containers(), &workspaces, None);
+        let dtos = container_list_dtos(&listed_containers(), &workspaces, None, None);
 
         assert_eq!(
             dtos,
@@ -504,6 +595,7 @@ mod tests {
                     service: Some("web".into()),
                     working_dir: Some("/repo/shop".into()),
                     workspace_id: Some("w1".into()),
+                    ssh_host: None,
                     is_default: false,
                 },
                 ContainerInfoDto {
@@ -514,6 +606,7 @@ mod tests {
                     service: Some("db".into()),
                     working_dir: Some("/repo/shop/docker".into()),
                     workspace_id: Some("w1".into()),
+                    ssh_host: None,
                     is_default: true,
                 },
                 ContainerInfoDto {
@@ -524,6 +617,7 @@ mod tests {
                     service: Some("api".into()),
                     working_dir: Some("/elsewhere/other".into()),
                     workspace_id: None,
+                    ssh_host: None,
                     is_default: false,
                 },
                 ContainerInfoDto {
@@ -534,6 +628,7 @@ mod tests {
                     service: None,
                     working_dir: None,
                     workspace_id: None,
+                    ssh_host: None,
                     is_default: false,
                 },
             ]
@@ -548,7 +643,7 @@ mod tests {
             workspace_root("w3", Some("/repo/shop")),
         ];
 
-        let scoped = container_list_dtos(&listed_containers(), &workspaces, Some("w3"));
+        let scoped = container_list_dtos(&listed_containers(), &workspaces, Some("w3"), None);
         let summary: Vec<_> = scoped
             .iter()
             .map(|dto| {
@@ -567,7 +662,115 @@ mod tests {
             ]
         );
 
-        assert!(container_list_dtos(&listed_containers(), &workspaces, Some("w2")).is_empty());
+        assert!(
+            container_list_dtos(&listed_containers(), &workspaces, Some("w2"), None).is_empty()
+        );
+    }
+
+    #[test]
+    fn remote_container_list_names_the_host_and_never_matches_local_workspaces() {
+        let workspaces = [workspace_root("w1", Some("/repo/shop"))];
+
+        let dtos = container_list_dtos(&listed_containers(), &workspaces, None, Some("prod"));
+
+        let summary: Vec<_> = dtos
+            .iter()
+            .map(|dto| {
+                (
+                    dto.reference.as_str(),
+                    dto.workspace_id.as_deref(),
+                    dto.ssh_host.as_deref(),
+                    dto.is_default,
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("shop/db", None, Some("prod"), true),
+                ("shop/web", None, Some("prod"), false),
+                ("other/api", None, Some("prod"), false),
+                ("scratch", None, Some("prod"), false),
+            ]
+        );
+        assert!(
+            container_list_dtos(&listed_containers(), &workspaces, Some("w1"), Some("prod"))
+                .is_empty(),
+            "a workspace filter cannot select containers of another machine"
+        );
+    }
+
+    #[test]
+    fn remote_launch_keeps_the_ssh_host_and_skips_bind_mount_mapping() {
+        let mut info = plain_container("scratch");
+        info.bind_mounts = vec![crate::container::types::BindMount {
+            source: PathBuf::from("/home/dev/app"),
+            destination: PathBuf::from("/work"),
+        }];
+        let cwd = Path::new("/home/dev/app/src");
+        let ssh = SshLaunch::new("deploy@prod".into(), Some("/tmp/ctl-%C".into()));
+
+        let remote = launch_for_info(&info, ssh.clone(), cwd);
+        assert_eq!(remote.ssh, ssh);
+        assert_eq!(
+            remote.workdir,
+            Some(PathBuf::from("/work")),
+            "image WorkingDir"
+        );
+
+        let local = launch_for_info(&info, None, cwd);
+        assert_eq!(local.ssh, None);
+        assert_eq!(local.workdir, Some(PathBuf::from("/work/src")));
+    }
+
+    #[test]
+    fn container_open_rejects_invalid_ssh_host_before_spawning() {
+        for host in ["-oProxyCommand=sh", "prod;id", ""] {
+            let mut app = test_app();
+            let (respond_to, response_rx) = std::sync::mpsc::channel();
+            let mut request = container_open("shop/db", workspace_target());
+            let Method::ContainerOpen(params) = &mut request.method else {
+                unreachable!()
+            };
+            params.ssh_host = Some(host.into());
+
+            assert!(app.handle_deferred_container_api_request(request, respond_to, false));
+
+            let response = response_rx
+                .try_recv()
+                .expect("an invalid host is rejected without an ssh lookup");
+            assert_eq!(
+                error_code(&response),
+                platform_or("invalid_ssh_host"),
+                "{host:?}"
+            );
+            assert!(app.state.workspaces.is_empty());
+            assert!(app.event_rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn container_list_rejects_invalid_ssh_host_before_spawning() {
+        let mut app = test_app();
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+
+        assert!(app.handle_deferred_container_api_request(
+            Request {
+                id: "list".into(),
+                method: Method::ContainerList(ContainerListParams {
+                    workspace_id: None,
+                    ssh_host: Some("-oProxyCommand=sh".into()),
+                }),
+            },
+            respond_to,
+            false,
+        ));
+
+        let response = response_rx
+            .try_recv()
+            .expect("an invalid host is rejected without an ssh lookup");
+        assert_eq!(error_code(&response), platform_or("invalid_ssh_host"));
+        assert!(app.event_rx.try_recv().is_err());
     }
 
     fn error_code(response: &str) -> String {
@@ -582,6 +785,7 @@ mod tests {
             id: "open".into(),
             method: Method::ContainerOpen(ContainerOpenParams {
                 container: container.into(),
+                ssh_host: None,
                 target,
             }),
         }
@@ -699,6 +903,7 @@ mod tests {
                 id: "list".into(),
                 method: Method::ContainerList(ContainerListParams {
                     workspace_id: Some("w_missing".into()),
+                    ssh_host: None,
                 }),
             },
             respond_to,
@@ -758,6 +963,7 @@ mod tests {
             workdir: None,
             user: None,
             shell: ContainerShell::BashOrSh,
+            ssh: None,
         }
     }
 
@@ -771,6 +977,7 @@ mod tests {
             id: "open".into(),
             params: ContainerOpenParams {
                 container: "shop/db".into(),
+                ssh_host: None,
                 target,
             },
             client_local: false,

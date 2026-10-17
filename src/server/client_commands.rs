@@ -248,11 +248,11 @@ mod tests {
         // Freeze additive methods separately without rewriting the published fixture.
         assert_eq!(
             actual.remove("container.list").as_deref(),
-            Some("07406b3788fd2d545579a4d5e10700386dc63e70e0be8f7533049058f46aca13")
+            Some("302a29074431d1afd67f41f858304595050117aac19dc695357968b636a3c525")
         );
         assert_eq!(
             actual.remove("container.open").as_deref(),
-            Some("b4a5504d496cf3424457ddb2a4c450f957e0e9bda7b936fb533a9cd4611e489e")
+            Some("93c71c1f87c7c8f5e6e040172a8c72748113e083b31d98201f393f22e17c495b")
         );
         assert_eq!(
             actual.remove("pane.clear").as_deref(),
