@@ -2288,9 +2288,10 @@ fn usable_reported_cwd(
     cwd: std::path::PathBuf,
     shell_off_host: bool,
 ) -> Option<std::path::PathBuf> {
-    // Container and ssh paths are not checked with `is_dir()`: this host's
-    // filesystem cannot confirm or refute a directory on the other side.
-    (cwd.is_absolute() && (shell_off_host || cwd.is_dir())).then_some(cwd)
+    // Container and ssh paths can be POSIX absolute paths even on Windows.
+    // This host's filesystem cannot confirm directories on the other side.
+    let remote_absolute = shell_off_host && cwd.as_os_str().as_encoded_bytes().starts_with(b"/");
+    ((cwd.is_absolute() || remote_absolute) && (shell_off_host || cwd.is_dir())).then_some(cwd)
 }
 
 fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<AppEvent>) {
@@ -5694,6 +5695,15 @@ mod tests {
             pwsh.with_ssh(Some(&launch)),
             ShellLaunchTarget::Windows
         ));
+    }
+
+    #[test]
+    fn reported_cwd_rejects_relative_paths_even_off_host() {
+        for path in ["", ".", "work", "../work"] {
+            for shell_off_host in [false, true] {
+                assert_eq!(usable_reported_cwd(path.into(), shell_off_host), None);
+            }
+        }
     }
 
     #[tokio::test]
