@@ -8,6 +8,7 @@ ARG TARGETARCH
 ARG ZIG_VERSION=0.16.0
 ARG JUST_VERSION=1.40.0
 ARG NEXTEST_VERSION=0.9.114
+ARG XWIN_VERSION=0.10.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl gdb git openssh-client pkg-config \
@@ -32,6 +33,8 @@ RUN case "${TARGETARCH}" in \
 RUN rustup component add rustfmt clippy \
     && cargo install --locked just --version "${JUST_VERSION}" \
     && cargo install --locked cargo-nextest --version "${NEXTEST_VERSION}" \
+    && cargo install --locked xwin --version "${XWIN_VERSION}" \
+    && rustup target add x86_64-pc-windows-msvc \
     && rm -rf /usr/local/cargo/registry /usr/local/cargo/git
 
 # Keep build products separate from the source, including when bind mounting it.
