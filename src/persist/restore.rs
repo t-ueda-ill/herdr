@@ -1575,6 +1575,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn remote_container_snapshot(
         name: &str,
         host: &str,

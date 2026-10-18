@@ -1,9 +1,13 @@
 use super::off_host_clipboard_fixture::{
-    cleanup_of, rejection, stage_target_of, staged_event, staged_file, staged_image,
-    OffHostPaneFixture, OffHostShell, CLIENT, STAGED_PATH,
+    cleanup_of, rejection, stage_target_of, staged_event, staged_image, OffHostPaneFixture,
+    OffHostShell, CLIENT,
 };
+#[cfg(not(windows))]
+use super::off_host_clipboard_fixture::{staged_file, STAGED_PATH};
 use super::*;
-use crate::server::clipboard_image::{test_cleanup, OffHostTarget, RemoteDockerHost};
+#[cfg(not(windows))]
+use crate::server::clipboard_image::RemoteDockerHost;
+use crate::server::clipboard_image::{test_cleanup, OffHostTarget};
 
 const CONTAINER_ID: &str = "cid-1";
 
@@ -34,8 +38,10 @@ fn container_target(container_id: &str) -> OffHostTarget {
     }
 }
 
+#[cfg(not(windows))]
 const REMOTE_CONTROL_PATH: &str = "/tmp/hssh-1000/0123abcd-%C";
 
+#[cfg(not(windows))]
 fn remote_launch(control_path: Option<&str>) -> crate::container::ContainerLaunch {
     crate::container::ContainerLaunch {
         ssh: crate::ssh_host::SshLaunch::new("deploy@prod".into(), control_path.map(Into::into)),
@@ -43,6 +49,7 @@ fn remote_launch(control_path: Option<&str>) -> crate::container::ContainerLaunc
     }
 }
 
+#[cfg(not(windows))]
 fn remote_container_target() -> OffHostTarget {
     OffHostTarget::Container {
         id: CONTAINER_ID.into(),
