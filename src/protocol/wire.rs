@@ -863,6 +863,23 @@ impl FrameData {
         *self = replacement;
     }
 
+    /// Drops hyperlinks from every cell inside `area`, clipped to the frame.
+    pub(crate) fn clear_hyperlinks_in(&mut self, area: ratatui::layout::Rect) {
+        let width = usize::from(self.width);
+        if width == 0 {
+            return;
+        }
+        let right = area.right().min(self.width);
+        let bottom = area.bottom().min(self.height);
+        for y in area.y..bottom {
+            for x in area.x..right {
+                if let Some(cell) = self.cells.get_mut(usize::from(y) * width + usize::from(x)) {
+                    cell.hyperlink = None;
+                }
+            }
+        }
+    }
+
     /// Reconstructs a ratatui `Buffer` from this frame data.
     ///
     /// Returns `None` if the cells vector length doesn't match `width * height`.
