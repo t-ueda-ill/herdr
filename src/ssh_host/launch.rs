@@ -73,6 +73,25 @@ pub(crate) fn ssh_argv(launch: &SshLaunch) -> Vec<OsString> {
     argv
 }
 
+/// [`ssh_argv`] running `command` on the remote, with the config's
+/// `RemoteCommand` disabled.
+///
+/// Why not put `-o RemoteCommand=none` in `ssh_argv`: plain panes are the
+/// user's own login and must keep their configured `RemoteCommand`. Why it is
+/// needed here: OpenSSH refuses a command line together with a configured
+/// `RemoteCommand` and exits 255.
+pub(crate) fn ssh_command_argv(launch: &SshLaunch, command: OsString) -> Vec<OsString> {
+    let mut argv = ssh_argv(launch);
+    // `ssh_argv` ends with `-t <host>`; the override must precede them.
+    let before_tty = argv.len() - 2;
+    argv.splice(
+        before_tty..before_tty,
+        ["-o".into(), "RemoteCommand=none".into()],
+    );
+    argv.push(command);
+    argv
+}
+
 /// POSIX single quoting: the remote shell reads `text` back unchanged,
 /// including spaces, `$`, and embedded `'`.
 pub(crate) fn shell_quote(text: &str) -> String {
@@ -87,6 +106,56 @@ mod tests {
         argv.into_iter()
             .map(|arg| arg.into_string().unwrap())
             .collect()
+    }
+
+    #[test]
+    fn ssh_command_argv_disables_remote_command_before_the_destination() {
+        let launch = SshLaunch::new("deploy@prod".into(), Some("/tmp/ctl-%C".into())).unwrap();
+        let argv = strings(ssh_command_argv(&launch, "docker ps".into()));
+        assert_eq!(
+            argv,
+            [
+                "ssh",
+                "-C",
+                "-S",
+                "/tmp/ctl-%C",
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                "ControlPersist=600",
+                "-o",
+                "RemoteCommand=none",
+                "-t",
+                "deploy@prod",
+                "docker ps"
+            ]
+        );
+    }
+
+    #[test]
+    fn ssh_command_argv_without_control_path_has_no_control_options() {
+        let launch = SshLaunch::new("prod".into(), None).unwrap();
+        let argv = strings(ssh_command_argv(&launch, "true".into()));
+        assert_eq!(
+            argv,
+            [
+                "ssh",
+                "-C",
+                "-o",
+                "RemoteCommand=none",
+                "-t",
+                "prod",
+                "true"
+            ]
+        );
+    }
+
+    #[test]
+    fn ssh_argv_keeps_the_users_remote_command() {
+        let launch = SshLaunch::new("prod".into(), Some("/tmp/ctl-%C".into())).unwrap();
+        assert!(strings(ssh_argv(&launch))
+            .iter()
+            .all(|arg| !arg.contains("RemoteCommand")));
     }
 
     #[test]

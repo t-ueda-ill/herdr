@@ -3960,7 +3960,9 @@ impl PaneRuntime {
             })
     }
 
-    fn shell_runs_off_host(&self) -> bool {
+    /// Whether the running shell is a docker or ssh CLI child. Cold-restored
+    /// metadata alone does not count: that shell is a host shell.
+    pub(crate) fn shell_runs_off_host(&self) -> bool {
         self.in_container || self.in_ssh
     }
 
@@ -4047,6 +4049,12 @@ impl PaneRuntime {
 
     pub(crate) fn test_set_in_ssh(&mut self, in_ssh: bool) {
         self.in_ssh = in_ssh;
+    }
+
+    pub(crate) fn test_set_reported_cwd(&self, cwd: std::path::PathBuf) {
+        if let Ok(mut reported) = self.reported_cwd.lock() {
+            *reported = Some(cwd);
+        }
     }
 
     #[cfg(unix)]

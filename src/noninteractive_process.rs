@@ -3,6 +3,7 @@ use std::{
     io::{self, Read, Write as _},
     path::Path,
     process::{Child, ChildStdin, Command, Stdio},
+    sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
     time::{Duration, Instant},
 };
 
@@ -91,15 +92,34 @@ pub(crate) fn run_with_deadline<S: AsRef<OsStr>>(
             })
         }
     };
-    let input_error = feeder.and_then(|feeder| match feeder.join() {
-        Ok(Ok(())) => None,
-        Ok(Err(err)) => Some(err.to_string()),
-        Err(_) => Some("input thread panicked".to_owned()),
-    });
+
+    // Why not kill the process group or descendants on timeout: the ssh
+    // callers use `ControlMaster=auto`, so a group kill could take down a
+    // ControlPersist master that an interactive pane just joined. The
+    // direct child is already reaped here, so nothing leaks. A detached
+    // collector thread exits by itself once the descendant closes its pipe,
+    // so lingering threads are bounded by live descendants.
+    let Some(stdout) = recv_until(stdout, deadline, Vec::new) else {
+        return Err(RunError::Timeout);
+    };
+    let Some(stderr) = recv_until(stderr, deadline, Vec::new) else {
+        return Err(RunError::Timeout);
+    };
+    let input_error = match feeder {
+        Some(feeder) => {
+            let Some(result) = recv_until(Some(feeder), deadline, || {
+                Err(io::Error::other("input thread panicked"))
+            }) else {
+                return Err(RunError::Timeout);
+            };
+            result.err().map(|err| err.to_string())
+        }
+        None => None,
+    };
     let output = ProcessOutput {
         status: status.code(),
-        stdout: join_output(stdout),
-        stderr: join_output(stderr),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
     };
     match input_error {
         // A successful exit after a short write means the child consumed a
@@ -112,15 +132,14 @@ pub(crate) fn run_with_deadline<S: AsRef<OsStr>>(
     }
 }
 
-fn feed(
-    stdin: Option<ChildStdin>,
-    input: Vec<u8>,
-) -> io::Result<std::thread::JoinHandle<io::Result<()>>> {
+fn feed(stdin: Option<ChildStdin>, input: Vec<u8>) -> io::Result<Receiver<io::Result<()>>> {
     let mut stdin = stdin.ok_or_else(|| io::Error::other("stdin was not piped"))?;
+    let (tx, rx) = mpsc::channel();
     crate::thread_spawn::spawn_named("herdr-cli-stdin", move || {
-        stdin.write_all(&input)
-        // Dropping `stdin` here sends EOF.
-    })
+        // Dropping `stdin` after the write sends EOF.
+        let _ = tx.send(stdin.write_all(&input));
+    })?;
+    Ok(rx)
 }
 
 /// Polls instead of blocking in `wait` because std has no `wait_timeout`, and a
@@ -143,23 +162,40 @@ fn wait_until(
     }
 }
 
-type Reader = Option<std::thread::JoinHandle<Vec<u8>>>;
-
-fn drain<R: Read + Send + 'static>(stream: Option<R>, name: &str) -> Reader {
+fn drain<R: Read + Send + 'static>(stream: Option<R>, name: &str) -> Option<Receiver<Vec<u8>>> {
     let mut stream = stream?;
+    let (tx, rx) = mpsc::channel();
+    // A failed spawn drops `tx`, which reads as an empty result below.
     crate::thread_spawn::spawn_named(name, move || {
         let mut buf = Vec::new();
         let _ = stream.read_to_end(&mut buf);
-        buf
+        let _ = tx.send(buf);
     })
-    .ok()
+    .ok()?;
+    Some(rx)
 }
 
-fn join_output(reader: Reader) -> String {
-    reader
-        .and_then(|handle| handle.join().ok())
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .unwrap_or_default()
+/// Waits for a collector's result until `deadline`. `None` means the deadline
+/// passed; a disconnected channel (panicked or unspawned thread) yields
+/// `on_disconnect()`, as does an absent receiver (stream was not piped).
+fn recv_until<T>(
+    rx: Option<Receiver<T>>,
+    deadline: Instant,
+    on_disconnect: impl FnOnce() -> T,
+) -> Option<T> {
+    let Some(rx) = rx else {
+        return Some(on_disconnect());
+    };
+    match rx.try_recv() {
+        Ok(value) => return Some(value),
+        Err(TryRecvError::Disconnected) => return Some(on_disconnect()),
+        Err(TryRecvError::Empty) => {}
+    }
+    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(value) => Some(value),
+        Err(RecvTimeoutError::Timeout) => None,
+        Err(RecvTimeoutError::Disconnected) => Some(on_disconnect()),
+    }
 }
 
 /// A fake CLI executable for tests that drive `run_with_deadline` callers.
@@ -197,5 +233,86 @@ pub(crate) mod fake_program {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn sh(
+        script: &str,
+        stdin: Option<Vec<u8>>,
+        limit: Duration,
+    ) -> (Result<ProcessOutput, RunError>, Duration) {
+        let started = Instant::now();
+        let result = run_with_deadline(
+            Path::new("/bin/sh"),
+            &["-c", script],
+            stdin,
+            started + limit,
+        );
+        (result, started.elapsed())
+    }
+
+    #[test]
+    fn descendant_holding_pipes_times_out_at_the_deadline() {
+        let (result, elapsed) = sh("sleep 2 & exit 0", None, Duration::from_millis(100));
+        assert!(matches!(result, Err(RunError::Timeout)), "{result:?}");
+        assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
+    }
+
+    #[test]
+    fn direct_child_times_out_and_is_killed() {
+        let (result, elapsed) = sh("sleep 5", None, Duration::from_millis(100));
+        assert!(matches!(result, Err(RunError::Timeout)), "{result:?}");
+        assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
+    }
+
+    #[test]
+    fn collects_stdout_stderr_and_status() {
+        let (result, _) = sh(
+            "printf out; printf err >&2; exit 3",
+            None,
+            Duration::from_secs(5),
+        );
+        let output = result.expect("run should succeed");
+        assert_eq!(output.stdout, "out");
+        assert_eq!(output.stderr, "err");
+        assert_eq!(output.status, Some(3));
+    }
+
+    #[test]
+    fn short_stdin_write_on_success_is_reported() {
+        let (result, _) = sh("exit 0", Some(vec![b'x'; 1 << 20]), Duration::from_secs(5));
+        match result {
+            Err(RunError::Failed {
+                status: Some(0),
+                detail,
+            }) => {
+                assert!(
+                    detail.starts_with("process did not read all input"),
+                    "{detail}"
+                )
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stdin_is_streamed_to_the_child() {
+        let (result, _) = sh("cat", Some(b"hello".to_vec()), Duration::from_secs(5));
+        assert_eq!(result.expect("run should succeed").stdout, "hello");
+    }
+
+    #[test]
+    fn missing_program_is_not_found() {
+        let result = run_with_deadline(
+            Path::new("/nonexistent/herdr-no-such-program"),
+            &["x"],
+            None,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(matches!(result, Err(RunError::NotFound)), "{result:?}");
     }
 }

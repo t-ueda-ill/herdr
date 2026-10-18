@@ -10,7 +10,7 @@ fn container_dto(
 ) -> crate::api::schema::ContainerInfoDto {
     crate::api::schema::ContainerInfoDto {
         reference: reference.into(),
-        id: "0123456789abcdef0123".into(),
+        id: format!("{name}-0123456789abcdef"),
         name: name.into(),
         project: project.map(str::to_owned),
         service: service.map(str::to_owned),
@@ -167,14 +167,14 @@ fn choose_host(state: &mut ClientShellState, downs: usize) -> Option<String> {
     ssh_host
 }
 
-fn assert_container_open_request(actions: &[ClientShellAction], reference: &str, label: &str) {
+fn assert_container_open_request(actions: &[ClientShellAction], container: &str, label: &str) {
     let [ClientShellAction::Endpoint { request, .. }] = actions else {
         panic!("choosing a container should open it through container.open: {actions:?}");
     };
     let crate::api::schema::Method::ContainerOpen(params) = &request.method else {
         panic!("expected container.open, got {:?}", request.method);
     };
-    assert_eq!(params.container, reference);
+    assert_eq!(params.container, container);
     assert_eq!(
         params.target,
         crate::api::schema::ContainerOpenTarget::Workspace(
@@ -213,9 +213,14 @@ fn container_picker_lists_running_containers_with_their_details() {
     assert_eq!(
         shown,
         [
-            ("herdr-dev", "herdr-dev", "default", "/work"),
-            ("shop/web", "shop-web-1", "", "shop/web"),
-            ("redis-1", "redis-1", "", "0123456789ab"),
+            (
+                "herdr-dev-0123456789abcdef",
+                "herdr-dev",
+                "default",
+                "/work"
+            ),
+            ("shop-web-1-0123456789abcdef", "shop-web-1", "", "shop/web"),
+            ("redis-1-0123456789abcdef", "redis-1", "", "redis-1-0123"),
         ]
     );
     let text = frame_text(&mut state);
@@ -232,7 +237,7 @@ fn container_picker_enter_opens_the_selected_container_in_a_new_named_workspace(
     state.handle_input_bytes(b"\x1b[B");
     let open = state.handle_input_bytes(b"\r");
 
-    assert_container_open_request(&open.actions, "shop/web", "shop-web-1");
+    assert_container_open_request(&open.actions, "shop-web-1-0123456789abcdef", "shop-web-1");
     assert!(matches!(
         &state.overlay,
         Some(ClientShellOverlay::OpenPicker(open)) if open.opening
@@ -256,7 +261,7 @@ fn container_picker_filter_narrows_containers_and_enter_opens_the_match() {
     state.handle_input_bytes(b"redis");
     let open = state.handle_input_bytes(b"\r");
 
-    assert_container_open_request(&open.actions, "redis-1", "redis-1");
+    assert_container_open_request(&open.actions, "redis-1-0123456789abcdef", "redis-1");
 }
 
 #[test]
@@ -274,7 +279,7 @@ fn container_picker_row_click_opens_that_container() {
         modifiers: KeyModifiers::empty(),
     })]);
 
-    assert_container_open_request(&open.actions, "shop/web", "shop-web-1");
+    assert_container_open_request(&open.actions, "shop-web-1-0123456789abcdef", "shop-web-1");
 }
 
 #[test]
@@ -321,7 +326,7 @@ fn container_picker_keeps_the_rejection_and_allows_another_choice() {
     );
     state.handle_input_bytes(b"\x1b[B");
     let retry = state.handle_input_bytes(b"\r");
-    assert_container_open_request(&retry.actions, "shop/web", "shop-web-1");
+    assert_container_open_request(&retry.actions, "shop-web-1-0123456789abcdef", "shop-web-1");
 }
 
 #[test]
@@ -443,7 +448,7 @@ fn choosing_a_host_lists_its_containers_and_opens_them_with_a_host_suffixed_labe
     let crate::api::schema::Method::ContainerOpen(params) = &request.method else {
         panic!("expected container.open, got {:?}", request.method);
     };
-    assert_eq!(params.container, "shop/web");
+    assert_eq!(params.container, "shop-web-1-0123456789abcdef");
     assert_eq!(params.ssh_host.as_deref(), Some("prod"));
     assert_eq!(
         params.target,
@@ -626,7 +631,7 @@ fn ctrl_n_moves_the_selection_while_typing_in_the_container_stage() {
     state.handle_input_bytes(b"\x0e");
     let open = state.handle_input_bytes(b"\r");
 
-    assert_container_open_request(&open.actions, "shop/web", "shop-web-1");
+    assert_container_open_request(&open.actions, "shop-web-1-0123456789abcdef", "shop-web-1");
 }
 
 #[test]

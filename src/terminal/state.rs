@@ -329,12 +329,6 @@ impl TerminalState {
         self
     }
 
-    /// True when the shell lives in a container or on a remote host, so its
-    /// reported paths name directories this host cannot check.
-    pub fn shell_runs_off_host(&self) -> bool {
-        self.container.is_some() || self.ssh.is_some()
-    }
-
     #[cfg(any(windows, test))]
     pub(crate) fn agent_process_exited_within(&self, now: Instant, max_age: Duration) -> bool {
         self.recent_agent_process_exit
@@ -2562,16 +2556,14 @@ mod tests {
     }
 
     #[test]
-    fn terminal_with_ssh_keeps_resolved_launch_and_runs_off_host() {
+    fn terminal_with_ssh_keeps_resolved_launch() {
         let launch = crate::ssh_host::SshLaunch::new("deploy@prod".into(), Some("/tmp/ctl".into()))
             .expect("valid destination");
 
         let host = test_terminal();
         assert_eq!(host.ssh, None);
-        assert!(!host.shell_runs_off_host());
         let remote = test_terminal().with_ssh(launch.clone());
         assert_eq!(remote.ssh, Some(launch));
-        assert!(remote.shell_runs_off_host());
     }
 
     #[test]

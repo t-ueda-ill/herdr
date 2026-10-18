@@ -602,6 +602,11 @@ impl TerminalRuntime {
         self.0.in_ssh()
     }
 
+    /// Decides from the running shell, not from saved metadata.
+    pub fn shell_runs_off_host(&self) -> bool {
+        self.0.shell_runs_off_host()
+    }
+
     pub(crate) fn current_size(&self) -> (u16, u16) {
         self.0.current_size()
     }
@@ -619,6 +624,10 @@ impl TerminalRuntime {
 
     pub(crate) fn test_set_in_ssh(&mut self, in_ssh: bool) {
         self.0.test_set_in_ssh(in_ssh);
+    }
+
+    pub(crate) fn test_set_reported_cwd(&self, cwd: std::path::PathBuf) {
+        self.0.test_set_reported_cwd(cwd);
     }
 
     #[cfg(unix)]

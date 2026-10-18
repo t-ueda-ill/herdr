@@ -595,9 +595,9 @@ impl ClientOpenPickerEntry {
             _ => info.id.chars().take(12).collect(),
         };
         Self {
-            // The reference, not the name: it is what `container.open` resolves,
-            // and a Compose service is only addressable as project/service.
-            id: info.reference,
+            // Why not the Compose reference: replicas of one service share it,
+            // and resolving it opens the first replica by name for every row.
+            id: info.id,
             title: info.name,
             status: if info.is_default { "default" } else { "" },
             detail,
@@ -2062,5 +2062,37 @@ impl ClientShellState {
         self.pending_pane_surface = None;
         self.hits = ShellHitMap::default();
         self.host_mouse_pixels = None;
+    }
+}
+
+#[cfg(test)]
+mod container_entry_tests {
+    use super::ClientOpenPickerEntry;
+    use crate::api::schema::ContainerInfoDto;
+
+    fn replica(id: &str, name: &str) -> ContainerInfoDto {
+        ContainerInfoDto {
+            reference: "review/web".into(),
+            id: id.into(),
+            name: name.into(),
+            project: Some("review".into()),
+            service: Some("web".into()),
+            working_dir: None,
+            workspace_id: None,
+            ssh_host: None,
+            is_default: false,
+        }
+    }
+
+    #[test]
+    fn compose_replicas_sharing_a_reference_get_their_own_entry_ids() {
+        let first = ClientOpenPickerEntry::container(replica("aaaaaaaaaaaa", "review-web-1"));
+        let second = ClientOpenPickerEntry::container(replica("bbbbbbbbbbbb", "review-web-2"));
+
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.id, "aaaaaaaaaaaa");
+        assert_eq!(second.id, "bbbbbbbbbbbb");
+        assert_eq!(first.title, "review-web-1");
+        assert_eq!(second.title, "review-web-2");
     }
 }

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::types::{ContainerInfo, ContainerLaunch, ContainerShell};
 use super::workdir::resolve_workdir;
-use crate::ssh_host::launch::{shell_quote, ssh_argv};
+use crate::ssh_host::launch::{shell_quote, ssh_command_argv};
 
 /// `host_cwd` is `None` when docker runs on another machine, see `resolve_workdir`.
 /// The caller sets `ssh` afterwards: this only reads container facts.
@@ -85,9 +85,7 @@ pub(crate) fn container_shell_argv(
         .map(|arg| shell_quote(&arg.to_string_lossy()))
         .collect::<Vec<_>>()
         .join(" ");
-    let mut argv = ssh_argv(ssh);
-    argv.push(command.into());
-    argv
+    ssh_command_argv(ssh, command.into())
 }
 
 #[cfg(test)]
@@ -255,7 +253,7 @@ mod tests {
             &[("TERM".into(), "xterm-256color".into())],
         ));
         assert_eq!(
-            &argv[..10],
+            &argv[..12],
             [
                 "ssh",
                 "-C",
@@ -265,18 +263,43 @@ mod tests {
                 "ControlMaster=auto",
                 "-o",
                 "ControlPersist=600",
+                "-o",
+                "RemoteCommand=none",
                 "-t",
                 "deploy@prod"
             ]
         );
-        assert_eq!(argv.len(), 11, "docker travels as one ssh argument");
+        assert_eq!(argv.len(), 13, "docker travels as one ssh argument");
         assert_eq!(
-            argv[10],
+            argv[12],
             format!(
                 "'docker' 'exec' '-it' '-w' '/work' '-u' 'dev' '-e' 'TERM=xterm-256color' \
                  'cid' 'sh' '-c' '{PROBE}' 'sh' '-l'"
             )
         );
+    }
+
+    #[test]
+    fn remote_container_argv_overrides_remote_command_but_local_docker_has_none() {
+        let remote_argv = strings(container_shell_argv(
+            &remote(ContainerShell::BashOrSh),
+            true,
+            &[],
+        ));
+        let override_at = remote_argv
+            .iter()
+            .position(|a| a == "RemoteCommand=none")
+            .expect("remote argv overrides RemoteCommand");
+        let tty_at = remote_argv.iter().position(|a| a == "-t").unwrap();
+        assert_eq!(remote_argv[override_at - 1], "-o");
+        assert!(override_at < tty_at);
+
+        let local_argv = strings(container_shell_argv(
+            &launch(ContainerShell::BashOrSh),
+            true,
+            &[],
+        ));
+        assert!(local_argv.iter().all(|a| !a.contains("RemoteCommand")));
     }
 
     #[test]
