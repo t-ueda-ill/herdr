@@ -1,3 +1,4 @@
+pub(crate) mod clipboard;
 pub(crate) mod docker;
 pub(crate) mod labels;
 pub(crate) mod launch;

@@ -31,6 +31,91 @@ fn clipboard_image_targets_the_focused_pane_or_active_popup() {
 }
 
 #[test]
+fn clipboard_image_bridge_is_needed_only_for_off_host_pane_targets() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let host_pane = crate::protocol::ClientClipboardImageTarget::Pane("pane_1".into());
+    assert!(
+        !state.clipboard_image_target_needs_bridge(&host_pane),
+        "no snapshot yet"
+    );
+
+    state.set_snapshot(Box::new(snapshot()));
+    assert!(
+        !state.clipboard_image_target_needs_bridge(&host_pane),
+        "a host pane reads the local clipboard itself"
+    );
+
+    let mut with_ssh_host = snapshot();
+    with_ssh_host.panes[0].ssh_host = Some("prod".into());
+    state.set_snapshot(Box::new(with_ssh_host));
+    assert!(
+        state.clipboard_image_target_needs_bridge(&host_pane),
+        "an ssh pane's shell runs on the remote host"
+    );
+
+    let mut with_container = snapshot();
+    with_container.panes[0].container = Some("shop/db".into());
+    state.set_snapshot(Box::new(with_container));
+    assert!(state.clipboard_image_target_needs_bridge(&host_pane));
+    assert!(!state.clipboard_image_target_needs_bridge(
+        &crate::protocol::ClientClipboardImageTarget::Pane("pane_missing".into())
+    ));
+    assert!(!state.clipboard_image_target_needs_bridge(
+        &crate::protocol::ClientClipboardImageTarget::Popup("terminal-popup".into())
+    ));
+    assert!(!state.clipboard_image_target_needs_bridge(
+        &crate::protocol::ClientClipboardImageTarget::DirectTerminal
+    ));
+}
+
+#[test]
+fn local_endpoint_bridges_an_empty_paste_only_to_off_host_panes() {
+    use crate::client::clipboard_images::{
+        clipboard_image_target_needs_bridge, endpoint_accepts_local_images,
+    };
+    // (container, ssh_host) of the focused pane -> image bridged
+    let cases = [
+        (None, None, false),
+        (Some("shop/db"), None, true),
+        (None, Some("prod"), true),
+    ];
+    for (container, ssh_host, expected) in cases {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut pane_snapshot = snapshot();
+        pane_snapshot.panes[0].container = container.map(str::to_owned);
+        pane_snapshot.panes[0].ssh_host = ssh_host.map(str::to_owned);
+        state.set_snapshot(Box::new(pane_snapshot));
+        let target = state.clipboard_image_target();
+
+        let bridge_active = endpoint_accepts_local_images(
+            false,
+            &crate::client::endpoint::ClientEndpointId::Local,
+            true,
+            clipboard_image_target_needs_bridge(Some(&state), target.as_ref()),
+        );
+        #[cfg(unix)]
+        let bridged = crate::client::clipboard_images::should_bridge_clipboard_image_paste(
+            b"\x1b[200~\x1b[201~",
+            bridge_active,
+            None,
+        );
+        #[cfg(windows)]
+        let bridged = crate::client::clipboard_images::should_bridge_clipboard_image_events(
+            &[crate::protocol::ClientInputEvent::Paste {
+                text: String::new(),
+            }],
+            bridge_active,
+            None,
+        );
+
+        assert_eq!(
+            bridged, expected,
+            "container={container:?} ssh_host={ssh_host:?}"
+        );
+    }
+}
+
+#[test]
 fn modal_paste_target_requires_a_focused_editable_client_field() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     assert!(!state.modal_paste_target_active());

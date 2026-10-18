@@ -167,6 +167,8 @@ mod tests {
             "worktree.open",
             "worktree.remove",
             "container.open",
+            "ssh.container.open",
+            "ssh.open",
             "tab.create",
             "tab.focus",
             "tab.rename",

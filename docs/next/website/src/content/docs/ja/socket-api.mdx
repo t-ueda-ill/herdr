@@ -98,7 +98,8 @@ herdr pane read w1:p2 --source recent --lines 50
 | セッション | `session.snapshot` |
 | ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
-| コンテナ | `container.open`, `container.list` |
+| コンテナ | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
+| SSH ホスト | `ssh.open`, `ssh.hosts` |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
@@ -295,7 +296,9 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 
 ## コンテナ
 
-`container.open` は、実行中の Docker コンテナ内でシェルを開きます。`target` には通常の作成・分割パラメーターを `workspace`、`tab`、`split` のいずれかの下にネストして渡します。結果はネストしたメソッドと同じです。`container` は Compose の `project/service`、またはコンテナ名か ID です。
+`container.open` は、実行中の Docker コンテナ内でシェルを開きます。`target` には通常の作成・分割パラメーターを `workspace`、`tab`、`split` のいずれかの下にネストして渡します。結果はネストしたメソッドと同じです。`container` は Compose の `project/service`、またはコンテナ名か ID です。 コンテナ内のディレクトリは `herdr.workdir` ラベルかイメージの `WorkingDir` で、`cwd` の bind mount 変換は行いません。
+
+`ssh.container.open` は同じパラメーターに必須の `host` を加えたものです。`host` はコンテナを持つ Docker の `~/.ssh/config` の `Host` エイリアスです。この場合、`docker` CLI は ssh ペインと同じ共有接続を通して ssh 経由で実行されるため、鍵認証か共有済みの接続が必要です（そうでなければ先にそのホストへの ssh ペインを開いてください）。別メソッドにしてあるのは、未対応のサーバーが `host` を無視してローカルのコンテナを開くことがないよう、リクエストを拒否させるためです。
 
 ```json
 {
@@ -308,7 +311,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 }
 ```
 
-`container.list` は実行中のコンテナを返します。`workspace_id` は省略可能で、指定するとそのワークスペースに一致するコンテナだけを返します。
+`container.list` は実行中のコンテナを返します。`workspace_id` は省略可能で、指定するとそのワークスペースに一致するコンテナだけを返します。`ssh.container.list` は必須の `host` を取り、その ssh ホストの Docker を一覧します。この場合のコンテナには `ssh_host` が付き、`workspace_id` は付かないため、`workspace_id` と併用すると空の一覧を返します。
 
 ```json
 { "id": "req_2", "method": "container.list", "params": { "workspace_id": "w1" } }
@@ -335,16 +338,62 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 }
 ```
 
-`project`、`service`、`working_dir`、`workspace_id` は不明な場合は省略されます。エラーコードは次のとおりです。
+`project`、`service`、`working_dir`、`workspace_id`、`ssh_host` は不明な場合は省略されます。エラーコードは次のとおりです。
 
 | コード | 意味 |
 | --- | --- |
 | `invalid_container` | `container` が空、または形式が不正 |
 | `container_not_found` | 該当コンテナがない（停止中のものを含む） |
-| `container_unavailable` | Docker がない、失敗した、または 5 秒を超えた |
+| `container_unavailable` | Docker がない、失敗した、または 5 秒（ssh 経由は 20 秒）を超えた、あるいは ssh ホストに先にログインが必要 |
+| `invalid_ssh_host` | `ssh.container.open` / `ssh.container.list` の `host` が有効な `Host` エイリアスではない |
 | `platform_unsupported` | サーバーが Windows 上で動作している |
 
-作成・分割パラメーターは変更されず、コンテナ参照は `container.open` でのみ渡されます。
+作成・分割パラメーターは変更されず、コンテナ参照は `container.open` と `ssh.container.open` でのみ渡されます。
+
+## SSH ホスト
+
+`ssh.open` は、SSH 経由でリモートホストのシェルを開きます。`host` は `~/.ssh/config` の `Host` エイリアスで、`user@alias` の形でも書けます。`target` には通常の作成・分割パラメーターを `workspace`、`tab`、`split` のうちちょうど一つの下にネストして渡します。結果はネストしたメソッドと同じです（`workspace_created`、`tab_created`、`pane_info`）。
+
+```json
+{
+  "id": "req_1",
+  "method": "ssh.open",
+  "params": {
+    "host": "prod",
+    "target": { "workspace": { "label": "prod", "focus": true } }
+  }
+}
+```
+
+`ssh.hosts` は空のパラメーターを受け取り、`~/.ssh/config` のリテラルな `Host` エイリアスを返します。
+
+```json
+{ "id": "req_2", "method": "ssh.hosts", "params": {} }
+```
+
+```json
+{
+  "id": "req_2",
+  "result": {
+    "type": "ssh_hosts",
+    "hosts": [
+      { "alias": "prod", "hostname": "prod.example.com", "user": "deploy" },
+      { "alias": "lab" }
+    ]
+  }
+}
+```
+
+エイリアス自身の `Host` ブロックで設定されていない場合、`hostname` と `user` は省略されます。ペイン情報には、`user@` を除いたエイリアスを持つ `ssh_host` が含まれます。エラー:
+
+| コード | 意味 |
+| --- | --- |
+| `invalid_ssh_host` | `host` が空、`-` で始まる、または `A-Z a-z 0-9 . _ @ -` 以外の文字を含む |
+| `ssh_host_not_found` | `~/.ssh/config` に該当するリテラルな `Host` エイリアスがない |
+| `ssh_unavailable` | `ssh` クライアントが `PATH` にない、または `~/.ssh/config` を読み取れない |
+| `platform_unsupported` | サーバーが Windows 上で動作している |
+
+作成・分割パラメーターは変更されず、SSH ホストは `ssh.open` でのみ渡されます。
 
 ## エージェントビューのクエリ
 

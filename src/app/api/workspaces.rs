@@ -68,7 +68,7 @@ impl App {
         &mut self,
         id: String,
         params: WorkspaceCreateParams,
-        container: Option<&crate::container::ContainerLaunch>,
+        launch: crate::pane::PaneLaunchTarget<'_>,
     ) -> String {
         let cwd = match self.workspace_create_cwd(&params) {
             Ok(cwd) => cwd,
@@ -78,7 +78,7 @@ impl App {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
         };
-        match self.create_workspace_with_launch_env(cwd, params.focus, extra_env, container) {
+        match self.create_workspace_with_launch_env(cwd, params.focus, extra_env, launch) {
             Ok(index) => {
                 if let Some(label) = params.label {
                     if let Some(workspace) = self.state.workspaces.get_mut(index) {
@@ -432,7 +432,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
-            None,
+            crate::pane::PaneLaunchTarget::Host,
         );
         let _: SuccessResponse = serde_json::from_str(&response).unwrap();
         // Drop runtimes so cwd resolution deterministically uses cached state.
@@ -463,7 +463,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
-            None,
+            crate::pane::PaneLaunchTarget::Host,
         );
 
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
@@ -525,7 +525,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
-            None,
+            crate::pane::PaneLaunchTarget::Host,
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         assert!(matches!(
@@ -546,7 +546,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
-            None,
+            crate::pane::PaneLaunchTarget::Host,
         );
         let error: ErrorResponse = serde_json::from_str(&invalid).unwrap();
         assert_eq!(error.error.code, "workspace_not_found");
@@ -560,7 +560,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
-            None,
+            crate::pane::PaneLaunchTarget::Host,
         );
         let success: SuccessResponse = serde_json::from_str(&captured).unwrap();
         assert!(matches!(

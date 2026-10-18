@@ -835,6 +835,13 @@
                 }
               ]
             },
+            "ssh_host": {
+              "description": "`Host` alias of the user's ssh config this pane's shell connects to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "state_labels": {
               "additionalProperties": {
                 "type": "string"
@@ -3973,6 +3980,104 @@
           ],
           "type": "string"
         },
+        "SshContainerListParams": {
+          "properties": {
+            "host": {
+              "description": "`Host` alias of the user's ssh config whose docker CLI lists the containers.",
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "host"
+          ],
+          "type": "object"
+        },
+        "SshContainerOpenParams": {
+          "properties": {
+            "container": {
+              "description": "Docker container to open the shell in: `project/service` for a Compose service, otherwise a container name or ID.",
+              "type": "string"
+            },
+            "host": {
+              "description": "`Host` alias of the user's ssh config whose docker CLI runs the shell.",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/ContainerOpenTarget"
+            }
+          },
+          "required": [
+            "host",
+            "container",
+            "target"
+          ],
+          "type": "object"
+        },
+        "SshHostsParams": {
+          "type": "object"
+        },
+        "SshOpenParams": {
+          "properties": {
+            "host": {
+              "description": "`Host` alias from the user's ssh config, optionally prefixed with `user@`.",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/SshOpenTarget"
+            }
+          },
+          "required": [
+            "host",
+            "target"
+          ],
+          "type": "object"
+        },
+        "SshOpenTarget": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "workspace": {
+                  "$ref": "#/schemas/request/$defs/WorkspaceCreateParams"
+                }
+              },
+              "required": [
+                "workspace"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "tab": {
+                  "$ref": "#/schemas/request/$defs/TabCreateParams"
+                }
+              },
+              "required": [
+                "tab"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "split": {
+                  "$ref": "#/schemas/request/$defs/PaneSplitParams"
+                }
+              },
+              "required": [
+                "split"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "Subscription": {
           "oneOf": [
             {
@@ -5226,6 +5331,70 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/ContainerListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "ssh.open",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SshOpenParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "ssh.hosts",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SshHostsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "ssh.container.open",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SshContainerOpenParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "ssh.container.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SshContainerListParams"
             }
           },
           "required": [
@@ -6923,6 +7092,13 @@
                 "null"
               ]
             },
+            "ssh_host": {
+              "description": "Set when the container runs on this ssh Host alias rather than the local docker.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "working_dir": {
               "type": [
                 "string",
@@ -8093,6 +8269,13 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "ssh_host": {
+              "description": "`Host` alias of the user's ssh config this pane's shell connects to.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "state_labels": {
@@ -9561,6 +9744,25 @@
             },
             {
               "properties": {
+                "hosts": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/SshHostInfoDto"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "ssh_hosts",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "hosts"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "tab": {
                   "$ref": "#/schemas/success_response/$defs/TabInfo"
                 },
@@ -10710,6 +10912,29 @@
             "down"
           ],
           "type": "string"
+        },
+        "SshHostInfoDto": {
+          "properties": {
+            "alias": {
+              "type": "string"
+            },
+            "hostname": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "user": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "alias"
+          ],
+          "type": "object"
         },
         "TabInfo": {
           "properties": {

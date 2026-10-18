@@ -98,7 +98,8 @@ herdr pane read w1:p2 --source recent --lines 50
 | 会话 | `session.snapshot` |
 | 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
-| 容器 | `container.open`, `container.list` |
+| 容器 | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
+| SSH 主机 | `ssh.open`, `ssh.hosts` |
 | 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | 弹窗 | `popup.close` |
@@ -295,7 +296,9 @@ Worktree 命令也发出生命周期事件。`worktree.create` 发出 `workspace
 
 ## 容器
 
-`container.open` 在正在运行的 Docker 容器内启动 shell。`target` 把普通的创建或拆分参数嵌套在 `workspace`、`tab`、`split` 之一下,结果与被嵌套方法相同。`container` 是 Compose 的 `project/service`,或容器名称、ID。
+`container.open` 在正在运行的 Docker 容器内启动 shell。`target` 把普通的创建或拆分参数嵌套在 `workspace`、`tab`、`split` 之一下,结果与被嵌套方法相同。`container` 是 Compose 的 `project/service`,或容器名称、ID。 容器内目录取 `herdr.workdir` 标签或镜像的 `WorkingDir`,不会对 `cwd` 做 bind mount 映射。
+
+`ssh.container.open` 参数相同,另需必填的 `host`:`~/.ssh/config` 中持有该容器的 Docker 所在的 `Host` 别名。此时 `docker` CLI 通过 ssh 窗格所用的同一条共享连接经 ssh 运行,需要密钥登录或已共享的连接(否则请先打开到该主机的 ssh 窗格)。它是独立的方法,这样不支持它的服务器会拒绝请求,而不会忽略 `host` 去打开本地容器。
 
 ```json
 {
@@ -308,7 +311,7 @@ Worktree 命令也发出生命周期事件。`worktree.create` 发出 `workspace
 }
 ```
 
-`container.list` 返回正在运行的容器。`workspace_id` 可选,指定后只返回与该工作区匹配的容器。
+`container.list` 返回正在运行的容器。`workspace_id` 可选,指定后只返回与该工作区匹配的容器。`ssh.container.list` 需要必填的 `host`,列出该 ssh 主机的 Docker;这些容器带有 `ssh_host`、不带 `workspace_id`,因此与 `workspace_id` 同时使用会返回空列表。
 
 ```json
 { "id": "req_2", "method": "container.list", "params": { "workspace_id": "w1" } }
@@ -335,16 +338,62 @@ Worktree 命令也发出生命周期事件。`worktree.create` 发出 `workspace
 }
 ```
 
-`project`、`service`、`working_dir`、`workspace_id` 未知时省略。错误码如下:
+`project`、`service`、`working_dir`、`workspace_id`、`ssh_host` 未知时省略。错误码如下:
 
 | 错误码 | 含义 |
 | --- | --- |
 | `invalid_container` | `container` 为空或格式不正确 |
 | `container_not_found` | 没有该容器(包括已停止的) |
-| `container_unavailable` | Docker 缺失、失败或超过 5 秒 |
+| `container_unavailable` | Docker 缺失、失败或超过 5 秒(经 ssh 为 20 秒),或 ssh 主机需要先登录 |
+| `invalid_ssh_host` | `ssh.container.open` / `ssh.container.list` 的 `host` 不是有效的 `Host` 别名 |
 | `platform_unsupported` | 服务器运行在 Windows 上 |
 
-创建和拆分参数保持不变,容器引用只通过 `container.open` 传递。
+创建和拆分参数保持不变,容器引用只通过 `container.open` 和 `ssh.container.open` 传递。
+
+## SSH 主机
+
+`ssh.open` 通过 SSH 在远程主机上启动 shell。`host` 是 `~/.ssh/config` 中的 `Host` 别名,也可以写成 `user@alias`。`target` 把普通的创建或拆分参数嵌套在 `workspace`、`tab`、`split` 中恰好一个之下,结果与被嵌套方法相同(`workspace_created`、`tab_created` 或 `pane_info`)。
+
+```json
+{
+  "id": "req_1",
+  "method": "ssh.open",
+  "params": {
+    "host": "prod",
+    "target": { "workspace": { "label": "prod", "focus": true } }
+  }
+}
+```
+
+`ssh.hosts` 的参数为空,返回 `~/.ssh/config` 中字面的 `Host` 别名。
+
+```json
+{ "id": "req_2", "method": "ssh.hosts", "params": {} }
+```
+
+```json
+{
+  "id": "req_2",
+  "result": {
+    "type": "ssh_hosts",
+    "hosts": [
+      { "alias": "prod", "hostname": "prod.example.com", "user": "deploy" },
+      { "alias": "lab" }
+    ]
+  }
+}
+```
+
+别名自己的 `Host` 块未设置时,`hostname` 和 `user` 会被省略。窗格信息包含 `ssh_host`,即去掉 `user@` 前缀的别名。错误:
+
+| 代码 | 含义 |
+| --- | --- |
+| `invalid_ssh_host` | `host` 为空、以 `-` 开头,或包含 `A-Z a-z 0-9 . _ @ -` 之外的字符 |
+| `ssh_host_not_found` | `~/.ssh/config` 中没有该字面 `Host` 别名 |
+| `ssh_unavailable` | `ssh` 客户端不在 `PATH` 中,或无法读取 `~/.ssh/config` |
+| `platform_unsupported` | 服务器运行在 Windows 上 |
+
+创建和拆分参数保持不变,SSH 主机只通过 `ssh.open` 传递。
 
 ## 智能体视图查询
 

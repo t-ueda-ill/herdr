@@ -114,7 +114,8 @@ use attach::AttachEscapeState;
 #[cfg(unix)]
 use attach::{write_attach_semantic_action, AttachInputAction};
 use clipboard_images::{
-    client_remote_image_paste_key, endpoint_accepts_local_images, write_remote_image_to_server,
+    client_remote_image_paste_key, clipboard_image_target_needs_bridge,
+    endpoint_accepts_local_images, write_remote_image_to_server,
 };
 #[cfg(windows)]
 use clipboard_images::{read_image_file_from_client_events, should_bridge_clipboard_image_events};
@@ -579,6 +580,11 @@ async fn run_client_loop(
         );
     });
 
+    // Why not inside the poller thread: the handler must exist before the first
+    // host query goes out, or a resize signalled during startup is lost and
+    // nothing observable marks the moment the poller thread has installed it.
+    crate::platform::watch_terminal_resize_signal();
+
     #[cfg(unix)]
     if will_query_host_terminal_theme {
         query_host_terminal_theme();
@@ -850,10 +856,18 @@ async fn run_client_loop(
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),
             #[cfg(unix)]
             ClientLoopEvent::StdinInput(data) => {
+                let image_target = state
+                    .shell
+                    .as_ref()
+                    .and_then(|shell| shell.clipboard_image_target());
                 let image_bridge_active = endpoint_accepts_local_images(
                     is_remote_client,
                     write_stream.active_id(),
                     write_stream.active_surface_available(),
+                    clipboard_image_target_needs_bridge(
+                        state.shell.as_ref(),
+                        image_target.as_ref(),
+                    ),
                 );
                 if state.shell.is_some() {
                     if will_query_host_cell_size {
@@ -863,10 +877,6 @@ async fn run_client_loop(
                             store_reported_cell_size(&reported_cell_size, width_px, height_px);
                         }
                     }
-                    let image_target = state
-                        .shell
-                        .as_ref()
-                        .and_then(|shell| shell.clipboard_image_target());
                     if let Some(target) = image_target.clone() {
                         if should_bridge_clipboard_image_paste(
                             &data,
@@ -1169,10 +1179,18 @@ async fn run_client_loop(
             }
             #[cfg(windows)]
             ClientLoopEvent::StdinEvents(events) => {
+                let image_target = state
+                    .shell
+                    .as_ref()
+                    .and_then(|shell| shell.clipboard_image_target());
                 let image_bridge_active = endpoint_accepts_local_images(
                     is_remote_client,
                     write_stream.active_id(),
                     write_stream.active_surface_available(),
+                    clipboard_image_target_needs_bridge(
+                        state.shell.as_ref(),
+                        image_target.as_ref(),
+                    ),
                 );
                 if state.shell.is_some() {
                     if events.iter().any(|event| {
@@ -1188,10 +1206,6 @@ async fn run_client_loop(
                             false,
                         );
                     }
-                    let image_target = state
-                        .shell
-                        .as_ref()
-                        .and_then(|shell| shell.clipboard_image_target());
                     if let Some(target) = image_target.clone() {
                         if should_bridge_clipboard_image_events(
                             &events,

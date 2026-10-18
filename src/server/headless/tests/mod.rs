@@ -1,11 +1,16 @@
 use super::*;
 
+#[path = "container_clipboard.rs"]
+mod container_clipboard_tests;
 mod event_fairness;
 mod native_graphics;
+mod off_host_clipboard_fixture;
 #[path = "pane_move.rs"]
 mod pane_move_tests;
 #[path = "pane_graphics.rs"]
 mod retained_graphics_tests;
+#[path = "ssh_clipboard.rs"]
+mod ssh_clipboard_tests;
 #[path = "surface_delta.rs"]
 mod surface_delta_tests;
 #[path = "surface_interest.rs"]
@@ -3464,6 +3469,40 @@ async fn container_open_rejects_invalid_reference_through_deferred_dispatch() {
         "platform_unsupported"
     } else {
         "invalid_container"
+    };
+    assert_eq!(response.error.code, expected);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn ssh_open_rejects_invalid_host_through_deferred_dispatch() {
+    let mut server = test_headless_server();
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+
+    server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+        request: api::schema::Request {
+            id: "bad-ssh".into(),
+            method: api::schema::Method::SshOpen(api::schema::SshOpenParams {
+                host: "-oProxyCommand=sh".into(),
+                target: api::schema::SshOpenTarget::Tab(api::schema::TabCreateParams {
+                    workspace_id: None,
+                    cwd: None,
+                    focus: true,
+                    label: None,
+                    env: Default::default(),
+                }),
+            }),
+        },
+        respond_to,
+        response_write_complete: None,
+    });
+
+    let response: api::schema::ErrorResponse =
+        serde_json::from_str(&response_rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+    let expected = if cfg!(windows) {
+        "platform_unsupported"
+    } else {
+        "invalid_ssh_host"
     };
     assert_eq!(response.error.code, expected);
     shutdown_test_runtimes(&mut server);

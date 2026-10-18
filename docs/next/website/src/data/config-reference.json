@@ -524,6 +524,18 @@
           "description": "Delete the selected managed worktree checkout after confirmation. Unset by default."
         },
         {
+          "key": "keys.open_ssh_workspace",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Pick a Host alias from ~/.ssh/config and open it in a new workspace. Unset by default."
+        },
+        {
+          "key": "keys.open_container_workspace",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Pick a running Docker container and open a shell in it in a new workspace. Unset by default."
+        },
+        {
           "key": "keys.rename_workspace",
           "type": "keybinding",
           "default": "\"prefix+shift+w\"",
@@ -635,7 +647,7 @@
           "key": "keys.remote_image_paste",
           "type": "string",
           "default": "\"ctrl+v\"",
-          "description": "Local-client shortcut that sends a clipboard image to a remote Herdr session."
+          "description": "Local-client shortcut that sends a clipboard image to a pane that cannot read the local clipboard: a remote Herdr session, a container pane, or an SSH pane."
         },
         {
           "key": "keys.new_tab",

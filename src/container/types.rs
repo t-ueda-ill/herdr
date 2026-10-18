@@ -113,13 +113,26 @@ pub(crate) struct ContainerLaunch {
     pub(crate) workdir: Option<PathBuf>,
     pub(crate) user: Option<String>,
     pub(crate) shell: ContainerShell,
+    /// The host whose docker CLI runs the shell; `None` for the local docker.
+    /// Why not `TerminalState.ssh`: the pane process is the local ssh client
+    /// running `docker exec`, and a pane never carries both launch kinds.
+    pub(crate) ssh: Option<crate::ssh_host::SshLaunch>,
 }
 
 #[derive(Debug)]
 pub(crate) enum ContainerListError {
     DockerNotFound,
+    /// Remote docker is reached through the local `ssh` client.
+    SshNotFound,
+    /// Batch-mode ssh could not log in without a prompt.
+    SshLoginRequired {
+        host: String,
+    },
     Timeout,
-    Failed { status: Option<i32>, stderr: String },
+    Failed {
+        status: Option<i32>,
+        stderr: String,
+    },
     InvalidOutput(String),
 }
 
@@ -127,6 +140,11 @@ impl fmt::Display for ContainerListError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DockerNotFound => write!(f, "docker executable not found"),
+            Self::SshNotFound => write!(f, "ssh executable not found"),
+            Self::SshLoginRequired { host } => write!(
+                f,
+                "cannot reach {host} without a prompt; open an ssh pane to {host} first, then retry"
+            ),
             Self::Timeout => write!(f, "docker did not respond in time"),
             Self::Failed { status, stderr } => match status {
                 Some(code) => write!(f, "docker exited with status {code}: {stderr}"),

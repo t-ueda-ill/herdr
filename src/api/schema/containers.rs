@@ -13,6 +13,17 @@ pub struct ContainerOpenParams {
     pub target: ContainerOpenTarget,
 }
 
+// Why not an optional `ssh_host` on `container.open`: a server that knows the method but
+// not the field would ignore it and open a local container while reporting success.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SshContainerOpenParams {
+    /// `Host` alias of the user's ssh config whose docker CLI runs the shell.
+    pub host: String,
+    /// Docker container to open the shell in: `project/service` for a Compose service, otherwise a container name or ID.
+    pub container: String,
+    pub target: ContainerOpenTarget,
+}
+
 // Nests the frozen create params instead of adding a `container` field to them: an older
 // server would ignore that field and report success after starting a host shell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -43,6 +54,15 @@ cli_params! {
     }
 }
 
+// Same reason as `SshContainerOpenParams` for not extending `container.list`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SshContainerListParams {
+    /// `Host` alias of the user's ssh config whose docker CLI lists the containers.
+    pub host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ContainerInfoDto {
     pub reference: String,
@@ -56,5 +76,8 @@ pub struct ContainerInfoDto {
     pub working_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// Set when the container runs on this ssh Host alias rather than the local docker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_host: Option<String>,
     pub is_default: bool,
 }

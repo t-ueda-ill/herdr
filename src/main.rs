@@ -19,6 +19,7 @@ mod build_info;
 mod checksum;
 mod cli;
 mod client;
+mod clipboard_stage_script;
 mod config;
 mod container;
 mod copy_mode;
@@ -54,6 +55,7 @@ mod selection;
 mod server;
 mod session;
 mod sound;
+mod ssh_host;
 mod terminal;
 mod terminal_effects;
 mod terminal_modes;
@@ -156,6 +158,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # new_worktree = "prefix+shift+g"
 # open_worktree = ""    # optional, unset by default
 # remove_worktree = ""  # optional, unset by default; opens confirmation
+# open_ssh_workspace = "" # optional, unset by default; picks a Host from ~/.ssh/config
+# open_container_workspace = "" # optional, unset by default; picks a running Docker container
 # rename_workspace = "prefix+shift+w"
 # close_workspace = "prefix+shift+d"
 # previous_workspace = "" # optional, unset by default

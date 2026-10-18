@@ -131,4 +131,11 @@ herdr container list --json | jq -r '.result.containers[].reference'
 herdr pane split --current --direction right --container myapp/web
 ```
 
+先查找 SSH 主机别名,再在该主机上打开 shell:
+
+```bash
+herdr ssh hosts --json | jq -r '.result.hosts[].alias'
+herdr pane split --current --direction right --ssh prod
+```
+
 完整命令和选项列表见 [CLI 参考](/zh-cn/docs/cli-reference/)。Shell 补全也能以交互方式显示同一命令树。

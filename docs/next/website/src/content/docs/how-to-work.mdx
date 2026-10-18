@@ -79,7 +79,7 @@ herdr --remote ssh://you@server:2222
 
 The remote server keeps the panes running and sends their terminal content and session state over SSH. Your local Herdr draws the UI using your local theme and presentation settings.
 
-Use this path when you want the remote session to feel local. The client runs on your machine, so local desktop features such as image clipboard paste can be bridged to the remote server. If you SSH first and run `herdr` on the server, Herdr runs entirely on that server and cannot read your local desktop clipboard.
+Use this path when you want the remote session to feel local. The client runs on your machine, so local desktop features such as image clipboard paste can be bridged to the remote server. If you SSH first and run `herdr` on the server, Herdr runs entirely on that server and cannot read your local desktop clipboard. Container panes and SSH panes get the same bridge, locally or through `herdr --remote`.
 
 For repeat targets, put the host in your SSH config:
 

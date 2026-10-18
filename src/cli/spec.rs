@@ -40,6 +40,7 @@ pub(super) fn command() -> Command {
         .subcommand(workspace_command())
         .subcommand(worktree_command())
         .subcommand(container_command())
+        .subcommand(ssh_command())
         .subcommand(tab_command())
         .subcommand(notification_command())
         .subcommand(agent_command())
@@ -207,6 +208,10 @@ fn worktree_command() -> Command {
 
 fn container_command() -> Command {
     super::container::command()
+}
+
+fn ssh_command() -> Command {
+    super::ssh::command()
 }
 
 fn tab_command() -> Command {
@@ -665,6 +670,36 @@ mod tests {
                 path.join(" ")
             );
         }
+    }
+
+    #[test]
+    fn spec_offers_ssh_option_on_shell_creating_commands() {
+        let cmd = super::command();
+        for path in [
+            &["workspace", "create"][..],
+            &["tab", "create"],
+            &["pane", "split"],
+        ] {
+            let command = command_path(&cmd, path);
+            assert!(
+                has_option(command, "ssh"),
+                "herdr {} should accept --ssh",
+                path.join(" ")
+            );
+            assert!(
+                option_arg(command, "ssh").get_help().is_some(),
+                "herdr {} --ssh needs help text",
+                path.join(" ")
+            );
+        }
+    }
+
+    #[test]
+    fn spec_includes_ssh_hosts_with_json() {
+        let cmd = super::command();
+        let hosts = command_path(&cmd, &["ssh", "hosts"]);
+        assert!(has_option(hosts, "json"));
+        assert!(hosts.get_about().is_some());
     }
 
     #[test]

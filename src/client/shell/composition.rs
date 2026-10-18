@@ -644,10 +644,12 @@ impl ClientShellState {
         }
         if let Some(overlay) = self.overlay.as_ref() {
             let mut composed = frame.to_ratatui_buffer()?;
+            let overlay_area;
             let cursor = if let ClientShellOverlay::ContextMenu(menu) = overlay {
                 let rendered =
                     render::render_context_menu(&mut composed, menu, &self.config.palette)?;
                 occlusion.cover(rendered.area);
+                overlay_area = rendered.area;
                 self.hits.context_menu_rows = rendered.menu_rows;
                 None
             } else if let ClientShellOverlay::GlobalMenu(menu) = overlay {
@@ -659,6 +661,7 @@ impl ClientShellState {
                     &self.config.palette,
                 )?;
                 occlusion.cover(rendered.area);
+                overlay_area = rendered.area;
                 self.hits.global_menu_rows = rendered.menu_rows;
                 None
             } else {
@@ -672,6 +675,7 @@ impl ClientShellState {
                     &self.config.palette,
                 )?;
                 occlusion.cover(rendered.area);
+                overlay_area = rendered.area;
                 self.hits.overlay_primary = rendered.primary;
                 self.hits.overlay_clear = rendered.clear;
                 self.hits.overlay_cancel = rendered.cancel;
@@ -700,6 +704,9 @@ impl ClientShellState {
                 rendered.cursor
             };
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+            // Not left to the (position, symbol) re-attachment: a linked blank
+            // behind the modal would match the modal's own blank cells.
+            frame.clear_hyperlinks_in(overlay_area);
         }
         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
             help.scroll = help.scroll.min(self.hits.help_max_scroll);

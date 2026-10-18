@@ -863,6 +863,23 @@ impl FrameData {
         *self = replacement;
     }
 
+    /// Drops hyperlinks from every cell inside `area`, clipped to the frame.
+    pub(crate) fn clear_hyperlinks_in(&mut self, area: ratatui::layout::Rect) {
+        let width = usize::from(self.width);
+        if width == 0 {
+            return;
+        }
+        let right = area.right().min(self.width);
+        let bottom = area.bottom().min(self.height);
+        for y in area.y..bottom {
+            for x in area.x..right {
+                if let Some(cell) = self.cells.get_mut(usize::from(y) * width + usize::from(x)) {
+                    cell.hyperlink = None;
+                }
+            }
+        }
+    }
+
     /// Reconstructs a ratatui `Buffer` from this frame data.
     ///
     /// Returns `None` if the cells vector length doesn't match `width * height`.
@@ -1064,6 +1081,16 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
+    /// Canonical container reference, set only while the pane's shell runs
+    /// inside that container. Clients bridge local images to such panes.
+    /// Why not `skip_serializing_if`: this struct also rides the legacy
+    /// bincode snapshot, which cannot skip fields.
+    #[serde(default)]
+    pub container: Option<String>,
+    /// Ssh config alias, set only while the pane's shell is that ssh login.
+    /// Clients bridge local images to such panes, like container panes.
+    #[serde(default)]
+    pub ssh_host: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2850,6 +2877,8 @@ mod tests {
                 foreground_cwd: Some("/repo".into()),
                 focused: true,
                 right_click_passthrough: false,
+                container: None,
+                ssh_host: None,
             }],
             agents: Vec::new(),
             commands: vec![ClientShellCommand {

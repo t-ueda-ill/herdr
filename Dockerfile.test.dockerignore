@@ -1,0 +1,12 @@
+.git
+.local
+.agents
+.codex
+.aws
+.env
+.env.*
+**/target
+**/node_modules
+**/.zig-cache
+**/zig-out
+**/__pycache__

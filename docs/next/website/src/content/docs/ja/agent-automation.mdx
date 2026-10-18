@@ -131,4 +131,11 @@ herdr container list --json | jq -r '.result.containers[].reference'
 herdr pane split --current --direction right --container myapp/web
 ```
 
+SSH ホストのエイリアスを探して、そのホストでシェルを開きます:
+
+```bash
+herdr ssh hosts --json | jq -r '.result.hosts[].alias'
+herdr pane split --current --direction right --ssh prod
+```
+
 コマンドとオプションの完全な一覧は [CLI リファレンス](/ja/docs/cli-reference/) を参照してください。シェル補完でも同じコマンドツリーを対話的に確認できます。

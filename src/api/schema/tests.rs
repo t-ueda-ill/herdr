@@ -829,6 +829,7 @@ fn worktree_request_and_response_round_trip() {
                 restore_error: None,
                 label: None,
                 container: None,
+                ssh_host: None,
                 agent: None,
                 title: None,
                 terminal_title: None,
@@ -1259,6 +1260,7 @@ fn create_response_round_trips_with_root_pane() {
                 restore_error: None,
                 label: None,
                 container: None,
+                ssh_host: None,
                 agent: None,
                 title: None,
                 terminal_title: None,
@@ -1605,6 +1607,7 @@ fn container_list_request_and_response_round_trip() {
                     service: Some("db".into()),
                     working_dir: Some("/repo/shop".into()),
                     workspace_id: Some("w1".into()),
+                    ssh_host: None,
                     is_default: true,
                 },
                 ContainerInfoDto {
@@ -1615,6 +1618,7 @@ fn container_list_request_and_response_round_trip() {
                     service: None,
                     working_dir: None,
                     workspace_id: None,
+                    ssh_host: None,
                     is_default: false,
                 },
             ],
@@ -1664,6 +1668,180 @@ fn container_methods_report_the_same_api_method_name_as_their_wire_tag() {
         crate::api::api_method_name(&Method::ContainerList(ContainerListParams::default())),
         "container.list"
     );
+}
+
+fn ssh_open_targets() -> Vec<(&'static str, SshOpenTarget)> {
+    container_open_targets()
+        .into_iter()
+        .map(|(tag, target)| {
+            (
+                tag,
+                match target {
+                    ContainerOpenTarget::Workspace(params) => SshOpenTarget::Workspace(params),
+                    ContainerOpenTarget::Tab(params) => SshOpenTarget::Tab(params),
+                    ContainerOpenTarget::Split(params) => SshOpenTarget::Split(params),
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn ssh_open_request_round_trips_for_each_target() {
+    for (tag, target) in ssh_open_targets() {
+        let focus = target.focus();
+        let request = Request {
+            id: format!("req_ssh_open_{tag}"),
+            method: Method::SshOpen(SshOpenParams {
+                host: "deploy@prod".into(),
+                target,
+            }),
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["method"], "ssh.open");
+        assert_eq!(json["params"]["host"], "deploy@prod");
+        let target_keys: Vec<&String> = json["params"]["target"]
+            .as_object()
+            .expect("ssh.open target is an object")
+            .keys()
+            .collect();
+        assert_eq!(target_keys, vec![tag]);
+        assert_eq!(json["params"]["target"][tag]["focus"], focus);
+        assert_eq!(serde_json::from_value::<Request>(json).unwrap(), request);
+    }
+}
+
+#[test]
+fn ssh_open_request_parses_nested_create_params_with_their_defaults() {
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "open",
+        "method": "ssh.open",
+        "params": { "host": "prod", "target": { "workspace": {} } }
+    }))
+    .unwrap();
+
+    let Method::SshOpen(params) = request.method else {
+        panic!("expected ssh.open");
+    };
+    assert_eq!(params.host, "prod");
+    assert_eq!(
+        params.target,
+        SshOpenTarget::Workspace(WorkspaceCreateParams {
+            source_workspace_id: None,
+            cwd: None,
+            focus: false,
+            label: None,
+            env: HashMap::new(),
+        })
+    );
+}
+
+#[test]
+fn ssh_open_request_without_host_or_target_is_rejected() {
+    for params in [
+        serde_json::json!({ "target": { "workspace": {} } }),
+        serde_json::json!({ "host": "prod" }),
+        serde_json::json!({ "host": "prod", "target": { "popup": {} } }),
+    ] {
+        let request = serde_json::json!({ "id": "open", "method": "ssh.open", "params": params });
+        assert!(
+            serde_json::from_value::<Request>(request.clone()).is_err(),
+            "{request}"
+        );
+    }
+}
+
+#[test]
+fn ssh_hosts_request_and_response_round_trip() {
+    let request = Request {
+        id: "req_ssh_hosts".into(),
+        method: Method::SshHosts(SshHostsParams::default()),
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "ssh.hosts");
+    assert_eq!(json["params"], serde_json::json!({}));
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), request);
+
+    let response = SuccessResponse {
+        id: "req_ssh_hosts".into(),
+        result: ResponseResult::SshHosts {
+            hosts: vec![
+                SshHostInfoDto {
+                    alias: "prod".into(),
+                    hostname: Some("prod.example.com".into()),
+                    user: Some("deploy".into()),
+                },
+                SshHostInfoDto {
+                    alias: "lab".into(),
+                    hostname: None,
+                    user: None,
+                },
+            ],
+        },
+    };
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["result"]["type"], "ssh_hosts");
+    assert_eq!(json["result"]["hosts"][0]["hostname"], "prod.example.com");
+    let bare = json["result"]["hosts"][1]
+        .as_object()
+        .expect("host entry is an object");
+    assert_eq!(bare.keys().collect::<Vec<_>>(), vec!["alias"]);
+    assert_eq!(
+        serde_json::from_value::<SuccessResponse>(json).unwrap(),
+        response
+    );
+}
+
+#[test]
+fn ssh_methods_report_the_same_api_method_name_as_their_wire_tag() {
+    let mut requests: Vec<Request> = ssh_open_targets()
+        .into_iter()
+        .map(|(tag, target)| Request {
+            id: format!("req_{tag}"),
+            method: Method::SshOpen(SshOpenParams {
+                host: "prod".into(),
+                target,
+            }),
+        })
+        .collect();
+    requests.push(Request {
+        id: "req_hosts".into(),
+        method: Method::SshHosts(SshHostsParams::default()),
+    });
+
+    for request in requests {
+        let wire_tag = serde_json::to_value(&request).unwrap()["method"].clone();
+        assert_eq!(
+            serde_json::Value::from(crate::api::api_method_name(&request.method)),
+            wire_tag
+        );
+    }
+}
+
+#[test]
+fn pane_info_reports_ssh_host_only_for_ssh_panes() {
+    let mut pane: PaneInfo = serde_json::from_value(serde_json::json!({
+        "pane_id": "w1:p1",
+        "terminal_id": "t1",
+        "workspace_id": "w1",
+        "tab_id": "w1:t1",
+        "focused": true,
+        "cwd": "/repo",
+        "agent_status": "idle",
+        "revision": 0
+    }))
+    .unwrap();
+    assert_eq!(pane.ssh_host, None);
+    assert!(serde_json::to_value(&pane)
+        .unwrap()
+        .get("ssh_host")
+        .is_none());
+
+    pane.ssh_host = Some("prod".into());
+    let json = serde_json::to_value(&pane).unwrap();
+    assert_eq!(json["ssh_host"], "prod");
+    assert_eq!(serde_json::from_value::<PaneInfo>(json).unwrap(), pane);
 }
 
 #[test]

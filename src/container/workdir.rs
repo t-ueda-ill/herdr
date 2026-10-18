@@ -21,11 +21,15 @@ pub(crate) fn container_path_for_host(mounts: &[BindMount], host_cwd: &Path) -> 
 }
 
 /// Order: `herdr.workdir` label, bind mount of the host cwd, image WorkingDir.
-pub(crate) fn resolve_workdir(info: &ContainerInfo, host_cwd: &Path) -> Option<PathBuf> {
+///
+/// `host_cwd` is `None` for a container on another machine: this host's
+/// directories say nothing about its bind mounts, so mapping one would
+/// pick an unrelated path.
+pub(crate) fn resolve_workdir(info: &ContainerInfo, host_cwd: Option<&Path>) -> Option<PathBuf> {
     info.herdr
         .workdir
         .clone()
-        .or_else(|| container_path_for_host(&info.bind_mounts, host_cwd))
+        .or_else(|| host_cwd.and_then(|cwd| container_path_for_host(&info.bind_mounts, cwd)))
         .or_else(|| info.working_dir.clone())
 }
 
@@ -130,7 +134,7 @@ mod tests {
     fn resolve_workdir_prefers_herdr_label_then_bind_then_working_dir() {
         let mut container = info("c");
         container.working_dir = Some("/image-default".into());
-        let cwd = Path::new("/home/dev/app/src");
+        let cwd = Some(Path::new("/home/dev/app/src"));
         assert_eq!(
             resolve_workdir(&container, cwd),
             Some(PathBuf::from("/image-default"))
@@ -149,6 +153,23 @@ mod tests {
         );
 
         assert_eq!(resolve_workdir(&info("bare"), cwd), None);
+    }
+
+    #[test]
+    fn resolve_workdir_skips_bind_mount_mapping_without_a_host_cwd() {
+        let mut container = info("c");
+        container.working_dir = Some("/image-default".into());
+        container.bind_mounts = vec![mount("/home/dev/app", "/work")];
+        assert_eq!(
+            resolve_workdir(&container, None),
+            Some(PathBuf::from("/image-default"))
+        );
+
+        container.herdr.workdir = Some("/srv".into());
+        assert_eq!(
+            resolve_workdir(&container, None),
+            Some(PathBuf::from("/srv"))
+        );
     }
 
     #[test]

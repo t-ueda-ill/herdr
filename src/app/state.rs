@@ -900,22 +900,21 @@ impl AppState {
     }
 
     /// Respawns read the launch stored at creation rather than resolving the
-    /// container again: they run on the app thread, where a docker round trip
-    /// would stall rendering.
+    /// container or ssh host again: they run on the app thread, where a docker
+    /// round trip or config read would stall rendering.
     pub(crate) fn pane_shell_config_for_terminal(
         &self,
         terminal_id: &crate::terminal::TerminalId,
     ) -> crate::pane::PaneShellConfig<'_> {
-        crate::pane::PaneShellConfig::new(&self.default_shell, self.shell_mode).with_container(
-            self.terminals
-                .get(terminal_id)
-                .and_then(|terminal| terminal.container.as_ref()),
-        )
+        let terminal = self.terminals.get(terminal_id);
+        crate::pane::PaneShellConfig::new(&self.default_shell, self.shell_mode)
+            .with_container(terminal.and_then(|terminal| terminal.container.as_ref()))
+            .with_ssh(terminal.and_then(|terminal| terminal.ssh.as_ref()))
     }
 
     /// Why not reuse `pane_shell_config_for_terminal`: cold restore starts a
-    /// plain host shell and keeps the container metadata only, because
-    /// re-attaching to the stored container is not implemented yet.
+    /// plain host shell and keeps the container or ssh metadata only, because
+    /// re-attaching or reconnecting automatically is not implemented yet.
     pub(crate) fn cold_restore_shell_config(&self) -> crate::pane::PaneShellConfig<'_> {
         crate::pane::PaneShellConfig::new(&self.default_shell, self.shell_mode)
     }
@@ -1370,6 +1369,7 @@ mod tests {
             workdir: Some("/work".into()),
             user: None,
             shell: crate::container::ContainerShell::BashOrSh,
+            ssh: None,
         };
         let container_terminal = crate::terminal::TerminalId::alloc();
         state.terminals.insert(
@@ -1397,6 +1397,31 @@ mod tests {
             state
                 .pane_shell_config_for_terminal(&crate::terminal::TerminalId::alloc())
                 .container,
+            None
+        );
+    }
+
+    #[test]
+    fn pane_shell_config_for_terminal_reuses_stored_ssh_launch() {
+        let mut state = AppState::test_new();
+        state.default_shell = "/bin/zsh".into();
+        let launch = crate::ssh_host::SshLaunch::new("prod".into(), Some("/tmp/ctl-%C".into()))
+            .expect("valid destination");
+        let ssh_terminal = crate::terminal::TerminalId::alloc();
+        state.terminals.insert(
+            ssh_terminal.clone(),
+            crate::terminal::TerminalState::new(ssh_terminal.clone(), "/host".into())
+                .with_ssh(launch.clone()),
+        );
+
+        let config = state.pane_shell_config_for_terminal(&ssh_terminal);
+        assert_eq!(config.ssh, Some(&launch));
+        assert_eq!(config.container, None);
+        assert_eq!(state.cold_restore_shell_config().ssh, None);
+        assert_eq!(
+            state
+                .pane_shell_config_for_terminal(&crate::terminal::TerminalId::alloc())
+                .ssh,
             None
         );
     }

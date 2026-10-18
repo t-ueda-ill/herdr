@@ -160,6 +160,8 @@ pub struct TerminalState {
     pub respawn_shell_on_exit: bool,
     /// Kept resolved so respawns reuse it instead of querying docker again.
     pub container: Option<crate::container::ContainerLaunch>,
+    /// Kept resolved so respawns reuse it instead of reading the ssh config again.
+    pub ssh: Option<crate::ssh_host::SshLaunch>,
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
     agent_process_acquisition_pending: bool,
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
@@ -168,15 +170,16 @@ pub struct TerminalState {
 
 /// Picks the directory a new pane should inherit.
 ///
-/// Why not trust the runtime path for container panes: the shell reports a
-/// path inside the container (e.g. `/work`), which does not exist on the host.
+/// Why not trust the runtime path for container and ssh panes: the shell
+/// reports a path inside the container or on the remote host (e.g. `/work`),
+/// which does not exist on this host.
 /// `plan_launch` maps the host launch cwd through the bind mounts instead.
 pub fn inherited_cwd(
-    has_container: bool,
+    runs_off_host: bool,
     runtime_cwd: Option<PathBuf>,
     launch_cwd: Option<PathBuf>,
 ) -> Option<PathBuf> {
-    if has_container {
+    if runs_off_host {
         launch_cwd
     } else {
         runtime_cwd.or(launch_cwd)
@@ -218,6 +221,7 @@ impl TerminalState {
             launch_argv: None,
             respawn_shell_on_exit: false,
             container: None,
+            ssh: None,
             recent_agent_process_exit: None,
             agent_process_acquisition_pending: false,
             pending_agent_resume_plan: None,
@@ -317,6 +321,11 @@ impl TerminalState {
 
     pub fn with_container(mut self, launch: crate::container::ContainerLaunch) -> Self {
         self.container = Some(launch);
+        self
+    }
+
+    pub fn with_ssh(mut self, launch: crate::ssh_host::SshLaunch) -> Self {
+        self.ssh = Some(launch);
         self
     }
 
@@ -2536,6 +2545,7 @@ mod tests {
             workdir: Some("/work".into()),
             user: Some("dev".into()),
             shell: crate::container::ContainerShell::Explicit("/bin/zsh".into()),
+            ssh: None,
         };
 
         assert_eq!(test_terminal().container, None);
@@ -2543,6 +2553,17 @@ mod tests {
             test_terminal().with_container(launch.clone()).container,
             Some(launch)
         );
+    }
+
+    #[test]
+    fn terminal_with_ssh_keeps_resolved_launch() {
+        let launch = crate::ssh_host::SshLaunch::new("deploy@prod".into(), Some("/tmp/ctl".into()))
+            .expect("valid destination");
+
+        let host = test_terminal();
+        assert_eq!(host.ssh, None);
+        let remote = test_terminal().with_ssh(launch.clone());
+        assert_eq!(remote.ssh, Some(launch));
     }
 
     #[test]

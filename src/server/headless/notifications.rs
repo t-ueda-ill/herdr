@@ -302,6 +302,9 @@ impl HeadlessServer {
         if self.host_shutdown_requested() {
             return false;
         }
+        if let AppEvent::ClipboardImageStaged(staged) = ev {
+            return self.finish_off_host_clipboard_image_stage(*staged);
+        }
         let focus_response = match &mut ev {
             AppEvent::WorktreeAddFinished(result) => result
                 .api_request
@@ -314,7 +317,10 @@ impl HeadlessServer {
             {
                 Some(&mut result.respond_to)
             }
-            AppEvent::ContainerOpenFinished(result) if result.params.target.focus() => {
+            AppEvent::ContainerOpenFinished(result) if result.target.focus() => {
+                Some(&mut result.respond_to)
+            }
+            AppEvent::SshOpenFinished(result) if result.params.target.focus() => {
                 Some(&mut result.respond_to)
             }
             _ => None,
@@ -582,12 +588,13 @@ impl HeadlessServer {
             {
                 self.app.handle_internal_event_with_render_impact(ev)
             }
-            AppEvent::ContainerListFinished(_) => {
+            AppEvent::ContainerListFinished(_) | AppEvent::SshHostsFinished(_) => {
                 self.app.handle_internal_event_with_render_impact(ev)
             }
             AppEvent::WorktreeAddFinished(_)
             | AppEvent::WorktreeReadFinished(_)
-            | AppEvent::ContainerOpenFinished(_) => {
+            | AppEvent::ContainerOpenFinished(_)
+            | AppEvent::SshOpenFinished(_) => {
                 let deferred_request_id = match &ev {
                     AppEvent::WorktreeAddFinished(result) => result
                         .api_request
@@ -595,11 +602,13 @@ impl HeadlessServer {
                         .map(|request| request.id.as_str()),
                     AppEvent::WorktreeReadFinished(result) => Some(result.request.id.as_str()),
                     AppEvent::ContainerOpenFinished(result) => Some(result.id.as_str()),
+                    AppEvent::SshOpenFinished(result) => Some(result.id.as_str()),
                     _ => None,
                 };
                 let client_local = match &ev {
                     AppEvent::WorktreeReadFinished(result) => result.client_local,
                     AppEvent::ContainerOpenFinished(result) => result.client_local,
+                    AppEvent::SshOpenFinished(result) => result.client_local,
                     _ => false,
                 };
                 let shell_navigation_pending = client_local

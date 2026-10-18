@@ -43,17 +43,23 @@ fn format_container_table(containers: &[ContainerInfoDto]) -> String {
     if containers.is_empty() {
         return "No running containers.\n".into();
     }
-    let header = [
+    // Not always shown: a local listing keeps its familiar columns.
+    let show_host = containers
+        .iter()
+        .any(|container| container.ssh_host.is_some());
+    let mut header = vec![
         "reference",
         "name",
         "project/service",
         "workspace",
         "default",
-    ]
-    .map(String::from);
-    let rows = std::iter::once(header)
+    ];
+    if show_host {
+        header.push("host");
+    }
+    let rows = std::iter::once(header.into_iter().map(String::from).collect::<Vec<_>>())
         .chain(containers.iter().map(|container| {
-            [
+            let mut row = vec![
                 container.reference.clone(),
                 container.name.clone(),
                 match (&container.project, &container.service) {
@@ -62,10 +68,14 @@ fn format_container_table(containers: &[ContainerInfoDto]) -> String {
                 },
                 container.workspace_id.clone().unwrap_or_else(|| "-".into()),
                 if container.is_default { "*" } else { "" }.into(),
-            ]
+            ];
+            if show_host {
+                row.push(container.ssh_host.clone().unwrap_or_else(|| "-".into()));
+            }
+            row
         }))
         .collect::<Vec<_>>();
-    let mut widths = [0; 5];
+    let mut widths = vec![0; rows[0].len()];
     for row in &rows {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());
@@ -76,7 +86,7 @@ fn format_container_table(containers: &[ContainerInfoDto]) -> String {
     for row in &rows {
         let line = row
             .iter()
-            .zip(widths)
+            .zip(&widths)
             .map(|(cell, width)| format!("{cell:<width$}"))
             .collect::<Vec<_>>()
             .join("  ");
@@ -99,6 +109,7 @@ mod tests {
             service: None,
             working_dir: None,
             workspace_id: None,
+            ssh_host: None,
             is_default: false,
         }
     }
@@ -114,6 +125,7 @@ mod tests {
             project: Some("app".into()),
             service: Some("web".into()),
             workspace_id: Some("w1".into()),
+            ssh_host: None,
             is_default: true,
             ..container("app/web", "app-web-1")
         };
@@ -125,6 +137,25 @@ mod tests {
                 "reference  name       project/service  workspace  default\n",
                 "app/web    app-web-1  app/web          w1         *\n",
                 "scratch    scratch    -                -\n",
+            )
+        );
+    }
+
+    #[test]
+    fn container_table_adds_a_host_column_for_containers_of_an_ssh_host() {
+        let remote = ContainerInfoDto {
+            ssh_host: Some("prod".into()),
+            is_default: true,
+            ..container("scratch", "scratch")
+        };
+        let local = container("cache", "cache");
+
+        assert_eq!(
+            format_container_table(&[remote, local]),
+            concat!(
+                "reference  name     project/service  workspace  default  host\n",
+                "scratch    scratch  -                -          *        prod\n",
+                "cache      cache    -                -                   -\n",
             )
         );
     }

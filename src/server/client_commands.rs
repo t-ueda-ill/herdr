@@ -255,12 +255,28 @@ mod tests {
             Some("b4a5504d496cf3424457ddb2a4c450f957e0e9bda7b936fb533a9cd4611e489e")
         );
         assert_eq!(
+            actual.remove("ssh.container.list").as_deref(),
+            Some("1af025446eb26d177b9df17a1088029e2e713a43b3f4f888a44d000763b50519")
+        );
+        assert_eq!(
+            actual.remove("ssh.container.open").as_deref(),
+            Some("4a4ac21adfcbc34698f0cedd0b4b1646eae0ea60600bb01fd6a7f899f57c668e")
+        );
+        assert_eq!(
             actual.remove("pane.clear").as_deref(),
             Some("0301d288ba198ddaa427dd7421c71911cccaf4ea03544531efa8b67ca21b08f6")
         );
         assert_eq!(
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
+        );
+        assert_eq!(
+            actual.remove("ssh.hosts").as_deref(),
+            Some("ccee86d255da6f3914dac9269f3718e5a6825108cb8358ec25659e82b13a5721")
+        );
+        assert_eq!(
+            actual.remove("ssh.open").as_deref(),
+            Some("248ed6ee395f6691f6ae8027ccd97a39c7fa935937de8931930133ab42800eac")
         );
 
         assert_eq!(

@@ -6,10 +6,12 @@ use crate::api::schema::workspaces::{
     WorkspaceCloseProjection, WorkspaceCreateProjection, WorkspaceMetadataProjection,
     WorkspaceRenameProjection,
 };
-use crate::api::schema::{ContainerOpenTarget, EmptyParams, Method, Request, WorkspaceTarget};
+use crate::api::schema::{
+    ContainerOpenTarget, EmptyParams, Method, Request, SshOpenTarget, WorkspaceTarget,
+};
 
-use super::container::bindings::{into_method, with_container};
 use super::projection::{cli_projection, Field, Input, ParseError};
+use super::ssh::bindings::{into_method, with_launch_options};
 
 pub(crate) use super::projection::{boolean, optional_text};
 
@@ -140,13 +142,14 @@ pub(crate) const LEAVES: [Leaf; 7] = [
         about: "Create a workspace",
         id: "cli:workspace:create",
         quiet: false,
-        arguments: || with_container(WorkspaceCreateProjection::arguments()),
+        arguments: || with_launch_options(WorkspaceCreateProjection::arguments()),
         method: |matches| {
             into_method(
                 matches,
                 WorkspaceCreateProjection::from_matches(matches)?,
                 Method::WorkspaceCreate,
                 ContainerOpenTarget::Workspace,
+                SshOpenTarget::Workspace,
             )
         },
     },
@@ -375,6 +378,64 @@ mod tests {
     fn workspace_create_rejects_container_without_value() {
         assert!(
             matches!(request("create", &["--container"]), Err(ParseError::Clap(error)) if error.exit_code() == 2)
+        );
+    }
+
+    #[test]
+    fn workspace_create_with_ssh_nests_the_create_params_in_ssh_open() {
+        for args in [
+            vec!["--ssh", "prod", "--label", "prod", "--focus"],
+            vec!["--ssh=prod", "--label", "prod", "--focus"],
+        ] {
+            assert_eq!(
+                serde_json::to_value(request("create", &args).unwrap()).unwrap(),
+                serde_json::json!({
+                    "id": "cli:workspace:create", "method": "ssh.open",
+                    "params": {
+                        "host": "prod",
+                        "target": {"workspace": {"label": "prod", "focus": true}}
+                    }
+                }),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_create_passes_option_shaped_ssh_hosts_to_the_server_for_rejection() {
+        let json =
+            serde_json::to_value(request("create", &["--ssh", "-oProxyCommand=sh"]).unwrap())
+                .unwrap();
+
+        assert_eq!(json["method"], "ssh.open");
+        assert_eq!(json["params"]["host"], "-oProxyCommand=sh");
+    }
+
+    #[test]
+    fn workspace_create_with_ssh_and_container_opens_the_container_of_that_hosts_docker() {
+        for args in [
+            vec!["--ssh", "prod", "--container", "app/web", "--label", "api"],
+            vec!["--container=app/web", "--ssh=prod", "--label", "api"],
+        ] {
+            assert_eq!(
+                serde_json::to_value(request("create", &args).unwrap()).unwrap(),
+                serde_json::json!({
+                    "id": "cli:workspace:create", "method": "ssh.container.open",
+                    "params": {
+                        "host": "prod",
+                        "container": "app/web",
+                        "target": {"workspace": {"label": "api", "focus": false}}
+                    }
+                }),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_create_rejects_ssh_without_value() {
+        assert!(
+            matches!(request("create", &["--ssh"]), Err(ParseError::Clap(error)) if error.exit_code() == 2)
         );
     }
 

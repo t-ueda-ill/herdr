@@ -1,5 +1,7 @@
 use super::*;
 
+mod list_picker_overlay;
+mod open_picker_overlays;
 mod settings_overlay;
 mod worktree_overlays;
 
@@ -78,6 +80,9 @@ pub(crate) fn render_client_overlay(
         }
         ClientShellOverlay::WorktreeRemove(v) => {
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
+        }
+        ClientShellOverlay::OpenPicker(v) => {
+            open_picker_overlays::render_open_picker_overlay(b, v, p)
         }
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
@@ -227,11 +232,27 @@ fn panel(
     if a.width < 2 || a.height < 2 {
         return None;
     }
-    let background = Style::default().bg(bg).remove_modifier(Modifier::DIM);
-    let border = Style::default().fg(c).bg(bg).remove_modifier(Modifier::DIM);
+    let background = Style::default().bg(bg);
+    let border = Style::default().fg(c).bg(bg);
+    // Not `set_style` alone: it only adds modifiers and overwrites fg/bg when
+    // set, so underline, bold, fg and the like from the pane behind would
+    // survive on the modal's blank cells and text.
     for y in a.y..a.bottom() {
         for x in a.x..a.right() {
-            b[(x, y)].set_symbol(" ").set_style(background);
+            let cell = &mut b[(x, y)];
+            cell.reset();
+            cell.set_symbol(" ").set_style(background);
+        }
+    }
+    // Not left alone: the ANSI encoder skips the cell after a width-2 head, so
+    // a wide glyph at `a.x - 1` would hide the left border from the terminal.
+    if a.x > 0 {
+        for y in a.y..a.bottom() {
+            if let Some(neighbour) = b.cell_mut((a.x - 1, y)) {
+                if display_width(neighbour.symbol()) >= 2 {
+                    neighbour.set_symbol(" ");
+                }
+            }
         }
     }
     for x in a.x..a.right() {

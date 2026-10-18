@@ -78,7 +78,7 @@ pub(crate) struct WorktreeReadData {
 pub struct ContainerOpenResult {
     pub(crate) id: String,
     /// Target params with the host cwd and target ids pinned at request time.
-    pub(crate) params: crate::api::schema::ContainerOpenParams,
+    pub(crate) target: crate::api::schema::ContainerOpenTarget,
     pub(crate) client_local: bool,
     pub(crate) result: Result<crate::container::ContainerLaunch, (String, String)>,
     pub(crate) respond_to: std::sync::mpsc::Sender<String>,
@@ -96,7 +96,41 @@ pub struct ContainerListResult {
     pub(crate) id: String,
     pub(crate) filter_workspace_id: Option<String>,
     pub(crate) workspaces: Vec<WorkspaceRepoRoot>,
+    /// The ssh `Host` alias whose docker was listed; `None` for the local docker.
+    pub(crate) ssh_host: Option<String>,
     pub(crate) result: Result<Vec<crate::container::ContainerInfo>, (String, String)>,
+    pub(crate) respond_to: std::sync::mpsc::Sender<String>,
+}
+
+/// A client clipboard image copied into a container or ssh pane's
+/// environment off the app thread. The paste happens only after the target is
+/// re-validated.
+#[derive(Debug)]
+pub struct ClipboardImageStagedResult {
+    pub(crate) client_id: u64,
+    pub(crate) target: crate::protocol::ClientClipboardImageTarget,
+    /// Where the image was staged, compared against the pane's current shell
+    /// so a respawned or re-pointed pane never receives a stale path.
+    pub(crate) stage_target: crate::server::clipboard_image::OffHostTarget,
+    pub(crate) result: Result<crate::server::clipboard_image::StagedClipboardImage, String>,
+}
+
+/// ssh config lookup for an `ssh.open` request, resolved off the app thread.
+#[derive(Debug)]
+pub struct SshOpenResult {
+    pub(crate) id: String,
+    /// Target params with the host cwd and target ids pinned at request time.
+    pub(crate) params: crate::api::schema::SshOpenParams,
+    pub(crate) client_local: bool,
+    pub(crate) result: Result<crate::ssh_host::SshLaunch, (String, String)>,
+    pub(crate) respond_to: std::sync::mpsc::Sender<String>,
+}
+
+/// Configured ssh hosts for an `ssh.hosts` request, read off the app thread.
+#[derive(Debug)]
+pub struct SshHostsResult {
+    pub(crate) id: String,
+    pub(crate) result: Result<Vec<crate::ssh_host::SshHostInfo>, (String, String)>,
     pub(crate) respond_to: std::sync::mpsc::Sender<String>,
 }
 
@@ -248,4 +282,10 @@ pub enum AppEvent {
     ContainerOpenFinished(Box<ContainerOpenResult>),
     /// Background container listing completed for an API `container.list` request.
     ContainerListFinished(Box<ContainerListResult>),
+    /// Background copy of a client clipboard image into a container pane finished.
+    ClipboardImageStaged(Box<ClipboardImageStagedResult>),
+    /// Background ssh config lookup completed for an API `ssh.open` request.
+    SshOpenFinished(Box<SshOpenResult>),
+    /// Background ssh config listing completed for an API `ssh.hosts` request.
+    SshHostsFinished(Box<SshHostsResult>),
 }

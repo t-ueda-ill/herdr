@@ -33,6 +33,7 @@ mod protocol_guard;
 mod server;
 mod server_not_running;
 mod spec;
+mod ssh;
 mod status;
 pub(crate) mod tab;
 mod target;
@@ -130,6 +131,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "workspace" => workspace::run_workspace_command(&args[2..])?,
         "worktree" => worktree::run_worktree_command(&args[2..])?,
         "container" => container::run_container_command(&args[2..])?,
+        "ssh" => ssh::run_ssh_command(&args[2..])?,
         "tab" => tab::run_tab_command(&args[2..])?,
         "notification" => notification::run_notification_command(&args[2..])?,
         "agent" => agent::run_agent_command(&args[2..])?,
@@ -150,6 +152,7 @@ fn api_group(name: &str) -> Option<clap::Command> {
         "workspace" => workspace_bindings::command(),
         "worktree" => worktree::command(),
         "container" => container::command(),
+        "ssh" => ssh::command(),
         "tab" => tab::command(),
         "notification" => notification::command(),
         "agent" => agent::command(),

@@ -969,6 +969,9 @@ impl HeadlessServer {
             let held_inputs = removed.drain_shell_held_inputs();
             self.release_client_shell_inputs(client_id, held_inputs);
             crate::server::clipboard_image::remove_files(removed.staged_clipboard_files);
+            crate::server::clipboard_image::remove_off_host_files(
+                removed.staged_off_host_clipboard_files,
+            );
             if let ClientConnectionMode::TerminalAttach { terminal_id } = removed.mode {
                 self.terminal_attach_owners.remove(&terminal_id);
                 if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
@@ -1163,6 +1166,230 @@ impl HeadlessServer {
         let staged = crate::server::clipboard_image::stage(client_id, extension, data)?;
         info!(client_id, bytes = data.len(), path = %staged.paste_text, "staged client clipboard image");
         Ok(staged)
+    }
+
+    /// Branches on the running shell, never on restored metadata: a cold
+    /// restored container or ssh pane runs a host shell and needs a host path.
+    /// `Err` carries the client-facing reason no backend reaches the pane.
+    fn client_clipboard_image_stage_target(
+        &self,
+        client_id: u64,
+        target: &protocol::ClientClipboardImageTarget,
+    ) -> Result<crate::server::clipboard_image::StageTarget, String> {
+        use super::client_shell::RunningOffHostShell;
+        use crate::server::clipboard_image::{
+            OffHostTarget, RemoteDockerHost as OffHostSsh, StageTarget,
+        };
+        match self.client_clipboard_image_off_host_shell(client_id, target) {
+            None => Ok(StageTarget::Host),
+            Some(RunningOffHostShell::Container(launch)) => {
+                // Why not stage into the local docker when the connection is
+                // not shared: the id lives on the ssh host, and the stage
+                // CLI could not log in without a prompt.
+                let ssh =
+                    match &launch.ssh {
+                        None => None,
+                        Some(ssh) => match &ssh.control_path {
+                            Some(control_path) => Some(OffHostSsh {
+                                host: ssh.host.clone(),
+                                control_path: control_path.clone(),
+                            }),
+                            None => return Err(
+                                "Image could not be copied into the container on the ssh host: \
+                                 the connection is not shared (ControlMaster unavailable)"
+                                    .to_owned(),
+                            ),
+                        },
+                    };
+                Ok(StageTarget::OffHost(OffHostTarget::Container {
+                    id: launch.id.clone(),
+                    user: launch.user.clone(),
+                    ssh,
+                }))
+            }
+            // Why not stage on the host without a master: the remote shell
+            // cannot open a host path, so pasting one would only look like
+            // success.
+            Some(RunningOffHostShell::Ssh(launch)) => match &launch.control_path {
+                Some(control_path) => Ok(StageTarget::OffHost(OffHostTarget::Ssh {
+                    host: launch.host.clone(),
+                    control_path: control_path.clone(),
+                })),
+                None => Err(
+                    "Image could not be copied to the ssh host: the pane's ssh connection \
+                     is not shared (ControlMaster unavailable)"
+                        .to_owned(),
+                ),
+            },
+        }
+    }
+
+    fn client_clipboard_image_off_host_shell(
+        &self,
+        client_id: u64,
+        target: &protocol::ClientClipboardImageTarget,
+    ) -> Option<super::client_shell::RunningOffHostShell<'_>> {
+        match target {
+            protocol::ClientClipboardImageTarget::Pane(pane_id) => {
+                let (workspace_index, runtime_pane_id) = self.app.parse_pane_id(pane_id)?;
+                super::client_shell::running_pane_off_host_shell(
+                    &self.app,
+                    workspace_index,
+                    runtime_pane_id,
+                )
+            }
+            protocol::ClientClipboardImageTarget::DirectTerminal => {
+                let ClientConnectionMode::TerminalAttach { terminal_id } =
+                    &self.clients.get(&client_id)?.mode
+                else {
+                    return None;
+                };
+                let terminal_id = self.terminal_id_by_string(terminal_id)?;
+                let runtime = self.app.terminal_runtimes.get(&terminal_id)?;
+                super::client_shell::running_off_host_shell(&self.app, runtime, &terminal_id)
+            }
+            // Popups always run a host shell.
+            protocol::ClientClipboardImageTarget::Popup(_) => None,
+        }
+    }
+
+    /// Phase one of a container or ssh paste: copy the image on a worker,
+    /// because `docker exec` and `ssh` must not block the app loop. Phase two
+    /// is `finish_off_host_clipboard_image_stage`.
+    fn start_off_host_clipboard_image_stage(
+        &mut self,
+        client_id: u64,
+        target: protocol::ClientClipboardImageTarget,
+        extension: String,
+        data: Vec<u8>,
+        stage_target: crate::server::clipboard_image::OffHostTarget,
+    ) {
+        struct Job {
+            client_id: u64,
+            target: protocol::ClientClipboardImageTarget,
+            extension: String,
+            data: Vec<u8>,
+            stage_target: crate::server::clipboard_image::OffHostTarget,
+        }
+        info!(client_id, bytes = data.len(), stage_target = ?stage_target, "staging client clipboard image off host");
+        let job = Job {
+            client_id,
+            target,
+            extension,
+            data,
+            stage_target,
+        };
+        let event_tx = self.app.event_tx.clone();
+        let spawned =
+            crate::thread_spawn::spawn_named_with("herdr-clipboard-stage", job, move |job| {
+                let result = crate::server::clipboard_image::stage_off_host(
+                    job.client_id,
+                    &job.extension,
+                    job.data,
+                    &job.stage_target,
+                );
+                let staged = crate::events::ClipboardImageStagedResult {
+                    client_id: job.client_id,
+                    target: job.target,
+                    stage_target: job.stage_target,
+                    result,
+                };
+                if let Err(err) =
+                    event_tx.blocking_send(AppEvent::ClipboardImageStaged(Box::new(staged)))
+                {
+                    // The server is gone, so nobody will paste or track the file.
+                    if let AppEvent::ClipboardImageStaged(staged) = err.0 {
+                        if let Ok(image) = staged.result {
+                            let _ = crate::server::clipboard_image::remove_off_host_batch(
+                                &crate::server::clipboard_image::OffHostCleanupBatch {
+                                    target: staged.stage_target,
+                                    paths: vec![image.paste_text],
+                                },
+                            );
+                        }
+                    }
+                }
+            });
+        if let Err((job, err)) = spawned {
+            // Why not fall back to host staging: the pane's shell cannot open
+            // a host path, so pasting one would only look like success.
+            warn!(client_id = job.client_id, err = %err, "failed to spawn off-host clipboard image thread");
+            self.send_client_paste_rejection(
+                job.client_id,
+                job.stage_target.failure_detail(&err.to_string()),
+            );
+        }
+    }
+
+    /// Phase two of a container or ssh paste. Everything checked at phase one
+    /// is checked again: the pane may have closed, respawned on the host, or
+    /// moved out of the client's view while docker or ssh ran.
+    pub(super) fn finish_off_host_clipboard_image_stage(
+        &mut self,
+        staged: crate::events::ClipboardImageStagedResult,
+    ) -> bool {
+        let crate::events::ClipboardImageStagedResult {
+            client_id,
+            target,
+            stage_target,
+            result,
+        } = staged;
+        let image = match result {
+            Ok(image) => image,
+            Err(err) => {
+                warn!(client_id, stage_target = ?stage_target, err = %err, "failed to stage client clipboard image off host");
+                self.send_client_paste_rejection(client_id, stage_target.failure_detail(&err));
+                return false;
+            }
+        };
+        info!(client_id, stage_target = ?stage_target, path = %image.paste_text, "staged client clipboard image off host");
+        let expected = Ok(crate::server::clipboard_image::StageTarget::OffHost(
+            stage_target.clone(),
+        ));
+        let file = crate::server::clipboard_image::OffHostClipboardFile {
+            target: stage_target,
+            path: image.paste_text.clone(),
+        };
+        if !self.client_clipboard_image_target_is_valid(client_id, &target)
+            || self.client_clipboard_image_stage_target(client_id, &target) != expected
+        {
+            debug!(
+                client_id,
+                "dropped off-host clipboard image for a stale target"
+            );
+            crate::server::clipboard_image::remove_off_host_files(vec![file]);
+            return false;
+        }
+        let routed = self.paste_client_clipboard_image_path(client_id, target, image.paste_text);
+        match self.clients.get_mut(&client_id) {
+            Some(client) if routed => {
+                client.staged_off_host_clipboard_files.push(file);
+                true
+            }
+            _ => {
+                crate::server::clipboard_image::remove_off_host_files(vec![file]);
+                false
+            }
+        }
+    }
+
+    /// Client-local failure notice; it never reaches other clients.
+    fn send_client_paste_rejection(&mut self, client_id: u64, detail: String) {
+        let message = if matches!(
+            self.clients.get(&client_id).map(|client| &client.mode),
+            Some(ClientConnectionMode::ClientShell)
+        ) {
+            ServerMessage::ClientShellError {
+                message: format!("Paste rejected: {detail}"),
+            }
+        } else {
+            ServerMessage::Notify {
+                kind: protocol::NotifyKind::Toast,
+                message: "Paste rejected".to_owned(),
+                body: Some(detail),
+            }
+        };
+        self.send_to_client(client_id, message);
     }
 
     fn paste_client_clipboard_image_path(
@@ -2109,22 +2336,10 @@ impl HeadlessServer {
                 size,
                 max,
             } => {
-                let detail = format!("Input message is {size} bytes; Herdr's limit is {max} bytes");
-                let message = if matches!(
-                    self.clients.get(&client_id).map(|client| &client.mode),
-                    Some(ClientConnectionMode::ClientShell)
-                ) {
-                    ServerMessage::ClientShellError {
-                        message: format!("Paste rejected: {detail}"),
-                    }
-                } else {
-                    ServerMessage::Notify {
-                        kind: protocol::NotifyKind::Toast,
-                        message: "Paste rejected".to_owned(),
-                        body: Some(detail),
-                    }
-                };
-                self.send_to_client(client_id, message);
+                self.send_client_paste_rejection(
+                    client_id,
+                    format!("Input message is {size} bytes; Herdr's limit is {max} bytes"),
+                );
                 false
             }
             ServerEvent::ClientClipboardImage {
@@ -2141,6 +2356,24 @@ impl HeadlessServer {
                 );
                 if !self.client_clipboard_image_target_is_valid(client_id, &target) {
                     return false;
+                }
+                match self.client_clipboard_image_stage_target(client_id, &target) {
+                    Ok(crate::server::clipboard_image::StageTarget::Host) => {}
+                    Ok(crate::server::clipboard_image::StageTarget::OffHost(stage_target)) => {
+                        self.start_off_host_clipboard_image_stage(
+                            client_id,
+                            target,
+                            extension,
+                            data,
+                            stage_target,
+                        );
+                        return false;
+                    }
+                    Err(detail) => {
+                        warn!(client_id, detail = %detail, "no backend reaches the clipboard image target");
+                        self.send_client_paste_rejection(client_id, detail);
+                        return false;
+                    }
                 }
                 match self.stage_client_clipboard_image(client_id, &extension, &data) {
                     Ok(staged) => {
@@ -3058,14 +3291,30 @@ impl HeadlessServer {
         }
         if matches!(
             &msg.request.method,
-            api::schema::Method::ContainerOpen(_) | api::schema::Method::ContainerList(_)
+            api::schema::Method::ContainerOpen(_)
+                | api::schema::Method::ContainerList(_)
+                | api::schema::Method::SshContainerOpen(_)
+                | api::schema::Method::SshContainerList(_)
         ) {
-            let read_only = matches!(&msg.request.method, api::schema::Method::ContainerList(_));
+            let read_only = matches!(
+                &msg.request.method,
+                api::schema::Method::ContainerList(_) | api::schema::Method::SshContainerList(_)
+            );
             let deferred_changed = self.app.handle_deferred_container_api_request(
                 msg.request,
                 msg.respond_to,
                 client_local,
             );
+            return changed | (deferred_changed && !read_only);
+        }
+        if matches!(
+            &msg.request.method,
+            api::schema::Method::SshOpen(_) | api::schema::Method::SshHosts(_)
+        ) {
+            let read_only = matches!(&msg.request.method, api::schema::Method::SshHosts(_));
+            let deferred_changed =
+                self.app
+                    .handle_deferred_ssh_api_request(msg.request, msg.respond_to, client_local);
             return changed | (deferred_changed && !read_only);
         }
         if self.foreground_client_id.is_some_and(|client_id| {
@@ -3410,14 +3659,27 @@ fn client_pane_input_has_interaction(events: &[protocol::ClientPaneInputEvent]) 
         .any(|event| !client_pane_input_releases_press(event))
 }
 
+/// Drains every client's staged image files, on the host and off it.
+fn take_staged_clipboard_files(
+    clients: &mut HashMap<u64, ClientConnection>,
+) -> (
+    Vec<std::path::PathBuf>,
+    Vec<crate::server::clipboard_image::OffHostClipboardFile>,
+) {
+    let mut host = Vec::new();
+    let mut off_host = Vec::new();
+    for (_, client) in clients.drain() {
+        host.extend(client.staged_clipboard_files);
+        off_host.extend(client.staged_off_host_clipboard_files);
+    }
+    (host, off_host)
+}
+
 impl Drop for HeadlessServer {
     fn drop(&mut self) {
-        let staged_files = self
-            .clients
-            .drain()
-            .flat_map(|(_, client)| client.staged_clipboard_files)
-            .collect::<Vec<_>>();
+        let (staged_files, off_host_files) = take_staged_clipboard_files(&mut self.clients);
         crate::server::clipboard_image::remove_files(staged_files);
+        crate::server::clipboard_image::remove_off_host_files(off_host_files);
         let _ = self.cleanup_sockets();
     }
 }

@@ -288,6 +288,7 @@ pub(super) enum ClientShellOverlayKind {
     WorktreeCreate,
     WorktreeOpen,
     WorktreeRemove,
+    OpenPicker,
     ContextMenu,
     GlobalMenu,
     Settings,
@@ -499,6 +500,168 @@ impl ClientWorktreeOpenOverlay {
     }
 }
 
+/// What the shared open picker lists and which endpoint method opens a choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OpenPickerSource {
+    SshHost,
+    /// First stage of "open container": where docker runs.
+    ContainerHost,
+    Container,
+}
+
+/// Where a container picker's docker daemon runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum OpenPickerHost {
+    Local,
+    Ssh(String),
+}
+
+impl OpenPickerHost {
+    pub(super) fn ssh_alias(&self) -> Option<String> {
+        match self {
+            Self::Local => None,
+            Self::Ssh(alias) => Some(alias.clone()),
+        }
+    }
+
+    pub(super) fn display_name(&self) -> &str {
+        match self {
+            Self::Local => "local",
+            Self::Ssh(alias) => alias,
+        }
+    }
+}
+
+/// Host-stage rows kept while the container stage is shown, so Esc returns
+/// without asking the server again.
+#[derive(Debug)]
+pub(super) struct OpenPickerHostStage {
+    pub(super) entries: Vec<ClientOpenPickerEntry>,
+    pub(super) selected: usize,
+}
+
+impl OpenPickerSource {
+    pub(super) fn for_action(action: crate::input::KeybindAction) -> Option<Self> {
+        match action {
+            crate::input::KeybindAction::OpenSshWorkspace => Some(Self::SshHost),
+            crate::input::KeybindAction::OpenContainerWorkspace => Some(Self::Container),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ClientOpenPickerEntry {
+    /// What the open method expects: an ssh alias or a container reference.
+    pub(super) id: String,
+    pub(super) title: String,
+    pub(super) status: &'static str,
+    pub(super) detail: String,
+    /// Set only on rows of the container host stage.
+    pub(super) host: Option<OpenPickerHost>,
+}
+
+impl ClientOpenPickerEntry {
+    pub(super) fn container_host(host: OpenPickerHost, detail: String) -> Self {
+        Self {
+            id: host.display_name().to_owned(),
+            title: host.display_name().to_owned(),
+            status: "",
+            detail,
+            host: Some(host),
+        }
+    }
+
+    pub(super) fn ssh_host(alias: String, hostname: Option<String>, user: Option<String>) -> Self {
+        // ssh connects to the alias itself when the block names no HostName.
+        let detail = match (user, hostname) {
+            (Some(user), hostname) => format!("{user}@{}", hostname.as_deref().unwrap_or(&alias)),
+            (None, Some(hostname)) => hostname,
+            (None, None) => String::new(),
+        };
+        Self {
+            id: alias.clone(),
+            title: alias,
+            status: "",
+            detail,
+            host: None,
+        }
+    }
+
+    pub(super) fn container(info: crate::api::schema::ContainerInfoDto) -> Self {
+        let detail = match (info.project, info.service, info.working_dir) {
+            (Some(project), Some(service), _) => format!("{project}/{service}"),
+            (_, _, Some(working_dir)) => working_dir,
+            _ => info.id.chars().take(12).collect(),
+        };
+        Self {
+            // Why not the Compose reference: replicas of one service share it,
+            // and resolving it opens the first replica by name for every row.
+            id: info.id,
+            title: info.name,
+            status: if info.is_default { "default" } else { "" },
+            detail,
+            host: None,
+        }
+    }
+
+    pub(super) fn matches_query(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        query.is_empty()
+            || format!("{} {}", self.title, self.detail)
+                .to_lowercase()
+                .contains(&query)
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct ClientOpenPickerOverlay {
+    pub(super) source: OpenPickerSource,
+    pub(super) entries: Vec<ClientOpenPickerEntry>,
+    pub(super) selected: usize,
+    pub(super) query: TextEditor,
+    pub(super) search_focused: bool,
+    pub(super) error: Option<String>,
+    pub(super) opening: bool,
+    /// Docker host of the container stage; unused by the other stages.
+    pub(super) host: OpenPickerHost,
+    /// Present when the container stage was reached through the host stage.
+    pub(super) host_stage: Option<OpenPickerHostStage>,
+}
+
+impl ClientOpenPickerOverlay {
+    /// Opens with the filter focused so typing narrows the list at once.
+    pub(super) fn new(source: OpenPickerSource, entries: Vec<ClientOpenPickerEntry>) -> Self {
+        Self {
+            source,
+            entries,
+            selected: 0,
+            query: TextEditor::default(),
+            search_focused: true,
+            error: None,
+            opening: false,
+            host: OpenPickerHost::Local,
+            host_stage: None,
+        }
+    }
+
+    pub(super) fn filtered_indices(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.matches_query(&self.query).then_some(index))
+            .collect()
+    }
+
+    pub(super) fn selected_entry_index(&self) -> Option<usize> {
+        let filtered = self.filtered_indices();
+        filtered
+            .contains(&self.selected)
+            .then_some(self.selected)
+            .or_else(|| filtered.first().copied())
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ClientWorktreeRemoveOverlay {
     pub(super) workspace_id: String,
@@ -591,6 +754,7 @@ pub(super) enum ClientShellOverlay {
     WorktreeCreate(ClientWorktreeCreateOverlay),
     WorktreeOpen(ClientWorktreeOpenOverlay),
     WorktreeRemove(ClientWorktreeRemoveOverlay),
+    OpenPicker(ClientOpenPickerOverlay),
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
@@ -609,6 +773,7 @@ impl ClientShellOverlay {
             Self::WorktreeCreate(_) => ClientShellOverlayKind::WorktreeCreate,
             Self::WorktreeOpen(_) => ClientShellOverlayKind::WorktreeOpen,
             Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
+            Self::OpenPicker(_) => ClientShellOverlayKind::OpenPicker,
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
@@ -642,6 +807,10 @@ pub(super) enum PendingEndpointKind {
     WorktreeRemove {
         forced: bool,
     },
+    PrepareOpenPicker(OpenPickerSource),
+    /// Lists one docker host's containers for the second picker stage.
+    ListContainers(OpenPickerHost),
+    OpenPicker,
     SelectionCopy,
     PaneScroll {
         pane_id: String,
@@ -1893,5 +2062,37 @@ impl ClientShellState {
         self.pending_pane_surface = None;
         self.hits = ShellHitMap::default();
         self.host_mouse_pixels = None;
+    }
+}
+
+#[cfg(test)]
+mod container_entry_tests {
+    use super::ClientOpenPickerEntry;
+    use crate::api::schema::ContainerInfoDto;
+
+    fn replica(id: &str, name: &str) -> ContainerInfoDto {
+        ContainerInfoDto {
+            reference: "review/web".into(),
+            id: id.into(),
+            name: name.into(),
+            project: Some("review".into()),
+            service: Some("web".into()),
+            working_dir: None,
+            workspace_id: None,
+            ssh_host: None,
+            is_default: false,
+        }
+    }
+
+    #[test]
+    fn compose_replicas_sharing_a_reference_get_their_own_entry_ids() {
+        let first = ClientOpenPickerEntry::container(replica("aaaaaaaaaaaa", "review-web-1"));
+        let second = ClientOpenPickerEntry::container(replica("bbbbbbbbbbbb", "review-web-2"));
+
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.id, "aaaaaaaaaaaa");
+        assert_eq!(second.id, "bbbbbbbbbbbb");
+        assert_eq!(first.title, "review-web-1");
+        assert_eq!(second.title, "review-web-2");
     }
 }

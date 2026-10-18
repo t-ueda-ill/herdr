@@ -134,6 +134,8 @@ Windows クライアントは、WezTerm が完全な Win32 文字の押下・解
 | --- | --- |
 | ダイレクトターミナルアタッチ (`herdr terminal attach`) | 未サポート |
 | コンテナシェル (`--container`、`herdr container`) | 未サポート |
+| コンテナペインへのクリップボード画像ブリッジ | 未サポート |
+| SSH ペイン (`--ssh`、`herdr ssh`) | 未サポート |
 | ライブサーバーハンドオフ | 未サポート |
 | Unix ファイルディスクリプタのハンドオフ | 未サポート |
 | Unix フォアグラウンドプロセスグループ | 未サポート |
@@ -141,6 +143,8 @@ Windows クライアントは、WezTerm が完全な Win32 文字の押下・解
 | 署名済みバイナリ / SmartScreen 回避 | 未サポート |
 
 コンテナシェルは Unix ホストが必要です。Windows では `platform_unsupported` を返します。
+
+SSH ペインには OpenSSH の ControlMaster が必要ですが、Windows の OpenSSH にはありません。Windows では `platform_unsupported` を返します。
 
 Windows Terminal からは、Linux や macOS と同じリモートコマンドを使います:
 
