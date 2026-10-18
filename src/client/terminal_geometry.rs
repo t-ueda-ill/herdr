@@ -127,6 +127,9 @@ pub(super) fn resize_report_required(
 /// The baseline cell size must match what the handshake sent to the server:
 /// reading a fresh one here would race the host cell size reply and could
 /// swallow the first change.
+///
+/// The SIGWINCH handler is installed by the caller before this thread starts,
+/// so this loop only consumes the signal flag.
 #[allow(clippy::too_many_arguments)] // The arguments are one immutable launch snapshot, not shared state.
 pub(super) fn resize_poll_loop(
     resize_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
@@ -140,7 +143,6 @@ pub(super) fn resize_poll_loop(
     reported_cell_size: &AtomicU64,
     should_quit: &Arc<AtomicBool>,
 ) {
-    crate::platform::watch_terminal_resize_signal();
     let mut last_size = (
         initial_cols,
         initial_rows,

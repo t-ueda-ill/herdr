@@ -756,8 +756,12 @@ fn sigwinch_refreshes_host_palette_without_resizing() {
     }
     writer.write_all(light.as_bytes()).unwrap();
     writer.flush().unwrap();
-    // Let startup settle and the resize watcher install its signal handler.
-    thread::sleep(Duration::from_millis(250));
+    // The client installs its SIGWINCH handler before writing the startup query,
+    // so having observed that query above is the synchronization.
+    // Why not always require the palette: Linux skips OSC 4 queries under WSL on
+    // purpose (see `should_query_host_terminal_palette`), and the refresh must
+    // mirror what the client queried at startup.
+    let expects_palette = read_output(&output).contains("\x1b]4;15;?\x1b\\");
 
     for _ in 0..2 {
         let watermark = output_len(&output);
@@ -769,9 +773,10 @@ fn sigwinch_refreshes_host_palette_without_resizing() {
             wait_until(Duration::from_secs(5), Duration::from_millis(25), || {
                 let captured = read_output(&output);
                 let refreshed = &captured[watermark..];
-                refreshed.contains(queries) && refreshed.contains("\x1b]4;15;?\x1b\\")
+                refreshed.contains(queries)
+                    && (!expects_palette || refreshed.contains("\x1b]4;15;?\x1b\\"))
             }),
-            "SIGWINCH should query default colors and the ANSI palette without changing PTY size"
+            "SIGWINCH should query default colors (and the ANSI palette: {expects_palette}) without changing PTY size"
         );
         writer
             .write_all(b"\x1b]10;rgb:eeee/eeee/eeee\x1b\\\x1b]11;rgb:1111/2222/3333\x1b\\")

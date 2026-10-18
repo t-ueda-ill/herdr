@@ -580,6 +580,11 @@ async fn run_client_loop(
         );
     });
 
+    // Why not inside the poller thread: the handler must exist before the first
+    // host query goes out, or a resize signalled during startup is lost and
+    // nothing observable marks the moment the poller thread has installed it.
+    crate::platform::watch_terminal_resize_signal();
+
     #[cfg(unix)]
     if will_query_host_terminal_theme {
         query_host_terminal_theme();
