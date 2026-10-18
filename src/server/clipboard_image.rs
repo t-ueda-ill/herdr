@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::clipboard_stage_script::STAGE_DIR_PREFIX;
+
 const STAGED_CLIPBOARD_IMAGE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Where a bridged image must land so the target pane's processes can open it.
@@ -74,22 +76,39 @@ pub(crate) fn stage(
     extension: &str,
     data: &[u8],
 ) -> io::Result<StagedClipboardImage> {
-    let dir = ensure_staging_dir()?;
-    cleanup_stale(&dir);
+    stage_in(&std::env::temp_dir(), client_id, extension, data)
+}
+
+/// Stages into a fresh private directory under `base`. Why not a shared
+/// per-uid directory: `create_dir_all` and `set_permissions` follow a symlink
+/// planted at that predictable path, so another local user could redirect the
+/// write or chmod. `DirBuilder::create` fails on any existing entry, symlink
+/// included, so a fresh directory is never reached through a planted path.
+fn stage_in(
+    base: &Path,
+    client_id: u64,
+    extension: &str,
+    data: &[u8],
+) -> io::Result<StagedClipboardImage> {
+    cleanup_stale(base);
 
     let unique = unique_stamp();
+    let pid = std::process::id();
 
     for attempt in 0..100 {
-        let path = dir.join(staged_file_name(client_id, extension, unique, attempt));
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        restrict_file_options(&mut options);
-        let mut file = match options.open(&path) {
-            Ok(file) => file,
+        let dir = base.join(format!("{STAGE_DIR_PREFIX}{unique}-{pid}-{attempt}"));
+        match create_private_dir(&dir) {
+            Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
-        };
-        file.write_all(data)?;
+        }
+        let path = dir.join(staged_file_name(client_id, extension, unique, attempt));
+        let written = write_private_file(&path, data);
+        if let Err(err) = written {
+            let _ = fs::remove_file(&path);
+            let _ = fs::remove_dir(&dir);
+            return Err(err);
+        }
         return Ok(StagedClipboardImage {
             paste_text: path.to_string_lossy().into_owned(),
             path,
@@ -102,10 +121,29 @@ pub(crate) fn stage(
     ))
 }
 
+fn write_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    restrict_file_options(&mut options);
+    options.open(path)?.write_all(data)
+}
+
+/// Removes staged files and their per-image directory. The parent is removed
+/// only when it carries the staging prefix so an unrelated directory is never
+/// touched.
 pub(crate) fn remove_files(paths: Vec<PathBuf>) {
     for path in paths {
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
+        if let Some(parent) = path.parent().filter(|parent| has_stage_prefix(parent)) {
+            let _ = fs::remove_dir(parent);
+        }
     }
+}
+
+fn has_stage_prefix(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(STAGE_DIR_PREFIX))
 }
 
 /// Copies the image into the pane's environment through `docker exec` or
@@ -325,26 +363,17 @@ fn sanitize_extension(extension: &str) -> &'static str {
     }
 }
 
-fn staging_dir() -> PathBuf {
-    #[cfg(unix)]
-    let user_id = unsafe { libc::geteuid() };
-    #[cfg(windows)]
-    let user_id = std::process::id();
-    std::env::temp_dir().join(format!("herdr-clipboard-images-{user_id}"))
+/// Non-recursive on purpose: a recursive create would accept an existing path.
+#[cfg(unix)]
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    fs::DirBuilder::new().mode(0o700).create(dir)
 }
 
-fn ensure_staging_dir() -> io::Result<PathBuf> {
-    let dir = staging_dir();
-    fs::create_dir_all(&dir)?;
-    let metadata = fs::metadata(&dir)?;
-    if !metadata.is_dir() {
-        return Err(io::Error::other(format!(
-            "clipboard image staging path is not a directory: {}",
-            dir.display()
-        )));
-    }
-    restrict_dir_permissions(&dir)?;
-    Ok(dir)
+#[cfg(windows)]
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    fs::DirBuilder::new().create(dir)
 }
 
 #[cfg(unix)]
@@ -358,32 +387,53 @@ fn restrict_file_options(options: &mut fs::OpenOptions) {
 fn restrict_file_options(_options: &mut fs::OpenOptions) {}
 
 #[cfg(unix)]
-fn restrict_dir_permissions(dir: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+fn owned_by_current_user(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
 
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+    metadata.uid() == unsafe { libc::geteuid() }
 }
 
 #[cfg(windows)]
-fn restrict_dir_permissions(_dir: &Path) -> io::Result<()> {
-    Ok(())
+fn owned_by_current_user(_metadata: &fs::Metadata) -> bool {
+    true
 }
 
-fn cleanup_stale(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else {
+/// Removes stale staging directories directly under `base`. Why not
+/// `remove_dir_all` or following symlinks: `base` is a shared temp directory
+/// where anyone can plant a prefix-named entry, so only real directories we
+/// own are touched, and only their regular files plus the directory itself are
+/// removed, never anything a link or nested entry could point at.
+fn cleanup_stale(base: &Path) {
+    let Ok(entries) = fs::read_dir(base) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(metadata) = entry.metadata() else {
+        if !has_stage_prefix(&path) {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
             continue;
         };
+        if !metadata.is_dir() || !owned_by_current_user(&metadata) {
+            continue;
+        }
         let Ok(modified) = metadata.modified() else {
             continue;
         };
-        if modified.elapsed().unwrap_or_default() > STAGED_CLIPBOARD_IMAGE_MAX_AGE {
-            let _ = fs::remove_file(path);
+        if modified.elapsed().unwrap_or_default() <= STAGED_CLIPBOARD_IMAGE_MAX_AGE {
+            continue;
         }
+        let Ok(children) = fs::read_dir(&path) else {
+            continue;
+        };
+        for child in children.flatten() {
+            let is_file = child.file_type().is_ok_and(|kind| kind.is_file());
+            if is_file {
+                let _ = fs::remove_file(child.path());
+            }
+        }
+        let _ = fs::remove_dir(&path);
     }
 }
 
@@ -409,6 +459,157 @@ mod tests {
             staged_file_name(7, "../../etc/passwd", 123, 0),
             "client-7-clipboard-123-0.png"
         );
+    }
+
+    struct TempBase(PathBuf);
+
+    impl TempBase {
+        fn new(label: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "herdr-clipboard-test-base-{label}-{}-{}-{}",
+                std::process::id(),
+                unique_stamp(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).expect("create test base");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempBase {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn make_old(path: &Path) {
+        let old = SystemTime::now() - STAGED_CLIPBOARD_IMAGE_MAX_AGE - Duration::from_secs(3600);
+        let file = fs::File::open(path).expect("open for mtime");
+        file.set_modified(old).expect("set mtime");
+    }
+
+    #[test]
+    fn stage_in_writes_the_image_into_a_fresh_prefixed_directory_under_the_base() {
+        let base = TempBase::new("fresh");
+
+        let staged = stage_in(&base.0, 3, "png", b"img").expect("stage");
+
+        let dir = staged.path.parent().expect("parent");
+        assert_eq!(dir.parent(), Some(base.0.as_path()));
+        assert!(has_stage_prefix(dir));
+        assert_eq!(fs::read(&staged.path).expect("read"), b"img");
+        assert_eq!(staged.paste_text, staged.path.to_string_lossy());
+    }
+
+    #[test]
+    fn stage_in_gives_each_image_its_own_directory() {
+        let base = TempBase::new("distinct");
+
+        let first = stage_in(&base.0, 3, "png", b"a").expect("stage");
+        let second = stage_in(&base.0, 3, "png", b"b").expect("stage");
+
+        assert_ne!(first.path.parent(), second.path.parent());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_in_restricts_the_directory_to_0700_and_the_file_to_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = TempBase::new("modes");
+
+        let staged = stage_in(&base.0, 3, "png", b"img").expect("stage");
+
+        let mode = |path: &Path| fs::metadata(path).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode(&staged.path), 0o600);
+        assert_eq!(mode(staged.path.parent().expect("parent")), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_in_leaves_a_symlink_at_the_old_per_uid_path_untouched() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let base = TempBase::new("old-layout");
+        let victim = base.0.join("victim");
+        fs::create_dir(&victim).expect("victim");
+        fs::set_permissions(&victim, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let uid = unsafe { libc::geteuid() };
+        symlink(
+            &victim,
+            base.0.join(format!("herdr-clipboard-images-{uid}")),
+        )
+        .expect("symlink");
+
+        stage_in(&base.0, 3, "png", b"img").expect("stage");
+
+        let mode = fs::metadata(&victim).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        assert_eq!(fs::read_dir(&victim).expect("read_dir").count(), 0);
+    }
+
+    #[test]
+    fn cleanup_stale_removes_old_staging_directories_and_keeps_fresh_ones() {
+        let base = TempBase::new("cleanup");
+        let old = stage_in(&base.0, 1, "png", b"old").expect("stage");
+        make_old(&old.path);
+        let old_dir = old.path.parent().expect("parent").to_path_buf();
+        make_old(&old_dir);
+        let fresh = stage_in(&base.0, 2, "png", b"fresh").expect("stage");
+        let unrelated = base.0.join("unrelated");
+        fs::create_dir(&unrelated).expect("unrelated");
+        make_old(&unrelated);
+
+        cleanup_stale(&base.0);
+
+        assert!(!old_dir.exists());
+        assert!(fresh.path.exists());
+        assert!(unrelated.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_stale_skips_a_prefixed_symlink_and_its_target() {
+        let base = TempBase::new("cleanup-link");
+        let target = base.0.join("target");
+        fs::create_dir(&target).expect("target");
+        let victim_file = target.join("old.png");
+        fs::write(&victim_file, b"x").expect("write");
+        make_old(&victim_file);
+        make_old(&target);
+        std::os::unix::fs::symlink(&target, base.0.join("herdr-clipboard-image-link"))
+            .expect("symlink");
+
+        cleanup_stale(&base.0);
+
+        assert!(victim_file.exists());
+    }
+
+    #[test]
+    fn remove_files_removes_the_file_and_its_prefixed_directory() {
+        let base = TempBase::new("remove");
+        let staged = stage_in(&base.0, 1, "png", b"img").expect("stage");
+        let dir = staged.path.parent().expect("parent").to_path_buf();
+
+        remove_files(vec![staged.path.clone()]);
+
+        assert!(!staged.path.exists());
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn remove_files_keeps_a_parent_directory_without_the_staging_prefix() {
+        let base = TempBase::new("remove-other");
+        let dir = base.0.join("other");
+        fs::create_dir(&dir).expect("dir");
+        let file = dir.join("a.png");
+        fs::write(&file, b"x").expect("write");
+
+        remove_files(vec![file.clone()]);
+
+        assert!(!file.exists());
+        assert!(dir.exists());
     }
 
     fn container(id: &str, user: Option<&str>) -> OffHostTarget {
