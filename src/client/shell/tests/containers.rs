@@ -558,6 +558,47 @@ fn a_server_without_ssh_hosts_lists_local_containers_without_a_notice() {
 }
 
 #[test]
+fn cancelling_the_host_listing_does_not_start_another_request() {
+    let mut state = shell_state();
+    let mut prepare = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenContainerWorkspace),
+        &mut prepare,
+    );
+    let request_id = endpoint_request(&prepare.actions).id.clone();
+
+    assert!(state.cancel_endpoint_request(&request_id));
+
+    assert!(state.pending_requests.is_empty());
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn a_rejected_host_listing_still_falls_back_to_a_local_listing() {
+    let mut state = shell_state();
+    let mut prepare = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenContainerWorkspace),
+        &mut prepare,
+    );
+    let request_id = endpoint_request(&prepare.actions).id.clone();
+
+    let (_, actions) = state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Err(ClientShellEndpointError {
+            code: Some("ssh_config_invalid".into()),
+            message: "bad ssh config".into(),
+        }),
+    );
+
+    assert!(matches!(
+        endpoint_request(&actions).method,
+        crate::api::schema::Method::ContainerList(_)
+    ));
+}
+
+#[test]
 fn an_empty_ssh_host_list_skips_the_host_stage() {
     let mut state = shell_state();
     let mut prepare = ClientShellInput::default();

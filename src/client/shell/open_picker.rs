@@ -338,6 +338,13 @@ impl ClientShellState {
                 }
                 true
             }
+            // Why not fall back: a cancellation arrives while the endpoint is
+            // being replaced, so a fresh request would be left unsent.
+            (PendingEndpointKind::PrepareOpenPicker(_), Err(error))
+                if error.code.as_deref() == Some("endpoint_cancelled") =>
+            {
+                true
+            }
             // Why not stop at the notice the endpoint raised: a broken ssh
             // config must not hide this machine's own containers.
             (PendingEndpointKind::PrepareOpenPicker(OpenPickerSource::ContainerHost), Err(_)) => {
