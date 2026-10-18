@@ -3450,7 +3450,6 @@ async fn container_open_rejects_invalid_reference_through_deferred_dispatch() {
             id: "bad-container".into(),
             method: api::schema::Method::ContainerOpen(api::schema::ContainerOpenParams {
                 container: "a/b/c".into(),
-                ssh_host: None,
                 target: api::schema::ContainerOpenTarget::Tab(api::schema::TabCreateParams {
                     workspace_id: None,
                     cwd: None,

@@ -102,7 +102,7 @@ Raw socket method names use dot notation:
 | Session | `session.snapshot` |
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
-| Container | `container.open`, `container.list` |
+| Container | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH hosts | `ssh.open`, `ssh.hosts` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
 | Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
@@ -371,7 +371,9 @@ Worktree commands also emit lifecycle events. `worktree.create` emits `workspace
 
 ## Containers
 
-`container.open` starts a shell inside a running Docker container. `target` nests the ordinary create or split params under one of `workspace`, `tab`, or `split`; the result is the same as the nested method's. `container` is a Compose `project/service`, or a container name or ID. `ssh_host` is optional: a `Host` alias from `~/.ssh/config` whose Docker holds the container. The `docker` CLI then runs over ssh through the shared connection ssh panes use, which needs a key-based or already-shared login (open an ssh pane to the host first otherwise), and the in-container directory is the `herdr.workdir` label or the image `WorkingDir`, never a bind-mount mapping of `cwd`.
+`container.open` starts a shell inside a running Docker container. `target` nests the ordinary create or split params under one of `workspace`, `tab`, or `split`; the result is the same as the nested method's. `container` is a Compose `project/service`, or a container name or ID. The in-container directory is the `herdr.workdir` label or the image `WorkingDir`, never a bind-mount mapping of `cwd`.
+
+`ssh.container.open` takes the same params plus a required `host`: a `Host` alias from `~/.ssh/config` whose Docker holds the container. The `docker` CLI then runs over ssh through the shared connection ssh panes use, which needs a key-based or already-shared login (open an ssh pane to the host first otherwise). It is a separate method so that a server without it rejects the request instead of ignoring `host` and opening a local container.
 
 ```json
 {
@@ -384,7 +386,7 @@ Worktree commands also emit lifecycle events. `worktree.create` emits `workspace
 }
 ```
 
-`container.list` returns the running containers. `workspace_id` is optional and keeps only containers matching that workspace. `ssh_host` lists the Docker of that ssh host instead; those containers carry `ssh_host` and no `workspace_id`, so combining it with `workspace_id` returns an empty list.
+`container.list` returns the running containers. `workspace_id` is optional and keeps only containers matching that workspace. `ssh.container.list` takes a required `host` and lists the Docker of that ssh host instead; those containers carry `ssh_host` and no `workspace_id`, so combining it with `workspace_id` returns an empty list.
 
 ```json
 { "id": "req_2", "method": "container.list", "params": { "workspace_id": "w1" } }
@@ -418,10 +420,10 @@ Worktree commands also emit lifecycle events. `worktree.create` emits `workspace
 | `invalid_container` | `container` is empty or malformed |
 | `container_not_found` | no such container, including stopped ones |
 | `container_unavailable` | Docker is missing, failed, or took longer than 5 seconds (20 seconds over ssh), or the ssh host needs a login first |
-| `invalid_ssh_host` | `ssh_host` is not a valid `Host` alias |
+| `invalid_ssh_host` | `host` of `ssh.container.open` or `ssh.container.list` is not a valid `Host` alias |
 | `platform_unsupported` | the server runs on Windows |
 
-Create and split params stay unchanged; the container reference travels only in `container.open`.
+Create and split params stay unchanged; the container reference travels only in `container.open` and `ssh.container.open`.
 
 ## SSH hosts
 

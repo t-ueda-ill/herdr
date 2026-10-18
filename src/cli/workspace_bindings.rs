@@ -420,10 +420,10 @@ mod tests {
             assert_eq!(
                 serde_json::to_value(request("create", &args).unwrap()).unwrap(),
                 serde_json::json!({
-                    "id": "cli:workspace:create", "method": "container.open",
+                    "id": "cli:workspace:create", "method": "ssh.container.open",
                     "params": {
+                        "host": "prod",
                         "container": "app/web",
-                        "ssh_host": "prod",
                         "target": {"workspace": {"label": "api", "focus": false}}
                     }
                 }),

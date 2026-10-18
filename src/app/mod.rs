@@ -2313,7 +2313,6 @@ mod tests {
             method: crate::api::schema::Method::ContainerOpen(
                 crate::api::schema::ContainerOpenParams {
                     container: "shop/db".into(),
-                    ssh_host: None,
                     target: crate::api::schema::ContainerOpenTarget::Tab(
                         crate::api::schema::TabCreateParams {
                             workspace_id: Some("w1".into()),

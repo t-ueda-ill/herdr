@@ -1,7 +1,7 @@
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::api::schema::{
-    ContainerOpenParams, ContainerOpenTarget, Method, Request, SshHostsParams, SshOpenParams,
+    ContainerOpenTarget, Method, Request, SshContainerOpenParams, SshHostsParams, SshOpenParams,
     SshOpenTarget,
 };
 
@@ -22,7 +22,7 @@ pub(crate) fn with_launch_options(arguments: Vec<Arg>) -> Vec<Arg> {
 }
 
 /// Sends fully parsed create/split params as-is, nested in `container.open` for
-/// `--container REF` (with `ssh_host` when `--ssh HOST` names where its docker runs),
+/// `--container REF` (as `ssh.container.open` when `--ssh HOST` names where its docker runs),
 /// or nested in `ssh.open` for `--ssh HOST` alone.
 pub(crate) fn into_method<P>(
     matches: &ArgMatches,
@@ -42,9 +42,9 @@ pub(crate) fn into_method<P>(
         host,
         super::super::container::bindings::read_container(matches)?,
     ) {
-        (Some(host), Some(container)) => Ok(Method::ContainerOpen(ContainerOpenParams {
+        (Some(host), Some(container)) => Ok(Method::SshContainerOpen(SshContainerOpenParams {
+            host,
             container,
-            ssh_host: Some(host),
             target: in_container(params),
         })),
         (Some(host), None) => Ok(Method::SshOpen(SshOpenParams {
@@ -186,9 +186,9 @@ mod tests {
 
         assert_eq!(
             method,
-            Method::ContainerOpen(ContainerOpenParams {
+            Method::SshContainerOpen(SshContainerOpenParams {
+                host: "prod".into(),
                 container: "app/web".into(),
-                ssh_host: Some("prod".into()),
                 target: ContainerOpenTarget::Workspace(params),
             })
         );

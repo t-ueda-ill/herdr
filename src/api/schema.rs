@@ -79,6 +79,8 @@ operations::define_operations! {
     ContainerList(ContainerListParams) => "container.list", false, true;
     SshOpen(SshOpenParams) => "ssh.open", true, true;
     SshHosts(SshHostsParams) => "ssh.hosts", false, true;
+    SshContainerOpen(SshContainerOpenParams) => "ssh.container.open", true, true;
+    SshContainerList(SshContainerListParams) => "ssh.container.list", false, true;
     TabCreate(TabCreateParams) => "tab.create", true, true;
     TabList(TabListParams) => "tab.list", false, false;
     TabGet(TabTarget) => "tab.get", false, false;

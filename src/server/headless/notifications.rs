@@ -317,7 +317,7 @@ impl HeadlessServer {
             {
                 Some(&mut result.respond_to)
             }
-            AppEvent::ContainerOpenFinished(result) if result.params.target.focus() => {
+            AppEvent::ContainerOpenFinished(result) if result.target.focus() => {
                 Some(&mut result.respond_to)
             }
             AppEvent::SshOpenFinished(result) if result.params.target.focus() => {

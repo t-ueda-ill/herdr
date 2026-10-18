@@ -155,13 +155,11 @@ fn choose_host(state: &mut ClientShellState, downs: usize) -> Option<String> {
     }
     let pick = state.handle_input_bytes(b"\r");
     let request = endpoint_request(&pick.actions);
-    let crate::api::schema::Method::ContainerList(params) = &request.method else {
-        panic!(
-            "choosing a host should list its containers: {:?}",
-            request.method
-        );
+    let ssh_host = match &request.method {
+        crate::api::schema::Method::ContainerList(_) => None,
+        crate::api::schema::Method::SshContainerList(params) => Some(params.host.clone()),
+        other => panic!("choosing a host should list its containers: {other:?}"),
     };
-    let ssh_host = params.ssh_host.clone();
     let request_id = request.id.clone();
     state.handle_endpoint_result("boot-1", &request_id, Ok(containers_result()));
     ssh_host
@@ -445,11 +443,11 @@ fn choosing_a_host_lists_its_containers_and_opens_them_with_a_host_suffixed_labe
     state.handle_input_bytes(b"\x1b[B");
     let open = state.handle_input_bytes(b"\r");
     let request = endpoint_request(&open.actions);
-    let crate::api::schema::Method::ContainerOpen(params) = &request.method else {
-        panic!("expected container.open, got {:?}", request.method);
+    let crate::api::schema::Method::SshContainerOpen(params) = &request.method else {
+        panic!("expected ssh.container.open, got {:?}", request.method);
     };
     assert_eq!(params.container, "shop-web-1-0123456789abcdef");
-    assert_eq!(params.ssh_host.as_deref(), Some("prod"));
+    assert_eq!(params.host, "prod");
     assert_eq!(
         params.target,
         crate::api::schema::ContainerOpenTarget::Workspace(
@@ -552,7 +550,7 @@ fn a_server_without_ssh_hosts_lists_local_containers_without_a_notice() {
     let request = endpoint_request(&prepare.actions);
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::ContainerList(params) if params.ssh_host.is_none()
+        crate::api::schema::Method::ContainerList(_)
     ));
     assert!(state.visible_endpoint_notice.is_none());
 }
@@ -617,7 +615,7 @@ fn an_empty_ssh_host_list_skips_the_host_stage() {
     let request = endpoint_request(&actions);
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::ContainerList(params) if params.ssh_host.is_none()
+        crate::api::schema::Method::ContainerList(_)
     ));
     let request_id = request.id.clone();
     state.handle_endpoint_result("boot-1", &request_id, Ok(containers_result()));
@@ -647,7 +645,7 @@ fn a_failed_ssh_host_listing_falls_back_to_local_containers() {
     let request = endpoint_request(&actions);
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::ContainerList(params) if params.ssh_host.is_none()
+        crate::api::schema::Method::ContainerList(_)
     ));
     let request_id = request.id.clone();
     state.handle_endpoint_result("boot-1", &request_id, Ok(containers_result()));
@@ -691,6 +689,71 @@ fn host_row_click_lists_that_hosts_containers() {
 
     assert!(matches!(
         &endpoint_request(&pick.actions).method,
-        crate::api::schema::Method::ContainerList(params) if params.ssh_host.as_deref() == Some("prod")
+        crate::api::schema::Method::SshContainerList(params) if params.host == "prod"
+    ));
+}
+
+#[test]
+fn a_remote_host_pick_on_a_server_without_ssh_container_list_is_refused_without_a_local_listing() {
+    let mut state = shell_state();
+    state.set_endpoint_methods(Some(vec![
+        "ssh.hosts".into(),
+        "container.list".into(),
+        "container.open".into(),
+    ]));
+    let mut input = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenContainerWorkspace),
+        &mut input,
+    );
+
+    // Without ssh.container.list the host stage is never offered, so no remote
+    // choice can be answered with the local docker's containers.
+    let request = endpoint_request(&input.actions);
+    assert!(matches!(
+        request.method,
+        crate::api::schema::Method::ContainerList(_)
+    ));
+    assert!(state.visible_endpoint_notice.is_none());
+}
+
+#[test]
+fn a_remote_host_pick_sends_ssh_container_list_with_the_host() {
+    let mut state = shell_state();
+    state.set_endpoint_methods(Some(vec![
+        "ssh.hosts".into(),
+        "ssh.container.list".into(),
+        "ssh.container.open".into(),
+        "container.list".into(),
+        "container.open".into(),
+    ]));
+    open_host_stage(&mut state);
+    state.handle_input_bytes(b"\x1b[B");
+
+    let pick = state.handle_input_bytes(b"\r");
+
+    assert_eq!(
+        endpoint_request(&pick.actions).method,
+        crate::api::schema::Method::SshContainerList(crate::api::schema::SshContainerListParams {
+            host: "prod".into(),
+            workspace_id: None,
+        })
+    );
+}
+
+#[test]
+fn a_remote_container_opens_through_ssh_container_open_only() {
+    let mut state = shell_state();
+    open_host_stage(&mut state);
+    choose_host(&mut state, 1);
+    state.handle_input_bytes(b"\x1b[B");
+
+    let open = state.handle_input_bytes(b"\r");
+
+    let request = endpoint_request(&open.actions);
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::SshContainerOpen(params)
+            if params.host == "prod" && params.container == "shop-web-1-0123456789abcdef"
     ));
 }

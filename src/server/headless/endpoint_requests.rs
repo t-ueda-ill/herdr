@@ -112,6 +112,8 @@ impl HeadlessServer {
                     | api::schema::Method::WorktreeOpen(_)
                     | api::schema::Method::ContainerOpen(_)
                     | api::schema::Method::ContainerList(_)
+                    | api::schema::Method::SshContainerOpen(_)
+                    | api::schema::Method::SshContainerList(_)
                     | api::schema::Method::SshOpen(_)
                     | api::schema::Method::SshHosts(_)
             );
@@ -119,6 +121,7 @@ impl HeadlessServer {
                 api::schema::Method::WorktreeCreate(params) => params.focus,
                 api::schema::Method::WorktreeOpen(params) => params.focus,
                 api::schema::Method::ContainerOpen(params) => params.target.focus(),
+                api::schema::Method::SshContainerOpen(params) => params.target.focus(),
                 api::schema::Method::SshOpen(params) => params.target.focus(),
                 _ => false,
             };

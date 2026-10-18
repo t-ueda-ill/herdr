@@ -572,9 +572,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(json["method"], "container.open");
+        assert_eq!(json["method"], "ssh.container.open");
         assert_eq!(json["params"]["container"], "app/web");
-        assert_eq!(json["params"]["ssh_host"], "prod");
+        assert_eq!(json["params"]["host"], "prod");
         assert_eq!(json["params"]["target"]["split"]["target_pane_id"], "w1:p1");
     }
 

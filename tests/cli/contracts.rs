@@ -595,11 +595,11 @@ fn ssh_cli_request_contract_matrix() {
                 "--container",
                 "shop/web",
             ],
-            json!({"id":"cli:workspace:create","method":"container.open","params":{"container":"shop/web","ssh_host":"prod","target":{"workspace":{"focus":false}}}}),
+            json!({"id":"cli:workspace:create","method":"ssh.container.open","params":{"host":"prod","container":"shop/web","target":{"workspace":{"focus":false}}}}),
         ),
         (
             vec!["container", "list", "--ssh", "prod"],
-            json!({"id":"cli:container:list","method":"container.list","params":{"ssh_host":"prod"}}),
+            json!({"id":"cli:container:list","method":"ssh.container.list","params":{"host":"prod"}}),
         ),
         (
             vec!["ssh", "hosts", "--json"],

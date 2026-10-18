@@ -1,10 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
-use crate::api::schema::{
-    ContainerInfoDto, ContainerListParams, ContainerOpenParams, ContainerOpenTarget, Method,
-    Request, ResponseResult,
-};
+use crate::api::schema::{ContainerInfoDto, ContainerOpenTarget, Method, Request, ResponseResult};
 use crate::app::App;
 use crate::container::docker::DockerHost;
 use crate::container::workdir::{compose_matches_repo_root, containers_for_repo_root};
@@ -21,7 +18,8 @@ type ApiFailure = (String, String);
 /// Returned intact by `spawn_named_with` when the lookup thread cannot start.
 struct ContainerOpenJob {
     id: String,
-    params: ContainerOpenParams,
+    target: ContainerOpenTarget,
+    ssh_host: Option<String>,
     reference: ContainerRef,
     host_cwd: PathBuf,
     client_local: bool,
@@ -66,11 +64,38 @@ impl App {
     ) -> bool {
         match request.method {
             Method::ContainerOpen(params) => {
-                self.start_container_open(request.id, params, respond_to, client_local);
+                self.start_container_open(
+                    request.id,
+                    params.container,
+                    None,
+                    params.target,
+                    respond_to,
+                    client_local,
+                );
+                true
+            }
+            Method::SshContainerOpen(params) => {
+                self.start_container_open(
+                    request.id,
+                    params.container,
+                    Some(params.host),
+                    params.target,
+                    respond_to,
+                    client_local,
+                );
                 true
             }
             Method::ContainerList(params) => {
-                self.start_container_list(request.id, params, respond_to);
+                self.start_container_list(request.id, None, params.workspace_id, respond_to);
+                true
+            }
+            Method::SshContainerList(params) => {
+                self.start_container_list(
+                    request.id,
+                    Some(params.host),
+                    params.workspace_id,
+                    respond_to,
+                );
                 true
             }
             _ => false,
@@ -80,24 +105,26 @@ impl App {
     fn start_container_open(
         &mut self,
         id: String,
-        mut params: ContainerOpenParams,
+        container: String,
+        ssh_host: Option<String>,
+        mut target: ContainerOpenTarget,
         respond_to: Sender<String>,
         client_local: bool,
     ) {
-        let reference = match parse_container_reference(&params.container) {
+        let reference = match parse_container_reference(&container) {
             Ok(reference) => reference,
             Err((code, message)) => {
                 let _ = respond_to.send(encode_error(id, &code, message));
                 return;
             }
         };
-        if let Some(host) = &params.ssh_host {
+        if let Some(host) = &ssh_host {
             if let Err((code, message)) = validate_ssh_host(host) {
                 let _ = respond_to.send(encode_error(id, &code, message));
                 return;
             }
         }
-        let host_cwd = match self.pin_container_open_target(&mut params.target) {
+        let host_cwd = match self.pin_container_open_target(&mut target) {
             Ok(host_cwd) => host_cwd,
             Err((code, message)) => {
                 let _ = respond_to.send(encode_error(id, &code, message));
@@ -106,7 +133,8 @@ impl App {
         };
         let job = ContainerOpenJob {
             id,
-            params,
+            target,
+            ssh_host,
             reference,
             host_cwd,
             client_local,
@@ -116,14 +144,14 @@ impl App {
         let spawned =
             crate::thread_spawn::spawn_named_with("herdr-container-open", job, move |job| {
                 let result = resolve_container_launch(
-                    job.params.ssh_host.as_deref(),
+                    job.ssh_host.as_deref(),
                     &job.reference,
                     &job.host_cwd,
                 );
                 let _ = event_tx.blocking_send(AppEvent::ContainerOpenFinished(Box::new(
                     ContainerOpenResult {
                         id: job.id,
-                        params: job.params,
+                        target: job.target,
                         client_local: job.client_local,
                         result,
                         respond_to: job.respond_to,
@@ -150,7 +178,7 @@ impl App {
     pub(crate) fn handle_container_open_finished(&mut self, finished: ContainerOpenResult) {
         let ContainerOpenResult {
             id,
-            params,
+            target,
             result,
             respond_to,
             ..
@@ -158,7 +186,7 @@ impl App {
         // A target closed during the lookup takes the handlers' own not-found path.
         let response = match result {
             Err((code, message)) => encode_error(id, &code, message),
-            Ok(launch) => match params.target {
+            Ok(launch) => match target {
                 ContainerOpenTarget::Workspace(target) => {
                     self.handle_workspace_create(id, target, PaneLaunchTarget::Container(&launch))
                 }
@@ -176,21 +204,22 @@ impl App {
     fn start_container_list(
         &mut self,
         id: String,
-        params: ContainerListParams,
+        ssh_host: Option<String>,
+        workspace_id: Option<String>,
         respond_to: Sender<String>,
     ) {
         if let Err((code, message)) = ensure_container_platform_supported() {
             let _ = respond_to.send(encode_error(id, &code, message));
             return;
         }
-        if let Some(host) = &params.ssh_host {
+        if let Some(host) = &ssh_host {
             if let Err((code, message)) = validate_ssh_host(host) {
                 let _ = respond_to.send(encode_error(id, &code, message));
                 return;
             }
         }
         let (filter_workspace_id, probes) =
-            match self.container_list_probes(params.workspace_id.as_deref()) {
+            match self.container_list_probes(workspace_id.as_deref()) {
                 Ok(captured) => captured,
                 Err((code, message)) => {
                     let _ = respond_to.send(encode_error(id, &code, message));
@@ -199,7 +228,7 @@ impl App {
             };
         let job = ContainerListJob {
             id,
-            ssh_host: params.ssh_host,
+            ssh_host,
             filter_workspace_id,
             probes,
             respond_to,
@@ -499,7 +528,8 @@ mod tests {
     use super::*;
     use crate::api::schema::{
         ContainerListParams, ContainerOpenParams, ContainerOpenTarget, ErrorResponse, Method,
-        PaneSplitParams, SplitDirection, TabCreateParams, WorkspaceCreateParams,
+        PaneSplitParams, SplitDirection, SshContainerListParams, SshContainerOpenParams,
+        TabCreateParams, WorkspaceCreateParams,
     };
     use crate::config::Config;
     use crate::container::{ComposeInfo, ContainerShell, HerdrLabels};
@@ -728,11 +758,14 @@ mod tests {
         for host in ["-oProxyCommand=sh", "prod;id", ""] {
             let mut app = test_app();
             let (respond_to, response_rx) = std::sync::mpsc::channel();
-            let mut request = container_open("shop/db", workspace_target());
-            let Method::ContainerOpen(params) = &mut request.method else {
-                unreachable!()
+            let request = Request {
+                id: "open".into(),
+                method: Method::SshContainerOpen(SshContainerOpenParams {
+                    host: host.into(),
+                    container: "shop/db".into(),
+                    target: workspace_target(),
+                }),
             };
-            params.ssh_host = Some(host.into());
 
             assert!(app.handle_deferred_container_api_request(request, respond_to, false));
 
@@ -757,9 +790,9 @@ mod tests {
         assert!(app.handle_deferred_container_api_request(
             Request {
                 id: "list".into(),
-                method: Method::ContainerList(ContainerListParams {
+                method: Method::SshContainerList(SshContainerListParams {
+                    host: "-oProxyCommand=sh".into(),
                     workspace_id: None,
-                    ssh_host: Some("-oProxyCommand=sh".into()),
                 }),
             },
             respond_to,
@@ -785,7 +818,6 @@ mod tests {
             id: "open".into(),
             method: Method::ContainerOpen(ContainerOpenParams {
                 container: container.into(),
-                ssh_host: None,
                 target,
             }),
         }
@@ -903,7 +935,6 @@ mod tests {
                 id: "list".into(),
                 method: Method::ContainerList(ContainerListParams {
                     workspace_id: Some("w_missing".into()),
-                    ssh_host: None,
                 }),
             },
             respond_to,
@@ -975,11 +1006,7 @@ mod tests {
         let (respond_to, response_rx) = std::sync::mpsc::channel();
         app.handle_container_open_finished(ContainerOpenResult {
             id: "open".into(),
-            params: ContainerOpenParams {
-                container: "shop/db".into(),
-                ssh_host: None,
-                target,
-            },
+            target,
             client_local: false,
             result,
             respond_to,

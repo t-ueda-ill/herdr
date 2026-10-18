@@ -1774,12 +1774,6 @@
         },
         "ContainerListParams": {
           "properties": {
-            "ssh_host": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "workspace_id": {
               "type": [
                 "string",
@@ -1794,13 +1788,6 @@
             "container": {
               "description": "Docker container to open the shell in: `project/service` for a Compose service, otherwise a container name or ID.",
               "type": "string"
-            },
-            "ssh_host": {
-              "description": "`Host` alias of the user's ssh config whose docker CLI runs the shell; the local docker when unset.",
-              "type": [
-                "string",
-                "null"
-              ]
             },
             "target": {
               "$ref": "#/schemas/request/$defs/ContainerOpenTarget"
@@ -3993,6 +3980,45 @@
           ],
           "type": "string"
         },
+        "SshContainerListParams": {
+          "properties": {
+            "host": {
+              "description": "`Host` alias of the user's ssh config whose docker CLI lists the containers.",
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "host"
+          ],
+          "type": "object"
+        },
+        "SshContainerOpenParams": {
+          "properties": {
+            "container": {
+              "description": "Docker container to open the shell in: `project/service` for a Compose service, otherwise a container name or ID.",
+              "type": "string"
+            },
+            "host": {
+              "description": "`Host` alias of the user's ssh config whose docker CLI runs the shell.",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/ContainerOpenTarget"
+            }
+          },
+          "required": [
+            "host",
+            "container",
+            "target"
+          ],
+          "type": "object"
+        },
         "SshHostsParams": {
           "type": "object"
         },
@@ -5337,6 +5363,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/SshHostsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "ssh.container.open",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SshContainerOpenParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "ssh.container.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SshContainerListParams"
             }
           },
           "required": [

@@ -9,7 +9,7 @@ impl ClientShellState {
         source: OpenPickerSource,
         outcome: &mut ClientShellInput,
     ) {
-        use crate::api::schema::{Method, SshHostsParams};
+        use crate::api::schema::{Method, SshContainerListParams, SshHostsParams};
 
         match source {
             OpenPickerSource::SshHost => {
@@ -21,9 +21,17 @@ impl ClientShellState {
             }
             OpenPickerSource::ContainerHost | OpenPickerSource::Container => {
                 let hosts = Method::SshHosts(SshHostsParams::default());
+                let remote_list = Method::SshContainerList(SshContainerListParams {
+                    host: String::new(),
+                    workspace_id: None,
+                });
                 // Checked up front, not through the push: an old server must
                 // fall back to local listing without an "Action unavailable" notice.
-                if self.supports_endpoint_method(&hosts) {
+                // Both methods are required so a host is never offered that
+                // cannot be listed, and no remote pick falls back to local docker.
+                if self.supports_endpoint_method(&hosts)
+                    && self.supports_endpoint_method(&remote_list)
+                {
                     self.push_endpoint_method_with_kind(
                         hosts,
                         PendingEndpointKind::PrepareOpenPicker(OpenPickerSource::ContainerHost),
@@ -187,11 +195,22 @@ impl ClientShellState {
                 })
             }
             OpenPickerSource::Container => {
-                crate::api::schema::Method::ContainerOpen(crate::api::schema::ContainerOpenParams {
-                    container: id,
-                    ssh_host,
-                    target: crate::api::schema::ContainerOpenTarget::Workspace(target),
-                })
+                let target = crate::api::schema::ContainerOpenTarget::Workspace(target);
+                match ssh_host {
+                    Some(host) => crate::api::schema::Method::SshContainerOpen(
+                        crate::api::schema::SshContainerOpenParams {
+                            host,
+                            container: id,
+                            target,
+                        },
+                    ),
+                    None => crate::api::schema::Method::ContainerOpen(
+                        crate::api::schema::ContainerOpenParams {
+                            container: id,
+                            target,
+                        },
+                    ),
+                }
             }
             OpenPickerSource::ContainerHost => {
                 let Some(host) = entry_host else {
@@ -199,12 +218,15 @@ impl ClientShellState {
                     return;
                 };
                 let kind = PendingEndpointKind::ListContainers(host.clone());
-                let method = crate::api::schema::Method::ContainerList(
-                    crate::api::schema::ContainerListParams {
-                        ssh_host: host.ssh_alias(),
-                        ..Default::default()
-                    },
-                );
+                let method = match host.ssh_alias() {
+                    Some(host) => crate::api::schema::Method::SshContainerList(
+                        crate::api::schema::SshContainerListParams {
+                            host,
+                            workspace_id: None,
+                        },
+                    ),
+                    None => crate::api::schema::Method::ContainerList(Default::default()),
+                };
                 if !self.push_endpoint_method_with_kind(method, kind, outcome) {
                     if let Some(ClientShellOverlay::OpenPicker(open)) = self.overlay.as_mut() {
                         open.opening = false;

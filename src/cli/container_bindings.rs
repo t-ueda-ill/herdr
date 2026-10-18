@@ -2,6 +2,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::api::schema::{
     ContainerListProjection, ContainerOpenParams, ContainerOpenTarget, Method, Request,
+    SshContainerListParams,
 };
 
 use super::super::projection::{self, optional_text, Field, Leaf, ParseError};
@@ -41,7 +42,6 @@ pub(crate) fn into_method<P>(
     Ok(match container.finish()? {
         Some(container) => Method::ContainerOpen(ContainerOpenParams {
             container,
-            ssh_host: None,
             target: nested(params),
         }),
         None => plain(params),
@@ -55,16 +55,39 @@ fn json_flag() -> Arg {
         .help("Print the raw API response as JSON")
 }
 
+fn list_ssh() -> Field<Option<String>> {
+    Field::new(None).input(
+        optional_text("ssh", "HOST").help(
+            "List containers of the docker on this ssh Host alias instead of the local docker",
+        ),
+    )
+}
+
+/// `--ssh HOST` selects `ssh.container.list`; without it the local `container.list`.
+fn list_method(matches: &ArgMatches) -> Result<Method, ParseError> {
+    let params = ContainerListProjection::from_matches(matches)?;
+    let mut ssh = list_ssh();
+    ssh.read_matches(matches)?;
+    Ok(match ssh.finish()? {
+        Some(host) => Method::SshContainerList(SshContainerListParams {
+            host,
+            workspace_id: params.workspace_id,
+        }),
+        None => Method::ContainerList(params),
+    })
+}
+
 const LEAVES: [Leaf; 1] = [Leaf {
     name: "list",
     about: "List running containers and the workspaces they match",
     id: "cli:container:list",
     arguments: || {
         let mut arguments = ContainerListProjection::arguments();
+        arguments.extend(list_ssh().arguments());
         arguments.push(json_flag());
         arguments
     },
-    method: |matches| ContainerListProjection::from_matches(matches).map(Method::ContainerList),
+    method: list_method,
 }];
 
 pub(crate) fn command() -> Command {
@@ -132,7 +155,6 @@ mod tests {
             request.method,
             Method::ContainerList(crate::api::schema::ContainerListParams {
                 workspace_id: Some("w3".into()),
-                ssh_host: None,
             })
         );
     }
@@ -144,16 +166,16 @@ mod tests {
 
             assert_eq!(
                 request.method,
-                Method::ContainerList(crate::api::schema::ContainerListParams {
+                Method::SshContainerList(crate::api::schema::SshContainerListParams {
+                    host: "prod".into(),
                     workspace_id: None,
-                    ssh_host: Some("prod".into()),
                 })
             );
         }
         let (request, _) = parse(&["list", "--ssh", "prod"]).unwrap();
         assert_eq!(
             serde_json::to_value(request).unwrap(),
-            serde_json::json!({"id":"cli:container:list","method":"container.list","params":{"ssh_host":"prod"}})
+            serde_json::json!({"id":"cli:container:list","method":"ssh.container.list","params":{"host":"prod"}})
         );
     }
 

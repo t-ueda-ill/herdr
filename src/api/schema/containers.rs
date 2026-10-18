@@ -10,9 +10,17 @@ use super::workspaces::WorkspaceCreateParams;
 pub struct ContainerOpenParams {
     /// Docker container to open the shell in: `project/service` for a Compose service, otherwise a container name or ID.
     pub container: String,
-    /// `Host` alias of the user's ssh config whose docker CLI runs the shell; the local docker when unset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ssh_host: Option<String>,
+    pub target: ContainerOpenTarget,
+}
+
+// Why not an optional `ssh_host` on `container.open`: a server that knows the method but
+// not the field would ignore it and open a local container while reporting success.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SshContainerOpenParams {
+    /// `Host` alias of the user's ssh config whose docker CLI runs the shell.
+    pub host: String,
+    /// Docker container to open the shell in: `project/service` for a Compose service, otherwise a container name or ID.
+    pub container: String,
     pub target: ContainerOpenTarget,
 }
 
@@ -43,12 +51,16 @@ cli_params! {
         pub workspace_id: Option<String> => Field::new(None).input(
             super::tabs::workspace_option("ID").help("Only show containers matching this workspace"),
         ),
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ssh_host: Option<String> => Field::new(None).input(
-            crate::cli::projection::optional_text("ssh", "HOST")
-                .help("List containers of the docker on this ssh Host alias instead of the local docker"),
-        ),
     }
+}
+
+// Same reason as `SshContainerOpenParams` for not extending `container.list`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SshContainerListParams {
+    /// `Host` alias of the user's ssh config whose docker CLI lists the containers.
+    pub host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -78,7 +78,7 @@ pub(crate) struct WorktreeReadData {
 pub struct ContainerOpenResult {
     pub(crate) id: String,
     /// Target params with the host cwd and target ids pinned at request time.
-    pub(crate) params: crate::api::schema::ContainerOpenParams,
+    pub(crate) target: crate::api::schema::ContainerOpenTarget,
     pub(crate) client_local: bool,
     pub(crate) result: Result<crate::container::ContainerLaunch, (String, String)>,
     pub(crate) respond_to: std::sync::mpsc::Sender<String>,

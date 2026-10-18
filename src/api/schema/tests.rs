@@ -1509,7 +1509,6 @@ fn container_open_request_round_trips_for_each_target() {
             id: format!("req_container_open_{tag}"),
             method: Method::ContainerOpen(ContainerOpenParams {
                 container: "shop/db".into(),
-                ssh_host: None,
                 target,
             }),
         };
@@ -1578,7 +1577,6 @@ fn container_list_request_and_response_round_trip() {
         id: "req_containers".into(),
         method: Method::ContainerList(ContainerListParams {
             workspace_id: Some("w1".into()),
-            ssh_host: None,
         }),
     };
     let json = serde_json::to_value(&request).unwrap();
@@ -1650,7 +1648,6 @@ fn container_methods_report_the_same_api_method_name_as_their_wire_tag() {
             id: format!("req_{tag}"),
             method: Method::ContainerOpen(ContainerOpenParams {
                 container: "shop/db".into(),
-                ssh_host: None,
                 target,
             }),
         })

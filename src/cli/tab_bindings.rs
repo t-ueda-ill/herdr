@@ -219,9 +219,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(json["method"], "container.open");
+        assert_eq!(json["method"], "ssh.container.open");
         assert_eq!(json["params"]["container"], "worker");
-        assert_eq!(json["params"]["ssh_host"], "prod");
+        assert_eq!(json["params"]["host"], "prod");
     }
 
     #[test]

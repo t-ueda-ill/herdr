@@ -1130,7 +1130,10 @@ impl App {
                     "worktree discovery is handled asynchronously by the app runtime",
                 );
             }
-            Method::ContainerOpen(_) | Method::ContainerList(_) => {
+            Method::ContainerOpen(_)
+            | Method::ContainerList(_)
+            | Method::SshContainerOpen(_)
+            | Method::SshContainerList(_) => {
                 return responses::encode_error(
                     request.id,
                     "invalid_request",
