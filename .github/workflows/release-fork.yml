@@ -1,0 +1,297 @@
+# Release workflow for the t-ueda-ill/herdr fork.
+#
+# Upstream's release.yml/preview.yml were removed from this fork: they were
+# gated on github.repository == 'herdrdev/herdr', required repository-admin
+# actors, and required a published preview tag. This workflow builds the same
+# five assets from a v* tag, publishes a GitHub Release, and commits
+# distribution/latest.json to master so `herdr update` can find the release.
+name: Release (fork)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RUST_TOOLCHAIN_VERSION: 1.96.1
+
+jobs:
+  validate:
+    if: github.repository == 't-ueda-ill/herdr'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            RELEASE_TAG="$INPUT_TAG"
+          else
+            RELEASE_TAG="$REF_NAME"
+          fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+
+      # The checkout above already fails when the tag does not exist, so no
+      # separate existence check is needed here.
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TAG_VERSION="${RELEASE_TAG#v}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "error: tag $RELEASE_TAG doesn't match Cargo.toml version $CARGO_VERSION"
+            exit 1
+          fi
+
+  build:
+    needs: validate
+    if: github.repository == 't-ueda-ill/herdr'
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            name: herdr-linux-x86_64
+            libghostty_vt_optimize: ReleaseFast
+            libghostty_vt_simd: 'true'
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            name: herdr-linux-aarch64
+            libghostty_vt_optimize: ReleaseFast
+            libghostty_vt_simd: 'true'
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: herdr-macos-x86_64
+            libghostty_vt_optimize: ReleaseFast
+            libghostty_vt_simd: 'true'
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: herdr-macos-aarch64
+            libghostty_vt_optimize: ReleaseFast
+            libghostty_vt_simd: 'true'
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            name: herdr-windows-x86_64.zip
+            libghostty_vt_optimize: ReleaseFast
+            libghostty_vt_simd: 'true'
+
+    runs-on: ${{ matrix.os }}
+    env:
+      LIBGHOSTTY_VT_OPTIMIZE: ${{ matrix.libghostty_vt_optimize }}
+      LIBGHOSTTY_VT_SIMD: ${{ matrix.libghostty_vt_simd }}
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Install Zig
+        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
+        with:
+          version: 0.16.0
+
+      - name: Prefer official Ubuntu mirrors over Azure
+        if: runner.os == 'Linux'
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i '/azure.archive.ubuntu.com/d' /etc/apt/apt-mirrors.txt
+            echo "Using apt mirrors:"
+            cat /etc/apt/apt-mirrors.txt
+          fi
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo find /etc/apt/sources.list.d -type f \( -iname '*microsoft*' -o -iname '*azure-cli*' \) -print -delete
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build musl-tools gcc-aarch64-linux-gnu crossbuild-essential-arm64
+
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install cmake ninja
+
+      - name: Set Linux aarch64 linker
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          key: release-fork-${{ matrix.target }}
+
+      - name: Remove Zig caches
+        shell: bash
+        run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package artifact
+        if: runner.os != 'Windows'
+        shell: bash
+        run: cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
+
+      - name: Package artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
+          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-x86_64"
+          .\scripts\package_windows_conpty.ps1 `
+            -HerdrExe target\${{ matrix.target }}\release\herdr.exe `
+            -PackagePath $package `
+            -StageDir $stage `
+            -OutputPath ${{ matrix.name }}
+          $version = (& (Join-Path $stage "herdr.exe") --version | Out-String).Trim()
+          $tagVersion = $env:RELEASE_TAG -replace '^v', ''
+          if ($version -notmatch [regex]::Escape($tagVersion) -or $version -match "preview") {
+            throw "Packaged Windows binary has unexpected version identity: $version"
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+
+  release:
+    needs: [validate, build]
+    if: github.repository == 't-ueda-ill/herdr'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+          persist-credentials: false
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          {
+            echo "Fork release of t-ueda-ill/herdr"
+            echo
+            echo "- Tag: $RELEASE_TAG"
+            echo "- Source commit: $(git rev-parse HEAD)"
+            echo
+            echo "SHA-256:"
+            echo
+            echo '```'
+            for name in herdr-linux-x86_64 herdr-linux-aarch64 herdr-macos-x86_64 herdr-macos-aarch64 herdr-windows-x86_64.zip; do
+              (cd "$name" && sha256sum "$name")
+            done
+            echo '```'
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Create release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          files: |
+            herdr-linux-x86_64/herdr-linux-x86_64
+            herdr-linux-aarch64/herdr-linux-aarch64
+            herdr-macos-x86_64/herdr-macos-x86_64
+            herdr-macos-aarch64/herdr-macos-aarch64
+            herdr-windows-x86_64.zip/herdr-windows-x86_64.zip
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  update-latest-json:
+    needs: [validate, release]
+    if: github.repository == 't-ueda-ill/herdr'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: latest-json-master
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Update distribution manifest from the GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          CURRENT_VERSION=$(python3 -c 'import json; print(json.load(open("distribution/latest.json")).get("version", ""))')
+          if [ "$CURRENT_VERSION" = "$VERSION" ]; then
+            echo "distribution/latest.json is already at v$VERSION"
+            exit 0
+          fi
+          RELEASE_PROTOCOL=$(git show "${RELEASE_TAG}:src/protocol/wire.rs" | python3 -c 'import re, sys; match = re.search(r"pub const PROTOCOL_VERSION: u32 = (\d+);", sys.stdin.read()); sys.exit(1) if match is None else print(match.group(1))')
+          RELEASE_ENDPOINT_GENERATION=$(git show "${RELEASE_TAG}:src/protocol/endpoint.rs" | python3 -c 'import re, sys; match = re.search(r"pub const ENDPOINT_PROTOCOL_GENERATION: u32 = (\d+);", sys.stdin.read()); sys.exit(1) if match is None else print(match.group(1))')
+          # The fork does not publish product announcements, so pass an empty one.
+          ANNOUNCEMENT_PATH="$RUNNER_TEMP/product-announcement.json"
+          printf 'null\n' > "$ANNOUNCEMENT_PATH"
+          python3 scripts/changelog.py sync-latest-json \
+            --version "$VERSION" \
+            --repo t-ueda-ill/herdr \
+            --output distribution/latest.json \
+            --announcement "$ANNOUNCEMENT_PATH" \
+            --protocol "$RELEASE_PROTOCOL" \
+            --endpoint-generation "$RELEASE_ENDPOINT_GENERATION"
+      - name: Commit distribution manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add distribution/latest.json
+          git diff --cached --quiet && { echo "nothing to commit"; exit 0; }
+          git commit -m "release: synchronize distribution manifest for v$VERSION"
+          for attempt in 1 2 3; do
+            if git push origin master; then exit 0; fi
+            git pull --rebase origin master
+          done
+          echo "failed to push distribution manifest after 3 attempts" >&2
+          exit 1
