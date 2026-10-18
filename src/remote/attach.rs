@@ -45,7 +45,9 @@ const CURRENT_PROTOCOL: u32 = crate::protocol::PROTOCOL_VERSION;
 // The fork has no website; the release workflow commits latest.json to master, so read it from raw GitHub.
 const STABLE_UPDATE_MANIFEST_URL: &str =
     "https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/latest.json";
-const PREVIEW_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/preview.json";
+// This path is gated on build_info::is_preview(), which fork builds never set; removing the preview attach code is a large change for no behavior gain.
+const PREVIEW_UPDATE_MANIFEST_URL: &str =
+    "https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/preview.json";
 const REMOTE_BINARY_ENV_VAR: &str = "HERDR_REMOTE_BINARY";
 const REMOTE_OUTPUT_READY_MARKER: &str = "herdr-remote-output-ready:1";
 const WINDOWS_REMOTE_PATH_MARKER: &str = "herdr-remote-path:1:";

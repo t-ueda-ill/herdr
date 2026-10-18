@@ -2,7 +2,7 @@
 set -eu
 
 BIN="herdr"
-MANIFEST_URL="https://herdr.dev/latest.json"
+MANIFEST_URL="https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/latest.json"
 INSTALL_DIR="${HERDR_INSTALL_DIR:-$HOME/.local/bin}"
 
 main() {
@@ -43,7 +43,7 @@ main() {
     TARGET="${os}-${arch}"
     log "fetching latest release manifest..."
     MANIFEST="$(curl -fsSL --retry 3 --connect-timeout 10 --max-time 20 "$MANIFEST_URL")" \
-        || err "can't reach ${MANIFEST_URL}. Please try again later; herdr.dev might be down. Who let the sheeps out? baaa."
+        || err "can't reach ${MANIFEST_URL}. Please try again later; GitHub might be down. Who let the sheeps out? baaa."
     URL="$(printf '%s\n' "$MANIFEST" | awk -v target="\"${TARGET}\"" '
         /^[[:space:]]*"assets"[[:space:]]*:/ { in_assets = 1; next }
         in_assets && /^[[:space:]]*}/ { exit }

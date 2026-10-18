@@ -25,7 +25,7 @@ use serde::{Deserialize, Deserializer};
 // The fork has no website; the release workflow commits latest.json to master, so read it from raw GitHub.
 const STABLE_UPDATE_MANIFEST_URL: &str =
     "https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/latest.json";
-const PREVIEW_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/preview.json";
+const FORK_PREVIEW_UNAVAILABLE: &str = "preview channel is not available in the t-ueda-ill/herdr fork; only stable releases are published";
 const HOMEBREW_FORMULA_API_URL: &str = "https://formulae.brew.sh/api/formula/herdr.json";
 const HERDR_UPDATE_COMMAND: &str = "herdr update";
 const HOMEBREW_UPDATE_COMMAND: &str = "brew update && brew upgrade herdr";
@@ -331,8 +331,10 @@ fn fetch_update_manifest() -> Result<UpdateManifest, String> {
     fetch_json_manifest(STABLE_UPDATE_MANIFEST_URL)
 }
 
+// The fork publishes no preview builds. The rest of the preview code is kept so an existing
+// `update.channel = "preview"` config fails with a clear message instead of installing upstream builds.
 fn fetch_preview_manifest() -> Result<PreviewManifest, String> {
-    fetch_json_manifest(PREVIEW_UPDATE_MANIFEST_URL)
+    Err(FORK_PREVIEW_UNAVAILABLE.to_string())
 }
 
 fn fetch_json_manifest<T>(url: &str) -> Result<T, String>
@@ -1940,10 +1942,10 @@ fn is_mise_managed_install() -> bool {
 
 pub(crate) fn preview_channel_rejection_for_current_install() -> Option<&'static str> {
     let Ok(current_exe) = env::current_exe() else {
-        return None;
+        return Some(FORK_PREVIEW_UNAVAILABLE);
     };
 
-    preview_channel_rejection_for_exe_path(&current_exe)
+    preview_channel_rejection_for_exe_path(&current_exe).or(Some(FORK_PREVIEW_UNAVAILABLE))
 }
 
 pub(crate) fn package_manager_channel_update_guidance_for_current_install() -> Option<&'static str>

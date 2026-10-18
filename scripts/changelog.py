@@ -11,10 +11,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-DEFAULT_LIVE_MANIFEST_URL = "https://herdr.dev/latest.json"
+DEFAULT_LIVE_MANIFEST_URL = "https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/latest.json"
 
 SECTION_RE = re.compile(r"^##\s+(?:\[(?P<bracketed>[^\]]+)\]|(?P<plain>.+?))\s*$", re.MULTILINE)
 VERSION_WITH_DATE_RE = re.compile(r"^(?P<version>.+?)\s+-\s+\d{4}-\d{2}-\d{2}$")
+# default_release_assets fills URLs for archived upstream releases, which really live in herdrdev/herdr; fork releases pass --repo explicitly.
 DEFAULT_RELEASE_REPO = "herdrdev/herdr"
 DEFAULT_LATEST_JSON_PATH = Path("distribution/latest.json")
 DEFAULT_PRODUCT_ANNOUNCEMENT_PATH = Path("docs/next/product-announcement.json")

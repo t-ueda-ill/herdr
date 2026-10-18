@@ -256,55 +256,37 @@ Do not use GitHub closing keywords like `fixes #<issue-number>`, `closes #<issue
 - Integration asset versions (`HERDR_INTEGRATION_VERSION` markers and matching `*_INTEGRATION_VERSION` constants) are migration versions relative to the latest released tag, not per-commit counters on `master`. If an integration asset changes multiple times between releases, bump it once from the version in the latest release.
 - When changing the server/client wire protocol, compare `src/protocol/wire.rs::PROTOCOL_VERSION` against protocols published in both stable and preview releases. Bump it when the current source protocol has already been published in either channel and the wire format changes incompatibly. Do not bump it again for multiple incompatible changes before that protocol is published. Update hardcoded protocol expectations and manual protocol fixtures in tests.
 
-## Release Channels
+## Release Channels (t-ueda-ill/herdr fork)
 
-This section is maintainer-only for release actions. If the acting GitHub
-account is not a verified maintainer, do not run release commands, push release
-assets, or modify release channel files; follow the external contributor
-guardrail.
+This fork publishes stable releases only. Upstream's preview/stable promotion
+workflows, `just preview`, `just release*`, and `scripts/release.py` were
+removed. `herdr channel set preview` is rejected.
 
-Herdr has one main branch and two update channels. Normal previews select a commit from `master`. Stable promotes a published preview, never the latest `master`. There is no long-lived release or preview branch.
+Release procedure:
 
-Normal users default to stable. Stable docs are `/docs/`, stable updates use `distribution/latest.json`, and Homebrew/Nix stay stable-only.
+1. Set the fork version in `Cargo.toml` and `Cargo.lock`. Versions must be
+   plain `X.Y.Z` (the updater's `Version::parse` accepts nothing else). Fork
+   patch = upstream patch × 100 + revision: upstream 0.9.5 becomes 0.9.501,
+   0.9.502, …; upstream 0.10.0 becomes 0.10.1 (no leading zeros). The version
+   must be greater than `distribution/latest.json`.
+2. Commit and push `master`, then push an annotated tag `v<version>` on the
+   same commit.
+3. `.github/workflows/release-fork.yml` validates the tag against `Cargo.toml`,
+   builds the five assets below, creates the GitHub Release, then commits
+   `distribution/latest.json` to `master` with `scripts/changelog.py
+   sync-latest-json --repo t-ueda-ill/herdr`. Watch it with `gh run watch`.
+4. `herdr update`, `herdr remote` installs, and the agent-detection catalog
+   read from `https://raw.githubusercontent.com/t-ueda-ill/herdr/master/`
+   (`distribution/latest.json`, `distribution/agent-detection/index.toml`).
+   raw.githubusercontent.com caches for up to about five minutes.
 
-Preview is opt-in for direct Herdr installs:
-
-```bash
-herdr channel set preview
-herdr update
-```
-
-Switch back with:
-
-```bash
-herdr channel set stable
-herdr update
-```
-
-Preview releases are GitHub prereleases produced by `.github/workflows/preview.yml` only on `preview-*` tag pushes. Use `just preview <commit-or-ref>` (default: HEAD) to validate the source, create the annotated `preview-<commit-date>-<short-sha>` tag, and push it. Normal source commits must be reachable from master and contain the tag-triggered preview workflow; older dispatch-only revisions cannot be previewed by tagging them. For an isolated hotfix, create a temporary `release/<name>` branch from the current stable tag, apply only the reviewed fix, push that branch, then run `just preview` at its tip. CI validates the tagged commit, not a moving branch. Branch naming and ancestry prevent selection mistakes; they do not replace reviewing the hotfix diff. Ensure the fix also reaches master. Preview is required even for hotfixes. A hotfix based on a legacy stable release must include the promotion tooling update before previewing; CI rejects candidates that still carry the old ungated stable workflow.
-
-All tags are protected by the repository's `release-tags` ruleset: only repository admins may create, update, or delete them. Do not grant GitHub Actions or writer bots a tag bypass. Both publishing workflows require tag-push events and check the original actor's and rerun actor's current repository admin permission before publication. Normal PR test workflows remain automatic and unchanged. Immutable releases protect published binaries.
-
-Preview notes contain only the build identifier (date and source SHA) and a comparison link. Do not generate a categorized commit summary for previews; curated release notes belong to stable releases.
-
-The workflow updates `distribution/preview.json`, which the private website publishes as `/preview.json`. Do not hand-edit `distribution/preview.json`; fix the workflow or `scripts/preview.py` and rerun Preview. Published preview releases and tags are retained; CI must not delete protected tags or leave old preview tags without their releases.
-
-Stable releases start in an isolated checkout at the selected published preview tag, not current master. Commit curated release docs there, then use:
+Install from the fork:
 
 ```bash
-just check
-just release 0.x.y preview-<build-id>
+curl -fsSL https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/install.sh | sh
 ```
 
-Before stable release, run `/pre-release-audit` against the currently published stable tag, finalize `docs/next`, and run `just pre-release-check` to validate the staged docs, distribution contract, and render scaling. `just release` prepares the changelog and release commit, validates the preview-to-release diff, and pushes only an annotated stable tag. Its `Preview` and `Previous-Stable` trailers are required provenance, not optional notes. `just release-prepare` and `just release-publish` also require the preview tag argument. Do not merge or rebase newer master commits into the candidate.
-
-Only the Herdr package version in Cargo.toml/Cargo.lock, changelogs, staged READMEs, staged website prose, product announcement, and stable skill may differ from the preview. Code, dependencies, API schemas, build configuration, and other files must match. These checks run locally and in CI before stable builds. Old previews without this promotion tooling require a new preview first. Stable rebuilds the selected source with stable version identity; it does not reuse preview binaries.
-
-GitHub Actions builds binaries, creates the GitHub release, closes issues using the recorded previous stable boundary, snapshots the tagged docs, and updates `distribution/latest.json`. It applies only the release-preparation diff back to master with a three-way merge, preserving newer development. A conflict stops distribution publication and needs manual resolution; do not resolve it by copying the whole release tree over master. Remove temporary release/hotfix branches after publication and metadata reconciliation. The private website repository owns rendering and deployment.
-
-Before the first stable Windows release, publish and verify a preview containing stable-channel support. Existing Windows preview users need that preview before `herdr channel set stable` can migrate them.
-
-The release workflows must publish these five assets:
+The release workflow must publish these five assets:
 
 - `herdr-linux-x86_64`
 - `herdr-linux-aarch64`

@@ -779,11 +779,10 @@ if ($useLocalPackage) {
     }
 
     if ([string]::IsNullOrWhiteSpace($ManifestUrl)) {
-        $ManifestUrl = if ($Channel -eq "preview") {
-            "https://herdr.dev/preview.json"
-        } else {
-            "https://herdr.dev/latest.json"
+        if ($Channel -eq "preview") {
+            throw "The preview channel is not available in the t-ueda-ill/herdr fork. Rerun with -Channel stable."
         }
+        $ManifestUrl = "https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/latest.json"
     }
 
     Write-Step "Fetching Herdr $Channel manifest"
