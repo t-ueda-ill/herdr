@@ -1,23 +1,42 @@
 {
-  "version": "0.9.5",
+  "version": "0.9.501",
   "protocol": 22,
   "endpoint_generation": 1,
-  "notes": "This is a hotfix release for v0.9.4. See the v0.9.4 notes for the full feature release: https://github.com/herdrdev/herdr/releases/tag/v0.9.4\n\n### Fixed\n- Prefix shortcuts work again when the terminal sends the next key as plain text. This affected Tern, Chinese, Japanese and Korean input methods on macOS, and Ghostty `text:` keybinds that send the prefix and a key together. Workspace navigation had the same problem. (#5255)\n- Codex sessions no longer start with a \"clamping Interrupt hook timeout\" warning. Herdr no longer installs Codex turn hooks, and Codex status comes from screen detection again. Run `herdr integration install codex` to update. (#5246, #5278)\n- Claude Code questions show as blocked in named sessions. (#4573, #5192)\n- On Windows, plugin panes start even when a folder on `PATH` has the same name as the plugin's program. (#5267, #5269, thanks @JJLiebig)\n- On Windows, Claude Code session tracking works when the user folder name contains non-ASCII characters, such as Korean. (#5253, #5270, thanks @JJLiebig)\n- Adding a Windows machine no longer prints raw PowerShell progress output. (#4639, #5282, thanks @JJLiebig)",
+  "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.501\n- Source commit: e5837e2a752fcda01686d9a8bd86ce954faa7217\n\nSHA-256:\n\n```\n33b1e70e3f8ad6c90d84a780425dced64d7bcd2bc26bffe70c5b13cfe8f95269  herdr-linux-x86_64\n5b140d20d158aebb6e795717e5f03e07b4dadf4ee3a4ad275beabfbfa9507a02  herdr-linux-aarch64\n420c9615e186294720e4d4fba922741d8ebea32c3300b2f76689b62d5b306944  herdr-macos-x86_64\n7efa665d42c55c5bc50ee2b174059996ff150d76a0660b66709efdcf58f8ae33  herdr-macos-aarch64\n6757916f61fc9c6ed3a60f884a7a9f6e3a33fd84d15f02d14eb0171be683eee7  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* feat: open shells inside running docker containers by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/1\n* fix: container selection, remote ssh launch, process deadlines, restored cwd, and sigwinch handler by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/2\n\n## New Contributors\n* @t-ueda-ill made their first contribution in https://github.com/t-ueda-ill/herdr/pull/1\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.4...v0.9.501",
   "assets": {
-    "linux-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-linux-x86_64",
-    "linux-aarch64": "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-linux-aarch64",
-    "macos-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-macos-x86_64",
-    "macos-aarch64": "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-macos-aarch64",
-    "windows-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-windows-x86_64.zip"
+    "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.501/herdr-linux-x86_64",
+    "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.501/herdr-linux-aarch64",
+    "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.501/herdr-macos-x86_64",
+    "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.501/herdr-macos-aarch64",
+    "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.501/herdr-windows-x86_64.zip"
   },
   "sha256": {
-    "linux-x86_64": "14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d",
-    "linux-aarch64": "17d7536f2da50859523680ef279dffcac8e4a235f4e46fe8da6c2ec44141897c",
-    "macos-x86_64": "5fb0a908ec7f6745e3e245738b06bfad56c46391c391ab3c0955fbead01f1369",
-    "macos-aarch64": "fb77c2232a05a8035421382c894392f4174e4e38a18e48af3dd0290157c3a7e2",
-    "windows-x86_64": "d2c6c9c971c43a0bfdde8c692a9a1a7a45c3e4807cd01ae45662b4734fac1cbf"
+    "linux-x86_64": "33b1e70e3f8ad6c90d84a780425dced64d7bcd2bc26bffe70c5b13cfe8f95269",
+    "linux-aarch64": "5b140d20d158aebb6e795717e5f03e07b4dadf4ee3a4ad275beabfbfa9507a02",
+    "macos-x86_64": "420c9615e186294720e4d4fba922741d8ebea32c3300b2f76689b62d5b306944",
+    "macos-aarch64": "7efa665d42c55c5bc50ee2b174059996ff150d76a0660b66709efdcf58f8ae33",
+    "windows-x86_64": "6757916f61fc9c6ed3a60f884a7a9f6e3a33fd84d15f02d14eb0171be683eee7"
   },
   "releases": {
+    "0.9.501": {
+      "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.501\n- Source commit: e5837e2a752fcda01686d9a8bd86ce954faa7217\n\nSHA-256:\n\n```\n33b1e70e3f8ad6c90d84a780425dced64d7bcd2bc26bffe70c5b13cfe8f95269  herdr-linux-x86_64\n5b140d20d158aebb6e795717e5f03e07b4dadf4ee3a4ad275beabfbfa9507a02  herdr-linux-aarch64\n420c9615e186294720e4d4fba922741d8ebea32c3300b2f76689b62d5b306944  herdr-macos-x86_64\n7efa665d42c55c5bc50ee2b174059996ff150d76a0660b66709efdcf58f8ae33  herdr-macos-aarch64\n6757916f61fc9c6ed3a60f884a7a9f6e3a33fd84d15f02d14eb0171be683eee7  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* feat: open shells inside running docker containers by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/1\n* fix: container selection, remote ssh launch, process deadlines, restored cwd, and sigwinch handler by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/2\n\n## New Contributors\n* @t-ueda-ill made their first contribution in https://github.com/t-ueda-ill/herdr/pull/1\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.4...v0.9.501",
+      "protocol": 22,
+      "endpoint_generation": 1,
+      "assets": {
+        "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.501/herdr-linux-x86_64",
+        "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.501/herdr-linux-aarch64",
+        "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.501/herdr-macos-x86_64",
+        "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.501/herdr-macos-aarch64",
+        "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.501/herdr-windows-x86_64.zip"
+      },
+      "sha256": {
+        "linux-x86_64": "33b1e70e3f8ad6c90d84a780425dced64d7bcd2bc26bffe70c5b13cfe8f95269",
+        "linux-aarch64": "5b140d20d158aebb6e795717e5f03e07b4dadf4ee3a4ad275beabfbfa9507a02",
+        "macos-x86_64": "420c9615e186294720e4d4fba922741d8ebea32c3300b2f76689b62d5b306944",
+        "macos-aarch64": "7efa665d42c55c5bc50ee2b174059996ff150d76a0660b66709efdcf58f8ae33",
+        "windows-x86_64": "6757916f61fc9c6ed3a60f884a7a9f6e3a33fd84d15f02d14eb0171be683eee7"
+      }
+    },
     "0.9.5": {
       "notes": "This is a hotfix release for v0.9.4. See the v0.9.4 notes for the full feature release: https://github.com/herdrdev/herdr/releases/tag/v0.9.4\n\n### Fixed\n- Prefix shortcuts work again when the terminal sends the next key as plain text. This affected Tern, Chinese, Japanese and Korean input methods on macOS, and Ghostty `text:` keybinds that send the prefix and a key together. Workspace navigation had the same problem. (#5255)\n- Codex sessions no longer start with a \"clamping Interrupt hook timeout\" warning. Herdr no longer installs Codex turn hooks, and Codex status comes from screen detection again. Run `herdr integration install codex` to update. (#5246, #5278)\n- Claude Code questions show as blocked in named sessions. (#4573, #5192)\n- On Windows, plugin panes start even when a folder on `PATH` has the same name as the plugin's program. (#5267, #5269, thanks @JJLiebig)\n- On Windows, Claude Code session tracking works when the user folder name contains non-ASCII characters, such as Korean. (#5253, #5270, thanks @JJLiebig)\n- Adding a Windows machine no longer prints raw PowerShell progress output. (#4639, #5282, thanks @JJLiebig)",
       "protocol": 22,
