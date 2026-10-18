@@ -7,7 +7,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::clipboard_stage_script::{staged_path_from_output, STAGE_SCRIPT};
+use crate::clipboard_stage_script::{staged_path_from_output, CLEANUP_SCRIPT, STAGE_SCRIPT};
 use crate::noninteractive_process::{run_with_deadline, RunError};
 use crate::ssh_host::launch::shell_quote;
 
@@ -85,9 +85,13 @@ fn stage_argv(host: &str, control_path: &Path, file_name: &str) -> Vec<OsString>
     argv
 }
 
-/// `ssh <side channel options> <host> "rm -f '<path>'…"`, one run per host.
+/// `ssh <side channel options> <host> "sh -c '<cleanup script>' sh '<path>'…"`, one
+/// run per host. Why `rmdir` and not `rm -rf`: each staged image owns a fresh
+/// directory, and `rmdir` can only remove it once empty.
 fn cleanup_argv(host: &str, control_path: &Path, paths: &[String]) -> Vec<OsString> {
-    let mut command = String::from("rm -f");
+    // Why `sh -c` and not a bare `rm; rmdir` line: the remote login shell may
+    // not be a POSIX shell, so redirections and `;` are only safe inside `sh`.
+    let mut command = format!("sh -c {} sh", shell_quote(CLEANUP_SCRIPT));
     for path in paths {
         command.push(' ');
         command.push_str(&shell_quote(path));
@@ -255,16 +259,18 @@ mod tests {
     #[test]
     fn cleanup_argv_removes_every_path_of_a_host_in_one_run() {
         let paths = vec![
-            "/tmp/herdr-clipboard-images-1000/a.png".to_owned(),
-            "/tmp/herdr-clipboard-images-1000/b.jpg".to_owned(),
+            "/tmp/herdr-clipboard-image-aB3dE9/a.png".to_owned(),
+            "/tmp/herdr-clipboard-image-Zz09Qq/b.jpg".to_owned(),
         ];
 
         assert_eq!(
             strings(cleanup_argv("prod", Path::new(CONTROL), &paths)),
             expected(
                 "prod",
-                "rm -f '/tmp/herdr-clipboard-images-1000/a.png' \
-                 '/tmp/herdr-clipboard-images-1000/b.jpg'"
+                &format!(
+                    "sh -c '{CLEANUP_SCRIPT}' sh '/tmp/herdr-clipboard-image-aB3dE9/a.png' \
+                     '/tmp/herdr-clipboard-image-Zz09Qq/b.jpg'"
+                )
             )
         );
     }
@@ -272,6 +278,7 @@ mod tests {
     /// Opt-in: `cargo nextest run --run-ignored only -E 'test(/ssh_host::clipboard::tests::live/)'`.
     mod live {
         use super::super::*;
+        use crate::clipboard_stage_script::STAGE_DIR_PREFIX;
         use std::path::PathBuf;
         use std::process::{Command, Output};
 
@@ -476,8 +483,12 @@ mod tests {
             let file_name = "client-1-clipboard-42-0.png";
             let staged = stage_image(ALIAS, &host.control, file_name, bytes.clone()).unwrap();
 
-            let dir = format!("/tmp/herdr-clipboard-images-{UID}");
+            let dir = Path::new(&staged).parent().unwrap().display().to_string();
             assert_eq!(staged, format!("{dir}/{file_name}"));
+            assert!(
+                dir.starts_with(&format!("/tmp/{STAGE_DIR_PREFIX}")),
+                "{dir}"
+            );
             let stat = container_out(&host, &["stat", "-c", "%U %a", &staged, &dir]);
             assert_eq!(
                 String::from_utf8_lossy(&stat.stdout),
@@ -489,6 +500,8 @@ mod tests {
             remove_images(ALIAS, &host.control, std::slice::from_ref(&staged)).unwrap();
             let gone = container_out(&host, &["test", "-e", &staged]);
             assert!(!gone.status.success(), "cleanup removes the staged file");
+            let dir_gone = container_out(&host, &["test", "-e", &dir]);
+            assert!(!dir_gone.status.success(), "cleanup removes the directory");
 
             assert!(host.stop_master().status.success());
             let err = stage_image(ALIAS, &host.control, file_name, b"x".to_vec()).unwrap_err();
@@ -526,6 +539,7 @@ mod tests {
     mod runner {
         use super::super::*;
         use super::NAME;
+        use crate::clipboard_stage_script::STAGE_DIR_PREFIX;
         use crate::noninteractive_process::fake_program::FakeProgram;
 
         fn secs(n: u64) -> Duration {
@@ -560,9 +574,16 @@ mod tests {
                 }
             }
 
-            fn staging_dir(&self) -> std::path::PathBuf {
-                let uid = unsafe { libc::geteuid() };
-                self.tmpdir.join(format!("herdr-clipboard-images-{uid}"))
+            fn staged_dirs(&self) -> Vec<std::path::PathBuf> {
+                std::fs::read_dir(&self.tmpdir)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.starts_with(STAGE_DIR_PREFIX))
+                    })
+                    .collect()
             }
         }
 
@@ -587,12 +608,14 @@ mod tests {
             )
             .unwrap();
 
-            let expected = remote.staging_dir().join(NAME);
+            let dirs = remote.staged_dirs();
+            assert_eq!(dirs.len(), 1);
+            let expected = dirs[0].join(NAME);
             assert_eq!(path, expected.display().to_string());
             assert_eq!(std::fs::read(&expected).unwrap(), b"image-bytes");
             let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode(&expected), 0o600);
-            assert_eq!(mode(&remote.staging_dir()), 0o700);
+            assert_eq!(mode(&dirs[0]), 0o700);
         }
 
         #[test]
@@ -618,6 +641,10 @@ mod tests {
             .unwrap();
 
             assert!(!Path::new(&path).exists());
+            assert!(
+                remote.staged_dirs().is_empty(),
+                "the per-image directory goes with the file"
+            );
         }
 
         #[test]

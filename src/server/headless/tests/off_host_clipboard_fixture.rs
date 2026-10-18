@@ -7,7 +7,8 @@ use crate::server::clipboard_image::{
 };
 
 pub(super) const CLIENT: u64 = 11;
-pub(super) const STAGED_PATH: &str = "/tmp/herdr-clipboard-images-1000/client-11-clipboard-1-0.png";
+pub(super) const STAGED_PATH: &str =
+    "/tmp/herdr-clipboard-image-aB3dE9/client-11-clipboard-1-0.png";
 
 /// The launch metadata a pane carries; whether it runs is a separate fact.
 #[derive(Clone)]

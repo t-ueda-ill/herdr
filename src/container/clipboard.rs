@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::docker::{program_for, run_docker_with, DockerHost};
 use super::ContainerListError;
-use crate::clipboard_stage_script::{staged_path_from_output, STAGE_SCRIPT};
+use crate::clipboard_stage_script::{staged_path_from_output, CLEANUP_SCRIPT, STAGE_SCRIPT};
 
 /// `docker exec -i [-u <user>] <id> sh -c '<script>' sh <file_name>`.
 /// No `-t`: stdin carries raw image bytes.
@@ -21,11 +21,16 @@ fn stage_argv(container_id: &str, user: Option<&str>, file_name: &str) -> Vec<St
     argv
 }
 
-/// `docker exec [-u <user>] <id> rm -f <paths…>`.
+/// `docker exec [-u <user>] <id> sh -c '<script>' sh <paths…>`: removes each
+/// file and then its now-empty per-image directory.
 fn cleanup_argv(container_id: &str, user: Option<&str>, paths: &[String]) -> Vec<String> {
     let mut argv = vec!["exec".to_owned()];
     push_user(&mut argv, user);
-    argv.extend([container_id, "rm", "-f"].into_iter().map(str::to_owned));
+    argv.extend(
+        [container_id, "sh", "-c", CLEANUP_SCRIPT, "sh"]
+            .into_iter()
+            .map(str::to_owned),
+    );
     argv.extend(paths.iter().cloned());
     argv
 }
@@ -178,15 +183,25 @@ mod tests {
                 "-u",
                 "1000:1000",
                 "abc123",
-                "rm",
-                "-f",
+                "sh",
+                "-c",
+                CLEANUP_SCRIPT,
+                "sh",
                 "/tmp/a.png",
                 "/tmp/b.jpg"
             ]
         );
         assert_eq!(
             cleanup_argv("abc123", None, &paths[..1]),
-            ["exec", "abc123", "rm", "-f", "/tmp/a.png"]
+            [
+                "exec",
+                "abc123",
+                "sh",
+                "-c",
+                CLEANUP_SCRIPT,
+                "sh",
+                "/tmp/a.png"
+            ]
         );
     }
 
@@ -194,6 +209,7 @@ mod tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     mod live {
         use super::super::*;
+        use crate::clipboard_stage_script::STAGE_DIR_PREFIX;
         use std::process::Command;
 
         struct LiveContainer(String);
@@ -241,16 +257,13 @@ mod tests {
                 bytes.clone(),
             )
             .unwrap();
-            assert_eq!(path, format!("/tmp/herdr-clipboard-images-405/{file_name}"));
-            let stat = docker_out(&[
-                "exec",
-                &container.0,
-                "stat",
-                "-c",
-                "%U %a",
-                &path,
-                "/tmp/herdr-clipboard-images-405",
-            ]);
+            let dir = Path::new(&path).parent().unwrap().display().to_string();
+            assert_eq!(path, format!("{dir}/{file_name}"));
+            assert!(
+                dir.starts_with(&format!("/tmp/{STAGE_DIR_PREFIX}")),
+                "{dir}"
+            );
+            let stat = docker_out(&["exec", &container.0, "stat", "-c", "%U %a", &path, &dir]);
             assert_eq!(
                 String::from_utf8_lossy(&stat.stdout),
                 "guest 600\nguest 700\n"
@@ -269,9 +282,9 @@ mod tests {
                 b"root".to_vec(),
             )
             .unwrap();
-            assert_eq!(
-                root_path,
-                format!("/tmp/herdr-clipboard-images-0/{file_name}")
+            assert!(
+                root_path.starts_with(&format!("/tmp/{STAGE_DIR_PREFIX}")),
+                "{root_path}"
             );
 
             remove_images(
@@ -283,6 +296,8 @@ mod tests {
             .unwrap();
             let gone = docker_out(&["exec", &container.0, "test", "-e", &path]);
             assert!(!gone.status.success(), "cleanup removes the staged file");
+            let dir_gone = docker_out(&["exec", &container.0, "test", "-e", &dir]);
+            assert!(!dir_gone.status.success(), "cleanup removes the directory");
             drop(container);
             assert!(
                 remove_images(&DockerHost::Local, &name, None, &[root_path]).is_err(),
@@ -295,6 +310,7 @@ mod tests {
     mod runner {
         use super::super::*;
         use super::NAME;
+        use crate::clipboard_stage_script::STAGE_DIR_PREFIX;
         use crate::container::docker::tests::Shim;
 
         fn secs(n: u64) -> Duration {
@@ -340,9 +356,16 @@ mod tests {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
 
-            fn staging_dir(&self) -> std::path::PathBuf {
-                let uid = unsafe { libc::geteuid() };
-                self.tmpdir.join(format!("herdr-clipboard-images-{uid}"))
+            fn staged_dirs(&self) -> Vec<std::path::PathBuf> {
+                std::fs::read_dir(&self.tmpdir)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.starts_with(STAGE_DIR_PREFIX))
+                    })
+                    .collect()
             }
 
             fn stage(&self) -> Result<String, ContainerListError> {
@@ -369,32 +392,23 @@ mod tests {
         fn stage_image_returns_the_printed_path_after_consuming_stdin() {
             let script = RealScript::new("stage");
             let path = script.stage().unwrap();
-            let expected = script.staging_dir().join(NAME);
+            let dirs = script.staged_dirs();
+            assert_eq!(dirs.len(), 1);
+            let expected = dirs[0].join(NAME);
             assert_eq!(path, expected.display().to_string());
             assert_eq!(std::fs::read(&expected).unwrap(), b"image-bytes");
         }
 
         #[test]
-        fn stage_image_writes_nothing_when_the_staging_dir_cannot_be_secured() {
-            // A directory pre-created by another uid makes `chmod` fail.
-            let chmod_denied = RealScript::new("chmod-denied");
-            chmod_denied.fake("chmod", "echo 'chmod: Operation not permitted' >&2; exit 1");
-            // Something other than a directory in the way makes `mkdir` fail.
-            let mkdir_blocked = RealScript::new("mkdir-blocked");
-            std::fs::write(mkdir_blocked.staging_dir(), b"not a dir").unwrap();
+        fn stage_image_writes_nothing_when_a_private_directory_cannot_be_created() {
+            let mktemp_fails = RealScript::new("mktemp-fails");
+            mktemp_fails.fake("mktemp", "echo 'mktemp: Permission denied' >&2; exit 1");
 
-            for (case, script) in [("chmod", &chmod_denied), ("mkdir", &mkdir_blocked)] {
-                match script.stage() {
-                    Err(ContainerListError::Failed { status, .. }) => {
-                        assert_eq!(status, Some(1), "{case}");
-                    }
-                    other => panic!("{case}: expected a failed stage, got {other:?}"),
-                }
-                assert!(
-                    !script.staging_dir().join(NAME).exists(),
-                    "{case}: the image must not be written"
-                );
+            match mktemp_fails.stage() {
+                Err(ContainerListError::Failed { status, .. }) => assert_eq!(status, Some(1)),
+                other => panic!("expected a failed stage, got {other:?}"),
             }
+            assert!(mktemp_fails.staged_dirs().is_empty());
         }
 
         #[test]
@@ -478,7 +492,7 @@ mod tests {
         }
 
         #[test]
-        fn remove_images_passes_every_path_to_rm() {
+        fn remove_images_passes_every_path_to_the_cleanup_script() {
             let log =
                 std::env::temp_dir().join(format!("herdr-clip-rm-{}.log", std::process::id()));
             let shim = Shim::new("clip-rm", &format!("echo \"$@\" > {}", log.display()));
@@ -496,7 +510,7 @@ mod tests {
             let _ = std::fs::remove_file(&log);
             assert_eq!(
                 logged.trim(),
-                "exec -u node abc rm -f /tmp/a.png /tmp/b.png"
+                format!("exec -u node abc sh -c {CLEANUP_SCRIPT} sh /tmp/a.png /tmp/b.png")
             );
         }
 
@@ -514,7 +528,7 @@ mod tests {
             let script = format!(
                 "printf '%s\\n' \"$@\" > {log}.argv; for last; do :; done; \
                  docker() {{ printf '%s\\n' \"$@\" > {log}.docker; cat > {log}.stdin; \
-                 printf %s /tmp/herdr-clipboard-images-0/{NAME}; }}; eval \"$last\"",
+                 printf %s /tmp/herdr-clipboard-image-aB3dE9/{NAME}; }}; eval \"$last\"",
                 log = log.display()
             );
             Shim::named("ssh", name, &script)
@@ -545,7 +559,7 @@ mod tests {
             };
             let (argv, docker, stdin) = (read("argv"), read("docker"), read("stdin"));
             let argv = String::from_utf8(argv).unwrap();
-            assert_eq!(path, format!("/tmp/herdr-clipboard-images-0/{NAME}"));
+            assert_eq!(path, format!("/tmp/herdr-clipboard-image-aB3dE9/{NAME}"));
             assert_eq!(stdin, b"image-bytes");
             assert!(argv.contains("ControlMaster=auto"), "{argv}");
             assert!(argv.contains("deploy@prod"), "{argv}");
@@ -559,7 +573,7 @@ mod tests {
         }
 
         #[test]
-        fn remove_images_over_ssh_runs_rm_inside_the_remote_container() {
+        fn remove_images_over_ssh_runs_the_cleanup_script_inside_the_remote_container() {
             let log =
                 std::env::temp_dir().join(format!("herdr-clip-ssh-rm-{}", std::process::id()));
             let shim = remote_docker_shim("clip-ssh-rm", &log);
@@ -572,7 +586,10 @@ mod tests {
             for ext in ["argv", "docker", "stdin"] {
                 let _ = std::fs::remove_file(format!("{}.{ext}", log.display()));
             }
-            assert_eq!(docker, "exec\nabc\nrm\n-f\n/tmp/a b.png\n");
+            assert_eq!(
+                docker,
+                format!("exec\nabc\nsh\n-c\n{CLEANUP_SCRIPT}\nsh\n/tmp/a b.png\n")
+            );
         }
 
         #[test]
