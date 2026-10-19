@@ -3,8 +3,10 @@
 # Upstream's release.yml/preview.yml were removed from this fork: they were
 # gated on github.repository == 'herdrdev/herdr', required repository-admin
 # actors, and required a published preview tag. This workflow builds the same
-# five assets from a v* tag, publishes a GitHub Release, and commits
-# distribution/latest.json to master so `herdr update` can find the release.
+# five assets from a v* tag, publishes a GitHub Release, and opens a PR that
+# updates distribution/latest.json on master so `herdr update` can find the
+# release once that PR is merged (master is protected, so the workflow token
+# cannot push to it directly).
 name: Release (fork)
 
 on:
@@ -248,6 +250,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
+      pull-requests: write
     env:
       RELEASE_TAG: ${{ needs.validate.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
@@ -279,19 +282,26 @@ jobs:
             --announcement "$ANNOUNCEMENT_PATH" \
             --protocol "$RELEASE_PROTOCOL" \
             --endpoint-generation "$RELEASE_ENDPOINT_GENERATION"
-      - name: Commit distribution manifest
+      - name: Open PR for distribution manifest
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
+          BRANCH="release/latest-json-v$VERSION"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add distribution/latest.json
           git diff --cached --quiet && { echo "nothing to commit"; exit 0; }
+          git switch -c "$BRANCH"
           git commit -m "release: synchronize distribution manifest for v$VERSION"
-          for attempt in 1 2 3; do
-            if git push origin master; then exit 0; fi
-            git pull --rebase origin master
-          done
-          echo "failed to push distribution manifest after 3 attempts" >&2
-          exit 1
+          # Force so a rerun can overwrite a leftover branch; it is not master, so the ruleset does not apply.
+          git push --force origin "HEAD:refs/heads/$BRANCH"
+          if [ -n "$(gh pr list --head "$BRANCH" --base master --state open --json number --jq '.[].number')" ]; then
+            echo "PR for $BRANCH already exists"
+            exit 0
+          fi
+          gh pr create \
+            --base master \
+            --head "$BRANCH" \
+            --title "release: synchronize distribution manifest for v$VERSION" \
+            --body "Automated update of \`distribution/latest.json\` for $RELEASE_TAG. Merge this PR to make the release visible to \`herdr update\`."
