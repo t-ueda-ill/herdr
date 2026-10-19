@@ -6,9 +6,11 @@ impl ClientContextMenuOverlay {
 
         let item = |label, action| ClientContextMenuItem { label, action };
         match &self.target {
-            ClientContextMenuTarget::Workspace { is_git: false, .. } => {
-                vec![item("Rename", Action::Rename), item("Close", Action::Close)]
-            }
+            ClientContextMenuTarget::Workspace { is_git: false, .. } => vec![
+                item("Rename", Action::Rename),
+                item("Close", Action::Close),
+                item("Browse files...", Action::BrowseFiles),
+            ],
             ClientContextMenuTarget::Workspace {
                 is_linked_worktree: false,
                 has_worktree_children: false,
@@ -18,6 +20,7 @@ impl ClientContextMenuOverlay {
                 item("Close", Action::Close),
                 item("New worktree", Action::NewWorktree),
                 item("Open worktree...", Action::OpenWorktree),
+                item("Browse files...", Action::BrowseFiles),
             ],
             ClientContextMenuTarget::Workspace {
                 is_linked_worktree: true,
@@ -26,6 +29,7 @@ impl ClientContextMenuOverlay {
                 item("Rename", Action::Rename),
                 item("Close", Action::Close),
                 item("Delete worktree checkout...", Action::RemoveWorktree),
+                item("Browse files...", Action::BrowseFiles),
             ],
             ClientContextMenuTarget::Workspace {
                 has_worktree_children: true,
@@ -44,6 +48,7 @@ impl ClientContextMenuOverlay {
                     if *collapsed { "Expand" } else { "Collapse" },
                     Action::ToggleGroup,
                 ),
+                item("Browse files...", Action::BrowseFiles),
             ],
             ClientContextMenuTarget::Tab { .. } => vec![
                 item("New tab", Action::NewTab),
@@ -259,6 +264,9 @@ impl ClientShellState {
             }
             ClientContextMenuAction::RemoveWorktree => {
                 self.begin_worktree_action_for(KeybindAction::RemoveWorktree, workspace_id, outcome)
+            }
+            ClientContextMenuAction::BrowseFiles => {
+                self.open_file_viewer_for(Some(workspace_id), outcome)
             }
             ClientContextMenuAction::ToggleGroup => {
                 let key = self.snapshot.as_deref().and_then(|snapshot| {

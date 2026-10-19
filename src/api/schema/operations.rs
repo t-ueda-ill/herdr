@@ -192,6 +192,7 @@ mod tests {
             "pane.scroll",
             "pane.clear",
             "pane.edit_scrollback",
+            "pane.open_editor",
             "pane.focus",
             "pane.input.set",
             "pane.rename",

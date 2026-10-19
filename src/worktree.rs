@@ -157,7 +157,7 @@ fn repository_git_command(repo_root: &Path, trust_repository: bool) -> std::proc
     command
 }
 
-fn repository_git_args(repo_root: &Path, trust_repository: bool) -> Vec<String> {
+pub(crate) fn repository_git_args(repo_root: &Path, trust_repository: bool) -> Vec<String> {
     let mut args = Vec::new();
     if trust_repository {
         args.push("-c".to_string());

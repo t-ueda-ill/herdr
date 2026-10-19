@@ -445,7 +445,10 @@ impl ClientShellState {
     }
 
     pub(super) fn insert_overlay_text(&mut self, text: &str) -> bool {
-        if self.insert_worktree_overlay_text(text) || self.insert_open_picker_overlay_text(text) {
+        if self.insert_worktree_overlay_text(text)
+            || self.insert_open_picker_overlay_text(text)
+            || self.insert_file_viewer_overlay_text(text)
+        {
             return true;
         }
         match self.overlay.as_mut() {
@@ -627,6 +630,7 @@ impl ClientShellState {
 
         if self.route_worktree_overlay_key(key, outcome)
             || self.route_open_picker_overlay_key(key, outcome)
+            || self.route_file_viewer_overlay_key(key, outcome)
         {
             return;
         }

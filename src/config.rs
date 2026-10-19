@@ -201,6 +201,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_keybindings_profile_carries_the_open_files_binding() {
+        let config: Config = toml::from_str("[keys]\nopen_files = \"prefix+f\"\n").unwrap();
+        let profile = config.local_keybindings_profile_toml().unwrap();
+        assert!(profile.contains("open_files"), "{profile}");
+        let restored = keybindings_from_profile_toml(&profile).unwrap();
+        assert!(!restored.keybinds.open_files.bindings.is_empty());
+        assert_eq!(
+            restored.keybinds.open_files.bindings,
+            config.keybinds().open_files.bindings
+        );
+    }
+
+    #[test]
     fn local_keybindings_profile_preserves_plus_prefixes() {
         let config: Config = toml::from_str(
             "[keys]\nprefix = [\"ctrl+plus\", \"alt+plus\"]\nnew_tab = \"prefix+plus\"\n",

@@ -24,6 +24,7 @@ pub(crate) enum KeybindAction {
     RemoveWorktree,
     OpenSshWorkspace,
     OpenContainerWorkspace,
+    OpenFiles,
     RenameWorkspace,
     CloseWorkspace,
     SwitchWorkspace(usize),
@@ -113,6 +114,7 @@ pub(crate) fn resolve_non_indexed_action(
             &keybinds.open_container_workspace,
             KeybindAction::OpenContainerWorkspace,
         ),
+        (&keybinds.open_files, KeybindAction::OpenFiles),
         (&keybinds.rename_workspace, KeybindAction::RenameWorkspace),
         (&keybinds.close_workspace, KeybindAction::CloseWorkspace),
         (
@@ -301,6 +303,41 @@ mod tests {
                 &TerminalKey::new(KeyCode::Char('k'), KeyModifiers::SHIFT)
             ),
             Some(KeybindMatch::Action(KeybindAction::SwapPaneUp))
+        ));
+    }
+
+    #[test]
+    fn open_files_is_unbound_by_default_and_resolves_once_configured() {
+        let default_keybinds = crate::config::Config::default().keybinds();
+        assert!(default_keybinds.open_files.bindings.is_empty());
+        assert!(!matches!(
+            resolve_prefix_binding(
+                &default_keybinds,
+                &TerminalKey::new(KeyCode::Char('f'), KeyModifiers::CONTROL)
+            ),
+            Some(KeybindMatch::Action(KeybindAction::OpenFiles))
+        ));
+
+        let config: crate::config::Config =
+            toml::from_str("[keys]\nopen_files = [\"ctrl+alt+f\", \"prefix+ctrl+f\"]").unwrap();
+        assert!(config.collect_diagnostics().is_empty());
+        let keybinds = config.keybinds();
+        assert!(matches!(
+            resolve_direct_binding(
+                &keybinds,
+                &TerminalKey::new(
+                    KeyCode::Char('f'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT
+                )
+            ),
+            Some(KeybindMatch::Action(KeybindAction::OpenFiles))
+        ));
+        assert!(matches!(
+            resolve_prefix_binding(
+                &keybinds,
+                &TerminalKey::new(KeyCode::Char('f'), KeyModifiers::CONTROL)
+            ),
+            Some(KeybindMatch::Action(KeybindAction::OpenFiles))
         ));
     }
 

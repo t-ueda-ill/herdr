@@ -1839,6 +1839,66 @@
             }
           ]
         },
+        "DirectoryIndexParams": {
+          "properties": {
+            "pane_id": {
+              "description": "Pane whose working directory is the root. Defaults to the focused pane.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "Absolute path inside the repository to index. Defaults to the root.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trust_repository": {
+              "description": "Passes `safe.directory` for the discovered repository so Git accepts a checkout owned by another user.",
+              "type": "boolean"
+            },
+            "workspace_id": {
+              "description": "Workspace whose focused pane supplies the root when `pane_id` is absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "DirectoryListParams": {
+          "properties": {
+            "pane_id": {
+              "description": "Pane whose working directory is the root. Defaults to the focused pane.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "Absolute directory to list. Defaults to the root.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trust_repository": {
+              "description": "Passes `safe.directory` for the discovered repository so Git accepts a checkout owned by another user.",
+              "type": "boolean"
+            },
+            "workspace_id": {
+              "description": "Workspace whose focused pane supplies the root when `pane_id` is absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EmptyParams": {
           "type": "object"
         },
@@ -2874,6 +2934,32 @@
           },
           "required": [
             "direction"
+          ],
+          "type": "object"
+        },
+        "PaneOpenEditorParams": {
+          "properties": {
+            "pane_id": {
+              "description": "Pane the editor overlays. It must be the focused pane of the active workspace.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "Absolute path of the file to edit. Directories are rejected.",
+              "type": "string"
+            },
+            "workspace_id": {
+              "description": "Workspace whose focused pane is the target when `pane_id` is absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "path"
           ],
           "type": "object"
         },
@@ -6586,6 +6672,54 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "directory.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/DirectoryListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "directory.index",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/DirectoryIndexParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.open_editor",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneOpenEditorParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -7119,6 +7253,79 @@
             "is_default"
           ],
           "type": "object"
+        },
+        "DirectoryEntry": {
+          "properties": {
+            "hidden": {
+              "description": "The name starts with a dot.",
+              "type": "boolean"
+            },
+            "ignored": {
+              "description": "Git ignores the entry. Absent outside a Git work tree or when Git failed.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/DirectoryEntryKind"
+            },
+            "mtime": {
+              "description": "Modification time of the entry itself, in milliseconds since the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "size": {
+              "description": "Size in bytes of a regular file.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "target_kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/DirectoryEntryKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What a `symlink` entry resolves to; absent for other kinds and for dangling links."
+            }
+          },
+          "required": [
+            "name",
+            "kind",
+            "hidden"
+          ],
+          "type": "object"
+        },
+        "DirectoryEntryKind": {
+          "oneOf": [
+            {
+              "enum": [
+                "file",
+                "dir",
+                "symlink"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "Sockets, FIFOs, devices, and any kind a newer server adds.",
+              "type": "string"
+            }
+          ]
         },
         "EventData": {
           "oneOf": [
@@ -9758,6 +9965,116 @@
               "required": [
                 "type",
                 "hosts"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "canonical": {
+                  "description": "`path` with symlinks resolved; clients compare it with ancestors to stop link loops.",
+                  "type": "string"
+                },
+                "entries": {
+                  "description": "Directories first, then by name. `.git` is never listed.",
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/DirectoryEntry"
+                  },
+                  "type": "array"
+                },
+                "git_error": {
+                  "description": "Why Git could not classify ignored entries; the listing is still complete.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "omitted": {
+                  "description": "How many entries `truncated` left out.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "pane_id": {
+                  "description": "Live pane whose working directory is `root`. Absent when no live pane\nwas found and `root` fell back to the new-workspace directory.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "description": "The listed directory as requested, or `root` when no path was given.",
+                  "type": "string"
+                },
+                "root": {
+                  "description": "Working directory of the target pane, as the pane reports it.",
+                  "type": "string"
+                },
+                "truncated": {
+                  "description": "The directory held more entries than were returned.",
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "directory_list",
+                  "type": "string"
+                },
+                "unlistable": {
+                  "description": "Entries left out because their names are not valid UTF-8, so no\npath to them can be named over the API.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "root",
+                "path",
+                "canonical",
+                "entries",
+                "truncated"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "entries": {
+                  "description": "Tracked and untracked, non-ignored files relative to `repo_root`, sorted.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "git_error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "repo_root": {
+                  "description": "Top level of the Git work tree containing the path; absent outside Git.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "truncated": {
+                  "description": "More files exist than were returned, or Git hit its deadline (then `git_error` is set too).",
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "directory_index",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "entries",
+                "truncated"
               ],
               "type": "object"
             },

@@ -104,6 +104,7 @@ Raw socket method names use dot notation:
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Container | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH hosts | `ssh.open`, `ssh.hosts` |
+| Files | `directory.list`, `directory.index`, `pane.open_editor` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
 | Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
@@ -469,6 +470,75 @@ Create and split params stay unchanged; the container reference travels only in 
 | `platform_unsupported` | the server runs on Windows |
 
 Create and split params stay unchanged; the SSH host travels only in `ssh.open`.
+
+## Files
+
+`directory.list`, `directory.index`, and `pane.open_editor` back the TUI file viewer. They read the server's filesystem, so a remote client sees the same files. In all three, `workspace_id` and `pane_id` are optional: an explicit `pane_id` wins, otherwise the target is the focused pane of `workspace_id` or of the focused workspace. The root is the directory a new tab would open in from that pane, which for an ssh or container pane is its launch directory on the host. Without a live pane, the root is the workspace's new-terminal directory. Raw `path` values must be absolute.
+
+`directory.list` lists one directory, `path` or the root. Directories and links to directories come first, then names in case-insensitive order. `.git` is never listed. Dotfiles and ignored entries are returned with flags so that the client decides what to show; the 2,000-entry limit counts them.
+
+```json
+{ "id": "req_1", "method": "directory.list", "params": { "path": "/home/me/app" } }
+```
+
+```json
+{
+  "id": "req_1",
+  "result": {
+    "type": "directory_list",
+    "root": "/home/me/app",
+    "path": "/home/me/app",
+    "canonical": "/home/me/app",
+    "entries": [
+      { "name": "docs", "kind": "symlink", "target_kind": "dir", "hidden": false, "ignored": false },
+      { "name": "src", "kind": "dir", "hidden": false, "ignored": false },
+      { "name": ".env", "kind": "file", "size": 120, "hidden": true, "ignored": true }
+    ],
+    "truncated": false,
+    "pane_id": "w1:p1"
+  }
+}
+```
+
+`kind` is `file`, `dir`, `symlink`, or `other`. `target_kind` is what a symlink resolves to and is omitted for dangling links. `size` (regular files only) and `mtime` (milliseconds since the Unix epoch) are optional. `canonical` is the listed directory with symlinks resolved; a client compares it with ancestors to stop link loops. `ignored` comes from one `git check-ignore` call and is omitted outside a Git work tree. `truncated` is true when the directory held more entries than were returned, and `omitted` then says how many were left out. Names that are not valid UTF-8 cannot be written as JSON strings, so they are left out and counted in `unlistable`. `pane_id` names the live pane whose directory is `root`; it is omitted when there was none and `root` is the fallback directory.
+
+`directory.index` lists the files of the Git repository containing `path` or the root: tracked and untracked, non-ignored, relative to `repo_root`, sorted, at most 50,000. Nested repositories and submodules are left out, and so are paths that are not valid UTF-8. Outside a repository, `repo_root` is omitted and `entries` is empty.
+
+```json
+{ "id": "req_2", "method": "directory.index", "params": {} }
+```
+
+```json
+{
+  "id": "req_2",
+  "result": {
+    "type": "directory_index",
+    "repo_root": "/home/me/app",
+    "entries": [".env", "README.md", "src/main.rs"],
+    "truncated": false
+  }
+}
+```
+
+The Git calls of one request share a 5-second deadline. When Git is missing, refuses the repository, or runs out of time, the request still succeeds with `git_error` set and falls back to non-Git results: `ignored` is omitted, or the index is empty, with `truncated` set after a timeout. Set `trust_repository` to `true` to pass `safe.directory` for the discovered repository, as the worktree methods do.
+
+`pane.open_editor` takes a required absolute `path` to a file and runs `${EDITOR:-vi}` from the pane's shell environment in a zoomed overlay pane over the target. The result is `pane_info` for the editor pane. When the editor exits, the overlay closes and the previous focus and zoom return. A missing file is created only if the editor saves it.
+
+Errors:
+
+| Code | Meaning |
+| --- | --- |
+| `invalid_params` | `path` is relative, `pane.open_editor` got a directory, or `pane_id` is not in `workspace_id` |
+| `not_found` | the `path` of `directory.list` or `directory.index` does not exist |
+| `not_a_directory` | `directory.list` got a file |
+| `permission_denied` | the directory cannot be read |
+| `directory_read_failed` | another filesystem error |
+| `directory_busy` | 8 directory reads are already running; retry shortly |
+| `workspace_not_found`, `pane_not_found` | the target does not exist, or `pane.open_editor` found no focused pane |
+| `stale_pane_target` | the `pane.open_editor` target is not the focused pane of the active workspace |
+| `pane_not_live` | the `pane.open_editor` target has no running shell, for example after a failed restore |
+| `editor_failed` | the editor pane could not be started |
+| `platform_unsupported` | the server runs on Windows, which also leaves these methods out of what it advertises to TUI clients |
 
 ## Agent view queries
 

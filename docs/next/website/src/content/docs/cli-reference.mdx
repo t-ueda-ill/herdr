@@ -333,6 +333,24 @@ Metadata text is normalized before storage. Herdr trims surrounding whitespace, 
 
 `--source` and `--applies-to-source` must be 80 characters or fewer and may contain only ASCII letters, digits, colon, dot, underscore, and hyphen. `--ttl-ms` makes metadata expire automatically and must be between `1` and `86400000` milliseconds. Omit it for metadata that should stay until replaced, cleared, or the pane closes. `--seq` lets Herdr ignore stale reports from the same `--source`; stale reports are accepted by the API but ignored by pane state. A pane or workspace accepts sequenced token reports from at most 32 distinct sources during its lifetime; clearing or expiry does not release those source slots.
 
+## Files
+
+```bash
+herdr directory list [--workspace ID] [--pane ID] [--path PATH] [--trust-repository] [--json]
+herdr directory index [--workspace ID] [--pane ID] [--path PATH] [--trust-repository] [--json]
+herdr pane open-editor [--workspace ID] [--pane ID] --path PATH
+```
+
+These commands read the server's filesystem. Without `--pane` or `--workspace`, they start from the focused pane of the focused workspace. The starting directory is the one a new tab would open in from that pane; for an ssh or container pane, it is the launch directory on the host.
+
+`directory list` prints one directory, by default the starting directory, with `/` after directories and `@` after symlinks. Directories come first, then names in case-insensitive order. `.git` and names that are not valid UTF-8 are never listed, and at most 2,000 entries are returned. `directory index` prints the tracked and untracked, non-ignored files of the Git repository containing that directory, relative to the repository root, up to 50,000 files; outside a repository it prints nothing. Notes about truncation or a Git failure go to stderr. `--json` prints the raw response instead; see [Files](/docs/socket-api/#files) in the socket API.
+
+Relative `--path` values resolve against the current directory; with `--machine`, `--path` must be absolute. Git runs with a 5-second deadline. When Git is missing, refuses the repository, or times out, the command still succeeds and reports the Git error. As with [worktrees](#worktrees), pass `--trust-repository` to trust a repository owned by another user for that command only.
+
+`pane open-editor` opens the file with `${EDITOR:-vi}` from the pane's shell environment, in a zoomed overlay pane over the target. Quitting the editor closes the overlay and restores the previous focus and zoom. The target must be the focused pane of the active workspace and have a running shell, and directories are rejected.
+
+In the TUI, bind `keys.open_files` (unset by default), choose `open files` from the global menu, or choose `Browse files...` from a workspace's right-click menu to browse the same listing; see [Keyboard](/docs/keyboard/#file-viewer). A server too old for these methods, or one running on Windows, shows an `Action unavailable` notice instead. Windows hosts return `platform_unsupported` to these commands.
+
 ## Containers
 
 ```bash

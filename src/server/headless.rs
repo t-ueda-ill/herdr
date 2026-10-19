@@ -3307,6 +3307,15 @@ impl HeadlessServer {
             );
             return changed | (deferred_changed && !read_only);
         }
+        // Read-only: the worker answers `respond_to` itself and changes no app state.
+        if matches!(
+            &msg.request.method,
+            api::schema::Method::DirectoryList(_) | api::schema::Method::DirectoryIndex(_)
+        ) {
+            self.app
+                .handle_deferred_directory_api_request(msg.request, msg.respond_to);
+            return changed;
+        }
         if matches!(
             &msg.request.method,
             api::schema::Method::SshOpen(_) | api::schema::Method::SshHosts(_)

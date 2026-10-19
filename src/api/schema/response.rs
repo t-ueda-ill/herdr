@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::agents::AgentInfo;
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::containers::ContainerInfoDto;
+use super::directory::DirectoryEntry;
 use super::events::EventEnvelope;
 use super::integrations::{
     IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult,
@@ -91,6 +92,43 @@ pub enum ResponseResult {
     },
     SshHosts {
         hosts: Vec<SshHostInfoDto>,
+    },
+    DirectoryList {
+        /// Working directory of the target pane, as the pane reports it.
+        root: String,
+        /// The listed directory as requested, or `root` when no path was given.
+        path: String,
+        /// `path` with symlinks resolved; clients compare it with ancestors to stop link loops.
+        canonical: String,
+        /// Directories first, then by name. `.git` is never listed.
+        entries: Vec<DirectoryEntry>,
+        /// The directory held more entries than were returned.
+        truncated: bool,
+        /// Why Git could not classify ignored entries; the listing is still complete.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git_error: Option<String>,
+        /// Live pane whose working directory is `root`. Absent when no live pane
+        /// was found and `root` fell back to the new-workspace directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<String>,
+        /// How many entries `truncated` left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        omitted: Option<u64>,
+        /// Entries left out because their names are not valid UTF-8, so no
+        /// path to them can be named over the API.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unlistable: Option<u64>,
+    },
+    DirectoryIndex {
+        /// Top level of the Git work tree containing the path; absent outside Git.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repo_root: Option<String>,
+        /// Tracked and untracked, non-ignored files relative to `repo_root`, sorted.
+        entries: Vec<String>,
+        /// More files exist than were returned, or Git hit its deadline (then `git_error` is set too).
+        truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git_error: Option<String>,
     },
     TabInfo {
         tab: TabInfo,

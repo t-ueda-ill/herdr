@@ -312,6 +312,24 @@ herdr pane report-metadata <pane_id> \
 
 `--source` 和 `--applies-to-source` 必须不超过 80 个字符,并且只能包含 ASCII 字母、数字、冒号、点、下划线和连字符。`--ttl-ms` 让元数据自动过期,取值必须在 `1` 到 `86400000` 毫秒之间。想让元数据一直保留到被替换、清除或窗格或工作区关闭时,省略它。`--seq` 让 Herdr 忽略来自同一 `--source` 的过期上报;过期上报会被 API 接受,但被窗格状态忽略。每个窗格或工作区在其生命周期内最多接受来自 32 个不同来源的带序号令牌上报,清除或过期不会释放这些来源名额。
 
+## 文件
+
+```bash
+herdr directory list [--workspace ID] [--pane ID] [--path PATH] [--trust-repository] [--json]
+herdr directory index [--workspace ID] [--pane ID] [--path PATH] [--trust-repository] [--json]
+herdr pane open-editor [--workspace ID] [--pane ID] --path PATH
+```
+
+这些命令读取服务器端的文件系统。省略 `--pane` 和 `--workspace` 时，以聚焦工作区中聚焦的窗格为起点。起始目录与从该窗格打开新标签页时使用的目录相同；对于 ssh 或容器窗格，它是主机上的启动目录。
+
+`directory list` 列出一个目录（默认是起始目录），目录后加 `/`，符号链接后加 `@`。目录在前，其余按不区分大小写的名称排序。`.git` 和不是有效 UTF-8 的名称不会列出，最多返回 2,000 条。`directory index` 列出包含该目录的 Git 仓库中已跟踪和未跟踪、未被忽略的文件，路径相对仓库根目录，最多 50,000 个；在仓库之外不输出任何内容。关于截断或 Git 失败的说明输出到标准错误。加上 `--json` 会改为输出原始响应，参见 socket API 中的[文件](/zh-cn/docs/socket-api/#文件)。
+
+相对的 `--path` 会基于当前目录解析；使用 `--machine` 时，`--path` 必须是绝对路径。Git 以 5 秒的截止时间运行。Git 不存在、拒绝该仓库或超时时，命令仍会成功，并报告 Git 错误。与 [Worktree](#worktree) 一样，传入 `--trust-repository` 可以仅在该命令中信任其他用户拥有的仓库。
+
+`pane open-editor` 用窗格 shell 环境中的 `${EDITOR:-vi}` 打开文件，显示在目标窗格上方的缩放覆盖窗格中。退出编辑器后覆盖窗格关闭，并恢复之前的焦点和缩放。目标必须是活动工作区中聚焦且有运行中 shell 的窗格，目录会被拒绝。
+
+在 TUI 中，可以为 `keys.open_files`（默认未设置）绑定按键、从全局菜单选择 `open files`，或在工作区的右键菜单中选择 `Browse files...`，浏览同样的列表，参见[键盘](/zh-cn/docs/keyboard/#文件查看器)。服务器版本过旧、不支持这些方法，或服务器运行在 Windows 上时，会改为显示 `Action unavailable` 通知。Windows 主机对这些命令返回 `platform_unsupported`。
+
 ## 容器
 
 ```bash

@@ -4,6 +4,7 @@ pub mod agents;
 pub mod commands;
 pub mod common;
 pub mod containers;
+pub mod directory;
 pub mod events;
 pub mod integrations;
 pub(crate) mod operations;
@@ -21,6 +22,7 @@ pub use agents::*;
 pub use commands::*;
 pub use common::*;
 pub use containers::*;
+pub use directory::*;
 pub use events::*;
 pub use integrations::*;
 pub use panes::*;
@@ -155,6 +157,9 @@ operations::define_operations! {
     PluginPaneOpen(PluginPaneOpenParams) => "plugin.pane.open", true, false;
     PluginPaneFocus(PluginPaneFocusParams) => "plugin.pane.focus", true, false;
     PluginPaneClose(PluginPaneCloseParams) => "plugin.pane.close", true, false;
+    DirectoryList(DirectoryListParams) => "directory.list", false, true;
+    DirectoryIndex(DirectoryIndexParams) => "directory.index", false, true;
+    PaneOpenEditor(PaneOpenEditorParams) => "pane.open_editor", true, true;
 }
 
 #[cfg(test)]

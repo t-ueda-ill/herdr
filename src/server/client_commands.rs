@@ -16,6 +16,28 @@ pub(crate) fn supported_client_shell_method_names() -> &'static [&'static str] {
     crate::api::schema::operations::client_shell_method_names()
 }
 
+/// Advertised only where `crate::platform::FILE_VIEWER_SUPPORTED` holds.
+const FILE_VIEWER_METHODS: [&str; 3] = ["directory.index", "directory.list", "pane.open_editor"];
+
+/// What the endpoint welcome advertises. Why not shrink
+/// `supported_client_shell_method_names` instead: method shapes are frozen on
+/// every platform. A client treats an unadvertised method as missing and
+/// disables only that action, instead of opening a view the host cannot fill.
+pub(crate) fn advertised_client_shell_method_names() -> &'static [&'static str] {
+    static NAMES: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+        advertised_method_names(crate::platform::FILE_VIEWER_SUPPORTED)
+    });
+    &NAMES
+}
+
+fn advertised_method_names(file_viewer_supported: bool) -> Vec<&'static str> {
+    supported_client_shell_method_names()
+        .iter()
+        .copied()
+        .filter(|method| file_viewer_supported || !FILE_VIEWER_METHODS.contains(method))
+        .collect()
+}
+
 pub(crate) fn supports_client_shell_method_name(method: &str) -> bool {
     supported_client_shell_method_names().contains(&method)
 }
@@ -278,6 +300,18 @@ mod tests {
             actual.remove("ssh.open").as_deref(),
             Some("248ed6ee395f6691f6ae8027ccd97a39c7fa935937de8931930133ab42800eac")
         );
+        let file_viewer: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-method-shapes-file-viewer.json"
+        )))
+        .expect("file viewer endpoint method shape fixture");
+        for (method, digest) in &file_viewer {
+            assert_eq!(
+                actual.remove(method).as_ref(),
+                Some(digest),
+                "file viewer endpoint method {method} changed shape"
+            );
+        }
 
         assert_eq!(
             actual, expected,
@@ -324,6 +358,24 @@ mod tests {
                 "advertised endpoint method {method:?} is absent from the request schema"
             );
         }
+    }
+
+    #[test]
+    fn hosts_without_the_file_viewer_leave_its_methods_unadvertised() {
+        let supported = supported_client_shell_method_names();
+
+        let without: Vec<&str> = advertised_method_names(false);
+
+        assert_eq!(advertised_method_names(true), supported);
+        let dropped: Vec<&str> = supported
+            .iter()
+            .copied()
+            .filter(|method| !without.contains(method))
+            .collect();
+        assert_eq!(
+            dropped,
+            ["directory.index", "directory.list", "pane.open_editor"]
+        );
     }
 
     #[test]

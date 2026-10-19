@@ -23,6 +23,7 @@ pub(crate) mod agent;
 mod api;
 mod completion;
 mod container;
+pub(crate) mod directory;
 mod integration;
 mod machine;
 pub(crate) mod notification;
@@ -131,6 +132,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "workspace" => workspace::run_workspace_command(&args[2..])?,
         "worktree" => worktree::run_worktree_command(&args[2..])?,
         "container" => container::run_container_command(&args[2..])?,
+        "directory" => directory::run_directory_command(&args[2..])?,
         "ssh" => ssh::run_ssh_command(&args[2..])?,
         "tab" => tab::run_tab_command(&args[2..])?,
         "notification" => notification::run_notification_command(&args[2..])?,
@@ -152,6 +154,7 @@ fn api_group(name: &str) -> Option<clap::Command> {
         "workspace" => workspace_bindings::command(),
         "worktree" => worktree::command(),
         "container" => container::command(),
+        "directory" => directory::command(),
         "ssh" => ssh::command(),
         "tab" => tab::command(),
         "notification" => notification::command(),

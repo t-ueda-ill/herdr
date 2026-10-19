@@ -257,6 +257,7 @@ mod containers;
 mod copy;
 mod endpoint_requests;
 mod endpoints;
+mod file_viewer;
 mod graphics;
 mod input_conformance;
 #[path = "input.rs"]

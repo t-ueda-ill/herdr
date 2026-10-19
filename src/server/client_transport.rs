@@ -829,7 +829,7 @@ pub(crate) fn handle_client_handshake(
     };
     let welcome = if shell_options.is_some() {
         let welcome = EndpointServerWelcome::compatible(
-            crate::server::client_commands::supported_client_shell_method_names()
+            crate::server::client_commands::advertised_client_shell_method_names()
                 .iter()
                 .map(|method| (*method).to_owned())
                 .collect(),
