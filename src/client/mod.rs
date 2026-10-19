@@ -2239,7 +2239,21 @@ async fn run_client_loop(
                         let needs_surface = write_stream
                             .connection(&selected_endpoint)
                             .is_some_and(|connection| !connection.surface_active);
+                        let deliberately_paused = state.shell.as_ref().is_some_and(|s| {
+                            s.endpoint_boot_id(&selected_endpoint).is_some_and(|boot| {
+                                write_stream
+                                    .connection(&selected_endpoint)
+                                    .is_some_and(|c| {
+                                        s.investigation_surface_paused(
+                                            &selected_endpoint,
+                                            c.generation,
+                                            boot,
+                                        )
+                                    })
+                            })
+                        });
                         if activation_ready
+                            && !deliberately_paused
                             && needs_surface
                             && pending_activation.is_none()
                             && state.deferred_local_activation.is_none()
@@ -2359,6 +2373,7 @@ async fn run_client_loop(
                             outcome.repaint |= repaint;
                             outcome.actions.extend(actions);
                         }
+                        shell.tick_investigation(now, &mut outcome);
                         let (effects, notification_repaint) = shell.tick_notifications(now);
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)

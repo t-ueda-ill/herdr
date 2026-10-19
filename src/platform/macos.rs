@@ -1211,6 +1211,61 @@ pub fn process_exists(pid: u32) -> bool {
     }
 }
 
+pub(crate) fn trash_file(path: &std::path::Path) -> std::io::Result<()> {
+    // Pass the path as an argv value, never interpolate it into AppleScript.
+    let script =
+        "on run argv\ntell application \"Finder\" to delete POSIX file (item 1 of argv)\nend run";
+    let args = [
+        std::ffi::OsStr::new("-e"),
+        std::ffi::OsStr::new(script),
+        path.as_os_str(),
+    ];
+    match crate::noninteractive_process::run_with_deadline(
+        std::path::Path::new("osascript"),
+        &args,
+        None,
+        std::time::Instant::now() + std::time::Duration::from_secs(30),
+    ) {
+        Ok(output) if output.status == Some(0) => Ok(()),
+        Ok(output) => Err(std::io::Error::other(output.stderr)),
+        Err(error) => Err(std::io::Error::other(format!("{error:?}"))),
+    }
+}
+
+pub(crate) fn rename_no_replace(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let source = std::ffi::CString::new(source.as_os_str().as_bytes())?;
+    let target = std::ffi::CString::new(target.as_os_str().as_bytes())?;
+    // RENAME_EXCL guarantees a new destination is never overwritten.
+    if unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+pub(crate) fn file_path_display(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+pub(crate) fn open_text_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+}
+
+pub(crate) fn copy_symbolic_link(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(std::fs::read_link(source)?, target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

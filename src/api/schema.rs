@@ -6,6 +6,7 @@ pub mod common;
 pub mod containers;
 pub mod directory;
 pub mod events;
+pub mod files;
 pub mod integrations;
 pub(crate) mod operations;
 pub mod panes;
@@ -24,6 +25,7 @@ pub use common::*;
 pub use containers::*;
 pub use directory::*;
 pub use events::*;
+pub use files::*;
 pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
@@ -123,7 +125,7 @@ operations::define_operations! {
     PaneCopySearch(PaneCopySearchParams) => "pane.copy_search", false, true;
     PaneList(PaneListParams) => "pane.list", false, false;
     PaneCurrent(PaneCurrentParams) => "pane.current", false, false;
-    PaneGet(PaneTarget) => "pane.get", false, false;
+    PaneGet(PaneTarget) => "pane.get", false, true;
     PaneFocus(PaneTarget) => "pane.focus", true, true;
     PaneInputSet(PaneInputSetParams) => "pane.input.set", true, true;
     PaneLinkActivate(PaneLinkActivateParams) => "pane.link.activate", false, true;
@@ -160,7 +162,31 @@ operations::define_operations! {
     DirectoryList(DirectoryListParams) => "directory.list", false, true;
     DirectoryIndex(DirectoryIndexParams) => "directory.index", false, true;
     PaneOpenEditor(PaneOpenEditorParams) => "pane.open_editor", true, true;
+    FileRead(FileReadParams) => "file.read", false, true;
+    FilesCancel(FilesCancelParams) => "files.cancel", false, true;
+    FilesSearch(FilesSearchParams) => "files.search", false, true;
+    FilesReplace(FilesReplaceParams) => "files.replace", false, true;
+    FilesPlan(FilesOperateParams) => "files.plan", false, true;
+    FilesOperate(FilesOperateParams) => "files.operate", false, true;
 }
 
 #[cfg(test)]
 mod tests;
+
+impl Method {
+    /// Filesystem facts/operations do not require terminal presentation or geometry.
+    pub(crate) fn independent_of_surface(&self) -> bool {
+        matches!(
+            self,
+            Self::FilesCancel(_)
+                | Self::DirectoryList(_)
+                | Self::DirectoryIndex(_)
+                | Self::FileRead(_)
+                | Self::FilesSearch(_)
+                | Self::FilesPlan(_)
+                | Self::FilesReplace(_)
+                | Self::FilesOperate(_)
+                | Self::PaneGet(_)
+        )
+    }
+}

@@ -5,7 +5,7 @@
 //! the host filesystem. Expansion, toggles and search are client state only.
 
 mod fuzzy;
-mod model;
+pub(super) mod model;
 
 use model::{
     git_error_notice, host_path_chain, host_path_contains, indexed_paths, join_host_path,
@@ -62,7 +62,10 @@ enum FileViewerAction {
 impl ClientShellState {
     pub(super) fn open_file_viewer(&mut self, outcome: &mut ClientShellInput) {
         let workspace_id = self.workspace_action_id();
-        self.open_file_viewer_for(workspace_id, outcome);
+        if !self.toggle_investigation() {
+            self.open_file_viewer_for(workspace_id, outcome);
+        }
+        outcome.repaint = true;
     }
 
     /// Focuses `workspace_id` first so the path goes to the pane whose
@@ -75,7 +78,9 @@ impl ClientShellState {
         outcome.repaint = true;
         let list = Method::DirectoryList(DirectoryListParams {
             workspace_id: workspace_id.clone(),
-            pane_id: None,
+            pane_id: self
+                .focused_pane_id()
+                .filter(|_| workspace_id == self.workspace_action_id()),
             path: None,
             trust_repository: false,
         });
@@ -123,6 +128,7 @@ impl ClientShellState {
                 index_supported,
             }),
         )));
+        self.promote_file_viewer();
     }
 
     /// Whether `pane_id` runs in a container or over ssh, as the snapshot says.
@@ -141,7 +147,9 @@ impl ClientShellState {
     fn file_viewer_send_target(&self) -> Result<String, &'static str> {
         let listed = match self.overlay.as_ref() {
             Some(ClientShellOverlay::FileViewer(viewer)) => viewer.pane_id.as_deref(),
-            _ => None,
+            _ => self
+                .investigation()
+                .and_then(|t| t.browser.pane_id.as_deref()),
         }
         .ok_or(NO_LIVE_PANE)?;
         let snapshot = self.snapshot.as_deref().ok_or(NO_LIVE_PANE)?;
@@ -163,9 +171,12 @@ impl ClientShellState {
         path: Option<String>,
         outcome: &mut ClientShellInput,
     ) -> bool {
+        let pane_id = self
+            .focused_pane_id()
+            .filter(|_| workspace_id == self.workspace_action_id());
         let method = Method::DirectoryIndex(DirectoryIndexParams {
             workspace_id,
-            pane_id: None,
+            pane_id,
             path,
             trust_repository: false,
         });
@@ -179,14 +190,24 @@ impl ClientShellState {
             )
     }
 
-    fn file_viewer(&mut self) -> Option<&mut ClientFileViewerOverlay> {
+    pub(super) fn file_viewer(&mut self) -> Option<&mut ClientFileViewerOverlay> {
+        if let Some(index) = self.workbench.dispatch {
+            return self.workbench.tabs.get_mut(index).map(|t| &mut t.browser);
+        }
+        if self.investigation_active() {
+            return self.investigation_mut().map(|t| &mut t.browser);
+        }
         match self.overlay.as_mut() {
             Some(ClientShellOverlay::FileViewer(viewer)) => Some(viewer),
             _ => None,
         }
     }
 
-    fn request_file_viewer_listing(&mut self, path: String, outcome: &mut ClientShellInput) {
+    pub(super) fn request_file_viewer_listing(
+        &mut self,
+        path: String,
+        outcome: &mut ClientShellInput,
+    ) {
         let Some(viewer) = self.file_viewer() else {
             return;
         };
@@ -217,7 +238,7 @@ impl ClientShellState {
     }
 
     /// Lists `root` and indexes it again; the old tree is dropped.
-    fn change_file_viewer_root(
+    pub(super) fn change_file_viewer_root(
         &mut self,
         root: String,
         select: Option<String>,
@@ -265,10 +286,15 @@ impl ClientShellState {
         viewer.revealing = None;
         viewer.scroll = 0;
         viewer.rebuild(false);
+        if let Some(tab) = self.investigation_mut() {
+            tab.matches.clear();
+            tab.selected_match = 0;
+            tab.schedule_search();
+        }
         true
     }
 
-    fn raise_file_viewer_root(&mut self, outcome: &mut ClientShellInput) {
+    pub(super) fn raise_file_viewer_root(&mut self, outcome: &mut ClientShellInput) {
         let Some(root) = self.file_viewer().and_then(|viewer| viewer.root.clone()) else {
             return;
         };
@@ -279,7 +305,7 @@ impl ClientShellState {
     }
 
     /// `expand: None` toggles. A listing is fetched only the first time.
-    fn set_file_viewer_expanded(
+    pub(super) fn set_file_viewer_expanded(
         &mut self,
         path: String,
         expand: Option<bool>,
@@ -310,7 +336,11 @@ impl ClientShellState {
 
     /// Leaves search and shows `path` expanded and selected in the tree,
     /// widening the root to the repository when the path lies outside it.
-    fn reveal_in_file_viewer_tree(&mut self, path: String, outcome: &mut ClientShellInput) {
+    pub(super) fn reveal_in_file_viewer_tree(
+        &mut self,
+        path: String,
+        outcome: &mut ClientShellInput,
+    ) {
         let Some(viewer) = self.file_viewer() else {
             return;
         };
@@ -457,7 +487,12 @@ impl ClientShellState {
         }
     }
 
-    fn send_file_viewer_path(&mut self, path: &str, close: bool, outcome: &mut ClientShellInput) {
+    pub(super) fn send_file_viewer_path(
+        &mut self,
+        path: &str,
+        close: bool,
+        outcome: &mut ClientShellInput,
+    ) {
         // Why not check after resolving the pane: that leaves copy mode, and a
         // refused path should leave copy mode and the viewer as they were.
         let Some(word) = shell_quote_path(path) else {
@@ -640,7 +675,7 @@ impl ClientShellState {
         true
     }
 
-    fn collapse_or_climb_file_viewer(&mut self, outcome: &mut ClientShellInput) {
+    pub(super) fn collapse_or_climb_file_viewer(&mut self, outcome: &mut ClientShellInput) {
         let Some(viewer) = self.file_viewer() else {
             return;
         };
@@ -777,7 +812,7 @@ impl ClientShellState {
     }
 
     /// `outcome` collects the next listing a reveal asks for.
-    pub(super) fn handle_file_viewer_endpoint_result(
+    pub(super) fn handle_file_viewer_endpoint_result_inner(
         &mut self,
         request: FileViewerRequest,
         result: Result<ResponseResult, ClientShellEndpointError>,

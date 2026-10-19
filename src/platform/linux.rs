@@ -1244,6 +1244,69 @@ fn process_session_id(pid: u32) -> Option<i32> {
     fields.get(3)?.parse().ok()
 }
 
+/// gio implements the desktop trash protocol, including mount-local trash.
+/// A missing service is returned to the caller; never fall back to unlink.
+pub(crate) fn trash_file(path: &std::path::Path) -> std::io::Result<()> {
+    let args = [
+        std::ffi::OsStr::new("trash"),
+        std::ffi::OsStr::new("--"),
+        path.as_os_str(),
+    ];
+    match crate::noninteractive_process::run_with_deadline(
+        std::path::Path::new("gio"),
+        &args,
+        None,
+        std::time::Instant::now() + std::time::Duration::from_secs(30),
+    ) {
+        Ok(output) if output.status == Some(0) => Ok(()),
+        Ok(output) => Err(std::io::Error::other(output.stderr)),
+        Err(error) => Err(std::io::Error::other(format!("{error:?}"))),
+    }
+}
+
+pub(crate) fn rename_no_replace(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let source = std::ffi::CString::new(source.as_os_str().as_bytes())?;
+    let target = std::ffi::CString::new(target.as_os_str().as_bytes())?;
+    // Both C strings live through the syscall; RENAME_NOREPLACE is atomic.
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            target.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+pub(crate) fn file_path_display(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+pub(crate) fn open_text_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+}
+
+pub(crate) fn copy_symbolic_link(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(std::fs::read_link(source)?, target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

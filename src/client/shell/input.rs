@@ -92,10 +92,11 @@ fn push_host_theme_update(
 
 impl ClientShellState {
     pub(crate) fn host_keyboard_report_all_requested(&self) -> bool {
-        matches!(
-            self.mode,
-            ClientShellMode::Prefix | ClientShellMode::Navigate
-        )
+        self.investigation_active()
+            || matches!(
+                self.mode,
+                ClientShellMode::Prefix | ClientShellMode::Navigate
+            )
     }
 
     pub(crate) fn set_host_reports_key_releases(&mut self, reports: bool) {
@@ -120,6 +121,7 @@ impl ClientShellState {
             || key.kind != KeyEventKind::Press
             || self.mode != ClientShellMode::Terminal
             || self.overlay.is_some()
+            || self.investigation_active()
         {
             return None;
         }
@@ -193,6 +195,11 @@ impl ClientShellState {
     }
 
     fn prepare_committed_text(&mut self, text: &str, outcome: &mut ClientShellInput) -> bool {
+        if self.overlay.is_none() && self.investigation_active() {
+            self.insert_investigation_text(text);
+            outcome.repaint = true;
+            return true;
+        }
         if !(self.mode == ClientShellMode::Navigate && self.workspace_preview_action_blocked())
             && self.insert_copy_search_text(text)
         {
@@ -262,6 +269,11 @@ impl ClientShellState {
                         self.reconcile_input_source();
                         continue;
                     }
+                    if self.overlay.is_none() && self.investigation_active() {
+                        self.insert_investigation_text(&text);
+                        outcome.repaint = true;
+                        continue;
+                    }
                     if let Some(target) = self.popup_input_target() {
                         super::push_target_event(
                             target,
@@ -293,6 +305,11 @@ impl ClientShellState {
                     }
                     if self.prepare_committed_text(&text, &mut outcome) {
                         self.reconcile_input_source();
+                        continue;
+                    }
+                    if self.overlay.is_none() && self.investigation_active() {
+                        self.insert_investigation_text(&text);
+                        outcome.repaint = true;
                         continue;
                     }
                     if let Some(target) = self.popup_input_target() {
@@ -620,7 +637,12 @@ impl ClientShellState {
         key: &crate::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) -> Option<ClientInputTarget> {
-        if self.handle_modal_paste_shortcut_with(key, outcome, crate::platform::read_clipboard_text)
+        if !self.investigation_active()
+            && self.handle_modal_paste_shortcut_with(
+                key,
+                outcome,
+                crate::platform::read_clipboard_text,
+            )
         {
             return None;
         }
@@ -648,6 +670,21 @@ impl ClientShellState {
             return None;
         }
         if matches!(key.code, KeyCode::Modifier(_)) {
+            return None;
+        }
+        if self.investigation_active() && self.mode != ClientShellMode::Prefix {
+            if let Some(binding) =
+                crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
+            {
+                self.record_binding(binding, outcome);
+                return None;
+            }
+            if self.config.keybinds.matches_prefix(key) {
+                self.mode = ClientShellMode::Prefix;
+                outcome.repaint = true;
+                return None;
+            }
+            self.route_investigation_key(key, outcome);
             return None;
         }
         self.word_selection_gesture = None;
@@ -689,6 +726,10 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return None;
                 }
+                if self.investigation_active() {
+                    self.route_investigation_key(key, outcome);
+                    return None;
+                }
                 self.focused_pane_id().map(ClientInputTarget::Pane)
             }
             ClientShellMode::Prefix => {
@@ -702,6 +743,9 @@ impl ClientShellState {
                 if self.config.keybinds.matches_prefix(key) {
                     self.mode = return_mode;
                     outcome.repaint = true;
+                    if self.investigation_active() {
+                        return None;
+                    }
                     return self.focused_pane_id().map(ClientInputTarget::Pane);
                 }
                 if key.code == KeyCode::Esc {
@@ -1079,6 +1123,9 @@ impl ClientShellState {
 
     fn input_context(&self) -> ClientInputContext {
         ClientInputContext {
+            investigation: self
+                .investigation()
+                .map(|t| (t.id, t.focus, t.dialog.is_some())),
             mode: self.mode,
             overlay: self.overlay.as_ref().map(ClientShellOverlay::kind),
             popup_terminal_id: self.popup_input_target().and_then(|target| match target {

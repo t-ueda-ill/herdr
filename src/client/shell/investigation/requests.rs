@@ -1,0 +1,692 @@
+use super::*;
+use crate::api::schema::*;
+use std::time::{Duration, Instant};
+
+impl ClientShellState {
+    pub(in crate::client::shell) fn request_investigation_preview(
+        &mut self,
+        pin: bool,
+        focus: bool,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(tab) = self.investigation_mut() else {
+            return;
+        };
+        let Some((path, offset)) = tab.target() else {
+            return;
+        };
+        if let Some(index) = tab.documents.iter().position(|d| d.path == path) {
+            tab.active_file = Some(index);
+            if offset > 0 {
+                tab.documents[index].cursor = offset.min(tab.documents[index].text.len());
+                while !tab.documents[index]
+                    .text
+                    .is_char_boundary(tab.documents[index].cursor)
+                {
+                    tab.documents[index].cursor -= 1;
+                }
+                tab.documents[index].scroll = tab.documents[index].line().saturating_sub(3);
+            }
+        } else {
+            if tab.preview.as_ref().is_none_or(|d| d.path != path) {
+                tab.preview = Some(Document::new(path.clone()));
+            }
+            tab.active_file = None;
+            if let Some(document) = tab.preview.as_mut() {
+                document.clear_selection();
+                document.cursor = if document.loaded {
+                    offset.min(document.text.len())
+                } else {
+                    offset
+                };
+                if document.loaded {
+                    while !document.text.is_char_boundary(document.cursor) {
+                        document.cursor -= 1;
+                    }
+                }
+            }
+            if pin {
+                if let Some(document) = tab.preview.take() {
+                    tab.documents.push(document);
+                    tab.active_file = Some(tab.documents.len() - 1);
+                }
+            }
+        }
+        if focus {
+            tab.focus = Focus::Body;
+        }
+        tab.preview_generation = tab.preview_generation.wrapping_add(1);
+        if tab.document().is_some_and(|d| d.loaded) {
+            self.persist_chrome_preferences(outcome);
+            return;
+        }
+        let (id, generation) = (tab.id, tab.preview_generation);
+        if let Some(d) = tab.document_mut() {
+            d.request_generation = generation;
+        }
+        tab.pending_reads.insert(path.clone());
+        let sent = self.push_endpoint_method_with_kind(
+            Method::FileRead(FileReadParams {
+                path: path.clone(),
+                revision: None,
+            }),
+            PendingEndpointKind::Investigation(FileRequest::Read {
+                id,
+                path,
+                generation,
+                prepare: false,
+            }),
+            outcome,
+        );
+        if !sent {
+            if let Some(tab) = self.investigation_mut() {
+                tab.pending_reads.clear();
+            }
+        }
+        self.persist_chrome_preferences(outcome);
+    }
+    pub(in crate::client::shell) fn handle_file_viewer_endpoint_result(
+        &mut self,
+        request: FileViewerRequest,
+        result: Result<ResponseResult, ClientShellEndpointError>,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let generation = match &request {
+            FileViewerRequest::List { generation, .. }
+            | FileViewerRequest::Index { generation } => Some(*generation),
+            _ => None,
+        };
+        let index = self.workbench.tabs.iter().position(|t| {
+            t.endpoint == self.active_endpoint_id && generation == Some(t.browser.generation)
+        });
+        self.workbench.dispatch = index;
+        let repaint = self.handle_file_viewer_endpoint_result_inner(request, result, outcome);
+        self.workbench.dispatch = None;
+        if self.investigation_active() {
+            self.request_investigation_preview(false, false, outcome);
+            self.persist_chrome_preferences(outcome);
+        }
+        repaint
+    }
+    pub(in crate::client::shell) fn handle_investigation_result(
+        &mut self,
+        request: FileRequest,
+        result: Result<ResponseResult, ClientShellEndpointError>,
+        outcome: &mut ClientShellInput,
+    ) {
+        let id = match &request {
+            FileRequest::Read { id, .. }
+            | FileRequest::Search { id, .. }
+            | FileRequest::Replace { id, .. }
+            | FileRequest::Plan { id, .. }
+            | FileRequest::Operate { id }
+            | FileRequest::Editor { id }
+            | FileRequest::EditorCheck { id, .. } => *id,
+        };
+        let Some(index) = self
+            .workbench
+            .tabs
+            .iter()
+            .position(|t| t.id == id && t.endpoint == self.active_endpoint_id)
+        else {
+            return;
+        };
+        let tab = &mut self.workbench.tabs[index];
+        match request {
+            FileRequest::Read {
+                path,
+                generation,
+                prepare,
+                ..
+            } => {
+                if prepare && generation != tab.prepare_generation {
+                    return;
+                }
+                if !prepare {
+                    tab.pending_reads.remove(&path);
+                }
+                if prepare {
+                    tab.prepare_pending = tab.prepare_pending.saturating_sub(1);
+                    match result {
+                        Ok(ResponseResult::FileDocument { document }) => {
+                            if let Err(error) = super::operations::prepare_document(tab, document) {
+                                tab.notice = error;
+                                tab.plan.clear();
+                                tab.prepare_queue.clear();
+                                tab.dialog = None;
+                            }
+                        }
+                        Err(error) => {
+                            tab.notice = error.message;
+                            tab.plan.clear();
+                            tab.prepare_queue.clear();
+                            tab.dialog = None;
+                        }
+                        _ => {
+                            tab.notice = "unexpected file response".into();
+                            tab.dialog = None;
+                        }
+                    }
+                    return;
+                }
+                let document = tab
+                    .documents
+                    .iter_mut()
+                    .find(|d| d.path == path && d.request_generation == generation)
+                    .or_else(|| {
+                        tab.preview
+                            .as_mut()
+                            .filter(|d| d.path == path && generation == d.request_generation)
+                    });
+                if let Some(document) = document {
+                    match result {
+                        Ok(ResponseResult::FileDocument { document: loaded }) => {
+                            if !loaded.unchanged {
+                                let changed =
+                                    document.loaded && document.revision != loaded.revision;
+                                if changed && tab.content_search {
+                                    tab.search_ready = false;
+                                    tab.notice =
+                                        "file changed; rerun the content search before replacing"
+                                            .into();
+                                }
+                                let first_load = !document.loaded;
+                                document.update(loaded.text, loaded.revision);
+                                if first_load && !document.restored_scroll {
+                                    document.scroll = document.line().saturating_sub(3);
+                                }
+                                document.restored_scroll = false;
+                            }
+                        }
+                        Err(error) => tab.notice = error.message,
+                        _ => tab.notice = "unexpected file response".into(),
+                    }
+                }
+            }
+            FileRequest::Search { generation, .. } => {
+                if generation != tab.search_generation {
+                    return;
+                }
+                tab.searching = false;
+                match result {
+                    Ok(ResponseResult::FileSearch {
+                        matches,
+                        truncated,
+                        cancelled,
+                        warnings,
+                    }) => {
+                        if cancelled {
+                            return;
+                        }
+                        tab.matches = matches;
+                        tab.selected_match = 0;
+                        tab.omitted.clear();
+                        tab.search_ready = true;
+                        tab.notice = format!(
+                            "{} matches{}{}",
+                            tab.matches.len(),
+                            if truncated {
+                                " (limited; narrow the search)"
+                            } else {
+                                ""
+                            },
+                            if warnings.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" · {} skipped/errors: {}", warnings.len(), warnings[0])
+                            }
+                        );
+                        if Some(index) == self.workbench.active && self.workbench.visible {
+                            self.request_investigation_preview(false, false, outcome);
+                        }
+                    }
+                    Err(error) => {
+                        tab.notice = error.message;
+                        tab.search_ready = false;
+                    }
+                    _ => tab.notice = "unexpected search response".into(),
+                }
+            }
+            FileRequest::Replace {
+                originals, undo, ..
+            } => {
+                tab.operation_pending = false;
+                match result {
+                    Ok(ResponseResult::FilesChanged { outcomes }) => {
+                        let mut next_undo = Vec::new();
+                        for item in &outcomes {
+                            if let Some(version) = &item.revision {
+                                if let Some(original) =
+                                    originals.iter().find(|o| o.path == item.path)
+                                {
+                                    next_undo.push(FileChange {
+                                        path: item.path.clone(),
+                                        revision: version.clone(),
+                                        text: original.text.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        if undo {
+                            tab.undo.retain(|change| {
+                                outcomes
+                                    .iter()
+                                    .any(|o| o.path == change.path && o.error.is_some())
+                            });
+                        } else {
+                            tab.undo = next_undo;
+                        }
+                        let errors: Vec<_> = outcomes
+                            .iter()
+                            .filter_map(|o| o.error.as_ref().map(|e| format!("{}: {e}", o.path)))
+                            .collect();
+                        tab.notice = format!(
+                            "{} files changed, {} skipped{}",
+                            outcomes.len() - errors.len(),
+                            errors.len(),
+                            errors.first().map_or(String::new(), |e| format!(" · {e}"))
+                        );
+                        tab.search_ready = false;
+                        tab.plan.clear();
+                        tab.prepare_queue.clear();
+                        tab.dialog = None;
+                        tab.last_poll = Instant::now() - Duration::from_secs(2);
+                    }
+                    Err(error) => tab.notice = error.message,
+                    _ => tab.notice = "unexpected replacement response".into(),
+                }
+            }
+            FileRequest::Plan { params, .. } => {
+                tab.operation_pending = false;
+                match result {
+                    Ok(ResponseResult::FilesPlanned { outcomes }) => {
+                        tab.dialog = Some(Dialog::Confirm {
+                            selected: match params.collision {
+                                FileCollision::Skip => 0,
+                                FileCollision::Rename => 1,
+                                FileCollision::Replace => 2,
+                            },
+                            params,
+                            outcomes,
+                        })
+                    }
+                    Err(error) => tab.notice = error.message,
+                    _ => tab.notice = "unexpected operation plan response".into(),
+                }
+            }
+            FileRequest::Operate { .. } => {
+                tab.operation_pending = false;
+                match result {
+                    Ok(ResponseResult::FilesChanged { outcomes }) => {
+                        let failures: Vec<_> =
+                            outcomes.iter().filter(|o| o.error.is_some()).collect();
+                        tab.notice = format!(
+                            "{} completed, {} skipped{}",
+                            outcomes.len() - failures.len(),
+                            failures.len(),
+                            failures.first().map_or(String::new(), |o| format!(
+                                " · {}: {}",
+                                o.path,
+                                o.error.as_deref().unwrap_or_default()
+                            ))
+                        );
+                        let unavailable: Vec<_> = outcomes
+                            .iter()
+                            .filter(|o| {
+                                o.error
+                                    .as_deref()
+                                    .is_some_and(|e| e.starts_with("trash unavailable:"))
+                            })
+                            .map(|o| o.path.clone())
+                            .collect();
+                        if !unavailable.is_empty() {
+                            tab.dialog = Some(Dialog::Confirm {
+                                params: operation_params(FileOperation::Delete, unavailable, None),
+                                selected: 0,
+                                outcomes: outcomes
+                                    .iter()
+                                    .filter(|o| o.error.is_some())
+                                    .cloned()
+                                    .collect(),
+                            });
+                        }
+                        tab.selected_files.clear();
+                        if let Some(clipboard) = self.workbench.clipboard.as_mut().filter(|c| c.cut)
+                        {
+                            clipboard.paths.retain(|p| {
+                                !outcomes.iter().any(|o| o.path == *p && o.error.is_none())
+                            });
+                        }
+                        let paths: Vec<_> = tab.browser.directories.keys().cloned().collect();
+                        if Some(index) == self.workbench.active && self.workbench.visible {
+                            for path in paths {
+                                self.request_file_viewer_listing(path, outcome);
+                            }
+                        }
+                    }
+                    Err(error) => tab.notice = error.message,
+                    _ => tab.notice = "unexpected operation response".into(),
+                }
+            }
+            FileRequest::EditorCheck { pane, .. } => {
+                if self
+                    .workbench
+                    .editor
+                    .as_ref()
+                    .is_none_or(|e| e.id != id || e.pane != pane)
+                {
+                    return;
+                }
+                match result {
+                    Err(error) if error.code.as_deref() == Some("pane_not_found") => {
+                        self.workbench.editor = None;
+                        self.workbench.active = Some(index);
+                        self.workbench.visible = true;
+                        tab.last_poll = Instant::now() - Duration::from_secs(2);
+                    }
+                    _ => {
+                        if let Some(editor) = self.workbench.editor.as_mut() {
+                            editor.awaiting = false;
+                            editor.due = Instant::now() + Duration::from_millis(500);
+                        }
+                    }
+                }
+            }
+            FileRequest::Editor { .. } => {
+                self.workbench.editor_opening = false;
+                match result {
+                    Ok(ResponseResult::PaneInfo { pane }) => {
+                        self.workbench.editor = Some(EditorReturn {
+                            id,
+                            pane: pane.pane_id,
+                            due: Instant::now(),
+                            awaiting: false,
+                        });
+                        self.workbench.visible = false;
+                        self.workbench.terminal_requested = false;
+                    }
+                    Err(error) => {
+                        tab.notice = error.message;
+                        self.workbench.terminal_requested = false;
+                    }
+                    _ => tab.notice = "unexpected editor response".into(),
+                }
+            }
+        }
+        self.persist_chrome_preferences(outcome);
+    }
+    pub(crate) fn tick_investigation(&mut self, now: Instant, outcome: &mut ClientShellInput) {
+        self.reconcile_investigation_boot(outcome);
+        let editor_request = self
+            .workbench
+            .editor
+            .as_mut()
+            .filter(|e| !e.awaiting && e.due <= now)
+            .and_then(|e| {
+                self.workbench
+                    .tabs
+                    .iter()
+                    .any(|t| t.id == e.id && t.endpoint == self.active_endpoint_id)
+                    .then(|| {
+                        e.awaiting = true;
+                        (e.id, e.pane.clone())
+                    })
+            });
+        if let Some((id, pane)) = editor_request {
+            if !self.push_endpoint_method_with_kind(
+                Method::PaneGet(PaneTarget {
+                    pane_id: pane.clone(),
+                }),
+                PendingEndpointKind::Investigation(FileRequest::EditorCheck { id, pane }),
+                outcome,
+            ) {
+                if let Some(editor) = self.workbench.editor.as_mut() {
+                    editor.awaiting = false;
+                    editor.due = now + Duration::from_secs(2);
+                }
+            }
+        }
+        self.restore_investigations(outcome);
+        if self.workbench.terminal_requested {
+            return;
+        }
+        if let Some(tab) = self.investigation_mut() {
+            if tab.content_search && tab.cancel_generation != tab.search_generation {
+                if let Some(params) = tab.search_params() {
+                    tab.cancel_generation = tab.search_generation;
+                    outcome.actions.push(ClientShellAction::FileSearchCancel {
+                        boot_id: tab.boot.clone(),
+                        params: FilesCancelParams {
+                            search_id: params.search_id,
+                            generation: params.generation,
+                        },
+                    });
+                }
+            }
+        }
+        self.pump_investigation_prepare(outcome);
+        let Some(tab) = self.investigation_mut() else {
+            return;
+        };
+        if tab.content_search && tab.search_due.is_some_and(|due| due <= now) {
+            tab.search_due = None;
+            if let Some(params) = tab.search_params() {
+                tab.searching = true;
+                let id = tab.id;
+                let generation = tab.search_generation;
+                let sent = self.push_endpoint_method_with_kind(
+                    Method::FilesSearch(params),
+                    PendingEndpointKind::Investigation(FileRequest::Search { id, generation }),
+                    outcome,
+                );
+                if !sent {
+                    if let Some(tab) = self.investigation_mut() {
+                        tab.searching = false;
+                        tab.notice = "content search is unavailable on this server".into();
+                    }
+                }
+                outcome.repaint = true;
+            }
+        }
+        let Some(tab) = self.investigation_mut() else {
+            return;
+        };
+        if now.duration_since(tab.last_poll) < Duration::from_secs(1) {
+            return;
+        }
+        tab.last_poll = now;
+        if let Some(document) = tab
+            .document()
+            .filter(|d| !tab.pending_reads.contains(&d.path))
+        {
+            let path = document.path.clone();
+            let revision = document.loaded.then(|| {
+                document
+                    .pending
+                    .as_ref()
+                    .map_or_else(|| document.revision.clone(), |(_, r)| r.clone())
+            });
+            let id = tab.id;
+            tab.preview_generation = tab.preview_generation.wrapping_add(1);
+            let generation = tab.preview_generation;
+            if let Some(d) = tab.document_mut() {
+                d.request_generation = generation;
+            }
+            tab.pending_reads.insert(path.clone());
+            let sent = self.push_endpoint_method_with_kind(
+                Method::FileRead(FileReadParams {
+                    path: path.clone(),
+                    revision,
+                }),
+                PendingEndpointKind::Investigation(FileRequest::Read {
+                    id,
+                    path,
+                    generation,
+                    prepare: false,
+                }),
+                outcome,
+            );
+            if !sent {
+                if let Some(tab) = self.investigation_mut() {
+                    tab.pending_reads.clear();
+                }
+            }
+        }
+    }
+    fn restore_investigations(&mut self, outcome: &mut ClientShellInput) {
+        if self.workbench.saved.is_empty()
+            || self.snapshot.is_none()
+            || !self.endpoint_is_online(&self.active_endpoint_id)
+        {
+            return;
+        }
+        if !self.supports_endpoint_method(&Method::FileRead(FileReadParams {
+            path: String::new(),
+            revision: None,
+        })) {
+            return;
+        }
+        let endpoint = self.active_endpoint_id.storage_key();
+        let workspace = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.focused_workspace_id.clone());
+        let Some(position) = self
+            .workbench
+            .saved
+            .iter()
+            .position(|s| s.endpoint == endpoint && s.workspace == workspace)
+        else {
+            return;
+        };
+        let saved = self.workbench.saved.remove(position);
+        let previous = (self.workbench.active, self.workbench.visible);
+        self.open_file_viewer_for(workspace, outcome);
+        let Some(tab) = self.investigation_mut() else {
+            return;
+        };
+        tab.browser.root = Some(saved.root.clone());
+        tab.browser.directories.clear();
+        tab.browser.expanded.clear();
+        tab.browser.expanded.insert(saved.root.clone());
+        tab.horizontal = saved.horizontal;
+        tab.content_search = saved.content_search;
+        tab.query = saved.query.as_str().into();
+        tab.include = saved.include.as_str().into();
+        tab.exclude = saved.exclude.as_str().into();
+        tab.regex = saved.regex;
+        tab.case_sensitive = saved.case_sensitive;
+        tab.whole_word = saved.whole_word;
+        tab.ignored = saved.ignored;
+        tab.documents = saved
+            .files
+            .into_iter()
+            .map(|s| {
+                let mut d = Document::new(s.path);
+                d.cursor = s.cursor;
+                d.scroll = s.scroll;
+                d.horizontal = s.horizontal;
+                d.restored_scroll = true;
+                d
+            })
+            .collect();
+        tab.active_file = saved.active_file.filter(|i| *i < tab.documents.len());
+        tab.schedule_search();
+        // Bump the root request generation, so the initial cwd response cannot
+        // replace the saved root when responses arrive in either order.
+        self.change_file_viewer_root(saved.root, None, outcome);
+        self.workbench.active = previous.0;
+        self.workbench.visible = previous.1;
+    }
+}
+
+impl ClientShellState {
+    pub(in crate::client::shell) fn pump_investigation_prepare(
+        &mut self,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(tab) = self.investigation_mut() else {
+            return;
+        };
+        if !matches!(tab.dialog, Some(Dialog::Replace { .. })) {
+            tab.prepare_queue.clear();
+            return;
+        }
+        let mut requests = Vec::new();
+        while tab.prepare_pending < 2 {
+            let Some(path) = tab.prepare_queue.pop_front() else {
+                break;
+            };
+            tab.prepare_pending += 1;
+            requests.push((tab.id, tab.prepare_generation, path));
+        }
+        for (id, generation, path) in requests {
+            if !self.push_endpoint_method_with_kind(
+                Method::FileRead(FileReadParams {
+                    path: path.clone(),
+                    revision: None,
+                }),
+                PendingEndpointKind::Investigation(FileRequest::Read {
+                    id,
+                    path,
+                    generation,
+                    prepare: true,
+                }),
+                outcome,
+            ) {
+                if let Some(tab) = self.investigation_mut() {
+                    tab.prepare_pending = tab.prepare_pending.saturating_sub(1);
+                    tab.prepare_queue.clear();
+                    tab.prepare_generation = tab.prepare_generation.wrapping_add(1);
+                    tab.prepare_pending = 0;
+                    tab.plan.clear();
+                    tab.dialog = None;
+                    tab.notice =
+                        "could not prepare every selected file; no replacement was applied".into();
+                }
+            }
+        }
+    }
+}
+
+impl ClientShellState {
+    fn reconcile_investigation_boot(&mut self, outcome: &mut ClientShellInput) {
+        let Some(boot) = self
+            .endpoint_boot_id(&self.active_endpoint_id)
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        for tab in self.workbench.tabs.iter_mut().filter(|t| {
+            t.endpoint == self.active_endpoint_id
+                && (t.boot != boot || t.connection_generation != self.active_snapshot_generation)
+        }) {
+            tab.boot = boot.clone();
+            tab.connection_generation = self.active_snapshot_generation;
+            tab.dialog = None;
+            tab.plan.clear();
+            tab.undo.clear();
+            tab.prepare_queue.clear();
+            tab.prepare_pending = 0;
+            tab.prepare_generation = tab.prepare_generation.wrapping_add(1);
+            tab.pending_reads.clear();
+            tab.operation_pending = false;
+            tab.searching = false;
+            tab.schedule_search();
+            for document in tab.documents.iter_mut().chain(tab.preview.iter_mut()) {
+                document.revision.clear();
+            }
+            tab.last_poll = Instant::now() - Duration::from_secs(2);
+            tab.notice = "server reconnected; file state reloading".into();
+            outcome.repaint = true;
+        }
+        if self
+            .workbench
+            .clipboard
+            .as_ref()
+            .is_some_and(|c| c.endpoint == self.active_endpoint_id && c.boot != boot)
+        {
+            self.workbench.clipboard = None;
+        }
+    }
+}

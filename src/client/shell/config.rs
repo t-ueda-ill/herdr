@@ -49,6 +49,13 @@ impl ClientShellState {
             .collect::<Vec<_>>();
         remote_collapsed_groups.sort_by(|left, right| left.profile_id.cmp(&right.profile_id));
         let preferences = preferences::ClientChromePreferences {
+            investigations: self
+                .workbench
+                .tabs
+                .iter()
+                .filter_map(|t| t.save())
+                .chain(self.workbench.saved.iter().cloned())
+                .collect(),
             sidebar_width: self.sidebar_width_manual.then_some(self.sidebar_width),
             sidebar_section_split: self
                 .sidebar_section_split_manual
@@ -151,6 +158,7 @@ impl ClientShellConfig {
             confirm_close: config.ui.confirm_close,
             file_viewer_show_hidden: config.ui.file_viewer_show_hidden,
             file_viewer_show_ignored: config.ui.file_viewer_show_ignored,
+            file_workbench_keys: config.ui.file_workbench_keys.clone(),
             mouse_capture: config.ui.mouse_capture,
             mouse_scroll_lines: config.ui.mouse_scroll_lines(),
             right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
@@ -368,6 +376,7 @@ impl ClientShellConfig {
                 self.confirm_close = ui.confirm_close;
                 self.file_viewer_show_hidden = ui.file_viewer_show_hidden;
                 self.file_viewer_show_ignored = ui.file_viewer_show_ignored;
+                self.file_workbench_keys = ui.file_workbench_keys.clone();
                 self.mouse_capture = ui.mouse_capture;
                 self.mouse_scroll_lines = ui.mouse_scroll_lines();
                 self.right_click_passthrough_modifiers = ui.right_click_passthrough_modifiers();

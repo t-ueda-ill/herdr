@@ -995,6 +995,12 @@
           "description": "Show Git-ignored entries when the file viewer opens. Press i in the viewer to toggle them for that session only."
         },
         {
+          "key": "ui.file_workbench_keys",
+          "type": "table",
+          "default": "{}",
+          "description": "Investigation-only key overrides by action name. Example: [ui.file_workbench_keys] next_file = \"alt+right\". Actions: pin, read, next_file, previous_file, close_file, find_files, search, replace, edit, copy, cut, paste, select_all, rename, delete, actions."
+        },
+        {
           "key": "ui.pane_borders",
           "type": "enum",
           "default": "\"auto\"",

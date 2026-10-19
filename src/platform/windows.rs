@@ -1429,13 +1429,12 @@ fn pane_custom_command_pty_builder_with_comspec(
     builder
 }
 
-/// Why not reuse the scrollback editor command: the file viewer is Unix-first,
-/// and its Windows path handling has not been validated yet.
-pub(crate) fn file_editor_argv(_path: &std::path::Path) -> std::io::Result<Vec<String>> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "opening files in an editor is not supported on Windows hosts yet",
-    ))
+/// Parse the configured editor without involving a shell and preserve the file.
+pub(crate) fn file_editor_argv(path: &std::path::Path) -> std::io::Result<Vec<String>> {
+    let editor = std::env::var("EDITOR")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    scrollback_editor_argv_with_env(path, editor.as_deref())
 }
 
 pub(crate) fn scrollback_editor_argv(path: &std::path::Path) -> std::io::Result<Vec<String>> {
@@ -3444,6 +3443,103 @@ impl Drop for InputSourceRestore {
                 tracing::debug!("restored host IME after prefix mode");
             }
         }
+    }
+}
+
+/// Recycle-only deletion: unsupported volumes fail instead of being unlinked.
+pub(crate) fn trash_file(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, IBindCtx, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        FileOperation, IFileOperation, IFileOperationProgressSink, IShellItem,
+        SHCreateItemFromParsingName, FOFX_EARLYFAILURE, FOFX_RECYCLEONDELETE, FOF_NO_UI,
+    };
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let result = (|| -> windows::core::Result<()> {
+        // This bounded worker owns its COM apartment and all interfaces.
+        unsafe {
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        }
+        struct Apartment;
+        impl Drop for Apartment {
+            fn drop(&mut self) {
+                unsafe {
+                    CoUninitialize();
+                }
+            }
+        }
+        let _apartment = Apartment;
+        unsafe {
+            let operation: IFileOperation =
+                CoCreateInstance(&FileOperation, None, CLSCTX_INPROC_SERVER)?;
+            operation.SetOperationFlags(FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE | FOF_NO_UI)?;
+            let item: IShellItem = SHCreateItemFromParsingName(
+                windows::core::PCWSTR(name.as_ptr()),
+                None::<&IBindCtx>,
+            )?;
+            operation.DeleteItem(&item, None::<&IFileOperationProgressSink>)?;
+            operation.PerformOperations()?;
+            if operation.GetAnyOperationsAborted()?.as_bool()
+                || std::fs::symlink_metadata(path).is_ok()
+            {
+                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    0x800704c7u32 as i32,
+                )));
+            }
+        }
+        Ok(())
+    })();
+    result.map_err(|e| std::io::Error::other(e.to_string()))
+}
+
+pub(crate) fn rename_no_replace(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let source: Vec<_> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target: Vec<_> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    // Flags=0 deliberately denies replacement and cross-volume copy/delete.
+    if unsafe {
+        windows_sys::Win32::Storage::FileSystem::MoveFileExW(source.as_ptr(), target.as_ptr(), 0)
+    } != 0
+    {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Normalize server paths for clients running on a different operating system.
+pub(crate) fn file_path_display(path: &std::path::Path) -> String {
+    let raw = path.to_string_lossy();
+    if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+        format!("//{}", unc.replace('\\', "/"))
+    } else {
+        raw.strip_prefix(r"\\?\").unwrap_or(&raw).replace('\\', "/")
+    }
+}
+
+pub(crate) fn open_text_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+pub(crate) fn copy_symbolic_link(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    let link = std::fs::read_link(source)?;
+    if std::fs::symlink_metadata(source)?.file_attributes()
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY
+        != 0
+    {
+        std::os::windows::fs::symlink_dir(link, target)
+    } else {
+        std::os::windows::fs::symlink_file(link, target)
     }
 }
 

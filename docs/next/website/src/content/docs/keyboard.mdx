@@ -98,24 +98,70 @@ Mouse drag selections and selections started with `v`, Space, or `V` remain acti
 
 ## File viewer
 
-Bind `keys.open_files` (unset by default), choose `open files` from the global menu, or choose `Browse files...` from a workspace's right-click menu to browse files from the focused pane's working directory. The right-click menu focuses that workspace first. The viewer starts in the directory a new tab would open in and stays there until you close it. For an ssh or container pane, that is the launch directory on the host, and the title shows `host:`. In copy mode, only a prefix binding opens the viewer, and opening it keeps copy mode.
+Bind `keys.open_files` (unset by default), choose `open files` from the global menu, or choose `Browse files...` from a workspace menu to open an investigation tab.
+The same action returns to the last terminal, or reopens the last investigation in that workspace.
+The investigation root stays fixed when a terminal changes directory; use its actions menu to change the root or create another investigation.
+The top tab strip switches between terminals and investigations, and the second strip holds pinned files.
+The list/results and document default to top/bottom; `F10` → `toggle split direction` switches to left/right.
 
-| Key | Tree | Filter results |
-| --- | --- | --- |
-| Up / Down, Ctrl+P / Ctrl+N, mouse wheel | Move | Move |
-| Right / Left | Expand / collapse | — |
-| Enter | File: send the path and close. Directory: expand or collapse | File: send the path and close. Directory: return to the tree with it expanded |
-| Space | Send the path and keep the viewer open, directories too | Same |
-| Ctrl+Y | Copy the absolute path, directories too | Same |
-| Ctrl+E | Open the file in your editor | Same |
-| Backspace | With an empty filter, widen the root to its parent | Delete a character |
-| `.` / `i` | Show or hide dotfiles / Git-ignored entries | Typed into the filter |
-| `/` | Focus the filter | — |
-| Esc | Close | Clear the filter and return to the tree |
+| Key | Action |
+| --- | --- |
+| Up / Down, mouse click | Select and preview |
+| Enter, double-click | Pin the file and focus its contents; expand a directory |
+| Space | Focus the preview without pinning |
+| Esc | Clear a document selection/search, then return to the list |
+| Tab / Shift+Tab | Move between fields, results and contents |
+| Ctrl+PageUp / Ctrl+PageDown | Switch pinned file tabs |
+| Ctrl+W | Close the current file tab |
+| Ctrl+P | Find files by fuzzy name/path |
+| Ctrl+Shift+F | Search file contents |
+| Ctrl+H | Open the replacement field |
+| Ctrl+F | Find text inside the displayed document |
+| Ctrl+E | Open the selected file in an external editor |
+| Ctrl+C | Copy selected text in the document, or files in the list |
+| Ctrl+X / Ctrl+V | Cut files / choose a paste destination |
+| Shift+arrows / Shift+click | Select a range of files or text |
+| Ctrl+click / Insert | Toggle an individual file or search match |
+| F2 / Delete | Rename / confirm deletion to trash |
+| F10, right-click | File actions, layout, replacement preview and undo |
 
-A sent path is the shell-quoted absolute path plus one space, with no newline, so you can keep typing around it. Herdr leaves copy mode before sending and sends to a full-screen app as a paste. Ctrl+E runs `${EDITOR:-vi}` from the pane's shell environment in a zoomed overlay pane; quitting the editor closes it and restores the previous focus and zoom. Paths go to the pane whose directory the viewer opened in, once it has focus. When there is no such pane, for example because its shell failed to restore, Enter on a file, Space, and Ctrl+E are refused, and Ctrl+Y still works.
+Content search updates after a short pause and combines a literal or regular expression with include/exclude globs.
+Separate globs with commas; `**/*.rs` includes Rust files at the root and in subdirectories.
+Case sensitivity, whole words and ignored files have separate controls.
+Hidden files are included; `.git`, binary/non-UTF-8 files and symbolic links are excluded from content searches.
+Searches cover at most 50,000 files and 10,000 matches, with a 15-second budget; narrow the conditions when results are limited.
+Text previews support UTF-8 files up to 8 MiB and copy original text without line numbers.
 
-Inside a Git repository, the filter fuzzy-matches every tracked and untracked, non-ignored file in the repository, dotfiles included, and lists results relative to the repository root. Outside Git, or on a server that cannot index, it matches the visible rows by substring. The filter takes no spaces, because Space and Shift+Space always send. Enter on a directory result that dotfiles or ignored entries hide turns on `.` or `i` so it can be shown. `ui.file_viewer_show_hidden` and `ui.file_viewer_show_ignored` choose whether dotfiles and ignored entries show when the viewer opens; `.` and `i` change that only until it closes. With the mouse, click a row to select it, click a directory to expand it, double-click a file to send it, use the buttons along the bottom, and click outside to close.
+Use Insert or Ctrl+click to exclude individual matches from replacement, or `F10` → `toggle matches in current file` for a whole file.
+Enter in the replacement field opens a difference preview; Ctrl+Enter or its apply button writes the selected changes.
+Regular-expression replacements support `$1` and `${name}` capture expansion; literal replacements preserve `$` literally.
+A batch supports up to 1,000 files and 512 KiB of resulting text.
+Files whose revision changed are skipped, and `undo last replacement` restores only files still at the revision written by that replacement.
+Revision checks are optimistic: coordinate concurrent writers while applying replacements.
+
+File copy/cut state stays within one server connection and is shown in the footer.
+Paste and rename show the sources, destination and collision policy before execution; choose skip, another name, or confirmed replacement of files.
+Directories are never merged or replaced.
+Moves use atomic renames; a cross-volume move reports an error, so use copy and then explicitly delete the source when required.
+Deletion uses the host trash service when available; permanent deletion requires its own confirmation.
+Linux requires `gio` for trash, macOS uses Finder, and Windows uses the recycle bin.
+
+The actions menu retains `copy path` and `send path to terminal…`.
+Path sending displays the destination pane and sends quoted text with no newline, while keeping the investigation open.
+External editing uses `$EDITOR` (Unix default `vi`, Windows default `notepad.exe`), then returns to the investigation.
+Investigations browse the selected Herdr server's filesystem; a shell running SSH or a container does not change that host boundary.
+Roots, pinned files, positions, search conditions and orientation restore from local client preferences; contents/results reload and clipboard/undo do not restore.
+External changes refresh the current document, with updates held while text is selected.
+
+Override investigation-only shortcuts separately from terminal bindings:
+
+```toml
+[ui.file_workbench_keys]
+next_file = "alt+right"
+previous_file = "alt+left"
+```
+
+Servers that do not advertise `file.read` retain the legacy path picker, including Enter/Space path sending.
 
 ## Change anything
 
