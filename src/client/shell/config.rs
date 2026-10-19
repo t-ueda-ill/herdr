@@ -61,6 +61,8 @@ impl ClientShellState {
                 .then_some(self.config.agent_panel_sort),
             collapsed_groups,
             remote_collapsed_groups,
+            open_picker: (!self.open_picker_memory.is_empty())
+                .then(|| self.open_picker_memory.clone()),
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);

@@ -25,6 +25,8 @@ pub(crate) struct OverlayRender {
     pub(crate) file_viewer_rows: Vec<(Rect, usize)>,
     pub(crate) file_viewer_buttons: Vec<(Rect, FileViewerButton)>,
     pub(crate) file_viewer_scroll: usize,
+    pub(crate) favorite: Rect,
+    pub(crate) favorite_marks: Vec<(Rect, usize)>,
     pub(crate) help_popup: Rect,
     pub(crate) help_scrollbar: Rect,
     pub(crate) help_scroll_metrics: Option<crate::pane::ScrollMetrics>,

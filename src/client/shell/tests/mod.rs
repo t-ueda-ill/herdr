@@ -266,6 +266,7 @@ mod keybindings_settings;
 mod link_hover;
 mod mobile;
 mod mouse_selection;
+mod open_picker_favorites;
 mod overlay_backdrop;
 mod popup_focus_projection;
 mod ssh_hosts;
