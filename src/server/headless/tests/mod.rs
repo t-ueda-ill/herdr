@@ -1957,12 +1957,12 @@ async fn deferred_worktree_response_moves_only_its_source_client() {
         .get_mut(&51)
         .unwrap()
         .shell_endpoint_command_in_flight = true;
-    let source_surface_revision = server.clients[&51].shell_projection_revision;
+    let source_surface_epoch = server.clients[&51].shell_surface_epoch;
     server
         .clients
         .get_mut(&51)
         .unwrap()
-        .shell_endpoint_command_surface_revision = Some(source_surface_revision);
+        .shell_endpoint_command_surface_epoch = Some(source_surface_epoch);
     server
         .clients
         .get_mut(&51)
@@ -2002,7 +2002,7 @@ async fn deferred_worktree_response_moves_only_its_source_client() {
         .clients
         .get_mut(&51)
         .unwrap()
-        .shell_endpoint_command_surface_revision = Some(source_surface_revision);
+        .shell_endpoint_command_surface_epoch = Some(source_surface_epoch);
     server
         .clients
         .get_mut(&51)
@@ -2045,7 +2045,7 @@ async fn deferred_worktree_response_moves_only_its_source_client() {
         .clients
         .get_mut(&51)
         .unwrap()
-        .shell_endpoint_command_surface_revision = Some(source_surface_revision);
+        .shell_endpoint_command_surface_epoch = Some(source_surface_epoch);
     server
         .clients
         .get_mut(&51)
@@ -2070,6 +2070,144 @@ async fn deferred_worktree_response_moves_only_its_source_client() {
         Some(original_tab_id.as_str())
     );
     shutdown_test_runtimes(&mut server);
+}
+
+fn focused_workspace_target() -> api::schema::WorkspaceCreateParams {
+    api::schema::WorkspaceCreateParams {
+        source_workspace_id: None,
+        cwd: None,
+        focus: true,
+        label: None,
+        env: Default::default(),
+    }
+}
+
+/// Replays the server loop order of a deferred open with focus: the completion creates and
+/// focuses a workspace, a render projects it before the response waiter forwards the
+/// response, then the final response chunk arrives.
+fn assert_deferred_open_moves_source_client_after_render(
+    method: api::schema::Method,
+    result_type: &str,
+) {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("origin")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let (source_control, _source_render) = connect_matching_test_shell(&mut server, 51);
+    let _ = source_control.recv().expect("source snapshot");
+    let origin_tab_id = server.shell_tab_id_for_client(51).unwrap();
+    let api_request_id = format!("endpoint:{}:51:open", server.client_shell_boot_id);
+    server
+        .clients
+        .get_mut(&51)
+        .unwrap()
+        .lease_shell_endpoint_command(&api_request_id, &method);
+    assert!(
+        server.clients[&51]
+            .shell_deferred_navigation_response
+            .is_some(),
+        "an open with focus defers source navigation to its response"
+    );
+
+    server
+        .app
+        .state
+        .workspaces
+        .push(crate::workspace::Workspace::test_new("created"));
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(1);
+    server.app.state.selected = 1;
+    server.reconcile_client_shell_locations();
+    server.app.accept_current_focus_without_events();
+    let created_tab_id = server.app.public_tab_id(1, 0).unwrap();
+    assert_eq!(
+        server.shell_tab_id_for_client(51).as_deref(),
+        Some(origin_tab_id.as_str()),
+        "the source client waits for the response before moving"
+    );
+
+    let revision_before_render = server.clients[&51].shell_projection_revision;
+    server.render_and_stream();
+    assert_ne!(
+        server.clients[&51].shell_projection_revision, revision_before_render,
+        "projecting the created workspace advances the source projection revision"
+    );
+
+    let response = serde_json::json!({
+        "id": api_request_id,
+        "result": {
+            "type": result_type,
+            "tab": { "tab_id": created_tab_id }
+        }
+    });
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellEndpointResponseChunkReady {
+            client_id: 51,
+            boot_id: server.client_shell_boot_id.clone(),
+            request_id: "open".into(),
+            final_chunk: true,
+            data: serde_json::to_vec(&response).unwrap(),
+        }),
+        "moving the source client changes its presentation"
+    );
+    assert_eq!(
+        server.shell_tab_id_for_client(51).as_deref(),
+        Some(created_tab_id.as_str()),
+        "an open with focus moves its source client to the created workspace"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn deferred_ssh_open_moves_source_client_after_render() {
+    assert_deferred_open_moves_source_client_after_render(
+        api::schema::Method::SshOpen(api::schema::SshOpenParams {
+            host: "devbox".into(),
+            target: api::schema::SshOpenTarget::Workspace(focused_workspace_target()),
+        }),
+        "workspace_created",
+    );
+}
+
+#[tokio::test]
+async fn deferred_container_open_moves_source_client_after_render() {
+    assert_deferred_open_moves_source_client_after_render(
+        api::schema::Method::ContainerOpen(api::schema::ContainerOpenParams {
+            container: "app".into(),
+            target: api::schema::ContainerOpenTarget::Workspace(focused_workspace_target()),
+        }),
+        "workspace_created",
+    );
+}
+
+#[tokio::test]
+async fn deferred_ssh_container_open_moves_source_client_after_render() {
+    assert_deferred_open_moves_source_client_after_render(
+        api::schema::Method::SshContainerOpen(api::schema::SshContainerOpenParams {
+            host: "devbox".into(),
+            container: "app".into(),
+            target: api::schema::ContainerOpenTarget::Workspace(focused_workspace_target()),
+        }),
+        "workspace_created",
+    );
+}
+
+#[tokio::test]
+async fn deferred_worktree_open_moves_source_client_after_render() {
+    assert_deferred_open_moves_source_client_after_render(
+        api::schema::Method::WorktreeOpen(api::schema::WorktreeOpenParams {
+            workspace_id: None,
+            cwd: None,
+            path: Some("/tmp/worktree".into()),
+            branch: None,
+            label: None,
+            focus: true,
+            trust_repository: false,
+        }),
+        "worktree_opened",
+    );
 }
 
 #[tokio::test]

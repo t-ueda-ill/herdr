@@ -125,6 +125,7 @@ pub(super) fn render_worktree_open_overlay(
             search_focused: open.search_focused,
             opening: open.opening,
             error: open.error.as_deref(),
+            favorites: false,
         },
         |index| {
             let entry = &open.entries[index];
@@ -132,6 +133,7 @@ pub(super) fn render_worktree_open_overlay(
                 title: &entry.label,
                 status: entry.status_label(),
                 detail: &entry.path,
+                favorite: false,
             }
         },
         p,

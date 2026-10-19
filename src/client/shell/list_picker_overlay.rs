@@ -5,6 +5,8 @@ pub(super) struct PickerRow<'a> {
     pub(super) title: &'a str,
     pub(super) status: &'a str,
     pub(super) detail: &'a str,
+    /// Drawn only when the picker has a favorites column.
+    pub(super) favorite: bool,
 }
 
 /// A filterable list modal: title, `/` filter, two-line rows, open/cancel
@@ -22,7 +24,14 @@ pub(super) struct ListPicker<'a> {
     pub(super) search_focused: bool,
     pub(super) opening: bool,
     pub(super) error: Option<&'a str>,
+    /// Adds a ★ column on every row and a favorite button. Why not on every
+    /// picker: only the open pickers remember favorites.
+    pub(super) favorites: bool,
 }
+
+/// Cells of the ★ column, counted from the row's left edge. The cell after
+/// the star still opens the row, so a slightly missed click is not a toggle.
+const FAVORITE_COLUMN_WIDTH: u16 = 2;
 
 pub(super) fn render_list_picker_overlay<'a>(
     b: &mut Buffer,
@@ -116,6 +125,7 @@ pub(super) fn render_list_picker_overlay<'a>(
         .saturating_sub(visible_count.saturating_sub(1))
         .min(filtered.len().saturating_sub(visible_count));
     let mut row_hits = Vec::new();
+    let mut favorite_marks = Vec::new();
     for (visible, entry_index) in filtered
         .iter()
         .copied()
@@ -126,6 +136,24 @@ pub(super) fn render_list_picker_overlay<'a>(
         let entry = picker_row(entry_index);
         let rect = Rect::new(body.x, body.y + visible as u16 * 2, body.width, 2);
         row_hits.push((rect, entry_index));
+        // Every row reserves the column, so non-favorites have a target and
+        // titles stay aligned whether starred or not.
+        let (title_mark, detail_mark) = match (picker.favorites, entry.favorite) {
+            (false, _) => ("", ""),
+            (true, true) => ("★ ", "  "),
+            (true, false) => ("  ", "  "),
+        };
+        if picker.favorites {
+            favorite_marks.push((
+                Rect::new(
+                    rect.x,
+                    rect.y,
+                    FAVORITE_COLUMN_WIDTH.min(rect.width),
+                    rect.height,
+                ),
+                entry_index,
+            ));
+        }
         let selected = entry_index == picker.selected;
         let style = if selected {
             Style::default().fg(contrast(p)).bg(p.accent)
@@ -138,7 +166,7 @@ pub(super) fn render_list_picker_overlay<'a>(
             rect.x,
             rect.y,
             rect.width,
-            &format!(" {}", entry.title),
+            &format!(" {title_mark}{}", entry.title),
             style.add_modifier(Modifier::BOLD),
         );
         if !entry.status.is_empty() {
@@ -149,7 +177,7 @@ pub(super) fn render_list_picker_overlay<'a>(
             rect.x,
             rect.y + 1,
             rect.width,
-            &format!(" {}", entry.detail),
+            &format!(" {detail_mark}{}", entry.detail),
             if selected {
                 style
             } else {
@@ -186,38 +214,49 @@ pub(super) fn render_list_picker_overlay<'a>(
             Style::default().fg(p.red).bg(p.panel_bg),
         );
     }
-    let buttons = row(inner, &[10, 12], 2, inner.height.saturating_sub(1));
-    let [primary, cancel] = buttons.as_slice() else {
-        return None;
+    let button_row = inner.height.saturating_sub(1);
+    let (primary, favorite, cancel) = if picker.favorites {
+        let buttons = row(inner, &[10, 12, 12], 2, button_row);
+        let [primary, favorite, cancel] = buttons.as_slice() else {
+            return None;
+        };
+        (*primary, *favorite, *cancel)
+    } else {
+        let buttons = row(inner, &[10, 12], 2, button_row);
+        let [primary, cancel] = buttons.as_slice() else {
+            return None;
+        };
+        (*primary, Rect::default(), *cancel)
     };
+    let secondary = Style::default()
+        .fg(p.text)
+        .bg(p.surface0)
+        .add_modifier(Modifier::BOLD);
     button(
         b,
-        *primary,
+        primary,
         " ↵ open ",
         Style::default()
             .fg(contrast(p))
             .bg(p.accent)
             .add_modifier(Modifier::BOLD),
     );
-    button(
-        b,
-        *cancel,
-        " esc cancel ",
-        Style::default()
-            .fg(p.text)
-            .bg(p.surface0)
-            .add_modifier(Modifier::BOLD),
-    );
+    if picker.favorites {
+        button(b, favorite, " * favorite ", secondary);
+    }
+    button(b, cancel, " esc cancel ", secondary);
     Some(OverlayRender {
         area: popup,
-        primary: *primary,
+        primary,
         clear: Rect::default(),
-        cancel: *cancel,
+        cancel,
         navigator_popup: Rect::default(),
         navigator_search: Rect::default(),
         navigator_rows: Vec::new(),
         worktree_search: search,
         worktree_rows: row_hits,
+        favorite,
+        favorite_marks,
         cursor: cursor.filter(|_| !picker.opening),
         ..OverlayRender::default()
     })

@@ -186,11 +186,14 @@ pub(crate) struct ClientConnection {
     pub(crate) shell_agent_view: Option<crate::api::schema::AgentViewSetParams>,
     /// Monotonic shell replacement revision for this connection.
     pub(crate) shell_projection_revision: u64,
+    /// Counts surface activations, so a source-off and source-on rollback starts a new
+    /// presentation lease even though this connection stays the same.
+    pub(crate) shell_surface_epoch: u64,
     /// Whether this shell is waiting for one ordered endpoint command response.
     pub(crate) shell_endpoint_command_in_flight: bool,
-    /// Surface projection epoch that owned the in-flight command. Deferred navigation may run
-    /// only if this exact presentation lease is still active when its response arrives.
-    pub(crate) shell_endpoint_command_surface_revision: Option<u64>,
+    /// Surface epoch that owned the in-flight command. Deferred navigation may run only if
+    /// this exact presentation lease is still active when its response arrives.
+    pub(crate) shell_endpoint_command_surface_epoch: Option<u64>,
     /// Request id and buffered response for a deferred worktree-created navigation.
     pub(crate) shell_deferred_navigation_request_id: Option<String>,
     pub(crate) shell_deferred_navigation_response: Option<Vec<u8>>,
@@ -255,8 +258,9 @@ impl ClientConnection {
             shell_agent_completions: None,
             shell_agent_view: None,
             shell_projection_revision: 0,
+            shell_surface_epoch: 0,
             shell_endpoint_command_in_flight: false,
-            shell_endpoint_command_surface_revision: None,
+            shell_endpoint_command_surface_epoch: None,
             shell_deferred_navigation_request_id: None,
             shell_deferred_navigation_response: None,
             shell_uses_endpoint_keybindings: false,
@@ -475,6 +479,48 @@ impl ClientConnection {
 
     pub(crate) fn is_active_shell_client(&self) -> bool {
         self.is_shell_client() && self.shell_surface_active
+    }
+
+    /// Take the ordered endpoint command lane for one request and record whether its
+    /// response must move this shell when it arrives.
+    pub(crate) fn lease_shell_endpoint_command(
+        &mut self,
+        api_request_id: &str,
+        method: &crate::api::schema::Method,
+    ) {
+        use crate::api::schema::Method;
+
+        self.shell_endpoint_command_in_flight = true;
+        // A later source restore starts a new surface epoch. Keep this request's lease so a
+        // delayed worktree, container or ssh response cannot focus a pane after endpoint
+        // switching. Why not lease `shell_projection_revision`: every snapshot diff advances
+        // it, including the one this request causes when its workspace appears, so the
+        // response would almost always look stale and never move the source shell.
+        self.shell_endpoint_command_surface_epoch = Some(self.shell_surface_epoch);
+        let deferred_request = matches!(
+            method,
+            Method::WorktreeCreate(_)
+                | Method::WorktreeRemove(_)
+                | Method::WorktreeList(_)
+                | Method::WorktreeOpen(_)
+                | Method::ContainerOpen(_)
+                | Method::ContainerList(_)
+                | Method::SshContainerOpen(_)
+                | Method::SshContainerList(_)
+                | Method::SshOpen(_)
+                | Method::SshHosts(_)
+        );
+        let deferred_navigation = match method {
+            Method::WorktreeCreate(params) => params.focus,
+            Method::WorktreeOpen(params) => params.focus,
+            Method::ContainerOpen(params) => params.target.focus(),
+            Method::SshContainerOpen(params) => params.target.focus(),
+            Method::SshOpen(params) => params.target.focus(),
+            _ => false,
+        };
+        self.shell_deferred_navigation_request_id =
+            deferred_request.then(|| api_request_id.to_owned());
+        self.shell_deferred_navigation_response = deferred_navigation.then(Vec::new);
     }
 }
 

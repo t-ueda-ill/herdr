@@ -132,6 +132,8 @@ pub(super) struct ShellHitMap {
     pub(super) file_viewer_rows: Vec<(Rect, usize)>,
     pub(super) file_viewer_buttons: Vec<(Rect, FileViewerButton)>,
     pub(super) file_viewer_scroll: usize,
+    pub(super) overlay_favorite: Rect,
+    pub(super) open_picker_favorites: Vec<(Rect, usize)>,
     pub(super) help_popup: Rect,
     pub(super) help_scrollbar: Rect,
     pub(super) help_scroll_metrics: Option<crate::pane::ScrollMetrics>,
@@ -538,6 +540,11 @@ impl OpenPickerHost {
             Self::Ssh(alias) => alias,
         }
     }
+
+    /// Key of this host's row in the container host picker.
+    pub(super) fn history_key(&self) -> String {
+        format!("host:{}", self.display_name())
+    }
 }
 
 /// Host-stage rows kept while the container stage is shown, so Esc returns
@@ -567,6 +574,15 @@ pub(super) struct ClientOpenPickerEntry {
     pub(super) detail: String,
     /// Set only on rows of the container host stage.
     pub(super) host: Option<OpenPickerHost>,
+    /// Favorites and history identity; see `ClientOpenPickerPreferences`.
+    pub(super) key: String,
+    pub(super) is_default: bool,
+    /// Copied from the favorites at reorder time so drawing needs no lookup.
+    pub(super) favorite: bool,
+    /// Position in the server's listing. Why not rely on a stable sort:
+    /// `entries` is sorted in place, so a later reorder would otherwise keep
+    /// the previous order instead of the server's.
+    pub(super) listing_order: usize,
 }
 
 impl ClientOpenPickerEntry {
@@ -576,7 +592,11 @@ impl ClientOpenPickerEntry {
             title: host.display_name().to_owned(),
             status: "",
             detail,
+            key: host.history_key(),
             host: Some(host),
+            is_default: false,
+            favorite: false,
+            listing_order: 0,
         }
     }
 
@@ -589,14 +609,23 @@ impl ClientOpenPickerEntry {
         };
         Self {
             id: alias.clone(),
+            key: format!("ssh:{alias}"),
             title: alias,
             status: "",
             detail,
             host: None,
+            is_default: false,
+            favorite: false,
+            listing_order: 0,
         }
     }
 
-    pub(super) fn container(info: crate::api::schema::ContainerInfoDto) -> Self {
+    /// `host` is the docker host the listing came from; it scopes the key so
+    /// equally named containers on two hosts are remembered apart.
+    pub(super) fn container(
+        info: crate::api::schema::ContainerInfoDto,
+        host: &OpenPickerHost,
+    ) -> Self {
         let detail = match (info.project, info.service, info.working_dir) {
             (Some(project), Some(service), _) => format!("{project}/{service}"),
             (_, _, Some(working_dir)) => working_dir,
@@ -606,10 +635,16 @@ impl ClientOpenPickerEntry {
             // Why not the Compose reference: replicas of one service share it,
             // and resolving it opens the first replica by name for every row.
             id: info.id,
+            // Why not the docker id: a recreated container keeps its name but
+            // not its id, and the favorite should survive that.
+            key: format!("container:{}:{}", host.display_name(), info.name),
             title: info.name,
             status: if info.is_default { "default" } else { "" },
             detail,
             host: None,
+            is_default: info.is_default,
+            favorite: false,
+            listing_order: 0,
         }
     }
 
@@ -639,8 +674,15 @@ pub(super) struct ClientOpenPickerOverlay {
 
 impl ClientOpenPickerOverlay {
     /// Opens with the filter focused so typing narrows the list at once.
-    pub(super) fn new(source: OpenPickerSource, entries: Vec<ClientOpenPickerEntry>) -> Self {
-        Self {
+    pub(super) fn new(
+        source: OpenPickerSource,
+        mut entries: Vec<ClientOpenPickerEntry>,
+        memory: &preferences::ClientOpenPickerPreferences,
+    ) -> Self {
+        for (listing_order, entry) in entries.iter_mut().enumerate() {
+            entry.listing_order = listing_order;
+        }
+        let mut overlay = Self {
             source,
             entries,
             selected: 0,
@@ -650,7 +692,37 @@ impl ClientOpenPickerOverlay {
             opening: false,
             host: OpenPickerHost::Local,
             host_stage: None,
+        };
+        overlay.reorder(memory);
+        overlay.selected = 0;
+        overlay
+    }
+
+    /// Sorts `entries` in place, so filtering and row hits keep the order
+    /// without a separate index map. The selection follows its entry.
+    pub(super) fn reorder(&mut self, memory: &preferences::ClientOpenPickerPreferences) {
+        let ranking = memory.ranking();
+        let mut ranked = std::mem::take(&mut self.entries)
+            .into_iter()
+            .enumerate()
+            .map(|(position, mut entry)| {
+                entry.favorite = ranking.is_favorite(&entry.key);
+                (position, entry)
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by_cached_key(|(_, entry)| {
+            (
+                ranking.rank(&entry.key, entry.is_default),
+                entry.listing_order,
+            )
+        });
+        if let Some(selected) = ranked
+            .iter()
+            .position(|(position, _)| *position == self.selected)
+        {
+            self.selected = selected;
         }
+        self.entries = ranked.into_iter().map(|(_, entry)| entry).collect();
     }
 
     pub(super) fn filtered_indices(&self) -> Vec<usize> {
@@ -821,8 +893,11 @@ pub(super) enum PendingEndpointKind {
     PrepareOpenPicker(OpenPickerSource),
     /// Lists one docker host's containers for the second picker stage.
     ListContainers(OpenPickerHost),
-    OpenPicker,
     FileViewer(FileViewerRequest),
+    /// `history_keys` are recorded only once the workspace exists.
+    OpenPicker {
+        history_keys: Vec<String>,
+    },
     SelectionCopy,
     PaneScroll {
         pane_id: String,
@@ -1063,6 +1138,7 @@ pub(crate) struct ClientShellState {
     pub(super) tab_press: Option<ClientTabPress>,
     pub(super) collapsed_groups: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
+    pub(super) open_picker_memory: preferences::ClientOpenPickerPreferences,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, String)>,
@@ -1239,6 +1315,7 @@ impl ClientShellState {
             tab_press: None,
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
+            open_picker_memory: preferences.open_picker.unwrap_or_default(),
             workspace_scroll: 0,
             agent_scroll: 0,
             pending_agent_reveal: None,
@@ -2082,7 +2159,7 @@ impl ClientShellState {
 
 #[cfg(test)]
 mod container_entry_tests {
-    use super::ClientOpenPickerEntry;
+    use super::{ClientOpenPickerEntry, OpenPickerHost};
     use crate::api::schema::ContainerInfoDto;
 
     fn replica(id: &str, name: &str) -> ContainerInfoDto {
@@ -2101,8 +2178,14 @@ mod container_entry_tests {
 
     #[test]
     fn compose_replicas_sharing_a_reference_get_their_own_entry_ids() {
-        let first = ClientOpenPickerEntry::container(replica("aaaaaaaaaaaa", "review-web-1"));
-        let second = ClientOpenPickerEntry::container(replica("bbbbbbbbbbbb", "review-web-2"));
+        let first = ClientOpenPickerEntry::container(
+            replica("aaaaaaaaaaaa", "review-web-1"),
+            &OpenPickerHost::Local,
+        );
+        let second = ClientOpenPickerEntry::container(
+            replica("bbbbbbbbbbbb", "review-web-2"),
+            &OpenPickerHost::Local,
+        );
 
         assert_ne!(first.id, second.id);
         assert_eq!(first.id, "aaaaaaaaaaaa");

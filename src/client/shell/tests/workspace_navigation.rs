@@ -969,6 +969,47 @@ fn navigation_highlight_ends_for_noop_focus_and_focused_creation() {
     }
 }
 
+#[test]
+fn navigation_highlight_ends_for_focused_ssh_and_container_opens() {
+    for focus in [false, true] {
+        let target = crate::api::schema::WorkspaceCreateParams {
+            source_workspace_id: None,
+            cwd: None,
+            focus,
+            label: None,
+            env: Default::default(),
+        };
+        for method in [
+            crate::api::schema::Method::SshOpen(crate::api::schema::SshOpenParams {
+                host: "devbox".into(),
+                target: crate::api::schema::SshOpenTarget::Workspace(target.clone()),
+            }),
+            crate::api::schema::Method::ContainerOpen(crate::api::schema::ContainerOpenParams {
+                container: "app".into(),
+                target: crate::api::schema::ContainerOpenTarget::Workspace(target.clone()),
+            }),
+            crate::api::schema::Method::SshContainerOpen(
+                crate::api::schema::SshContainerOpenParams {
+                    host: "devbox".into(),
+                    container: "app".into(),
+                    target: crate::api::schema::ContainerOpenTarget::Workspace(target.clone()),
+                },
+            ),
+        ] {
+            let method_name = crate::api::api_method_name(&method).to_owned();
+            let mut state = local_navigation_state(false);
+            request_local_navigation(&mut state, 2);
+            let mut outcome = ClientShellInput::default();
+            state.push_endpoint_method(method, &mut outcome);
+            assert_eq!(
+                state.pending_workspace_highlight.is_none(),
+                focus,
+                "{method_name} with focus={focus}"
+            );
+        }
+    }
+}
+
 // Kitty keyboard protocol (CSI u) encodings of `[` (codepoint 91).
 const KITTY_CTRL_BRACKET: &[u8] = b"\x1b[91;5u";
 const KITTY_CTRL_SHIFT_BRACKET: &[u8] = b"\x1b[91;6u";
