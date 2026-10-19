@@ -525,6 +525,14 @@ mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::*;
 
+#[cfg(all(test, not(windows)))]
+pub(crate) fn set_file_modified_for_test(
+    path: &std::path::Path,
+    modified: std::time::SystemTime,
+) -> std::io::Result<()> {
+    std::fs::File::open(path)?.set_modified(modified)
+}
+
 #[cfg(not(windows))]
 pub(crate) use process_cwd as pane_process_cwd;
 

@@ -25,6 +25,25 @@ pub(crate) use power::monitor_host_power;
 
 static ALLOW_UNELEVATED_CLIENTS: OnceLock<bool> = OnceLock::new();
 
+#[cfg(test)]
+pub(crate) fn set_file_modified_for_test(
+    path: &std::path::Path,
+    modified: SystemTime,
+) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+    };
+
+    // Timestamp updates need attribute-write access; backup semantics also
+    // allow opening directories without requesting permission to write data.
+    std::fs::OpenOptions::new()
+        .access_mode(FILE_WRITE_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?
+        .set_modified(modified)
+}
+
 pub(crate) struct ChildPipe(std::fs::File);
 
 impl ChildPipe {
