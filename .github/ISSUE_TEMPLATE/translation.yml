@@ -33,7 +33,6 @@ body:
       label: Language
       options:
         - 日本語 (Japanese)
-        - 简体中文 (Simplified Chinese)
     validations:
       required: true
 
@@ -41,7 +40,7 @@ body:
     id: problem
     attributes:
       label: What is wrong
-      description: Quote the incorrect or unclear text and explain the problem. Writing in Japanese or Chinese is fine.
+      description: Quote the incorrect or unclear text and explain the problem. Writing in Japanese is fine.
     validations:
       required: true
 

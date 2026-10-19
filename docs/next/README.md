@@ -1,88 +1,162 @@
-# herdr
+# Herdr (t-ueda-ill fork)
 
-> this is the [t-ueda-ill/herdr](https://github.com/t-ueda-ill/herdr) fork of [herdrdev/herdr](https://github.com/herdrdev/herdr). it adds shells inside docker containers and publishes its own releases; `herdr update` follows this fork.
+[日本語](README.ja-JP.md)
 
-<p align="center">
-  <img src="assets/logo.png" alt="herdr" width="100" />
-</p>
+Herdr is a terminal workspace manager for AI coding agents. Run agents and shells
+in separate panes, monitor their status, and detach while they continue working
+in a background server.
 
-<p align="center">
-  <a href="https://herdr.dev">herdr.dev</a> · <a href="#install">install</a> · <a href="https://herdr.dev/docs/quick-start/">quick start</a> · <a href="https://herdr.dev/docs/">docs</a>
-</p>
+This repository is [t-ueda-ill/herdr](https://github.com/t-ueda-ill/herdr), a fork
+of [herdrdev/herdr](https://github.com/herdrdev/herdr). It adds Docker container
+shells and distributes its own stable releases and updates.
 
-<p align="center">
-  English · <a href="README.ja-JP.md">日本語</a> · <a href="README.zh-CN.md">简体中文</a>
-</p>
+**Modification notice:** This README has been rewritten for the t-ueda-ill/herdr
+fork, replacing the upstream presentation.
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-666666?labelColor=333333" alt="Apache 2.0 license" /></a>
-  <a href="https://github.com/t-ueda-ill/herdr/releases/latest"><img src="https://img.shields.io/github/v/release/t-ueda-ill/herdr?label=fork%20release&labelColor=333333&color=666666" alt="latest fork release" /></a>
-  <a href="https://github.com/herdrdev/herdr/releases/latest"><img src="https://img.shields.io/github/v/release/herdrdev/herdr?label=upstream&labelColor=333333&color=666666" alt="latest upstream release" /></a>
-</p>
+## Features
 
----
+- Organize projects into workspaces, tabs, and terminal panes.
+- Run existing coding agents, including Claude Code and Codex, in their own terminals.
+- Track agent states such as working, blocked, and idle.
+- Detach and reconnect without stopping the server's running processes.
+- Work with local terminals and remote machines over SSH.
+- Open shells in running Docker containers, locally or over SSH.
+- Control workspaces and panes through the CLI and socket API.
+- Use mouse controls, context menus, or configurable keyboard shortcuts.
 
-https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
+Detaching keeps processes alive while the server is running. After a server or
+machine restart, saved layouts can be restored and supported agent sessions can
+be resumed; the original processes do not survive the restart.
 
-**the runtime your coding agents live on.**
+## Install
 
-- **detach without stopping work** — herdr keeps terminals running in a background server when you close the client or lose your SSH connection. after a server or machine restart, herdr restores the saved layout and can resume supported agent sessions; the original processes do not survive. [session state →](https://herdr.dev/docs/session-state/)
-- **several machines, one window** — keep local work and saved ssh machines together, with a combined agent list and independent reconnects. [remote machines →](https://herdr.dev/docs/connecting-machines/)
-- **never hunt for the stuck one** — every pane is marked working, blocked, or idle. when an agent stops and needs an answer, herdr says so.
-- **agent-native** — agents drive herdr through the cli and socket api: they can spawn panes, prompt each other, and wait until another agent is genuinely blocked. [agent skill →](https://herdr.dev/docs/agent-skill/)
-- **shells inside running containers** — `herdr workspace create --container REF`, `herdr tab create --container REF`, and `herdr pane split --container REF` open the new shell with `docker exec` inside a running compose service or container, on the host or over a saved ssh machine. `herdr container list` shows what is running. restored panes keep their container. *(fork feature)* [cli reference →](https://github.com/t-ueda-ill/herdr/blob/master/docs/next/website/src/content/docs/cli-reference.mdx#containers)
-- **runs what you already run** — claude code, codex, cursor, opencode, grok and the rest. herdr doesn't wrap or replace them; it owns their terminals. building an agent? [add herdr support →](https://herdr.dev/docs/add-herdr-support/)
-- **keyboard and mouse, both first-class** — tmux-style prefix keys *and* click, drag, split. pick per moment, not per tool.
-- **plugins** — extend panes and workflows. [browse the marketplace →](https://herdr.dev/plugins/)
-- **one rust binary, no electron** — runs in whatever terminal you already use.
+### Linux and macOS
 
----
-
-## install
-
-```bash
+```sh
 curl -fsSL https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/install.sh | sh
 ```
 
-windows: `powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/install.ps1 | iex"` · [endpoint-protected Windows](https://herdr.dev/docs/windows-beta/) · [binaries](https://github.com/t-ueda-ill/herdr/releases)
+The installer supports x86_64 and aarch64 and installs to `~/.local/bin` by
+default. Make sure that directory is on your `PATH`.
 
-`brew install herdr` and `mise use -g herdr` install the upstream build, which updates from herdr.dev, not from this fork. this fork publishes stable releases only; `herdr channel set preview` is rejected. `herdr update` (run outside a herdr session) installs the latest fork release and verifies its checksum.
+### Windows
 
-then start it where the work lives:
+Run in PowerShell:
 
-```bash
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/install.ps1 | iex"
+```
+
+The Windows x86_64 release is a ZIP containing `herdr.exe` and its app-local
+ConPTY runtime. Keep the runtime files alongside the executable when installing
+manually.
+
+All release assets are available on the [fork's releases page](https://github.com/t-ueda-ill/herdr/releases).
+Use this fork's installer or release assets to install this build; upstream
+installation instructions may select the upstream distribution.
+
+## Start using Herdr
+
+Start Herdr from your project directory:
+
+```sh
+cd /path/to/project
 herdr
 ```
 
-run your agents, split panes, walk away. `ctrl+b q` detaches, `herdr` reattaches. [quick start →](https://herdr.dev/docs/quick-start/)
+Launch your agent or shell in a pane. Click to focus panes, drag split borders
+to resize, and right-click to open context menus.
 
-## docs
+The default keyboard prefix is `Ctrl+B`: press it, release it, then press the
+action key.
 
-upstream docs live at [herdr.dev/docs](https://herdr.dev/docs/); fork-only features are documented in [`docs/next`](https://github.com/t-ueda-ill/herdr/tree/master/docs/next/website/src/content/docs). upstream links: [quick start](https://herdr.dev/docs/quick-start/) · [concepts](https://herdr.dev/docs/concepts/) · [supported agents](https://herdr.dev/docs/agents/) · [keyboard](https://herdr.dev/docs/keyboard/) · [configuration](https://herdr.dev/docs/configuration/) · [session state](https://herdr.dev/docs/session-state/) · [connecting machines](https://herdr.dev/docs/connecting-machines/) · [remote](https://herdr.dev/docs/persistence-remote/) · [integrations](https://herdr.dev/docs/integrations/) · [add herdr support to your agent](https://herdr.dev/docs/add-herdr-support/) · [plugins](https://herdr.dev/docs/plugins/) · [socket api](https://herdr.dev/docs/socket-api/)
+| Action | Keys after the prefix |
+| --- | --- |
+| Show current shortcuts | `?` |
+| Create a tab | `c` |
+| Split right / down | `v` / `-` |
+| Move between panes | `h` / `j` / `k` / `l` |
+| Detach | `q` |
 
-## thanks
+Run `herdr` again to reattach to the default session.
 
-every past sponsor and backer is listed in [SPONSORS.md](./SPONSORS.md) — thank you 🐑
+## Docker container shells
 
-upstream enterprise / partnership: hey@herdr.dev
+With a Herdr server running, list containers and open a shell in one:
 
-## agent instructions
-
-if you are an ai agent helping with this repository, read [`AGENTS.md`](./AGENTS.md) before making changes and read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before opening issues or PRs.
-
-## development
-
-```bash
-git clone https://github.com/t-ueda-ill/herdr
-cd herdr
-cargo build --release
-
-just test        # unit tests
-just check       # formatting, tests, and maintenance checks
+```sh
+herdr container list
+herdr workspace create --container myapp/web --label web
 ```
 
-releases: bump `Cargo.toml`/`Cargo.lock` to the next fork version (upstream `0.9.5` → fork `0.9.501`, `0.9.502`, …), push `master`, then push the tag `v<version>`. `.github/workflows/release-fork.yml` builds the five binaries, publishes the GitHub release, and commits `distribution/latest.json` so `herdr update` sees it. see the release section of [`AGENTS.md`](./AGENTS.md).
+The container reference can be a Compose `project/service`, a container name,
+or a container ID. The container must already be running, and the host needs
+access to the Docker CLI and daemon.
 
-## license
+Use `--container` with `herdr tab create` or `herdr pane split` to add a
+container shell to an existing workspace. Add `--ssh HOST` to list or open
+containers on a host configured in `~/.ssh/config`; this requires key-based SSH
+access or an existing shared connection. The TUI also offers an **open
+container** menu.
 
-Herdr is licensed under the [Apache License 2.0](LICENSE).
+Container commands are unsupported on Windows hosts. After a server restart,
+restoring a container pane starts a host shell; it does not reconnect to the
+container automatically. See the [container CLI reference](website/src/content/docs/cli-reference.mdx#containers)
+for options and limitations.
+
+## Updates
+
+Run outside a Herdr session:
+
+```sh
+herdr update
+```
+
+This build checks the fork's release manifest and verifies the downloaded
+asset's checksum. The fork publishes stable releases only; the preview channel
+is unavailable.
+
+## Documentation
+
+- [Quick start](website/src/content/docs/quick-start.mdx)
+- [Keyboard controls](website/src/content/docs/keyboard.mdx)
+- [Configuration](website/src/content/docs/configuration.mdx)
+- [CLI reference, including container commands](website/src/content/docs/cli-reference.mdx)
+- [Session state and restoration](website/src/content/docs/session-state.mdx)
+- [Socket API](website/src/content/docs/socket-api.mdx)
+
+These links point to the working documentation for this checkout under
+`docs/next`; it can include changes that have not been released. See the
+[release notes](https://github.com/t-ueda-ill/herdr/releases) for shipped changes.
+The [upstream documentation](https://herdr.dev/docs/) covers shared features,
+but can differ from this fork.
+
+## Development
+
+Building requires Rust and Zig 0.16.0. Install `just` to use the repository's
+build and validation recipes, and `cargo-nextest` and Bun for the test recipes.
+
+```sh
+git clone https://github.com/t-ueda-ill/herdr.git
+cd herdr
+just build
+just test
+just check
+```
+
+On Windows, `just build` also packages the app-local ConPTY runtime. On Unix,
+`just check` includes Windows cross-compilation, which requires the SDK setup
+described in [AGENTS.md](../../AGENTS.md#testing).
+
+Read [AGENTS.md](../../AGENTS.md) before changing the repository and
+[CONTRIBUTING.md](../../CONTRIBUTING.md) before submitting issues or pull requests.
+Fork release procedures are documented in
+[AGENTS.md](../../AGENTS.md#release-channels-t-ueda-illherdr-fork).
+
+## License and origin
+
+Herdr is distributed under the [Apache License, Version 2.0](../../LICENSE).
+This fork is derived from [herdrdev/herdr](https://github.com/herdrdev/herdr);
+the upstream project and its contributors retain their rights in their work.
+Bundled third-party components retain their respective licenses and notices,
+including those under `vendor/` and `packaging/windows/licenses/`.

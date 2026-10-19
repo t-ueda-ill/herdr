@@ -22,14 +22,9 @@ class DocsTranslationParityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "ja").mkdir()
-            (root / "zh-cn").mkdir()
             (root / "guide.mdx").write_text("# Guide\n\n## Install\n\n### Verify\n", encoding="utf-8")
             (root / "ja" / "guide.mdx").write_text(
                 "# ガイド\n\n## インストール\n\n### 確認\n",
-                encoding="utf-8",
-            )
-            (root / "zh-cn" / "guide.mdx").write_text(
-                "# 指南\n\n## 安装\n\n### 验证\n",
                 encoding="utf-8",
             )
 
@@ -39,17 +34,12 @@ class DocsTranslationParityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "ja").mkdir()
-            (root / "zh-cn").mkdir()
             (root / "cli-reference.mdx").write_text(
                 "# CLI reference\n\n## Launch\n\n## Shell completions\n",
                 encoding="utf-8",
             )
             (root / "ja" / "cli-reference.mdx").write_text(
                 "# CLI リファレンス\n\n## 起動\n",
-                encoding="utf-8",
-            )
-            (root / "zh-cn" / "cli-reference.mdx").write_text(
-                "# CLI 参考\n\n## 启动\n\n## Shell 补全\n",
                 encoding="utf-8",
             )
 
@@ -63,10 +53,8 @@ class DocsTranslationParityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "ja").mkdir()
-            (root / "zh-cn").mkdir()
             (root / "guide.mdx").write_text("# Guide\n", encoding="utf-8")
             (root / "ja" / "old.mdx").write_text("# Old\n", encoding="utf-8")
-            (root / "zh-cn" / "guide.mdx").write_text("# 指南\n", encoding="utf-8")
 
             errors = check_docs_translation_parity(root)
 

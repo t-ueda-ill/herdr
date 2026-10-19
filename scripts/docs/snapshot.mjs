@@ -44,7 +44,10 @@ export function listGitEntries(git, ref, root) {
       const separator = line.indexOf('\t');
       const [mode, type, object] = line.slice(0, separator).split(' ');
       return { mode, type, object, path: line.slice(separator + 1) };
-    });
+    })
+    // This fork retired Simplified Chinese docs, including historical snapshots.
+    // Exclude them from both extraction and comparison of older source commits.
+    .filter((entry) => !entry.path.includes('/src/content/docs/zh-cn/'));
 }
 
 export async function extractGitTree(git, ref, sourceRoot, destinationRoot) {

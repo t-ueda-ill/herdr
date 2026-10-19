@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 describe('preview documentation snapshots', () => {
-  test('snapshots and validates the selected commit exactly', async () => {
+  test('snapshots supported locales and validates the selected commit', async () => {
     const root = await fixture();
     const commit = git(root, ['rev-parse', 'HEAD']).trim();
     await write(root, 'docs/preview/website/stale.mdx', 'stale\n');
@@ -35,6 +35,12 @@ describe('preview documentation snapshots', () => {
       'selected preview\n',
     );
     await expect(read(root, 'docs/preview/website/stale.mdx')).rejects.toThrow();
+    await expect(read(root, 'docs/preview/website/src/content/docs/zh-cn/index.mdx')).rejects.toThrow();
+    expect(await read(root, 'docs/preview/website/src/content/docs/ja/index.mdx')).toBe('日本語\n');
+
+    // A retired locale must not silently reappear in a published snapshot.
+    await write(root, 'docs/preview/website/src/content/docs/zh-cn/index.mdx', 'legacy\n');
+    expect(() => runScript(root, ['check'])).toThrow();
   }, fixtureTimeoutMs);
 
   test('rejects snapshot drift', async () => {
@@ -52,6 +58,8 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'herdr-preview-docs-'));
   temporaryDirectories.push(root);
   await write(root, 'docs/next/website/src/content/docs/index.mdx', 'selected preview\n');
+  await write(root, 'docs/next/website/src/content/docs/ja/index.mdx', '日本語\n');
+  await write(root, 'docs/next/website/src/content/docs/zh-cn/index.mdx', 'legacy\n');
   await write(root, 'docs/next/website/src/data/config-reference.json', '{"preview":true}\n');
   git(root, ['init', '-q']);
   git(root, ['config', 'user.email', 'test@example.com']);
