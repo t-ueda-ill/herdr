@@ -2809,14 +2809,14 @@ impl HeadlessServer {
                 final_chunk,
                 data,
             } => {
-                let command_surface_revision = self.clients.get(&client_id).and_then(|client| {
+                let command_surface_epoch = self.clients.get(&client_id).and_then(|client| {
                     (matches!(client.mode, ClientConnectionMode::ClientShell)
                         && client.shell_endpoint_command_in_flight
                         && boot_id == self.client_shell_boot_id)
-                        .then_some(client.shell_endpoint_command_surface_revision)
+                        .then_some(client.shell_endpoint_command_surface_epoch)
                         .flatten()
                 });
-                let Some(command_surface_revision) = command_surface_revision else {
+                let Some(command_surface_epoch) = command_surface_epoch else {
                     return false;
                 };
                 let completed_deferred_response =
@@ -2830,7 +2830,7 @@ impl HeadlessServer {
                 if final_chunk {
                     if let Some(client) = self.clients.get_mut(&client_id) {
                         client.shell_endpoint_command_in_flight = false;
-                        client.shell_endpoint_command_surface_revision = None;
+                        client.shell_endpoint_command_surface_epoch = None;
                         client.shell_deferred_navigation_request_id = None;
                     }
                 }
@@ -2841,7 +2841,7 @@ impl HeadlessServer {
                 let focused_tabs_before = self.focused_shell_tabs();
                 let navigation_changed = self.clients.get(&client_id).is_some_and(|client| {
                     client.is_active_shell_client()
-                        && client.shell_projection_revision == command_surface_revision
+                        && client.shell_surface_epoch == command_surface_epoch
                 }) && deferred_tab_id
                     .as_deref()
                     .is_some_and(|tab_id| self.focus_shell_client_on_tab(client_id, tab_id));

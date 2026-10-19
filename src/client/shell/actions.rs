@@ -376,6 +376,7 @@ impl ClientShellState {
             crate::api::schema::Method::PaneSplit(params) => params.focus,
             crate::api::schema::Method::SshOpen(params) => params.target.focus(),
             crate::api::schema::Method::ContainerOpen(params) => params.target.focus(),
+            crate::api::schema::Method::SshContainerOpen(params) => params.target.focus(),
             _ => false,
         };
         if changes_focus {
