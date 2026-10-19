@@ -71,6 +71,33 @@ impl ClientShellState {
         open.selected = stage.selected;
         open.query = TextEditor::default();
         open.error = None;
+        open.reorder(&self.open_picker_memory);
+    }
+
+    /// Stars or unstars `index`, or the selected row when `None`, and saves
+    /// it at once like the other chrome preferences.
+    pub(super) fn toggle_open_picker_favorite(
+        &mut self,
+        index: Option<usize>,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(ClientShellOverlay::OpenPicker(open)) = self.overlay.as_mut() else {
+            return;
+        };
+        if open.opening {
+            return;
+        }
+        let Some(key) = index
+            .or_else(|| open.selected_entry_index())
+            .and_then(|index| open.entries.get(index))
+            .map(|entry| entry.key.clone())
+        else {
+            return;
+        };
+        self.open_picker_memory.toggle_favorite(&key);
+        open.reorder(&self.open_picker_memory);
+        outcome.repaint = true;
+        self.persist_chrome_preferences(outcome);
     }
 
     pub(super) fn insert_open_picker_overlay_text(&mut self, text: &str) -> bool {
@@ -96,6 +123,13 @@ impl ClientShellState {
         let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
         let opening = open.opening;
         let search_focused = open.search_focused;
+        // Taken before the filter, so `*` never reaches the query, as Enter
+        // never does. Why not let the filter have it: container names and
+        // listed ssh aliases never contain `*`, so such a query matches no row.
+        if code == KeyCode::Char('*') {
+            self.toggle_open_picker_favorite(None, outcome);
+            return true;
+        }
         if !opening && search_focused {
             if let Some(content_changed) = open.query.handle_key(key) {
                 if content_changed {
@@ -164,12 +198,21 @@ impl ClientShellState {
             return;
         };
         let source = open.source;
-        let Some((id, title, entry_host)) = open
-            .entries
-            .get(index)
-            .map(|entry| (entry.id.clone(), entry.title.clone(), entry.host.clone()))
-        else {
+        let Some((id, title, entry_host, entry_key)) = open.entries.get(index).map(|entry| {
+            (
+                entry.id.clone(),
+                entry.title.clone(),
+                entry.host.clone(),
+                entry.key.clone(),
+            )
+        }) else {
             return;
+        };
+        // A container open is the only success the host picker ever sees, so
+        // it also counts as a use of the docker host it ran on.
+        let history_keys = match source {
+            OpenPickerSource::Container => vec![entry_key, open.host.history_key()],
+            OpenPickerSource::SshHost | OpenPickerSource::ContainerHost => vec![entry_key],
         };
         open.selected = index;
         open.opening = true;
@@ -236,7 +279,11 @@ impl ClientShellState {
                 return;
             }
         };
-        if !self.push_endpoint_method_with_kind(method, PendingEndpointKind::OpenPicker, outcome) {
+        if !self.push_endpoint_method_with_kind(
+            method,
+            PendingEndpointKind::OpenPicker { history_keys },
+            outcome,
+        ) {
             if let Some(ClientShellOverlay::OpenPicker(open)) = self.overlay.as_mut() {
                 open.opening = false;
             }
@@ -274,7 +321,11 @@ impl ClientShellState {
                     )
                 }));
                 self.overlay = Some(ClientShellOverlay::OpenPicker(
-                    ClientOpenPickerOverlay::new(OpenPickerSource::ContainerHost, entries),
+                    ClientOpenPickerOverlay::new(
+                        OpenPickerSource::ContainerHost,
+                        entries,
+                        &self.open_picker_memory,
+                    ),
                 ));
                 true
             }
@@ -293,10 +344,13 @@ impl ClientShellState {
                     Ok(ResponseResult::ContainerList { containers }) => {
                         let entries = containers
                             .into_iter()
-                            .map(ClientOpenPickerEntry::container)
+                            .map(|info| ClientOpenPickerEntry::container(info, &host))
                             .collect();
-                        let mut next =
-                            ClientOpenPickerOverlay::new(OpenPickerSource::Container, entries);
+                        let mut next = ClientOpenPickerOverlay::new(
+                            OpenPickerSource::Container,
+                            entries,
+                            &self.open_picker_memory,
+                        );
                         next.host = host;
                         next.host_stage = Some(OpenPickerHostStage {
                             entries: std::mem::take(&mut open.entries),
@@ -326,7 +380,7 @@ impl ClientShellState {
                         ResponseResult::ContainerList { containers },
                     ) => containers
                         .into_iter()
-                        .map(ClientOpenPickerEntry::container)
+                        .map(|info| ClientOpenPickerEntry::container(info, &OpenPickerHost::Local))
                         .collect::<Vec<_>>(),
                     _ => {
                         self.set_endpoint_error("endpoint returned an unexpected listing result");
@@ -342,16 +396,26 @@ impl ClientShellState {
                     });
                 } else {
                     self.overlay = Some(ClientShellOverlay::OpenPicker(
-                        ClientOpenPickerOverlay::new(source, entries),
+                        ClientOpenPickerOverlay::new(source, entries, &self.open_picker_memory),
                     ));
                 }
                 true
             }
-            (PendingEndpointKind::OpenPicker, Ok(ResponseResult::WorkspaceCreated { .. })) => {
+            (
+                PendingEndpointKind::OpenPicker { history_keys },
+                Ok(ResponseResult::WorkspaceCreated { .. }),
+            ) => {
                 self.overlay = None;
+                let now_ms = super::open_picker_memory::now_ms();
+                for key in &history_keys {
+                    self.open_picker_memory.record_open(key, now_ms);
+                }
+                self.persist_chrome_preferences(outcome);
                 true
             }
-            (PendingEndpointKind::OpenPicker, Err(error)) => {
+            // Why not record a rejected open: history is meant to surface
+            // targets that work, not ones the user just failed to reach.
+            (PendingEndpointKind::OpenPicker { .. }, Err(error)) => {
                 // Kept open so the user can pick another entry or retry after
                 // fixing the setup; the rejection itself is not retried.
                 if let Some(ClientShellOverlay::OpenPicker(open)) = self.overlay.as_mut() {

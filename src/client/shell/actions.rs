@@ -860,7 +860,7 @@ impl ClientShellState {
             }
             kind @ (PendingEndpointKind::PrepareOpenPicker(_)
             | PendingEndpointKind::ListContainers(_)
-            | PendingEndpointKind::OpenPicker) => {
+            | PendingEndpointKind::OpenPicker { .. }) => {
                 let mut outcome = ClientShellInput::default();
                 let repaint = self.handle_open_picker_endpoint_result(kind, result, &mut outcome);
                 return (repaint || outcome.repaint, outcome.actions);

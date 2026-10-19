@@ -1547,11 +1547,22 @@ impl ClientShellState {
                             self.cancel_open_picker();
                             outcome.repaint = true;
                         }
+                    } else if super::contains(self.hits.overlay_favorite, point) {
+                        self.toggle_open_picker_favorite(None, outcome);
                     } else if super::contains(self.hits.worktree_search, point) {
                         if let Some(ClientShellOverlay::OpenPicker(open)) = self.overlay.as_mut() {
                             open.search_focused = true;
                             outcome.repaint = true;
                         }
+                    // Checked before the rows: the ★ column lies inside each row.
+                    } else if let Some((_, index)) = self
+                        .hits
+                        .open_picker_favorites
+                        .iter()
+                        .find(|(rect, _)| super::contains(*rect, point))
+                        .copied()
+                    {
+                        self.toggle_open_picker_favorite(Some(index), outcome);
                     } else if let Some((_, index)) = self
                         .hits
                         .worktree_rows
