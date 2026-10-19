@@ -536,6 +536,7 @@ impl ClientShellState {
                 | PendingEndpointKind::PrepareOpenPicker(_)
                 | PendingEndpointKind::ListContainers(_)
                 | PendingEndpointKind::OpenPicker
+                | PendingEndpointKind::FileViewer(_)
                 | PendingEndpointKind::SelectionCopy
                 | PendingEndpointKind::PaneScroll { .. }
                 | PendingEndpointKind::WordSelection { .. }

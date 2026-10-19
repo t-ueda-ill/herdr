@@ -1429,6 +1429,15 @@ fn pane_custom_command_pty_builder_with_comspec(
     builder
 }
 
+/// Why not reuse the scrollback editor command: the file viewer is Unix-first,
+/// and its Windows path handling has not been validated yet.
+pub(crate) fn file_editor_argv(_path: &std::path::Path) -> std::io::Result<Vec<String>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening files in an editor is not supported on Windows hosts yet",
+    ))
+}
+
 pub(crate) fn scrollback_editor_argv(path: &std::path::Path) -> std::io::Result<Vec<String>> {
     let editor = std::env::var("VISUAL")
         .ok()

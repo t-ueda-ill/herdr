@@ -160,6 +160,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # remove_worktree = ""  # optional, unset by default; opens confirmation
 # open_ssh_workspace = "" # optional, unset by default; picks a Host from ~/.ssh/config
 # open_container_workspace = "" # optional, unset by default; picks a running Docker container
+# open_files = ""       # optional, unset by default; browses the focused pane's directory
 # rename_workspace = "prefix+shift+w"
 # close_workspace = "prefix+shift+d"
 # previous_workspace = "" # optional, unset by default
@@ -295,6 +296,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 # Ask for a workspace name before interactive creation.
 # prompt_new_workspace_name = false
+
+# Show dotfiles and Git-ignored entries when the file viewer opens.
+# `.` and `i` toggle them inside the viewer; the toggle is not saved.
+# file_viewer_show_hidden = false
+# file_viewer_show_ignored = false
 
 # Draw borders around split panes.
 # "auto" draws them only for split panes, "always" also frames a lone pane
@@ -824,6 +830,17 @@ mod tests {
         let sidebar = DEFAULT_CONFIG.find("# [ui.sidebar.agents]").unwrap();
 
         assert!(accent < sidebar);
+    }
+
+    #[test]
+    fn default_config_documents_the_file_viewer_settings_unset() {
+        for line in [
+            "# open_files = \"\"",
+            "# file_viewer_show_hidden = false",
+            "# file_viewer_show_ignored = false",
+        ] {
+            assert_eq!(DEFAULT_CONFIG.matches(line).count(), 1, "{line}");
+        }
     }
 
     #[test]

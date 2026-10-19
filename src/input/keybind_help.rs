@@ -209,6 +209,19 @@ pub(crate) fn keybind_help_groups(
                 entry(binding_label(&keybinds.last_pane), "last pane"),
             ],
         ),
+        (
+            "files",
+            vec![
+                entry(binding_label(&keybinds.open_files), "open files"),
+                entry("enter", "send path and close / expand dir"),
+                entry("space", "send path, keep open"),
+                entry("ctrl+e", "edit file"),
+                entry("ctrl+y", "copy path"),
+                entry(". / i", "show dotfiles / ignored"),
+                entry("backspace", "widen root to parent"),
+                entry("/", "filter (no spaces)"),
+            ],
+        ),
     ];
 
     if !keybinds.custom_commands.is_empty() {
@@ -304,6 +317,40 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].1[0].1, "close pane");
         assert!(filter_keybind_help_groups(groups(), "panes").is_empty());
+    }
+
+    #[test]
+    fn help_lists_open_files_with_the_viewer_keys_and_the_no_space_filter() {
+        let unset = keybind_help_groups(&Keybinds::default(), &[]);
+        let (_, files) = unset
+            .iter()
+            .find(|(group, _)| *group == "files")
+            .expect("files group");
+        assert_eq!(files[0], entry("unset", "open files"));
+
+        let config: crate::config::Config =
+            toml::from_str("[keys]\nopen_files = \"prefix+f\"\n").expect("open_files parses");
+        let keybinds = config.keybinds();
+        let groups = keybind_help_groups(&keybinds, &[]);
+        let (_, files) = groups
+            .iter()
+            .find(|(group, _)| *group == "files")
+            .expect("files group");
+        assert_eq!(files[0].0, binding_label(&keybinds.open_files));
+        assert_ne!(files[0].0, "unset");
+        for key in ["enter", "space", "ctrl+e", "ctrl+y", ". / i", "backspace"] {
+            assert!(
+                files.iter().any(|(listed, _)| listed == key),
+                "{key} listed"
+            );
+        }
+        assert!(files
+            .iter()
+            .any(|(key, label)| key == "/" && label.contains("no spaces")));
+
+        let filtered = filter_keybind_help_groups(groups, "open files");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].0, "files");
     }
 
     #[test]

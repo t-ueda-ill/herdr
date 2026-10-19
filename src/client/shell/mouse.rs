@@ -1519,6 +1519,9 @@ impl ClientShellState {
             }
             return;
         }
+        if self.handle_file_viewer_mouse(mouse, outcome) {
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::OpenPicker(_))) {
             // The open picker renders through the shared list picker, so its
             // rows and filter land in the worktree picker's hit slots.

@@ -40,6 +40,7 @@ pub(super) fn command() -> Command {
         .subcommand(workspace_command())
         .subcommand(worktree_command())
         .subcommand(container_command())
+        .subcommand(directory_command())
         .subcommand(ssh_command())
         .subcommand(tab_command())
         .subcommand(notification_command())
@@ -208,6 +209,10 @@ fn worktree_command() -> Command {
 
 fn container_command() -> Command {
     super::container::command()
+}
+
+fn directory_command() -> Command {
+    super::directory::command()
 }
 
 fn ssh_command() -> Command {
@@ -708,6 +713,25 @@ mod tests {
         let list = command_path(&cmd, &["container", "list"]);
         assert!(has_option(list, "workspace"));
         assert!(has_option(list, "json"));
+    }
+
+    #[test]
+    fn spec_includes_file_viewer_commands_for_help_and_completion() {
+        let cmd = super::command();
+        for leaf in ["list", "index"] {
+            let command = command_path(&cmd, &["directory", leaf]);
+            for option in ["workspace", "pane", "path", "trust-repository", "json"] {
+                assert!(
+                    has_option(command, option),
+                    "herdr directory {leaf} should accept --{option}"
+                );
+            }
+            assert!(command.get_about().is_some());
+        }
+        let open_editor = command_path(&cmd, &["pane", "open-editor"]);
+        assert!(has_option(open_editor, "path"));
+        assert!(has_option(open_editor, "pane"));
+        assert!(option_arg(open_editor, "path").is_required_set());
     }
 
     #[test]

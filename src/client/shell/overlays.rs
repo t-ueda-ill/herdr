@@ -1,5 +1,6 @@
 use super::*;
 
+mod file_viewer_overlay;
 mod list_picker_overlay;
 mod open_picker_overlays;
 mod settings_overlay;
@@ -19,6 +20,11 @@ pub(crate) struct OverlayRender {
     pub(crate) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(crate) worktree_search: Rect,
     pub(crate) worktree_rows: Vec<(Rect, usize)>,
+    pub(crate) file_viewer_popup: Rect,
+    pub(crate) file_viewer_filter: Rect,
+    pub(crate) file_viewer_rows: Vec<(Rect, usize)>,
+    pub(crate) file_viewer_buttons: Vec<(Rect, FileViewerButton)>,
+    pub(crate) file_viewer_scroll: usize,
     pub(crate) help_popup: Rect,
     pub(crate) help_scrollbar: Rect,
     pub(crate) help_scroll_metrics: Option<crate::pane::ScrollMetrics>,
@@ -83,6 +89,9 @@ pub(crate) fn render_client_overlay(
         }
         ClientShellOverlay::OpenPicker(v) => {
             open_picker_overlays::render_open_picker_overlay(b, v, p)
+        }
+        ClientShellOverlay::FileViewer(v) => {
+            file_viewer_overlay::render_file_viewer_overlay(b, v, p)
         }
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }

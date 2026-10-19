@@ -536,6 +536,12 @@
           "description": "Pick a running Docker container and open a shell in it in a new workspace. Unset by default."
         },
         {
+          "key": "keys.open_files",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Browse files from the focused pane's working directory and send a path to it. Unset by default."
+        },
+        {
           "key": "keys.rename_workspace",
           "type": "keybinding",
           "default": "\"prefix+shift+w\"",
@@ -975,6 +981,18 @@
           "type": "boolean",
           "default": "false",
           "description": "Ask for a workspace name before interactive TUI creation."
+        },
+        {
+          "key": "ui.file_viewer_show_hidden",
+          "type": "boolean",
+          "default": "false",
+          "description": "Show dotfiles when the file viewer opens. Press . in the viewer to toggle them for that session only."
+        },
+        {
+          "key": "ui.file_viewer_show_ignored",
+          "type": "boolean",
+          "default": "false",
+          "description": "Show Git-ignored entries when the file viewer opens. Press i in the viewer to toggle them for that session only."
         },
         {
           "key": "ui.pane_borders",

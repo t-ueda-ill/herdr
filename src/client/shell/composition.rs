@@ -686,6 +686,11 @@ impl ClientShellState {
                 self.hits.navigator_scroll_metrics = rendered.navigator_scroll_metrics;
                 self.hits.worktree_search = rendered.worktree_search;
                 self.hits.worktree_rows = rendered.worktree_rows;
+                self.hits.file_viewer_popup = rendered.file_viewer_popup;
+                self.hits.file_viewer_filter = rendered.file_viewer_filter;
+                self.hits.file_viewer_rows = rendered.file_viewer_rows;
+                self.hits.file_viewer_buttons = rendered.file_viewer_buttons;
+                self.hits.file_viewer_scroll = rendered.file_viewer_scroll;
                 self.hits.help_popup = rendered.help_popup;
                 self.hits.help_scrollbar = rendered.help_scrollbar;
                 self.hits.help_scroll_metrics = rendered.help_scroll_metrics;
@@ -710,6 +715,9 @@ impl ClientShellState {
         }
         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
             help.scroll = help.scroll.min(self.hits.help_max_scroll);
+        }
+        if let Some(ClientShellOverlay::FileViewer(viewer)) = self.overlay.as_mut() {
+            viewer.scroll = self.hits.file_viewer_scroll;
         }
         if let Some(ClientShellOverlay::ProductAnnouncement(announcement)) = self.overlay.as_mut() {
             announcement.scroll = announcement

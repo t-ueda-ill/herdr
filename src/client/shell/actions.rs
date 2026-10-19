@@ -47,6 +47,10 @@ impl ClientShellState {
                     self.begin_open_picker(source, outcome);
                     return;
                 }
+                if action == crate::input::KeybindAction::OpenFiles {
+                    self.open_file_viewer(outcome);
+                    return;
+                }
                 if action == crate::input::KeybindAction::OpenNavigator {
                     self.open_navigator_overlay();
                     outcome.repaint = true;
@@ -539,10 +543,16 @@ impl ClientShellState {
                 self.pending_workspace_highlight = None;
             }
             let code = error.code.as_deref().unwrap_or("invalid_response");
-            if !matches!(
-                code,
-                "confirmation_required" | "stale_content" | "stale_target"
-            ) {
+            let shown_inline = matches!(
+                &pending.kind,
+                PendingEndpointKind::FileViewer(request) if request.reports_errors_inline(code)
+            );
+            if !shown_inline
+                && !matches!(
+                    code,
+                    "confirmation_required" | "stale_content" | "stale_target"
+                )
+            {
                 let (kind, notice_code, title, body) = match code {
                     "endpoint_timeout" => (
                         ClientEndpointNoticeKind::Timeout,
@@ -840,6 +850,12 @@ impl ClientShellState {
             kind @ (PendingEndpointKind::IntegrationList
             | PendingEndpointKind::IntegrationInstall) => {
                 return self.handle_settings_endpoint_result(kind, result);
+            }
+            PendingEndpointKind::FileViewer(request) => {
+                let mut outcome = ClientShellInput::default();
+                let repaint =
+                    self.handle_file_viewer_endpoint_result(request, result, &mut outcome);
+                return (repaint || outcome.repaint, outcome.actions);
             }
             kind @ (PendingEndpointKind::PrepareOpenPicker(_)
             | PendingEndpointKind::ListContainers(_)

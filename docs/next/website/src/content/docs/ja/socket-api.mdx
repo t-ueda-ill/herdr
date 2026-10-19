@@ -100,6 +100,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | コンテナ | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH ホスト | `ssh.open`, `ssh.hosts` |
+| ファイル | `directory.list`、`directory.index`、`pane.open_editor` |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
@@ -394,6 +395,75 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 | `platform_unsupported` | サーバーが Windows 上で動作している |
 
 作成・分割パラメーターは変更されず、SSH ホストは `ssh.open` でのみ渡されます。
+
+## ファイル
+
+`directory.list`、`directory.index`、`pane.open_editor` は TUI のファイルビューアを支えるメソッドです。サーバー側のファイルシステムを読むため、リモートのクライアントにも同じファイルが見えます。3 つとも `workspace_id` と `pane_id` は省略できます。`pane_id` を指定するとそれが優先され、指定しないときは `workspace_id` のワークスペース、またはフォーカス中のワークスペースのフォーカス中のペインが対象になります。ルートは、そのペインから新しいタブを開くときと同じディレクトリです。ssh やコンテナのペインではホスト上の起動ディレクトリになります。生きているペインがないときは、ワークスペースの新しいターミナル用のディレクトリがルートになります。生の `path` は絶対パスでなければなりません。
+
+`directory.list` は 1 つのディレクトリ（`path`、省略時はルート）を一覧します。ディレクトリとディレクトリへのリンクが先で、その後は大文字と小文字を区別しない名前順です。`.git` は返しません。ドットファイルと無視されるエントリもフラグ付きで返し、何を表示するかはクライアントが決めます。2,000 件の上限にはこれらも数えます。
+
+```json
+{ "id": "req_1", "method": "directory.list", "params": { "path": "/home/me/app" } }
+```
+
+```json
+{
+  "id": "req_1",
+  "result": {
+    "type": "directory_list",
+    "root": "/home/me/app",
+    "path": "/home/me/app",
+    "canonical": "/home/me/app",
+    "entries": [
+      { "name": "docs", "kind": "symlink", "target_kind": "dir", "hidden": false, "ignored": false },
+      { "name": "src", "kind": "dir", "hidden": false, "ignored": false },
+      { "name": ".env", "kind": "file", "size": 120, "hidden": true, "ignored": true }
+    ],
+    "truncated": false,
+    "pane_id": "w1:p1"
+  }
+}
+```
+
+`kind` は `file`、`dir`、`symlink`、`other` のいずれかです。`target_kind` はシンボリックリンクの解決先の種類で、リンク切れでは省略されます。`size`（通常のファイルのみ）と `mtime`（Unix エポックからのミリ秒）は省略されることがあります。`canonical` は一覧したディレクトリのシンボリックリンクを解決したパスで、クライアントは祖先と比べてリンクのループを止めます。`ignored` は `git check-ignore` を 1 回呼んで求め、Git の作業ツリーの外では省略されます。`truncated` は、返した件数より多くのエントリがあったときに true になり、そのとき `omitted` が省いた件数を示します。UTF-8 として正しくない名前は JSON の文字列にできないため返さず、その件数を `unlistable` に入れます。`pane_id` は、`root` を作業ディレクトリとする生きているペインです。そのようなペインがなく `root` がフォールバックのディレクトリのときは省略されます。
+
+`directory.index` は、`path`（省略時はルート）を含む Git リポジトリのファイルを一覧します。追跡中・未追跡で無視されないファイルを、`repo_root` からの相対パスで並べ替えて最大 50,000 件返します。ネストしたリポジトリとサブモジュール、UTF-8 として正しくないパスは含めません。リポジトリの外では `repo_root` を省略し、`entries` は空になります。
+
+```json
+{ "id": "req_2", "method": "directory.index", "params": {} }
+```
+
+```json
+{
+  "id": "req_2",
+  "result": {
+    "type": "directory_index",
+    "repo_root": "/home/me/app",
+    "entries": [".env", "README.md", "src/main.rs"],
+    "truncated": false
+  }
+}
+```
+
+1 つのリクエスト内の Git の呼び出しは、合わせて 5 秒のデッドラインを共有します。Git がない、リポジトリを拒否した、または時間切れになった場合も、リクエストは `git_error` 付きで成功し、Git を使わない結果に戻ります。つまり `ignored` が省略されるか、索引が空になり、時間切れなら `truncated` も設定されます。`trust_repository` を `true` にすると、worktree のメソッドと同じく、見つかったリポジトリに `safe.directory` を渡します。
+
+`pane.open_editor` は必須の絶対パス `path` でファイルを受け取り、ペインのシェル環境の `${EDITOR:-vi}` を対象ペインの上のズームしたオーバーレイペインで起動します。結果はエディタペインの `pane_info` です。エディタが終了するとオーバーレイが閉じ、元のフォーカスとズームに戻ります。存在しないファイルは、エディタが保存したときにだけ作られます。
+
+エラー:
+
+| コード | 意味 |
+| --- | --- |
+| `invalid_params` | `path` が相対パス、`pane.open_editor` にディレクトリが渡された、または `pane_id` が `workspace_id` に属さない |
+| `not_found` | `directory.list` または `directory.index` の `path` が存在しない |
+| `not_a_directory` | `directory.list` にファイルが渡された |
+| `permission_denied` | ディレクトリを読み取れない |
+| `directory_read_failed` | その他のファイルシステムのエラー |
+| `directory_busy` | すでに 8 件のディレクトリ読み取りが実行中。少し待って再試行する |
+| `workspace_not_found`、`pane_not_found` | 対象が存在しない、または `pane.open_editor` でフォーカス中のペインがない |
+| `stale_pane_target` | `pane.open_editor` の対象が、アクティブなワークスペースのフォーカス中のペインではない |
+| `pane_not_live` | `pane.open_editor` の対象ペインで動いているシェルがない（復元に失敗した場合など） |
+| `editor_failed` | エディタのペインを起動できなかった |
+| `platform_unsupported` | サーバーが Windows 上で動作している。この場合、これらのメソッドは TUI クライアントにも提示されない |
 
 ## エージェントビューのクエリ
 

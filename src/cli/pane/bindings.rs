@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use clap::{ArgMatches, Command};
 
+use crate::api::schema::directory::PaneOpenEditorProjection;
 use crate::api::schema::panes::*;
 use crate::api::schema::{
     ContainerOpenTarget, Method, OutputMatch, PaneAgentState, PaneDirection, PaneTarget,
@@ -660,6 +661,14 @@ pub(super) const LEAVES: &[Leaf] = &[
         Json,
         PaneTargetProjection,
         PaneClose
+    ),
+    leaf!(
+        "open-editor",
+        "Open a file in $EDITOR over the focused pane",
+        "cli:pane:open_editor",
+        Json,
+        PaneOpenEditorProjection,
+        PaneOpenEditor
     ),
     leaf!(
         "send-text",

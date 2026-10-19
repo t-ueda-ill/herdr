@@ -471,6 +471,11 @@ pub(crate) struct RemoteSshConfigPaths {
 pub(crate) const REMOTE_BRIDGE_IDLE_TIMEOUT_SUPPORTED: bool =
     cfg!(any(target_os = "linux", target_os = "macos"));
 
+/// Hosts that serve the file viewer: `directory.list`, `directory.index` and
+/// `pane.open_editor`. Why not Windows yet: canonical paths carry the `\\?\`
+/// prefix and drive-relative forms the client does not handle.
+pub(crate) const FILE_VIEWER_SUPPORTED: bool = cfg!(not(windows));
+
 #[cfg(unix)]
 mod remote_bridge;
 #[cfg(all(test, unix))]

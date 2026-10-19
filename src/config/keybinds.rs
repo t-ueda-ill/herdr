@@ -359,6 +359,7 @@ pub struct Keybinds {
     pub remove_worktree: ActionKeybinds,
     pub open_ssh_workspace: ActionKeybinds,
     pub open_container_workspace: ActionKeybinds,
+    pub open_files: ActionKeybinds,
     pub rename_workspace: ActionKeybinds,
     pub close_workspace: ActionKeybinds,
     pub workspace_picker: ActionKeybinds,
@@ -544,6 +545,7 @@ impl Config {
             remove_worktree: empty_action!(),
             open_ssh_workspace: empty_action!(),
             open_container_workspace: empty_action!(),
+            open_files: empty_action!(),
             rename_workspace: empty_action!(),
             close_workspace: empty_action!(),
             workspace_picker: empty_action!(),
@@ -679,6 +681,7 @@ impl Config {
                 open_container_workspace,
                 source
             );
+            apply_action!(keybinds.open_files, open_files, source);
             apply_action!(keybinds.rename_workspace, rename_workspace, source);
             apply_action!(keybinds.close_workspace, close_workspace, source);
             apply_action!(keybinds.workspace_picker, workspace_picker, source);
@@ -1732,6 +1735,21 @@ next_tab = "prefix+n"
             .open_container_workspace
             .bindings
             .is_empty());
+    }
+
+    #[test]
+    fn open_files_keybind_is_unset_by_default_and_configurable() {
+        assert!(Config::default().keybinds().open_files.bindings.is_empty());
+
+        let config: Config =
+            toml::from_str("[keys]\nopen_files = \"prefix+f\"\n").expect("open_files parses");
+        assert_eq!(
+            binding_triggers(&config.keybinds().open_files),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('f'),
+                KeyModifiers::empty()
+            ))]
+        );
     }
 
     #[test]

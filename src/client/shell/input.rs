@@ -593,6 +593,9 @@ impl ClientShellState {
                     search_focused: true,
                     ..
                 }))
+        ) || matches!(
+            self.overlay.as_ref(),
+            Some(ClientShellOverlay::FileViewer(viewer)) if viewer.search_focused
         )
     }
 

@@ -183,6 +183,14 @@ pub(crate) fn interactive_shell_command(_argv: &[String], _shell_name: &str) -> 
 }
 
 /// Unsupported platform stub.
+pub(crate) fn file_editor_argv(_path: &std::path::Path) -> std::io::Result<Vec<String>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening files in an editor is not supported on this platform",
+    ))
+}
+
+/// Unsupported platform stub.
 pub(crate) fn scrollback_editor_argv(_path: &std::path::Path) -> std::io::Result<Vec<String>> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,

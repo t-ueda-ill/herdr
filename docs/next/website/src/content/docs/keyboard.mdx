@@ -94,6 +94,27 @@ Press `prefix+[` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-st
 
 Mouse drag selections and selections started with `v`, Space, or `V` remain active during output and redraws, including when part of the selected range is outside the viewport. Copy reads the current text in that range, not a frozen snapshot. Resizing the pane or switching between its normal and alternate screens still clears the selection. Search results and double-click word selections retain their content-change checks.
 
+## File viewer
+
+Bind `keys.open_files` (unset by default), choose `open files` from the global menu, or choose `Browse files...` from a workspace's right-click menu to browse files from the focused pane's working directory. The right-click menu focuses that workspace first. The viewer starts in the directory a new tab would open in and stays there until you close it. For an ssh or container pane, that is the launch directory on the host, and the title shows `host:`. In copy mode, only a prefix binding opens the viewer, and opening it keeps copy mode.
+
+| Key | Tree | Filter results |
+| --- | --- | --- |
+| Up / Down, Ctrl+P / Ctrl+N, mouse wheel | Move | Move |
+| Right / Left | Expand / collapse | — |
+| Enter | File: send the path and close. Directory: expand or collapse | File: send the path and close. Directory: return to the tree with it expanded |
+| Space | Send the path and keep the viewer open, directories too | Same |
+| Ctrl+Y | Copy the absolute path, directories too | Same |
+| Ctrl+E | Open the file in your editor | Same |
+| Backspace | With an empty filter, widen the root to its parent | Delete a character |
+| `.` / `i` | Show or hide dotfiles / Git-ignored entries | Typed into the filter |
+| `/` | Focus the filter | — |
+| Esc | Close | Clear the filter and return to the tree |
+
+A sent path is the shell-quoted absolute path plus one space, with no newline, so you can keep typing around it. Herdr leaves copy mode before sending and sends to a full-screen app as a paste. Ctrl+E runs `${EDITOR:-vi}` from the pane's shell environment in a zoomed overlay pane; quitting the editor closes it and restores the previous focus and zoom. Paths go to the pane whose directory the viewer opened in, once it has focus. When there is no such pane, for example because its shell failed to restore, Enter on a file, Space, and Ctrl+E are refused, and Ctrl+Y still works.
+
+Inside a Git repository, the filter fuzzy-matches every tracked and untracked, non-ignored file in the repository, dotfiles included, and lists results relative to the repository root. Outside Git, or on a server that cannot index, it matches the visible rows by substring. The filter takes no spaces, because Space and Shift+Space always send. Enter on a directory result that dotfiles or ignored entries hide turns on `.` or `i` so it can be shown. `ui.file_viewer_show_hidden` and `ui.file_viewer_show_ignored` choose whether dotfiles and ignored entries show when the viewer opens; `.` and `i` change that only until it closes. With the mouse, click a row to select it, click a directory to expand it, double-click a file to send it, use the buttons along the bottom, and click outside to close.
+
 ## Change anything
 
 Every binding is configurable, including the prefix itself:

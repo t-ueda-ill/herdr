@@ -2,9 +2,11 @@ use std::time::{Duration, Instant};
 
 mod agent_view;
 mod agents;
+mod directory;
 mod env;
 mod integrations;
 mod layouts;
+mod open_editor;
 mod panes;
 pub(crate) mod plugins;
 pub(super) mod responses;
@@ -12,6 +14,8 @@ mod session;
 mod tabs;
 mod workspaces;
 mod worktrees;
+
+pub(crate) use directory::DIRECTORY_READ_SLOTS;
 
 use super::{api_helpers::pane_agent_status, App, Mode, OverlayPaneState, ToastKind};
 use crate::events::AppEvent;
@@ -1147,6 +1151,13 @@ impl App {
                     "ssh host lookups are handled asynchronously by the app runtime",
                 );
             }
+            Method::DirectoryList(_) | Method::DirectoryIndex(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "directory reads are handled asynchronously by the app runtime",
+                );
+            }
             Method::WorktreeCreate(params) => {
                 let _ = params;
                 return responses::encode_error(
@@ -1233,6 +1244,9 @@ impl App {
             Method::PaneClear(target) => return self.handle_pane_clear(request.id, target),
             Method::PaneEditScrollback(target) => {
                 return self.handle_pane_edit_scrollback(request.id, target);
+            }
+            Method::PaneOpenEditor(params) => {
+                return self.handle_pane_open_editor(request.id, params);
             }
             Method::PaneSelectionRead(params) => {
                 return self.handle_pane_selection_read(request.id, params);

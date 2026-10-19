@@ -11,6 +11,18 @@ HOT_PATH_SOURCES = (
     *sorted((PROJECT_ROOT / "src" / "ui").rglob("*.rs")),
     PROJECT_ROOT / "src" / "server" / "render_stream.rs",
 )
+# Drawn every frame; listings and search results are prepared when they change.
+FILE_VIEWER_RENDER_SOURCES = (
+    PROJECT_ROOT / "src" / "client" / "shell" / "file_viewer_overlay.rs",
+)
+FILE_VIEWER_RENDER_FORBIDDEN_CALLS = (
+    (re.compile(r"\bstd::fs\b|\bfs::"), "filesystem access"),
+    (re.compile(r"\bstd::process\b|\bCommand::new\b"), "process spawning"),
+    (
+        re.compile(r"(?:\.|::|\b)(?:rebuild|rank|score)\s*\("),
+        "file viewer row computation; rebuild rows when their inputs change",
+    ),
+)
 APP_SERVER_SOURCES = (
     *sorted((PROJECT_ROOT / "src" / "app").rglob("*.rs")),
     *sorted((PROJECT_ROOT / "src" / "server").rglob("*.rs")),
@@ -168,6 +180,36 @@ class UiHotPathArchitectureTests(unittest.TestCase):
             "App/server code must use narrow terminal-state accessors:\n"
             + "\n".join(violations),
         )
+
+    def test_file_viewer_render_only_draws_prepared_rows(self) -> None:
+        self.assertTrue(all(path.exists() for path in FILE_VIEWER_RENDER_SOURCES))
+        violations = find_violations(
+            FILE_VIEWER_RENDER_SOURCES, FILE_VIEWER_RENDER_FORBIDDEN_CALLS
+        )
+
+        self.assertEqual(
+            violations,
+            [],
+            "The file viewer renderer must only draw rows prepared ahead of the frame:\n"
+            + "\n".join(violations),
+        )
+
+    def test_scanner_catches_file_viewer_render_work(self) -> None:
+        cases = (
+            "fn render() { std::fs::read_dir(path); }",
+            "fn render() { Command::new(\"git\"); }",
+            "fn render() { viewer.rebuild(true); }",
+            "fn render() { rank(&query, paths); }",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                code = production_code(source)
+                self.assertTrue(
+                    any(
+                        pattern.search(code)
+                        for pattern, _ in FILE_VIEWER_RENDER_FORBIDDEN_CALLS
+                    )
+                )
 
     def test_scanner_ignores_non_production_references(self) -> None:
         source = '''

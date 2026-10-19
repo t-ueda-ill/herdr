@@ -8430,3 +8430,48 @@ fn no_handle_internal_event_bypass_in_module() {
         bypass_lines.join("\n  ")
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn directory_list_is_answered_by_its_worker_without_a_render() {
+    let mut server = test_headless_server();
+    let dir = std::env::temp_dir().join(format!("herdr-headless-directory-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let dir = std::fs::canonicalize(dir).unwrap();
+    let mut workspace = crate::workspace::Workspace::test_new("directory");
+    workspace.identity_cwd = dir.clone();
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+
+    let changed = server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+        request: api::schema::Request {
+            id: "files".into(),
+            method: api::schema::Method::DirectoryList(api::schema::DirectoryListParams::default()),
+        },
+        respond_to,
+        response_write_complete: None,
+    });
+
+    assert!(!changed, "a directory read must not request a render");
+    let response: api::schema::SuccessResponse = serde_json::from_str(
+        &response_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("directory.list response"),
+    )
+    .unwrap();
+    let api::schema::ResponseResult::DirectoryList { root, entries, .. } = response.result else {
+        panic!("expected directory list");
+    };
+    assert_eq!(root, dir.display().to_string());
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["src"]
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

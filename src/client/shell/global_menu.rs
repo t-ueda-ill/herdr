@@ -46,7 +46,12 @@ pub(super) fn global_menu_items(
             ClientGlobalMenuAction::WhatsNew,
         ));
     }
-    // Why not first: existing items keep their positions, and detach stays last.
+    // Why not first: settings, keybinds, reload config and what's new keep
+    // their positions, and detach stays last.
+    items.push((
+        "open files",
+        ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenFiles),
+    ));
     items.push((
         "open container",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenContainerWorkspace),

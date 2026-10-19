@@ -323,6 +323,14 @@ pub(crate) fn scrollback_editor_argv(path: &std::path::Path) -> std::io::Result<
     Ok(vec!["/bin/sh".to_string(), "-c".to_string(), command])
 }
 
+/// Opens a user file in `${EDITOR:-vi}`. Unlike the scrollback editor it must
+/// leave the file in place when the editor exits.
+pub(crate) fn file_editor_argv(path: &std::path::Path) -> std::io::Result<Vec<String>> {
+    let quoted_path = shell_quote(&path.display().to_string());
+    let command = format!(r#"edit_file={quoted_path}; eval "${{EDITOR:-vi}} \"\$edit_file\"""#);
+    Ok(vec!["/bin/sh".to_string(), "-c".to_string(), command])
+}
+
 pub(crate) fn interactive_shell_command(argv: &[String], shell_name: &str) -> Option<String> {
     super::interactive_unix_shell_command(argv, shell_name, shell_quote)
 }
@@ -2261,6 +2269,29 @@ mod tests {
         let args = std::fs::read_to_string(&path).expect("args file");
         let _ = std::fs::remove_file(&path);
         assert_eq!(args, "--app-name\nHerdr\n--\n-danger\nbody\n");
+    }
+
+    #[test]
+    fn file_editor_argv_passes_the_quoted_path_to_editor_and_keeps_the_file() {
+        let dir = std::env::temp_dir().join(format!("herdr-file-editor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("it's a file.txt");
+        std::fs::write(&path, "keep").unwrap();
+        let argv = file_editor_argv(&path).unwrap();
+
+        let output = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .env("EDITOR", "printf '%s\\n'")
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{}\n", path.display())
+        );
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

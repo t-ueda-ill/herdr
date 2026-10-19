@@ -353,6 +353,8 @@ pub struct KeysConfig {
     pub open_ssh_workspace: BindingConfig,
     /// Pick a running Docker container and open a shell in it in a new workspace. Unset by default.
     pub open_container_workspace: BindingConfig,
+    /// Browse files from the focused pane's working directory and send a path to it. Unset by default.
+    pub open_files: BindingConfig,
     /// Rename the selected workspace. Default: "prefix+shift+w"
     pub rename_workspace: BindingConfig,
     /// Close the selected workspace. Default: "prefix+shift+d"
@@ -494,6 +496,8 @@ pub(crate) struct KeysConfigOverlay {
     open_ssh_workspace: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     open_container_workspace: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_files: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rename_workspace: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -660,6 +664,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(remove_worktree);
         apply_field!(open_ssh_workspace);
         apply_field!(open_container_workspace);
+        apply_field!(open_files);
         apply_field!(rename_workspace);
         apply_field!(close_workspace);
         apply_field!(workspace_picker);
@@ -767,6 +772,7 @@ impl KeysConfig {
         copy_effective_action_field!(remove_worktree, keybinds.remove_worktree);
         copy_effective_action_field!(open_ssh_workspace, keybinds.open_ssh_workspace);
         copy_effective_action_field!(open_container_workspace, keybinds.open_container_workspace);
+        copy_effective_action_field!(open_files, keybinds.open_files);
         copy_effective_action_field!(rename_workspace, keybinds.rename_workspace);
         copy_effective_action_field!(close_workspace, keybinds.close_workspace);
         copy_effective_action_field!(workspace_picker, keybinds.workspace_picker);
@@ -978,6 +984,12 @@ pub struct UiConfig {
     pub prompt_new_tab_name: bool,
     /// Ask for a workspace name before interactive creation. Default: false.
     pub prompt_new_workspace_name: bool,
+    /// Show dotfiles when the file viewer opens; `.` toggles them for that
+    /// session only. Default: false.
+    pub file_viewer_show_hidden: bool,
+    /// Show Git-ignored entries when the file viewer opens; `i` toggles them
+    /// for that session only. Default: false.
+    pub file_viewer_show_ignored: bool,
     /// Draw borders around split panes. auto draws them only for split panes,
     /// always also frames a lone pane (only while pane_outer_borders is
     /// enabled, since every edge of a lone pane is an outer edge), off
@@ -1141,6 +1153,7 @@ impl Default for KeysConfig {
             remove_worktree: BindingConfig::empty(),
             open_ssh_workspace: BindingConfig::empty(),
             open_container_workspace: BindingConfig::empty(),
+            open_files: BindingConfig::empty(),
             rename_workspace: BindingConfig::one("prefix+shift+w"),
             close_workspace: BindingConfig::one("prefix+shift+d"),
             workspace_picker: BindingConfig::one("prefix+w"),
@@ -1227,6 +1240,8 @@ impl Default for UiConfig {
             confirm_close: true,
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
+            file_viewer_show_hidden: false,
+            file_viewer_show_ignored: false,
             pane_borders: PaneBordersConfig::Auto,
             pane_outer_borders: true,
             pane_scrollbars: true,
@@ -1618,6 +1633,23 @@ prompt_new_workspace_name = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.ui.prompt_new_workspace_name);
+    }
+
+    #[test]
+    fn file_viewer_visibility_defaults_off_and_parses() {
+        let default_config = Config::default();
+        assert!(!default_config.ui.file_viewer_show_hidden);
+        assert!(!default_config.ui.file_viewer_show_ignored);
+
+        let toml = r#"
+[ui]
+file_viewer_show_hidden = true
+file_viewer_show_ignored = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.collect_diagnostics().is_empty());
+        assert!(config.ui.file_viewer_show_hidden);
+        assert!(config.ui.file_viewer_show_ignored);
     }
 
     #[test]

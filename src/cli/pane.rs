@@ -240,6 +240,8 @@ mod tests {
     #[test]
     fn pane_projection_all_leaf_request_values() {
         use serde_json::json;
+        // Absolute on every platform, unlike a literal Unix path.
+        let editor_file = std::env::temp_dir().join("notes.md").display().to_string();
         let cases = [
             ("list", vec![], "cli:pane:list", "pane.list", json!({})),
             (
@@ -355,6 +357,13 @@ mod tests {
                 json!({"pane_id": "pane"}),
             ),
             (
+                "open-editor",
+                vec!["--path", editor_file.as_str()],
+                "cli:pane:open_editor",
+                "pane.open_editor",
+                json!({"path": editor_file}),
+            ),
+            (
                 "send-text",
                 vec!["pane", ""],
                 "cli:request",
@@ -421,6 +430,36 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn pane_open_editor_sends_an_absolute_path_and_optional_target() {
+        // Absolute on every platform, unlike a literal `/srv/app/main.rs`.
+        let file = std::env::temp_dir().join("main.rs").display().to_string();
+        let json = serde_json::to_value(
+            request("open-editor", &["--pane", "w1:p2", "--path", &file]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "cli:pane:open_editor",
+                "method": "pane.open_editor",
+                "params": {"pane_id": "w1:p2", "path": file}
+            })
+        );
+
+        let json =
+            serde_json::to_value(request("open-editor", &["--path", "notes.md"]).unwrap()).unwrap();
+        assert_eq!(
+            json["params"]["path"],
+            std::env::current_dir()
+                .unwrap()
+                .join("notes.md")
+                .display()
+                .to_string()
+        );
+        assert!(request("open-editor", &[]).is_err());
     }
 
     #[test]

@@ -100,6 +100,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | 容器 | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH 主机 | `ssh.open`, `ssh.hosts` |
+| 文件 | `directory.list`、`directory.index`、`pane.open_editor` |
 | 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | 弹窗 | `popup.close` |
@@ -394,6 +395,75 @@ Worktree 命令也发出生命周期事件。`worktree.create` 发出 `workspace
 | `platform_unsupported` | 服务器运行在 Windows 上 |
 
 创建和拆分参数保持不变,SSH 主机只通过 `ssh.open` 传递。
+
+## 文件
+
+`directory.list`、`directory.index` 和 `pane.open_editor` 支撑 TUI 的文件查看器。它们读取服务器端的文件系统，因此远程客户端看到的是同样的文件。三者的 `workspace_id` 和 `pane_id` 都可省略：显式的 `pane_id` 优先，否则目标是 `workspace_id` 所指工作区或聚焦工作区中聚焦的窗格。根目录与从该窗格打开新标签页时使用的目录相同；对于 ssh 或容器窗格，它是主机上的启动目录。没有存活的窗格时，根目录是该工作区新终端使用的目录。原始的 `path` 必须是绝对路径。
+
+`directory.list` 列出一个目录（`path`，省略时为根目录）。目录和指向目录的链接在前，其余按不区分大小写的名称排序。`.git` 不会返回。点文件和被忽略的条目也会带标记返回，由客户端决定显示什么；2,000 条的上限也计入它们。
+
+```json
+{ "id": "req_1", "method": "directory.list", "params": { "path": "/home/me/app" } }
+```
+
+```json
+{
+  "id": "req_1",
+  "result": {
+    "type": "directory_list",
+    "root": "/home/me/app",
+    "path": "/home/me/app",
+    "canonical": "/home/me/app",
+    "entries": [
+      { "name": "docs", "kind": "symlink", "target_kind": "dir", "hidden": false, "ignored": false },
+      { "name": "src", "kind": "dir", "hidden": false, "ignored": false },
+      { "name": ".env", "kind": "file", "size": 120, "hidden": true, "ignored": true }
+    ],
+    "truncated": false,
+    "pane_id": "w1:p1"
+  }
+}
+```
+
+`kind` 为 `file`、`dir`、`symlink` 或 `other`。`target_kind` 是符号链接解析后的类型，悬空链接会省略它。`size`（仅普通文件）和 `mtime`（自 Unix 纪元起的毫秒数）可能省略。`canonical` 是解析了符号链接的被列出目录，客户端将它与祖先目录比较以阻止链接循环。`ignored` 来自一次 `git check-ignore` 调用，在 Git 工作树之外会省略。目录中的条目多于返回数量时，`truncated` 为 true，此时 `omitted` 给出省略的条目数。不是有效 UTF-8 的名称无法写成 JSON 字符串，因此不会返回，其数量记在 `unlistable` 中。`pane_id` 是以 `root` 为工作目录的存活窗格；没有这样的窗格、`root` 是回退目录时会省略。
+
+`directory.index` 列出包含 `path`（省略时为根目录）的 Git 仓库中的文件：已跟踪和未跟踪、未被忽略，路径相对 `repo_root`，已排序，最多 50,000 个。嵌套仓库、子模块以及不是有效 UTF-8 的路径不包括在内。在仓库之外，`repo_root` 会省略，`entries` 为空。
+
+```json
+{ "id": "req_2", "method": "directory.index", "params": {} }
+```
+
+```json
+{
+  "id": "req_2",
+  "result": {
+    "type": "directory_index",
+    "repo_root": "/home/me/app",
+    "entries": [".env", "README.md", "src/main.rs"],
+    "truncated": false
+  }
+}
+```
+
+同一请求中的 Git 调用共享 5 秒的截止时间。Git 不存在、拒绝该仓库或超时时，请求仍会成功并设置 `git_error`，结果退回到不使用 Git 的形式：省略 `ignored`，或索引为空，超时时还会设置 `truncated`。把 `trust_repository` 设为 `true`，会像 worktree 方法一样为找到的仓库传入 `safe.directory`。
+
+`pane.open_editor` 接受必填的绝对路径 `path`（文件），并在目标窗格上方的缩放覆盖窗格中运行窗格 shell 环境里的 `${EDITOR:-vi}`。结果是编辑器窗格的 `pane_info`。编辑器退出后覆盖窗格关闭，并恢复之前的焦点和缩放。不存在的文件只有在编辑器保存时才会创建。
+
+错误:
+
+| 代码 | 含义 |
+| --- | --- |
+| `invalid_params` | `path` 是相对路径、`pane.open_editor` 收到了目录，或 `pane_id` 不属于 `workspace_id` |
+| `not_found` | `directory.list` 或 `directory.index` 的 `path` 不存在 |
+| `not_a_directory` | `directory.list` 收到了文件 |
+| `permission_denied` | 无法读取该目录 |
+| `directory_read_failed` | 其他文件系统错误 |
+| `directory_busy` | 已有 8 个目录读取在运行，请稍后重试 |
+| `workspace_not_found`、`pane_not_found` | 目标不存在，或 `pane.open_editor` 找不到聚焦的窗格 |
+| `stale_pane_target` | `pane.open_editor` 的目标不是活动工作区中聚焦的窗格 |
+| `pane_not_live` | `pane.open_editor` 的目标窗格没有运行中的 shell，例如恢复失败之后 |
+| `editor_failed` | 无法启动编辑器窗格 |
+| `platform_unsupported` | 服务器运行在 Windows 上；此时这些方法也不会向 TUI 客户端公布 |
 
 ## 智能体视图查询
 
