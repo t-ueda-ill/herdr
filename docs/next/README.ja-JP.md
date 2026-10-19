@@ -1,88 +1,149 @@
-# herdr
+# Herdr（t-ueda-ill フォーク）
 
-> これは [herdrdev/herdr](https://github.com/herdrdev/herdr) の fork [t-ueda-ill/herdr](https://github.com/t-ueda-ill/herdr) です。Docker コンテナ内でシェルを開く機能を追加し、独自にリリースを公開しています。`herdr update` はこの fork のリリースを追従します。
+[English](README.md)
 
-<p align="center">
-  <img src="assets/logo.png" alt="herdr" width="100" />
-</p>
+Herdrは、AIコーディングエージェント向けのターミナルワークスペースマネージャーです。
+エージェントやシェルを別々のペインで動かし、状態を確認できます。
+画面からデタッチしても、バックグラウンドサーバー上で処理を継続できます。
 
-<p align="center">
-  <a href="https://herdr.dev">herdr.dev</a> · <a href="#インストール">インストール</a> · <a href="https://herdr.dev/ja/docs/quick-start/">クイックスタート</a> · <a href="https://herdr.dev/ja/docs/">ドキュメント</a>
-</p>
+このリポジトリは、[herdrdev/herdr](https://github.com/herdrdev/herdr)から派生した[t-ueda-ill/herdr](https://github.com/t-ueda-ill/herdr)です。
+Dockerコンテナ内でシェルを開く機能を追加し、このフォーク独自の安定版と更新を配布しています。
 
-<p align="center">
-  <a href="README.md">English</a> · 日本語 · <a href="README.zh-CN.md">简体中文</a>
-</p>
+**変更の明示：** このREADMEは、上流版の構成と説明を置き換え、t-ueda-ill/herdr向けに書き直したものです。
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-666666?labelColor=333333" alt="Apache 2.0 license" /></a>
-  <a href="https://github.com/t-ueda-ill/herdr/releases/latest"><img src="https://img.shields.io/github/v/release/t-ueda-ill/herdr?label=fork%20release&labelColor=333333&color=666666" alt="latest fork release" /></a>
-  <a href="https://github.com/herdrdev/herdr/releases/latest"><img src="https://img.shields.io/github/v/release/herdrdev/herdr?label=upstream&labelColor=333333&color=666666" alt="latest upstream release" /></a>
-</p>
+## 主な機能
 
----
+- プロジェクトをワークスペース、タブ、ターミナルペインで整理
+- Claude CodeやCodexなど、既存のエージェントをそれぞれのターミナルで実行
+- 作業中（working）、入力待ち（blocked）、待機中（idle）などの状態を確認
+- サーバー上のプロセスを動かしたままデタッチし、再接続
+- ローカルのターミナルとSSH接続先のマシンを利用
+- ローカルやSSH接続先で稼働中のDockerコンテナ内にシェルを作成
+- CLIとソケットAPIからワークスペースやペインを操作
+- マウス、コンテキストメニュー、変更可能なキーボードショートカットで操作
 
-https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
-
-**コーディングエージェントを動かし続けるランタイム。**
-
-- **作業を止めずにデタッチ**: クライアントを閉じても SSH が切れても、herdr はバックグラウンドのサーバーでターミナルを動かし続けます。サーバーやマシンを再起動した後は保存したレイアウトを復元し、対応エージェントのセッションを再開できます。元のプロセス自体は残りません。[セッション状態 →](https://herdr.dev/ja/docs/session-state/)
-- **複数マシンを 1 つのウィンドウで**: ローカルの作業と保存済み SSH マシンをまとめて扱えます。エージェント一覧は統合され、再接続はマシンごとに独立しています。[リモートマシン →](https://herdr.dev/ja/docs/connecting-machines/)
-- **詰まっているエージェントを探さなくてよい**: すべてのペインに working、blocked、idle のいずれかの印が付きます。エージェントが止まって回答を待っていれば、herdr がそれを知らせます。
-- **エージェントネイティブ**: エージェントは CLI と socket API から herdr を操作できます。ペインを起動し、互いにプロンプトを送り、相手が本当にブロックされるまで待てます。[agent skill →](https://herdr.dev/ja/docs/agent-skill/)
-- **起動中のコンテナ内でシェルを開く**: `herdr workspace create --container REF`、`herdr tab create --container REF`、`herdr pane split --container REF` は、起動中の Compose サービスやコンテナの中に `docker exec` で新しいシェルを開きます。ホストでも保存済み SSH マシン経由でも使えます。`herdr container list` で起動中のコンテナを確認できます。復元されたペインはコンテナ情報を保持します。この機能は fork 独自です。 [CLI リファレンス →](https://github.com/t-ueda-ill/herdr/blob/master/docs/next/website/src/content/docs/ja/cli-reference.mdx#コンテナ)
-- **いつものツールをそのまま**: claude code、codex、cursor、opencode、grok などをそのまま使えます。herdr はそれらをラップも置き換えもせず、ターミナルを管理するだけです。エージェントを開発している場合は [herdr 対応を追加する →](https://herdr.dev/ja/docs/add-herdr-support/)
-- **キーボードもマウスも同じように使える**: tmux 風のプレフィックスキーと、クリック、ドラッグ、分割の両方に対応します。ツールごとに決めるのではなく、その場その場で選べます。
-- **プラグイン**: ペインとワークフローを拡張できます。[マーケットプレイス →](https://herdr.dev/ja/plugins/)
-- **Rust 製の単一バイナリで Electron 不要**: 普段使っているターミナルでそのまま動きます。
-
----
+デタッチ後もプロセスが動き続けるのは、サーバーが稼働している間です。
+サーバーやマシンを再起動した場合は、保存済みのレイアウトを復元し、対応するエージェントのセッションを再開できますが、元のプロセスは終了しています。
 
 ## インストール
 
-```bash
+### LinuxとmacOS
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/install.sh | sh
 ```
 
-Windows: `powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/install.ps1 | iex"` · [エンドポイント保護された Windows](https://herdr.dev/ja/docs/windows-beta/) · [バイナリ](https://github.com/t-ueda-ill/herdr/releases)
+x86_64とaarch64に対応しています。
+既定のインストール先は`~/.local/bin`です。
+このディレクトリを`PATH`に追加してください。
 
-`brew install herdr` と `mise use -g herdr` は upstream のビルドをインストールします。そのビルドは herdr.dev から更新されるため、この fork には追従しません。この fork は stable リリースのみを公開しており、`herdr channel set preview` は拒否されます。herdr セッションの外で `herdr update` を実行すると、fork の最新リリースをチェックサム検証のうえインストールします。
+### Windows
 
-作業ディレクトリで起動します。
+PowerShellで実行します。
 
-```bash
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/t-ueda-ill/herdr/master/distribution/install.ps1 | iex"
+```
+
+Windows x86_64版は、`herdr.exe`とアプリに同梱するConPTYランタイムを含むZIPで配布しています。
+手動でインストールする場合も、ランタイムのファイルを実行ファイルと同じ場所に置いてください。
+
+配布ファイルは[このフォークのリリース一覧](https://github.com/t-ueda-ill/herdr/releases)から取得できます。
+このビルドを使う場合は、このフォークのインストーラーか配布ファイルを利用してください。
+上流のインストール手順では、上流版が導入される場合があります。
+
+## 基本操作
+
+プロジェクトのディレクトリでHerdrを起動します。
+
+```sh
+cd /path/to/project
 herdr
 ```
 
-エージェントを動かし、ペインを分割したら、席を離れて構いません。`ctrl+b q` でデタッチ、`herdr` で再アタッチします。[クイックスタート →](https://herdr.dev/ja/docs/quick-start/)
+ペイン内でエージェントやシェルを起動してください。
+クリックでペインを選び、境界をドラッグしてサイズを変更し、右クリックでメニューを開けます。
+
+既定のプレフィックスキーは`Ctrl+B`です。
+押して離してから、操作に対応するキーを押します。
+
+| 操作 | プレフィックスの後に押すキー |
+| --- | --- |
+| 現在のショートカットを表示 | `?` |
+| タブを作成 | `c` |
+| 右／下に分割 | `v` / `-` |
+| ペイン間を移動 | `h` / `j` / `k` / `l` |
+| デタッチ | `q` |
+
+再び`herdr`を実行すると、既定のセッションに再接続できます。
+
+## Dockerコンテナ内のシェル
+
+Herdrサーバーが動いている状態で、コンテナを一覧表示し、その中にシェルを開きます。
+
+```sh
+herdr container list
+herdr workspace create --container myapp/web --label web
+```
+
+コンテナの指定には、Composeの`project/service`、コンテナ名、コンテナIDを使えます。
+対象のコンテナは起動済みで、ホストからDocker CLIとデーモンにアクセスできる必要があります。
+
+既存のワークスペースに追加する場合は、`herdr tab create`や`herdr pane split`に`--container`を指定します。
+`--ssh HOST`を付けると、`~/.ssh/config`に設定した接続先のコンテナを一覧表示したり、その中にシェルを開いたりできます。
+SSH接続には、鍵認証か接続済みの共有コネクションが必要です。
+TUIの**open container**メニューからも開けます。
+
+Windowsホストではコンテナコマンドを利用できません。
+サーバー再起動後にコンテナのペインを復元すると、ホスト側のシェルが起動し、コンテナには自動で再接続しません。
+オプションと制限は[コンテナのCLIリファレンス](website/src/content/docs/ja/cli-reference.mdx#コンテナ)を参照してください。
+
+## 更新
+
+Herdrセッションの外で実行します。
+
+```sh
+herdr update
+```
+
+このビルドはフォークのリリースマニフェストを確認し、ダウンロードしたファイルのチェックサムを検証します。
+このフォークは安定版のみを配布し、プレビューチャンネルは提供していません。
 
 ## ドキュメント
 
-upstream のドキュメントは [herdr.dev/docs](https://herdr.dev/ja/docs/) にあります。fork 独自機能は [`docs/next`](https://github.com/t-ueda-ill/herdr/tree/master/docs/next/website/src/content/docs) に記載しています。upstream へのリンク: [クイックスタート](https://herdr.dev/ja/docs/quick-start/) · [コンセプト](https://herdr.dev/ja/docs/concepts/) · [対応エージェント](https://herdr.dev/ja/docs/agents/) · [キーボード](https://herdr.dev/ja/docs/keyboard/) · [設定](https://herdr.dev/ja/docs/configuration/) · [セッション状態](https://herdr.dev/ja/docs/session-state/) · [マシン接続](https://herdr.dev/ja/docs/connecting-machines/) · [リモート](https://herdr.dev/ja/docs/persistence-remote/) · [インテグレーション](https://herdr.dev/ja/docs/integrations/) · [エージェントに herdr 対応を追加する](https://herdr.dev/ja/docs/add-herdr-support/) · [プラグイン](https://herdr.dev/ja/docs/plugins/) · [socket API](https://herdr.dev/ja/docs/socket-api/)
+- [クイックスタート](website/src/content/docs/ja/quick-start.mdx)
+- [キーボード操作](website/src/content/docs/ja/keyboard.mdx)
+- [設定](website/src/content/docs/ja/configuration.mdx)
+- [コンテナコマンドを含むCLIリファレンス](website/src/content/docs/ja/cli-reference.mdx)
+- [セッションの状態と復元](website/src/content/docs/ja/session-state.mdx)
+- [ソケットAPI](website/src/content/docs/ja/socket-api.mdx)
 
-## 謝辞
-
-これまでのスポンサーと支援者は [SPONSORS.md](./SPONSORS.md) に掲載しています。ありがとうございます 🐑
-
-upstream のエンタープライズ / パートナーシップ窓口: hey@herdr.dev
-
-## エージェントへの指示
-
-このリポジトリで作業する AI エージェントは、変更を加える前に [`AGENTS.md`](./AGENTS.md) を、issue や PR を作成する前に [`CONTRIBUTING.md`](./CONTRIBUTING.md) を読んでください。
+これらのリンクは、このチェックアウトの作業用ドキュメントである`docs/next`を指します。
+未リリースの変更を含む場合があるため、配布済みの変更は[リリースノート](https://github.com/t-ueda-ill/herdr/releases)で確認してください。
+[上流のドキュメント](https://herdr.dev/docs/)も共通機能の参考になりますが、このフォークとは異なる場合があります。
 
 ## 開発
 
-```bash
-git clone https://github.com/t-ueda-ill/herdr
-cd herdr
-cargo build --release
+ビルドにはRustとZig 0.16.0が必要です。
+リポジトリのビルドと検証には`just`を、テストには`cargo-nextest`とBunもインストールしてください。
 
-just test        # ユニットテスト
-just check       # フォーマット、テスト、保守チェック
+```sh
+git clone https://github.com/t-ueda-ill/herdr.git
+cd herdr
+just build
+just test
+just check
 ```
 
-リリース手順: `Cargo.toml` と `Cargo.lock` を次の fork バージョンに上げます(upstream の `0.9.5` に対して fork は `0.9.501`、`0.9.502` と続きます)。`master` を push してから `v<version>` タグを push します。`.github/workflows/release-fork.yml` が 5 つのバイナリをビルドして GitHub Release を公開し、`herdr update` が参照する `distribution/latest.json` をコミットします。詳細は [`AGENTS.md`](./AGENTS.md) のリリース節を参照してください。
+Windowsの`just build`は、同梱するConPTYランタイムもパッケージ化します。
+Unixの`just check`にはWindows向けクロスコンパイルが含まれるため、[AGENTS.md](../../AGENTS.md#testing)のSDKセットアップが必要です。
 
-## ライセンス
+変更を加える前に[AGENTS.md](../../AGENTS.md)を、IssueやPRを提出する前に[CONTRIBUTING.md](../../CONTRIBUTING.md)を読んでください。
+フォークのリリース手順は[AGENTS.md](../../AGENTS.md#release-channels-t-ueda-illherdr-fork)に記載しています。
 
-Herdr は [Apache License 2.0](LICENSE) の下で提供されます。
+## ライセンスと派生元
+
+Herdrは[Apache License, Version 2.0](../../LICENSE)で配布しています。
+このフォークは[herdrdev/herdr](https://github.com/herdrdev/herdr)から派生したもので、上流プロジェクトと各貢献者は自身の著作物に関する権利を保持しています。
+同梱する第三者コンポーネントには、それぞれのライセンスと通知が適用されます。
+該当する文書は`vendor/`や`packaging/windows/licenses/`などに含まれています。

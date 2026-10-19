@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_LOCALES = ("ja", "zh-cn")
+DEFAULT_LOCALES = ("ja",)
 
 
 def heading_outline(path: Path) -> list[int]:
