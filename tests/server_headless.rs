@@ -596,6 +596,26 @@ fn server_survives_hangup_and_logs_why_it_stops() {
     );
     assert!(ping_socket(&api_socket).contains("pong"));
 
+    // Ping is answered by the API listener before App initialization finishes.
+    // A workspace request must pass through the event loop, so its response
+    // proves the graceful-stop signal handlers are installed before SIGTERM.
+    let mut ready_stream = UnixStream::connect(&api_socket).expect("connect for readiness");
+    ready_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("set readiness timeout");
+    writeln!(
+        ready_stream,
+        r#"{{"id":"ready","method":"workspace.list","params":{{}}}}"#
+    )
+    .expect("write readiness request");
+    let mut ready_response = String::new();
+    BufReader::new(ready_stream)
+        .read_line(&mut ready_response)
+        .expect("read readiness response");
+    let ready_response: serde_json::Value =
+        serde_json::from_str(&ready_response).expect("parse readiness response");
+    assert!(ready_response.get("result").is_some(), "{ready_response}");
+
     assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
     assert!(
         wait_for_exit(&mut spawned.child, Duration::from_secs(10)),
