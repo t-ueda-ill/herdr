@@ -485,8 +485,7 @@ mod tests {
 
     fn make_old(path: &Path) {
         let old = SystemTime::now() - STAGED_CLIPBOARD_IMAGE_MAX_AGE - Duration::from_secs(3600);
-        let file = fs::File::open(path).expect("open for mtime");
-        file.set_modified(old).expect("set mtime");
+        crate::platform::set_file_modified_for_test(path, old).expect("set mtime");
     }
 
     #[test]
@@ -553,13 +552,20 @@ mod tests {
     fn cleanup_stale_removes_old_staging_directories_and_keeps_fresh_ones() {
         let base = TempBase::new("cleanup");
         let old = stage_in(&base.0, 1, "png", b"old").expect("stage");
-        make_old(&old.path);
         let old_dir = old.path.parent().expect("parent").to_path_buf();
-        make_old(&old_dir);
         let fresh = stage_in(&base.0, 2, "png", b"fresh").expect("stage");
         let unrelated = base.0.join("unrelated");
         fs::create_dir(&unrelated).expect("unrelated");
+
+        // Stage all images before aging: stage_in() also runs cleanup_stale().
+        make_old(&old.path);
+        make_old(&old_dir);
         make_old(&unrelated);
+
+        assert!(old_dir.is_dir());
+        assert_eq!(fs::read(&old.path).expect("read old image"), b"old");
+        assert!(fresh.path.is_file());
+        assert!(unrelated.is_dir());
 
         cleanup_stale(&base.0);
 
