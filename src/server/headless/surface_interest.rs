@@ -20,6 +20,7 @@ impl HeadlessServer {
             }
             let changed = client.shell_surface_active != active;
             if active {
+                client.shell_surface_epoch = client.shell_surface_epoch.saturating_add(1);
                 client.shell_projection_revision =
                     client.shell_projection_revision.saturating_add(1);
                 // Force the next control snapshot to carry this new floor instead of reusing a

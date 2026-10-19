@@ -99,35 +99,7 @@ impl HeadlessServer {
             return false;
         }
         if let Some(client) = self.clients.get_mut(&client_id) {
-            client.shell_endpoint_command_in_flight = true;
-            // A later source restore has a new projection revision. Keep this request's lease
-            // so a delayed worktree, container or ssh response cannot focus a pane after
-            // endpoint switching.
-            client.shell_endpoint_command_surface_revision = Some(client.shell_projection_revision);
-            let deferred_request = matches!(
-                &request.method,
-                api::schema::Method::WorktreeCreate(_)
-                    | api::schema::Method::WorktreeRemove(_)
-                    | api::schema::Method::WorktreeList(_)
-                    | api::schema::Method::WorktreeOpen(_)
-                    | api::schema::Method::ContainerOpen(_)
-                    | api::schema::Method::ContainerList(_)
-                    | api::schema::Method::SshContainerOpen(_)
-                    | api::schema::Method::SshContainerList(_)
-                    | api::schema::Method::SshOpen(_)
-                    | api::schema::Method::SshHosts(_)
-            );
-            let deferred_navigation = match &request.method {
-                api::schema::Method::WorktreeCreate(params) => params.focus,
-                api::schema::Method::WorktreeOpen(params) => params.focus,
-                api::schema::Method::ContainerOpen(params) => params.target.focus(),
-                api::schema::Method::SshContainerOpen(params) => params.target.focus(),
-                api::schema::Method::SshOpen(params) => params.target.focus(),
-                _ => false,
-            };
-            client.shell_deferred_navigation_request_id =
-                deferred_request.then(|| api_request_id.clone());
-            client.shell_deferred_navigation_response = deferred_navigation.then(Vec::new);
+            client.lease_shell_endpoint_command(&api_request_id, &request.method);
         }
         let foreground_changed = self.promote_client_to_foreground(client_id);
         foreground_changed

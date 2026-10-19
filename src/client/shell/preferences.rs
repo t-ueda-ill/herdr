@@ -28,6 +28,27 @@ pub(super) struct ClientChromePreferences {
     pub(super) collapsed_groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) remote_collapsed_groups: Vec<ClientRemoteCollapsedGroups>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) open_picker: Option<ClientOpenPickerPreferences>,
+}
+
+/// Favorites and successful opens of the ssh host, container host and
+/// container pickers. Keys are `ssh:<alias>`, `host:local`, `host:<alias>`,
+/// `container:local:<name>` and `container:<alias>:<name>`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub(super) struct ClientOpenPickerPreferences {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) favorites: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) recent: Vec<ClientOpenPickerRecent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(super) struct ClientOpenPickerRecent {
+    pub(super) key: String,
+    pub(super) last_used_ms: u64,
+    #[serde(default)]
+    pub(super) count: u32,
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {
@@ -120,6 +141,40 @@ mod tests {
 
         assert_eq!(preferences.collapsed_groups, ["/repo"]);
         assert!(preferences.remote_collapsed_groups.is_empty());
+    }
+
+    #[test]
+    fn preferences_written_before_open_picker_memory_load_without_it() {
+        let preferences: ClientChromePreferences =
+            serde_json::from_str(r#"{"sidebar_width":30,"collapsed_groups":["/repo"]}"#)
+                .expect("client chrome preferences without open_picker");
+
+        assert_eq!(preferences.sidebar_width, Some(30));
+        assert_eq!(preferences.open_picker, None);
+    }
+
+    #[test]
+    fn open_picker_memory_round_trips_and_is_omitted_when_absent() {
+        let memory = ClientOpenPickerPreferences {
+            favorites: vec!["ssh:prod".into()],
+            recent: vec![ClientOpenPickerRecent {
+                key: "container:local:redis-1".into(),
+                last_used_ms: 1_700_000_000_000,
+                count: 3,
+            }],
+        };
+        let stored = serde_json::to_string(&ClientChromePreferences {
+            open_picker: Some(memory.clone()),
+            ..ClientChromePreferences::default()
+        })
+        .expect("encode preferences");
+        let restored: ClientChromePreferences =
+            serde_json::from_str(&stored).expect("decode preferences");
+
+        assert_eq!(restored.open_picker, Some(memory));
+        assert!(!serde_json::to_string(&ClientChromePreferences::default())
+            .expect("encode default preferences")
+            .contains("open_picker"));
     }
 
     #[test]

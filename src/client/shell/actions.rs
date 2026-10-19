@@ -376,6 +376,7 @@ impl ClientShellState {
             crate::api::schema::Method::PaneSplit(params) => params.focus,
             crate::api::schema::Method::SshOpen(params) => params.target.focus(),
             crate::api::schema::Method::ContainerOpen(params) => params.target.focus(),
+            crate::api::schema::Method::SshContainerOpen(params) => params.target.focus(),
             _ => false,
         };
         if changes_focus {
@@ -859,7 +860,7 @@ impl ClientShellState {
             }
             kind @ (PendingEndpointKind::PrepareOpenPicker(_)
             | PendingEndpointKind::ListContainers(_)
-            | PendingEndpointKind::OpenPicker) => {
+            | PendingEndpointKind::OpenPicker { .. }) => {
                 let mut outcome = ClientShellInput::default();
                 let repaint = self.handle_open_picker_endpoint_result(kind, result, &mut outcome);
                 return (repaint || outcome.repaint, outcome.actions);

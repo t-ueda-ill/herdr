@@ -40,6 +40,7 @@ pub(super) fn render_open_picker_overlay(
             search_focused: open.search_focused,
             opening: open.opening,
             error: open.error.as_deref(),
+            favorites: true,
         },
         |index| {
             let entry = &open.entries[index];
@@ -47,6 +48,7 @@ pub(super) fn render_open_picker_overlay(
                 title: &entry.title,
                 status: entry.status,
                 detail: &entry.detail,
+                favorite: entry.favorite,
             }
         },
         p,
