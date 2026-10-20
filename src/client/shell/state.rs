@@ -571,6 +571,18 @@ impl OpenPickerSource {
     }
 }
 
+/// Stage 1 mixes two kinds of row, so selection cannot follow `open.source`
+/// alone. Why not a kind on the overlay: stage 1 rows differ one by one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum OpenPickerRowKind {
+    /// Rows of the ssh host picker and of the container stage.
+    Plain,
+    /// Docker host row; selecting it lists that host's containers.
+    Host(OpenPickerHost),
+    /// Favorited container; selecting it opens it without a listing.
+    FavoriteContainer(OpenPickerHost),
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct ClientOpenPickerEntry {
     /// What the open method expects: an ssh alias or a container reference.
@@ -578,8 +590,8 @@ pub(super) struct ClientOpenPickerEntry {
     pub(super) title: String,
     pub(super) status: &'static str,
     pub(super) detail: String,
-    /// Set only on rows of the container host stage.
-    pub(super) host: Option<OpenPickerHost>,
+    /// What selecting the row does; see `OpenPickerRowKind`.
+    pub(super) kind: OpenPickerRowKind,
     /// Favorites and history identity; see `ClientOpenPickerPreferences`.
     pub(super) key: String,
     pub(super) is_default: bool,
@@ -599,7 +611,27 @@ impl ClientOpenPickerEntry {
             status: "",
             detail,
             key: host.history_key(),
-            host: Some(host),
+            kind: OpenPickerRowKind::Host(host),
+            is_default: false,
+            favorite: false,
+            listing_order: 0,
+        }
+    }
+
+    /// A favorited container shown on the host stage. `id` is the saved name:
+    /// the server resolves it with `docker inspect`, so no listing is needed.
+    pub(super) fn favorite_container(host: OpenPickerHost, name: String) -> Self {
+        let (title, detail) = match &host {
+            OpenPickerHost::Local => (name.clone(), "local docker".to_owned()),
+            OpenPickerHost::Ssh(alias) => (format!("{name}@{alias}"), format!("docker on {alias}")),
+        };
+        Self {
+            key: format!("container:{}:{name}", host.display_name()),
+            id: name,
+            title,
+            status: "",
+            detail,
+            kind: OpenPickerRowKind::FavoriteContainer(host),
             is_default: false,
             favorite: false,
             listing_order: 0,
@@ -619,7 +651,7 @@ impl ClientOpenPickerEntry {
             title: alias,
             status: "",
             detail,
-            host: None,
+            kind: OpenPickerRowKind::Plain,
             is_default: false,
             favorite: false,
             listing_order: 0,
@@ -647,7 +679,7 @@ impl ClientOpenPickerEntry {
             title: info.name,
             status: if info.is_default { "default" } else { "" },
             detail,
-            host: None,
+            kind: OpenPickerRowKind::Plain,
             is_default: info.is_default,
             favorite: false,
             listing_order: 0,
@@ -717,10 +749,14 @@ impl ClientOpenPickerOverlay {
             })
             .collect::<Vec<_>>();
         ranked.sort_by_cached_key(|(_, entry)| {
-            (
-                ranking.rank(&entry.key, entry.is_default),
-                entry.listing_order,
-            )
+            let (tier, recent) = ranking.rank(&entry.key, entry.is_default);
+            match entry.kind {
+                // Always above the host rows, and tier 0 even once unstarred:
+                // a row that dropped below the hosts on `*` would be easy to
+                // lose and could not be restored where it was.
+                OpenPickerRowKind::FavoriteContainer(_) => (0u8, 0u8, recent, entry.listing_order),
+                _ => (1, tier, recent, entry.listing_order),
+            }
         });
         if let Some(selected) = ranked
             .iter()

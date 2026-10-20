@@ -198,27 +198,38 @@ impl ClientShellState {
             return;
         };
         let source = open.source;
-        let Some((id, title, entry_host, entry_key)) = open.entries.get(index).map(|entry| {
+        let Some((id, title, kind, entry_key)) = open.entries.get(index).map(|entry| {
             (
                 entry.id.clone(),
                 entry.title.clone(),
-                entry.host.clone(),
+                entry.kind.clone(),
                 entry.key.clone(),
             )
         }) else {
             return;
         };
+        // Dispatched on the row, not `open.source`: the host stage also holds
+        // favorite containers, which open straight from there.
+        let (container_host, host_row) = match kind {
+            OpenPickerRowKind::FavoriteContainer(host) => (Some(host), None),
+            OpenPickerRowKind::Host(host) => (None, Some(host)),
+            OpenPickerRowKind::Plain if source == OpenPickerSource::Container => {
+                (Some(open.host.clone()), None)
+            }
+            OpenPickerRowKind::Plain => (None, None),
+        };
         // A container open is the only success the host picker ever sees, so
         // it also counts as a use of the docker host it ran on.
-        let history_keys = match source {
-            OpenPickerSource::Container => vec![entry_key, open.host.history_key()],
-            OpenPickerSource::SshHost | OpenPickerSource::ContainerHost => vec![entry_key],
+        let history_keys = match &container_host {
+            Some(host) => vec![entry_key, host.history_key()],
+            None => vec![entry_key],
         };
         open.selected = index;
         open.opening = true;
         open.error = None;
-        let ssh_host = open.host.ssh_alias();
-        // Remote rows share names across hosts, so the workspace label says which.
+        let ssh_host = container_host.as_ref().and_then(OpenPickerHost::ssh_alias);
+        // Remote rows share names across hosts, so the workspace label says
+        // which. A favorite row's title already carries it.
         let title = match &ssh_host {
             Some(alias) if source == OpenPickerSource::Container => format!("{title}@{alias}"),
             _ => title,
@@ -230,14 +241,14 @@ impl ClientShellState {
             label: Some(title),
             env: Default::default(),
         };
-        let method = match source {
-            OpenPickerSource::SshHost => {
+        let method = match (source, container_host.is_some()) {
+            (OpenPickerSource::SshHost, _) => {
                 crate::api::schema::Method::SshOpen(crate::api::schema::SshOpenParams {
                     host: id,
                     target: crate::api::schema::SshOpenTarget::Workspace(target),
                 })
             }
-            OpenPickerSource::Container => {
+            (_, true) => {
                 let target = crate::api::schema::ContainerOpenTarget::Workspace(target);
                 match ssh_host {
                     Some(host) => crate::api::schema::Method::SshContainerOpen(
@@ -255,8 +266,13 @@ impl ClientShellState {
                     ),
                 }
             }
-            OpenPickerSource::ContainerHost => {
-                let Some(host) = entry_host else {
+            (OpenPickerSource::Container, false) => {
+                // A listed container row is always `Plain` on the container stage.
+                open.opening = false;
+                return;
+            }
+            (OpenPickerSource::ContainerHost, false) => {
+                let Some(host) = host_row else {
                     open.opening = false;
                     return;
                 };
@@ -309,10 +325,11 @@ impl ClientShellState {
                     self.list_local_containers(outcome);
                     return true;
                 }
-                let mut entries = vec![ClientOpenPickerEntry::container_host(
+                let mut entries = favorite_container_entries(&self.open_picker_memory, &hosts);
+                entries.push(ClientOpenPickerEntry::container_host(
                     OpenPickerHost::Local,
                     "this machine's docker".to_owned(),
-                )];
+                ));
                 entries.extend(hosts.into_iter().map(|host| {
                     let row = ClientOpenPickerEntry::ssh_host(host.alias, host.hostname, host.user);
                     ClientOpenPickerEntry::container_host(
@@ -449,4 +466,34 @@ impl ClientShellState {
             (_, Err(_)) => true,
         }
     }
+}
+
+/// Favorites whose docker host exists on this endpoint. Why not check the
+/// container: that would cost a listing per host before the picker shows; a
+/// stopped one fails on open with the server's own error instead.
+fn favorite_container_entries(
+    memory: &preferences::ClientOpenPickerPreferences,
+    hosts: &[crate::api::schema::SshHostInfoDto],
+) -> Vec<ClientOpenPickerEntry> {
+    memory
+        .favorites
+        .iter()
+        .filter_map(|key| {
+            let (host, name) = key.strip_prefix("container:")?.split_once(':')?;
+            if name.is_empty() {
+                return None;
+            }
+            let host = if host == "local" {
+                OpenPickerHost::Local
+            } else if hosts.iter().any(|known| known.alias == host) {
+                OpenPickerHost::Ssh(host.to_owned())
+            } else {
+                return None;
+            };
+            Some(ClientOpenPickerEntry::favorite_container(
+                host,
+                name.to_owned(),
+            ))
+        })
+        .collect()
 }

@@ -119,6 +119,7 @@ pub(super) fn render_worktree_open_overlay(
             count_noun: "checkouts",
             empty_message: " no matching worktrees",
             total: open.entries.len(),
+            counted: None,
             filtered: open.filtered_indices(),
             selected: open.selected,
             query: &open.query,
@@ -134,6 +135,7 @@ pub(super) fn render_worktree_open_overlay(
                 status: entry.status_label(),
                 detail: &entry.path,
                 favorite: false,
+                unstarred: false,
             }
         },
         p,
