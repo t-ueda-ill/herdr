@@ -214,6 +214,9 @@ pub(in crate::client::shell) struct Investigation {
     pub searching: bool,
     pub preview_generation: u64,
     pub last_poll: Instant,
+    /// Separate from `last_poll` so listings interleave with the document
+    /// poll instead of competing for the same off-host slot.
+    pub last_list_poll: Instant,
     pub pending_reads: BTreeSet<String>,
     pub dialog: Option<Dialog>,
     pub plan: Vec<Replacement>,
@@ -289,6 +292,7 @@ impl Investigation {
             searching: false,
             preview_generation: 0,
             last_poll: Instant::now(),
+            last_list_poll: Instant::now(),
             pending_reads: BTreeSet::new(),
             dialog: None,
             plan: Vec::new(),
@@ -544,6 +548,7 @@ pub(in crate::client::shell) const MENU: &[&str] = &[
     "close investigation",
     "toggle matches in current file",
     "refresh content search",
+    "refresh files",
 ];
 pub(in crate::client::shell) fn operation_params(
     operation: FileOperation,

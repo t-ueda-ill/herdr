@@ -126,8 +126,8 @@ impl ClientShellState {
         }
         let index = self.workbench.active?;
         let tab = &mut self.workbench.tabs[index];
-        let title = format!(
-            " {}{} · {} · F10 actions",
+        let head = format!(
+            " {}{} · {}",
             tab.browser.location_prefix(),
             tab.browser.root.as_deref().unwrap_or("loading…"),
             if tab.content_search && !tab.search_ready {
@@ -138,6 +138,7 @@ impl ClientShellState {
                 "files"
             }
         );
+        let title = format!("{head} · F10 actions");
         text(b, line(area, 0), &title, base.add_modifier(Modifier::BOLD));
         let actions = Rect::new(
             area.right().saturating_sub(13).max(area.x),
@@ -147,6 +148,20 @@ impl ClientShellState {
         );
         text(b, actions, "[F10 actions]", base.fg(p.accent));
         self.investigation_hits.buttons.push((actions, usize::MAX));
+        // Dropped rather than overlapped when the title needs the room.
+        let refresh_width = 12u16;
+        let refresh_x = actions.x.saturating_sub(refresh_width + 1);
+        if actions.x > area.x + refresh_width
+            && refresh_x
+                >= area
+                    .x
+                    .saturating_add(display_width(&head))
+                    .saturating_add(1)
+        {
+            let refresh = Rect::new(refresh_x, area.y, refresh_width, 1);
+            text(b, refresh, "[F5 refresh]", base.fg(p.accent));
+            self.investigation_hits.buttons.push((refresh, 23));
+        }
         let file_bar = line(area, 1);
         let mut x = file_bar.x;
         // Show a bounded neighborhood around the current file tab.
