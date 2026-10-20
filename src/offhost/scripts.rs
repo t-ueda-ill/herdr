@@ -38,6 +38,9 @@ elif [ ! -d "$1" ]; then
 else
   cd -P -- "$1" 2>/dev/null || { printf 'eacces\0'; exit 0; }
 fi
+# Why check: a directory with search but no read permission passes `cd`, yet
+# its globs match nothing, which would read as an empty directory.
+[ -r . ] || { printf 'eacces\0'; exit 0; }
 cwd=$(pwd -P)
 home=$(cd -P -- "${HOME:-/}" 2>/dev/null && pwd -P || printf /)
 printf 'ok\0%s\0%s\0' "$cwd" "$home"
@@ -154,12 +157,17 @@ fi
     script
 }
 
+/// Why the producer reports its own status in the stream: a pipeline hides it,
+/// so a `find` stopped by `timeout` or failing on a permission error would
+/// otherwise look like a complete index.
+const STATUS_RECORD: &str = r#"printf '/status\0%s\0' "$?""#;
+
 /// `$1` directory (empty: the login directory), `$2` `1` to trust the repository,
 /// `$3` seconds `find` may run (empty: unbounded).
 ///
 /// Tokens: `ok`, physical path, login directory, one of `nogit`, `giterr message` or
 /// `git top`, then a stream: `/cached … /others … /end` for git, else
-/// `/find … /end`. Why `/`-prefixed markers: git and `find` print relative
+/// `/find … /end`, each stream closing with `/status code`. Why `/`-prefixed markers: git and `find` print relative
 /// paths, so no path can equal a marker.
 pub(crate) fn index_script() -> String {
     let cap = INDEX_STREAM_BYTE_CAP;
@@ -173,9 +181,9 @@ if [ "$gitstate" = git ]; then
   repo=$top
   printf 'git\0%s\0' "$top"
   printf '/cached\0'
-  g ls-files -z --stage --cached | head -c {cap}
+  {{ g ls-files -z --stage --cached; {STATUS_RECORD}; }} | head -c {cap}
   printf '\0/others\0'
-  g ls-files -z --others --exclude-standard | head -c {cap}
+  {{ g ls-files -z --others --exclude-standard; {STATUS_RECORD}; }} | head -c {cap}
   printf '\0/end\0'
   exit 0
 elif [ "$gitstate" = giterr ]; then
@@ -192,9 +200,9 @@ case "$cwd" in
 esac
 printf '/find\0'
 if [ -n "$3" ] && command -v timeout >/dev/null 2>&1; then
-  timeout "$3" find . -name .git -prune -o -type f -exec printf '%s\0' {{}} + | head -c {cap}
+  {{ timeout "$3" find . -name .git -prune -o -type f -exec printf '%s\0' {{}} +; {STATUS_RECORD}; }} | head -c {cap}
 else
-  find . -name .git -prune -o -type f -exec printf '%s\0' {{}} + | head -c {cap}
+  {{ find . -name .git -prune -o -type f -exec printf '%s\0' {{}} +; {STATUS_RECORD}; }} | head -c {cap}
 fi
 printf '\0/end\0'
 "#

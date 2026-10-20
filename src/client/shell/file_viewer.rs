@@ -103,6 +103,7 @@ impl ClientShellState {
             &location,
             host_pane,
             initial_root.clone(),
+            None,
         ) {
             Ok(list) => list,
             Err(notice) => {
@@ -131,6 +132,7 @@ impl ClientShellState {
                 outcome,
             );
         }
+        let location_pane = Self::method_location_pane(&list);
         self.file_viewer_generation = self.file_viewer_generation.wrapping_add(1);
         let generation = self.file_viewer_generation;
         if !self.push_endpoint_method_with_kind(
@@ -148,6 +150,7 @@ impl ClientShellState {
             workspace_id.clone(),
             &location,
             initial_root.clone(),
+            location_pane.as_deref(),
             outcome,
         );
         let mut viewer = ClientFileViewerOverlay::new(FileViewerOptions {
@@ -158,6 +161,7 @@ impl ClientShellState {
             show_ignored: self.config.file_viewer_show_ignored,
             index_supported,
         });
+        viewer.location_pane = location_pane.filter(|_| viewer.location.is_some());
         // A restored tab already knows its root, so the one listing asked for
         // is the root's, as after a root change.
         if let Some(root) = initial_root {
@@ -215,11 +219,15 @@ impl ClientShellState {
         FileLocation::of_pane(first)
     }
 
-    /// A live pane of `workspace_id` running in `location`, the focused one first.
+    /// A live pane of `workspace_id` running in `location`. `preferred` (the pane
+    /// the tab last used) wins while it still qualifies, then the focused one.
+    /// Why not the focused pane first: Compose replicas share one location, so
+    /// focusing replica 2 would move replica 1's investigation into it.
     pub(super) fn file_location_pane(
         &self,
         workspace_id: Option<&str>,
         location: &FileLocation,
+        preferred: Option<&str>,
     ) -> Option<String> {
         let snapshot = self.snapshot.as_deref()?;
         let mut candidates = snapshot.panes.iter().filter(|pane| {
@@ -228,9 +236,39 @@ impl ClientShellState {
         });
         candidates
             .clone()
-            .find(|pane| snapshot.focused_pane_id.as_deref() == Some(pane.pane_id.as_str()))
+            .find(|pane| Some(pane.pane_id.as_str()) == preferred)
+            .or_else(|| {
+                candidates
+                    .clone()
+                    .find(|pane| snapshot.focused_pane_id.as_deref() == Some(pane.pane_id.as_str()))
+            })
             .or(candidates.next())
             .map(|pane| pane.pane_id.clone())
+    }
+
+    /// The pane an off-host request is addressed to; `None` for host methods.
+    pub(super) fn method_location_pane(method: &Method) -> Option<String> {
+        match method {
+            Method::PaneDirectoryList(params) => Some(params.pane_id.clone()),
+            Method::PaneDirectoryIndex(params) => Some(params.pane_id.clone()),
+            Method::PaneFileRead(params) => Some(params.pane_id.clone()),
+            _ => None,
+        }
+    }
+
+    /// Makes the pane a sent request went through the one the tab keeps using.
+    pub(super) fn remember_location_pane(&mut self, pane_id: Option<String>) {
+        let Some(pane_id) = pane_id else {
+            return;
+        };
+        if let Some(viewer) = self.file_viewer().filter(|v| v.location.is_some()) {
+            viewer.location_pane = Some(pane_id);
+        }
+    }
+
+    /// The pane the browser last used, to prefer for its next request.
+    pub(super) fn location_pane_hint(&mut self) -> Option<String> {
+        self.file_viewer()?.location_pane.clone()
     }
 
     pub(super) fn no_pane_notice(location: &FileLocation) -> String {
@@ -245,6 +283,7 @@ impl ClientShellState {
         location: &Option<FileLocation>,
         host_pane: Option<String>,
         path: Option<String>,
+        preferred: Option<&str>,
     ) -> Result<Method, String> {
         let Some(location) = location else {
             return Ok(Method::DirectoryList(DirectoryListParams {
@@ -255,7 +294,7 @@ impl ClientShellState {
             }));
         };
         let pane_id = self
-            .file_location_pane(workspace_id.as_deref(), location)
+            .file_location_pane(workspace_id.as_deref(), location, preferred)
             .ok_or_else(|| Self::no_pane_notice(location))?;
         Ok(Method::PaneDirectoryList(PaneDirectoryListParams {
             pane_id,
@@ -270,6 +309,7 @@ impl ClientShellState {
         location: &Option<FileLocation>,
         host_pane: Option<String>,
         path: Option<String>,
+        preferred: Option<&str>,
     ) -> Result<Method, String> {
         let Some(location) = location else {
             return Ok(Method::DirectoryIndex(DirectoryIndexParams {
@@ -280,7 +320,7 @@ impl ClientShellState {
             }));
         };
         let pane_id = self
-            .file_location_pane(workspace_id.as_deref(), location)
+            .file_location_pane(workspace_id.as_deref(), location, preferred)
             .ok_or_else(|| Self::no_pane_notice(location))?;
         Ok(Method::PaneDirectoryIndex(PaneDirectoryIndexParams {
             pane_id,
@@ -297,12 +337,13 @@ impl ClientShellState {
         path: String,
         revision: Option<String>,
         poll: bool,
+        preferred: Option<&str>,
     ) -> Result<Method, String> {
         let Some(location) = location else {
             return Ok(Method::FileRead(FileReadParams { path, revision }));
         };
         let pane_id = self
-            .file_location_pane(workspace_id.as_deref(), location)
+            .file_location_pane(workspace_id.as_deref(), location, preferred)
             .ok_or_else(|| Self::no_pane_notice(location))?;
         Ok(Method::PaneFileRead(PaneFileReadParams {
             pane_id,
@@ -369,7 +410,19 @@ impl ClientShellState {
         }) else {
             return;
         };
-        if self.request_file_viewer_index(generation, workspace_id, &location, root, outcome) {
+        let preferred = self.location_pane_hint();
+        let pane = location.as_ref().and_then(|location| {
+            self.file_location_pane(workspace_id.as_deref(), location, preferred.as_deref())
+        });
+        if self.request_file_viewer_index(
+            generation,
+            workspace_id,
+            &location,
+            root,
+            preferred.as_deref(),
+            outcome,
+        ) {
+            self.remember_location_pane(pane);
             if let Some(viewer) = self.file_viewer() {
                 viewer.index_retry = false;
                 viewer.index = FileIndex::Loading;
@@ -386,12 +439,15 @@ impl ClientShellState {
         workspace_id: Option<String>,
         location: &Option<FileLocation>,
         path: Option<String>,
+        preferred: Option<&str>,
         outcome: &mut ClientShellInput,
     ) -> bool {
         let host_pane = self
             .focused_pane_id()
             .filter(|_| workspace_id == self.workspace_action_id());
-        let Ok(method) = self.file_index_method(&workspace_id, location, host_pane, path) else {
+        let Ok(method) =
+            self.file_index_method(&workspace_id, location, host_pane, path, preferred)
+        else {
             return false;
         };
         // Checked up front, not through the push: a missing index must not
@@ -425,20 +481,36 @@ impl ClientShellState {
         let Some(viewer) = self.file_viewer() else {
             return;
         };
+        viewer.listing_retry.remove(&path);
         let generation = viewer.generation;
         let (workspace_id, location) = (viewer.workspace_id.clone(), viewer.location.clone());
-        let method = self.file_list_method(&workspace_id, &location, None, Some(path.clone()));
+        let preferred = self.location_pane_hint();
+        let method = self.file_list_method(
+            &workspace_id,
+            &location,
+            None,
+            Some(path.clone()),
+            preferred.as_deref(),
+        );
         let sent = match method {
-            Ok(method) => self.push_endpoint_method_with_kind(
-                method,
-                PendingEndpointKind::FileViewer(FileViewerRequest::List {
-                    generation,
-                    path: Some(path.clone()),
-                }),
-                outcome,
-            ),
+            Ok(method) => {
+                let pane = Self::method_location_pane(&method);
+                let sent = self.push_endpoint_method_with_kind(
+                    method,
+                    PendingEndpointKind::FileViewer(FileViewerRequest::List {
+                        generation,
+                        path: Some(path.clone()),
+                    }),
+                    outcome,
+                );
+                if sent {
+                    self.remember_location_pane(pane);
+                }
+                sent
+            }
             Err(notice) => {
                 if let Some(viewer) = self.file_viewer() {
+                    viewer.listing_retry.insert(path.clone());
                     viewer
                         .directories
                         .insert(path, DirectoryState::Failed(notice));
@@ -471,13 +543,21 @@ impl ClientShellState {
         else {
             return false;
         };
-        let list = match self.file_list_method(&workspace_id, &location, None, Some(root.clone())) {
+        let preferred = self.location_pane_hint();
+        let list = match self.file_list_method(
+            &workspace_id,
+            &location,
+            None,
+            Some(root.clone()),
+            preferred.as_deref(),
+        ) {
             Ok(list) => list,
             Err(notice) => {
                 self.set_file_viewer_notice(notice);
                 return false;
             }
         };
+        let pane = Self::method_location_pane(&list);
         self.file_viewer_generation = self.file_viewer_generation.wrapping_add(1);
         let generation = self.file_viewer_generation;
         if !self.push_endpoint_method_with_kind(
@@ -490,11 +570,13 @@ impl ClientShellState {
         ) {
             return false;
         }
+        self.remember_location_pane(pane.clone());
         let index_supported = self.request_file_viewer_index(
             generation,
             workspace_id,
             &location,
             Some(root.clone()),
+            pane.as_deref(),
             outcome,
         );
         let Some(viewer) = self.file_viewer() else {
@@ -502,6 +584,7 @@ impl ClientShellState {
         };
         viewer.generation = generation;
         viewer.directories.clear();
+        viewer.listing_retry.clear();
         viewer
             .directories
             .insert(root.clone(), DirectoryState::Loading);
@@ -1103,6 +1186,7 @@ impl ClientShellState {
             return false;
         }
         let rejected = result.is_err();
+        let pane_gone = matches!(&result, Err(error) if pane_unavailable(error));
         let listing = match result {
             Ok(ResponseResult::DirectoryList {
                 path,
@@ -1172,6 +1256,7 @@ impl ClientShellState {
                 } else {
                     DirectoryState::Loaded(listing)
                 };
+                viewer.listing_retry.remove(&path);
                 viewer.directories.insert(path, state);
                 viewer.rebuild(true);
                 self.continue_file_viewer_reveal(outcome);
@@ -1179,6 +1264,9 @@ impl ClientShellState {
             // Why not go through `continue_file_viewer_reveal`: a failed or
             // cancelled answer must never start another request.
             (Some(path), Err(notice)) => {
+                if pane_gone {
+                    viewer.listing_retry.insert(path.clone());
+                }
                 viewer
                     .directories
                     .insert(path.clone(), DirectoryState::Failed(notice));
@@ -1210,13 +1298,7 @@ impl ClientShellState {
         else {
             return false;
         };
-        viewer.index_retry = matches!(
-            &result,
-            Err(error) if matches!(
-                error.code.as_deref(),
-                Some("pane_not_found" | "pane_not_live" | "stale_pane_target")
-            )
-        );
+        viewer.index_retry = matches!(&result, Err(error) if pane_unavailable(error));
         viewer.index = match result {
             Ok(ResponseResult::DirectoryIndex {
                 repo_root: Some(repo_root),
@@ -1277,6 +1359,14 @@ pub(super) fn offhost_result_as_host(result: ResponseResult) -> ResponseResult {
         },
         other => other,
     }
+}
+
+/// The server could not use the pane the request named (closed while queued).
+fn pane_unavailable(error: &ClientShellEndpointError) -> bool {
+    matches!(
+        error.code.as_deref(),
+        Some("pane_not_found" | "pane_not_live" | "stale_pane_target")
+    )
 }
 
 fn listing_error_notice(error: &ClientShellEndpointError) -> String {

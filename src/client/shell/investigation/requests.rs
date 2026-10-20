@@ -71,26 +71,41 @@ impl ClientShellState {
             return;
         }
         let (id, generation) = (tab.id, tab.preview_generation);
-        let (workspace, location) = (
+        let (workspace, location, preferred) = (
             tab.browser.workspace_id.clone(),
             tab.browser.location.clone(),
+            tab.browser.location_pane.clone(),
         );
         if let Some(d) = tab.document_mut() {
             d.request_generation = generation;
         }
         tab.pending_reads.insert(path.clone());
-        let method = self.file_read_method(&workspace, &location, path.clone(), None, false);
+        let method = self.file_read_method(
+            &workspace,
+            &location,
+            path.clone(),
+            None,
+            false,
+            preferred.as_deref(),
+        );
         let sent = match method {
-            Ok(method) => self.push_endpoint_method_with_kind(
-                method,
-                PendingEndpointKind::Investigation(FileRequest::Read {
-                    id,
-                    path,
-                    generation,
-                    prepare: false,
-                }),
-                outcome,
-            ),
+            Ok(method) => {
+                let pane = Self::method_location_pane(&method);
+                let sent = self.push_endpoint_method_with_kind(
+                    method,
+                    PendingEndpointKind::Investigation(FileRequest::Read {
+                        id,
+                        path,
+                        generation,
+                        prepare: false,
+                    }),
+                    outcome,
+                );
+                if sent {
+                    self.remember_location_pane(pane);
+                }
+                sent
+            }
             Err(notice) => {
                 if let Some(tab) = self.investigation_mut() {
                     tab.notice = notice;
@@ -532,9 +547,10 @@ impl ClientShellState {
             return;
         };
         tab.last_poll = now;
-        let (workspace, location) = (
+        let (workspace, location, preferred) = (
             tab.browser.workspace_id.clone(),
             tab.browser.location.clone(),
+            tab.browser.location_pane.clone(),
         );
         if let Some(document) = tab
             .document()
@@ -553,7 +569,14 @@ impl ClientShellState {
             if let Some(d) = tab.document_mut() {
                 d.request_generation = generation;
             }
-            let method = self.file_read_method(&workspace, &location, path.clone(), revision, true);
+            let method = self.file_read_method(
+                &workspace,
+                &location,
+                path.clone(),
+                revision,
+                true,
+                preferred.as_deref(),
+            );
             let method = match method {
                 Ok(method) => method,
                 Err(notice) => {
@@ -566,6 +589,7 @@ impl ClientShellState {
             if let Some(tab) = self.investigation_mut() {
                 tab.pending_reads.insert(path.clone());
             }
+            let pane = Self::method_location_pane(&method);
             let sent = self.push_endpoint_method_with_kind(
                 method,
                 PendingEndpointKind::Investigation(FileRequest::Read {
@@ -576,10 +600,10 @@ impl ClientShellState {
                 }),
                 outcome,
             );
-            if !sent {
-                if let Some(tab) = self.investigation_mut() {
-                    tab.pending_reads.clear();
-                }
+            if sent {
+                self.remember_location_pane(pane);
+            } else if let Some(tab) = self.investigation_mut() {
+                tab.pending_reads.clear();
             }
         }
     }
@@ -593,18 +617,29 @@ impl ClientShellState {
             return;
         };
         if self
-            .file_location_pane(tab.browser.workspace_id.as_deref(), &location)
+            .file_location_pane(
+                tab.browser.workspace_id.as_deref(),
+                &location,
+                tab.browser.location_pane.as_deref(),
+            )
             .is_none()
         {
             return;
         }
         let stalled_notice = Self::no_pane_notice(&location);
+        // Sorted so one directory is asked per tick in a stable order.
         let stalled = tab
             .browser
-            .directories
+            .listing_retry
             .iter()
-            .find(|(_, state)| matches!(state, crate::client::shell::file_viewer::model::DirectoryState::Failed(n) if *n == stalled_notice))
-            .map(|(path, _)| path.clone());
+            .filter(|path| {
+                matches!(
+                    tab.browser.directories.get(*path),
+                    Some(crate::client::shell::file_viewer::model::DirectoryState::Failed(_))
+                )
+            })
+            .min()
+            .cloned();
         if tab.notice == stalled_notice {
             if let Some(tab) = self.investigation_mut() {
                 tab.notice.clear();
@@ -645,7 +680,7 @@ impl ClientShellState {
                 && s.location.as_ref().is_none_or(|location| {
                     pane_directory
                         && self
-                            .file_location_pane(workspace.as_deref(), location)
+                            .file_location_pane(workspace.as_deref(), location, None)
                             .is_some()
                 })
         }) else {
@@ -722,12 +757,20 @@ impl ClientShellState {
             tab.prepare_pending += 1;
             requests.push((tab.id, tab.prepare_generation, path));
         }
-        let (workspace, location) = (
+        let (workspace, location, preferred) = (
             tab.browser.workspace_id.clone(),
             tab.browser.location.clone(),
+            tab.browser.location_pane.clone(),
         );
         for (id, generation, path) in requests {
-            let method = self.file_read_method(&workspace, &location, path.clone(), None, false);
+            let method = self.file_read_method(
+                &workspace,
+                &location,
+                path.clone(),
+                None,
+                false,
+                preferred.as_deref(),
+            );
             let sent = method.is_ok_and(|method| {
                 self.push_endpoint_method_with_kind(
                     method,

@@ -181,6 +181,10 @@ pub(in crate::client::shell) struct ClientFileViewerOverlay {
     /// Live pane whose directory the first listing showed; paths go there.
     /// `None` until that listing arrives, or when the server found no live pane.
     pub(in crate::client::shell) pane_id: Option<String>,
+    /// Pane of `location` the last request went through. Why remembered:
+    /// Compose replicas share one location, and following the focus would
+    /// move this tab into a replica it was not browsing.
+    pub(in crate::client::shell) location_pane: Option<String>,
     pub(in crate::client::shell) directories: HashMap<String, DirectoryState>,
     pub(in crate::client::shell) expanded: HashSet<String>,
     pub(in crate::client::shell) show_hidden: bool,
@@ -192,6 +196,9 @@ pub(in crate::client::shell) struct ClientFileViewerOverlay {
     /// the location runs. Why not retry every unavailable index: outside a
     /// repository it stays unavailable by design.
     pub(in crate::client::shell) index_retry: bool,
+    /// Directories whose listing failed for lack of a pane, to ask again once
+    /// one runs. Why not every failed directory: a permission error stays one.
+    pub(in crate::client::shell) listing_retry: HashSet<String>,
     pub(in crate::client::shell) rows: Vec<FileViewerRow>,
     /// Selectable rows while searching, counted once per rebuild.
     pub(in crate::client::shell) match_count: usize,
@@ -225,6 +232,7 @@ impl ClientFileViewerOverlay {
             location: options.location,
             host_fallback: false,
             pane_id: None,
+            location_pane: None,
             directories: HashMap::new(),
             expanded: HashSet::new(),
             show_hidden: options.show_hidden,
@@ -237,6 +245,7 @@ impl ClientFileViewerOverlay {
                 FileIndex::Unsupported
             },
             index_retry: false,
+            listing_retry: HashSet::new(),
             rows: Vec::new(),
             match_count: 0,
             selected: 0,

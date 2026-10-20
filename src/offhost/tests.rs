@@ -924,3 +924,97 @@ fn the_marker_constant_matches_the_one_the_scripts_print() {
         assert!(script.contains(&format!("printf '{}\\0'", super::scripts::OUTPUT_MARKER)));
     }
 }
+
+fn running_as_root() -> bool {
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .is_ok_and(|output| output.stdout == b"0\n")
+}
+
+#[test]
+fn a_searchable_but_unreadable_directory_is_permission_denied_not_empty() {
+    use std::os::unix::fs::PermissionsExt;
+    if running_as_root() {
+        return;
+    }
+    let dir = TempDir::new("unreadable");
+    let locked = dir.dir("locked");
+    dir.file("locked/inside.txt", b"");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o111)).unwrap();
+
+    let listing = list(&LocalShell::sh(), None, Some(locked.to_str().unwrap()));
+    let indexing = ops::index(
+        &LocalShell::sh(),
+        location(),
+        None,
+        Some(locked.to_str().unwrap()),
+        false,
+    );
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(listing.unwrap_err().0, "permission_denied");
+    assert_eq!(indexing.unwrap_err().0, "permission_denied");
+}
+
+fn find_index_with(find_body: &str, timeout_body: Option<&str>) -> PaneDirectoryIndexing {
+    let dir = TempDir::new("find-status");
+    dir.file("a.txt", b"");
+    let tools = TempDir::new("fake-find");
+    executable(&tools, "find", &format!("#!/bin/sh\n{find_body}\n"));
+    if let Some(body) = timeout_body {
+        executable(&tools, "timeout", &format!("#!/bin/sh\n{body}\n"));
+    }
+    let mut shell = LocalShell::sh();
+    shell.tool_dir = Some(tools.path().to_owned());
+    shell.seconds_left = timeout_body.map(|_| 8);
+    index(&shell, dir.str())
+}
+
+#[test]
+fn a_find_that_exits_nonzero_marks_the_index_truncated() {
+    let index = find_index_with("printf './a.txt\\0'\nexit 1", None);
+
+    assert_eq!(index.entries, ["a.txt"]);
+    assert!(index.truncated);
+}
+
+#[test]
+fn a_find_stopped_by_timeout_marks_the_index_truncated() {
+    let index = find_index_with("printf './a.txt\\0'", Some("shift\n\"$@\"\nexit 124"));
+
+    assert_eq!(index.entries, ["a.txt"]);
+    assert!(index.truncated);
+}
+
+#[test]
+fn a_find_that_finishes_cleanly_is_not_truncated() {
+    let index = find_index_with("printf './a.txt\\0'", None);
+
+    assert_eq!(index.entries, ["a.txt"]);
+    assert!(!index.truncated);
+}
+
+#[test]
+fn a_failing_git_ls_files_marks_the_index_truncated() {
+    let repo = repo("ls-files-fails");
+    repo.file("tracked.rs", b"");
+    git(repo.path(), &["add", "tracked.rs"]);
+    let tools = TempDir::new("fake-git");
+    // Why delegate: rev-parse must still succeed so the script reaches ls-files.
+    let real = which_git();
+    executable(
+        &tools,
+        "git",
+        &format!(
+            "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = ls-files ] && {{ printf 'x\\0'; exit 1; }}; done\nexec {} \"$@\"\n",
+            real.display()
+        ),
+    );
+    let mut shell = LocalShell::sh();
+    shell.tool_dir = Some(tools.path().to_owned());
+
+    let index = index(&shell, repo.str());
+
+    assert!(index.truncated);
+}

@@ -1466,6 +1466,106 @@ mod offhost {
         );
     }
 
+    fn focus_pane(state: &mut ClientShellState, pane_id: &str) {
+        let mut snapshot = state.snapshot.as_deref().unwrap().clone();
+        for pane in &mut snapshot.panes {
+            pane.focused = pane.pane_id == pane_id;
+        }
+        snapshot.focused_pane_id = Some(pane_id.into());
+        state_set_snapshot(state, snapshot);
+    }
+
+    fn list_pane_of(state: &mut ClientShellState, path: &str) -> String {
+        let mut outcome = ClientShellInput::default();
+        state.request_file_viewer_listing(path.into(), &mut outcome);
+        let [(_, Method::PaneDirectoryList(list))] = &requests(&outcome)[..] else {
+            panic!("{:?}", requests(&outcome));
+        };
+        list.pane_id.clone()
+    }
+
+    #[test]
+    fn focusing_another_pane_of_the_location_does_not_move_the_requests() {
+        let mut state = offhost_state();
+        assert_eq!(list_pane_of(&mut state, "/work/a"), "pane_1");
+
+        focus_pane(&mut state, "pane_2");
+
+        assert_eq!(list_pane_of(&mut state, "/work/b"), "pane_1");
+    }
+
+    #[test]
+    fn requests_move_to_the_focused_pane_of_the_location_once_the_used_pane_closes_and_stay_there()
+    {
+        let mut state = offhost_state();
+        assert_eq!(list_pane_of(&mut state, "/work/a"), "pane_1");
+        set_panes(
+            &mut state,
+            &[
+                ("pane_3", Some("app"), Some("devbox")),
+                ("pane_2", Some("app"), Some("devbox")),
+            ],
+        );
+
+        assert_eq!(list_pane_of(&mut state, "/work/b"), "pane_3");
+
+        focus_pane(&mut state, "pane_2");
+
+        assert_eq!(list_pane_of(&mut state, "/work/c"), "pane_3");
+    }
+
+    #[test]
+    fn a_listing_refused_because_its_pane_closed_is_requested_again_when_one_returns() {
+        let mut state = offhost_state();
+        let generation = state.investigation().unwrap().browser.generation;
+        for code in ["pane_not_found", "pane_not_live", "stale_pane_target"] {
+            state.handle_file_viewer_endpoint_result(
+                FileViewerRequest::List {
+                    generation,
+                    path: Some(format!("/work/{code}")),
+                },
+                Err(ClientShellEndpointError {
+                    code: Some(code.into()),
+                    message: "gone".into(),
+                }),
+                &mut ClientShellInput::default(),
+            );
+        }
+        state.handle_file_viewer_endpoint_result(
+            FileViewerRequest::List {
+                generation,
+                path: Some("/work/denied".into()),
+            },
+            Err(ClientShellEndpointError {
+                code: Some("permission_denied".into()),
+                message: "denied".into(),
+            }),
+            &mut ClientShellInput::default(),
+        );
+        set_panes(&mut state, &[("pane_3", Some("app"), Some("devbox"))]);
+
+        let mut asked = Vec::new();
+        for seconds in [2, 3, 4, 5] {
+            for (id, method) in tick(&mut state, seconds) {
+                if let Method::PaneDirectoryList(list) = method {
+                    let path = list.path.unwrap();
+                    answer(&mut state, &id, Ok(pane_listing(&path)));
+                    asked.push(path);
+                }
+            }
+        }
+
+        asked.sort();
+        assert_eq!(
+            asked,
+            [
+                "/work/pane_not_found",
+                "/work/pane_not_live",
+                "/work/stale_pane_target"
+            ]
+        );
+    }
+
     #[test]
     fn an_index_that_is_simply_not_a_repository_is_not_requested_again() {
         let mut state = offhost_state();

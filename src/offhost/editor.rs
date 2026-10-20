@@ -38,6 +38,24 @@ fi
 exec sh -c "$0" sh "$1" "$2"
 "#;
 
+/// Runs under `sh` inside a container whose configured shell cannot run POSIX
+/// scripts (fish). `$0` is the editor script, `$1` the shell, `$2` `1` when the
+/// pane uses a login shell, `$3` the file.
+/// Why not run the script in that shell: `docker exec` does not inherit the
+/// pane shell's environment, so only the shell's own startup files know `EDITOR`.
+const CONTAINER_FALLBACK_WRAPPER: &str = r#"
+if [ "$2" = 1 ]; then
+  reported=$("$1" -l -c 'printf "%s" "$EDITOR"' </dev/null 2>/dev/null)
+else
+  reported=$("$1" -c 'printf "%s" "$EDITOR"' </dev/null 2>/dev/null)
+fi
+if [ -n "$reported" ]; then
+  EDITOR=$reported
+  export EDITOR
+fi
+exec sh -c "$0" sh "$3"
+"#;
+
 /// Shells whose `-c` accepts the POSIX scripts above.
 fn is_sh_family(shell: &str) -> bool {
     let name = shell.rsplit('/').next().unwrap_or(shell);
@@ -76,15 +94,25 @@ pub(crate) fn editor_argv(
                 ContainerShell::Explicit(shell) if is_sh_family(shell) => {
                     docker.push(shell.clone());
                     docker.extend(login.then(|| "-l".to_owned()));
+                    docker.extend(strs(&["-c", EDITOR_SCRIPT, "sh", path]));
                 }
-                // Why `sh` for a fish label: its `-c` cannot run the POSIX script.
-                ContainerShell::Explicit(_) => docker.extend(strs(&["sh"])),
+                // Why a wrapper: a fish label's `-c` cannot run the POSIX script.
+                ContainerShell::Explicit(shell) => {
+                    docker.extend(strs(&[
+                        "sh",
+                        "-c",
+                        CONTAINER_FALLBACK_WRAPPER,
+                        EDITOR_SCRIPT,
+                    ]));
+                    docker.extend([shell.clone(), if login { "1" } else { "0" }.to_owned()]);
+                    docker.push(path.to_owned());
+                }
                 ContainerShell::BashOrSh => {
                     docker.extend(strs(&["sh", "-c", BASH_OR_SH_PROBE, "sh"]));
                     docker.extend(login.then(|| "-l".to_owned()));
+                    docker.extend(strs(&["-c", EDITOR_SCRIPT, "sh", path]));
                 }
             }
-            docker.extend(strs(&["-c", EDITOR_SCRIPT, "sh", path]));
             match &launch.ssh {
                 None => std::iter::once("docker".to_owned()).chain(docker).collect(),
                 Some(ssh) => {
@@ -206,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn container_editor_falls_back_to_sh_for_a_shell_that_cannot_run_posix_scripts() {
+    fn container_editor_asks_a_non_posix_shell_for_editor_through_a_sh_wrapper() {
         let argv = editor_argv(
             &container(ContainerShell::Explicit("/usr/bin/fish".into()), None),
             None,
@@ -225,11 +253,90 @@ mod tests {
                 "cid",
                 "sh",
                 "-c",
+                CONTAINER_FALLBACK_WRAPPER,
                 EDITOR_SCRIPT,
-                "sh",
+                "/usr/bin/fish",
+                "1",
                 "/f"
             ]
         );
+    }
+
+    /// Runs what `docker exec` would run inside the container, with a fake
+    /// shell that answers like fish: it only knows how to print `EDITOR`.
+    #[cfg(unix)]
+    fn run_container_with_fake_fish(login: bool, inherited_editor: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let tools =
+            std::env::temp_dir().join(format!("herdr-cfish-{}-{login}", std::process::id()));
+        std::fs::create_dir_all(&tools).unwrap();
+        let fish = tools.join("fish");
+        let expected = if login { "-l -c" } else { "-c" };
+        std::fs::write(
+            &fish,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in \"{expected} \"*EDITOR*) printf '%s' \"printf '%s|' FISH-EDITOR\" ;; *) echo fish-ran-script; exit 1 ;; esac\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fish, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let shell = fish.to_str().unwrap().to_owned();
+        let argv = editor_argv(
+            &container(ContainerShell::Explicit(shell), None),
+            None,
+            login,
+            "/a b/$(id)",
+        );
+        let inside = &argv[argv.iter().position(|arg| arg == "cid").unwrap() + 1..];
+        let output = std::process::Command::new(&inside[0])
+            .args(&inside[1..])
+            .env("EDITOR", inherited_editor)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&tools);
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn container_editor_uses_the_editor_a_non_posix_shell_reports_with_the_pane_login_mode() {
+        assert_eq!(
+            run_container_with_fake_fish(true, "ignored"),
+            "FISH-EDITOR|/a b/$(id)|"
+        );
+        assert_eq!(
+            run_container_with_fake_fish(false, "ignored"),
+            "FISH-EDITOR|/a b/$(id)|"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn container_editor_keeps_the_inherited_editor_when_the_non_posix_shell_reports_none() {
+        let tools = std::env::temp_dir().join(format!("herdr-cfish-none-{}", std::process::id()));
+        std::fs::create_dir_all(&tools).unwrap();
+        let fish = tools.join("fish");
+        std::fs::write(&fish, "#!/bin/sh\nexit 1\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fish, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let argv = editor_argv(
+            &container(
+                ContainerShell::Explicit(fish.to_str().unwrap().into()),
+                None,
+            ),
+            None,
+            false,
+            "/f",
+        );
+        let inside = &argv[argv.iter().position(|arg| arg == "cid").unwrap() + 1..];
+        let output = std::process::Command::new(&inside[0])
+            .args(&inside[1..])
+            .env("EDITOR", "printf '%s|' INHERITED")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&tools);
+
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "INHERITED|/f|");
     }
 
     #[test]

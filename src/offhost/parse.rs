@@ -314,10 +314,22 @@ pub(crate) fn parse_index(output: &[u8], max_entries: usize) -> Result<ParsedInd
     let mut section: Option<&[u8]> = None;
     let mut ended = false;
     let mut cut = false;
-    for token in iter {
+    let mut sections = 0usize;
+    let mut clean_sections = 0usize;
+    while let Some(token) = iter.next() {
         match *token {
             b"/trunc" => cut = true,
-            b"/cached" | b"/others" | b"/find" => section = Some(token),
+            b"/cached" | b"/others" | b"/find" => {
+                section = Some(token);
+                sections += 1;
+            }
+            // Zero only: a producer killed by `timeout` or failing on a
+            // permission error left a partial stream.
+            b"/status" => {
+                if iter.next().copied() == Some(b"0".as_slice()) {
+                    clean_sections += 1;
+                }
+            }
             b"/end" => {
                 ended = true;
                 break;
@@ -333,7 +345,7 @@ pub(crate) fn parse_index(output: &[u8], max_entries: usize) -> Result<ParsedInd
             },
         }
     }
-    let mut truncated = !ended || cut;
+    let mut truncated = !ended || cut || clean_sections < sections;
     // A stream that reached the script's byte cap was cut mid-record.
     for stream in [&mut cached, &mut others, &mut found] {
         let bytes: usize = stream.iter().map(|record| record.len() + 1).sum();
