@@ -10,7 +10,10 @@ pub(crate) struct TempDir(PathBuf);
 
 impl TempDir {
     pub(crate) fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        // Canonical, because the receiver reports canonical paths and macOS
+        // temp dirs sit behind the /var -> /private/var symlink.
+        let base = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let path = base.join(format!(
             "herdr-upload-test-{}-{}-{label}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

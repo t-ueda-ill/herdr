@@ -474,9 +474,33 @@ fn fail_reports_every_conflict_keeps_the_stage_and_accepts_another_commit() {
     }
 }
 
+/// Shells whose `PATH` lookup reaches a fake tool. BusyBox's `sh` runs applets
+/// such as `mv` and `tee` in-process and never consults `PATH` for them, so a
+/// fake cannot be injected there; skipping beats a test that injects nothing.
+fn shells_honouring_path() -> Vec<Vec<String>> {
+    let probe = TempDir::new("probe");
+    let bin = fake_bin(&probe, "mv", "echo faked");
+    posix_shells()
+        .into_iter()
+        .filter(|shell| {
+            let mut command = Command::new(&shell[0]);
+            command.args(&shell[1..]).args(["-c", "mv"]);
+            let path = std::env::var("PATH").unwrap_or_default();
+            command.env("PATH", format!("{}:{path}", bin.display()));
+            let faked = command
+                .output()
+                .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("faked"));
+            if !faked {
+                eprintln!("{shell:?}: runs applets in-process, skipping fault injection");
+            }
+            faked
+        })
+        .collect()
+}
+
 #[test]
 fn a_failed_publish_rolls_back_everything_including_replaced_originals() {
-    for shell in posix_shells() {
+    for shell in shells_honouring_path() {
         let dest = TempDir::new("rollback");
         std::fs::write(dest.join("a"), b"old-a").unwrap();
         // `mv` refuses to publish `z`, after `a` was already swapped in.
@@ -508,7 +532,7 @@ fn a_failed_publish_rolls_back_everything_including_replaced_originals() {
 
 #[test]
 fn a_rollback_that_cannot_restore_keeps_the_stage_and_reports_its_path() {
-    for shell in posix_shells() {
+    for shell in shells_honouring_path() {
         let dir = TempDir::new("rbfail");
         let target = dir.join("target");
         std::fs::create_dir(&target).unwrap();
@@ -539,7 +563,7 @@ case $2 in */o/*) exit 1 ;; esac; exec /bin/mv "$@""#,
 
 #[test]
 fn a_short_write_is_an_error_and_never_reported_ok() {
-    for shell in posix_shells() {
+    for shell in shells_honouring_path() {
         let dir = TempDir::new("short");
         // A `tee` that forwards everything but keeps only one byte, as on ENOSPC.
         let bin = fake_bin(
@@ -869,7 +893,7 @@ fn commit_reports_a_step_for_every_nested_directory_and_published_name() {
 
 #[test]
 fn a_cleanup_that_fails_after_publishing_still_reports_every_path_and_keeps_no_originals() {
-    for shell in posix_shells() {
+    for shell in shells_honouring_path() {
         let dir = TempDir::new("late-wipe");
         let target = dir.join("target");
         std::fs::create_dir(&target).unwrap();
