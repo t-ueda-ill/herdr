@@ -213,13 +213,15 @@ pub(crate) fn keybind_help_groups(
             "files",
             vec![
                 entry(binding_label(&keybinds.open_files), "open files"),
-                entry("enter", "send path and close / expand dir"),
-                entry("space", "send path, keep open"),
+                entry("enter", "pin file / expand dir"),
+                entry("space", "focus file preview"),
                 entry("ctrl+e", "edit file"),
-                entry("ctrl+y", "copy path"),
+                entry("ctrl+shift+f", "search contents"),
+                entry("f10", "file actions / layout / replace"),
+                entry("ctrl+c", "copy selected text / files"),
                 entry(". / i", "show dotfiles / ignored"),
                 entry("backspace", "widen root to parent"),
-                entry("/", "filter (no spaces)"),
+                entry("ctrl+p", "find files"),
             ],
         ),
     ];
@@ -320,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn help_lists_open_files_with_the_viewer_keys_and_the_no_space_filter() {
+    fn help_lists_open_files_with_the_investigation_keys() {
         let unset = keybind_help_groups(&Keybinds::default(), &[]);
         let (_, files) = unset
             .iter()
@@ -338,7 +340,7 @@ mod tests {
             .expect("files group");
         assert_eq!(files[0].0, binding_label(&keybinds.open_files));
         assert_ne!(files[0].0, "unset");
-        for key in ["enter", "space", "ctrl+e", "ctrl+y", ". / i", "backspace"] {
+        for key in ["enter", "space", "ctrl+e", "ctrl+c", ". / i", "backspace"] {
             assert!(
                 files.iter().any(|(listed, _)| listed == key),
                 "{key} listed"
@@ -346,7 +348,7 @@ mod tests {
         }
         assert!(files
             .iter()
-            .any(|(key, label)| key == "/" && label.contains("no spaces")));
+            .any(|(key, label)| key == "ctrl+p" && label.contains("find files")));
 
         let filtered = filter_keybind_help_groups(groups, "open files");
         assert_eq!(filtered.len(), 1);

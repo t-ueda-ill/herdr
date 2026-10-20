@@ -36,6 +36,17 @@ impl HeadlessServer {
             return false;
         }
         let surface_active = client.shell_surface_active;
+        // Search generations are local to one attached client, even when two
+        // remote machines happen to use the same process/ investigation IDs.
+        match &mut request.method {
+            api::schema::Method::FilesSearch(params) => {
+                params.search_id = format!("client:{client_id}:{}", params.search_id);
+            }
+            api::schema::Method::FilesCancel(params) => {
+                params.search_id = format!("client:{client_id}:{}", params.search_id);
+            }
+            _ => {}
+        }
         if let api::schema::Method::ClientShellSurfaceSet(params) = &request.method {
             let Some((changed, projection_revision)) =
                 self.set_client_shell_surface_active(client_id, params.active)
@@ -55,6 +66,18 @@ impl HeadlessServer {
             );
             return changed;
         }
+        if let api::schema::Method::FilesCancel(params) = &request.method {
+            self.app.file_service.cancel(params.clone());
+            self.send_to_client(
+                client_id,
+                crate::server::client_commands::success_message_with_result(
+                    boot_id,
+                    request_id,
+                    api::schema::ResponseResult::Ok {},
+                ),
+            );
+            return false;
+        }
         if client.shell_endpoint_command_in_flight {
             let message = crate::server::client_commands::error_message(
                 boot_id,
@@ -65,7 +88,7 @@ impl HeadlessServer {
             self.send_to_client(client_id, message);
             return false;
         }
-        if !surface_active {
+        if !surface_active && !request.method.independent_of_surface() {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
@@ -100,6 +123,17 @@ impl HeadlessServer {
         }
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.lease_shell_endpoint_command(&api_request_id, &request.method);
+        }
+        if request.method.independent_of_surface() {
+            return self.handle_api_request_with_shutdown_check_inner(
+                api::ApiRequestMessage {
+                    request: *request,
+                    respond_to,
+                    response_write_complete: None,
+                },
+                false,
+                true,
+            );
         }
         let foreground_changed = self.promote_client_to_foreground(client_id);
         foreground_changed

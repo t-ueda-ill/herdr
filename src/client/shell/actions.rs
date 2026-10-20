@@ -20,6 +20,9 @@ impl ClientShellState {
                 self.persist_chrome_preferences(outcome);
             }
             crate::input::KeybindMatch::Action(action) => {
+                if self.investigation_terminal_action(action, outcome) {
+                    return;
+                }
                 if self.workspace_preview_action_blocked()
                     && matches!(
                         action,
@@ -380,6 +383,7 @@ impl ClientShellState {
             _ => false,
         };
         if changes_focus {
+            self.workbench.visible = false;
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
         if !self.endpoint_is_online(&self.active_endpoint_id) {
@@ -851,6 +855,27 @@ impl ClientShellState {
             kind @ (PendingEndpointKind::IntegrationList
             | PendingEndpointKind::IntegrationInstall) => {
                 return self.handle_settings_endpoint_result(kind, result);
+            }
+            PendingEndpointKind::FileSurfacePause => {
+                if matches!(
+                    result,
+                    Ok(crate::api::schema::ResponseResult::ClientShellSurfaceSet {
+                        active: false,
+                        ..
+                    })
+                ) {
+                    if let Some(pause) = self.workbench.pause.as_mut() {
+                        pause.confirmed = true;
+                    }
+                    return (true, vec![ClientShellAction::FileSurfacePaused]);
+                }
+                self.workbench.pause = None;
+                return (true, Vec::new());
+            }
+            PendingEndpointKind::Investigation(request) => {
+                let mut outcome = ClientShellInput::default();
+                self.handle_investigation_result(request, result, &mut outcome);
+                return (true, outcome.actions);
             }
             PendingEndpointKind::FileViewer(request) => {
                 let mut outcome = ClientShellInput::default();

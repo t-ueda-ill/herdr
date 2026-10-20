@@ -17,9 +17,35 @@ pub(super) fn dispatch_client_shell_actions(
                 boot_id,
                 request,
             } => {
+                let deliberately_paused = shell
+                    .as_deref()
+                    .and_then(|s| s.file_surface_pause())
+                    .is_some_and(|p| {
+                        p.endpoint == endpoint_id
+                            && p.boot == boot_id
+                            && endpoints.accepts(&endpoint_id, p.generation)
+                    });
+                if deliberately_paused
+                    && !request.method.independent_of_surface()
+                    && !matches!(
+                        request.method,
+                        crate::api::schema::Method::ClientShellSurfaceSet(_)
+                    )
+                {
+                    if let Some(shell) = shell.as_deref_mut() {
+                        shell.defer_investigation_terminal_action(
+                            shell::ClientShellAction::Endpoint {
+                                endpoint_id,
+                                boot_id,
+                                request,
+                            },
+                        );
+                    }
+                    continue;
+                }
                 if let Some(connection) = endpoints.connection(&endpoint_id).filter(|connection| {
                     endpoints.active_id() == &endpoint_id
-                        && (endpoints.active_surface_available()
+                        && (endpoints.active_surface_available() || deliberately_paused && request.method.independent_of_surface()
                             // The coherent target is visible before its input fence opens.
                             // Retain workspace navigation; sending remains gated below.
                             || (connection.surface_active
@@ -31,6 +57,26 @@ pub(super) fn dispatch_client_shell_actions(
                     endpoint_commands.enqueue(endpoint_id, connection.generation, boot_id, request);
                 } else if let Some(shell) = shell.as_deref_mut() {
                     repaint |= shell.cancel_endpoint_request(&request.id);
+                }
+            }
+            shell::ClientShellAction::FileSearchCancel { boot_id, params } => {
+                let request = crate::api::schema::Request {
+                    id: format!("files-cancel:{}:{}", params.search_id, params.generation),
+                    method: crate::api::schema::Method::FilesCancel(params),
+                };
+                if let Ok(request) = serde_json::to_string(&request) {
+                    let id = endpoints.active_id().clone();
+                    endpoints.send_to(
+                        &id,
+                        &ClientMessage::ClientShellEndpointRequest { boot_id, request },
+                    );
+                }
+            }
+            shell::ClientShellAction::FileSurfacePaused => {
+                if let Some(pause) = shell.as_deref().and_then(|s| s.file_surface_pause()) {
+                    if endpoints.accepts(&pause.endpoint, pause.generation) {
+                        endpoints.set_surface_active(&pause.endpoint, false);
+                    }
                 }
             }
             shell::ClientShellAction::ClipboardWrite(bytes) => {
@@ -67,7 +113,14 @@ pub(super) fn dispatch_client_shell_actions(
     // A source-off-first handoff leaves the registry's committed identity pointing at a
     // deliberately surface-inactive source. Do not drain its retained queue into a server that
     // must reject it; completion below resumes the committed owner's lane.
-    if endpoints.active_surface_available() {
+    if endpoints.active_surface_available()
+        || shell
+            .as_deref()
+            .and_then(|s| s.file_surface_pause())
+            .is_some_and(|p| {
+                p.endpoint == *endpoints.active_id() && endpoints.accepts(&p.endpoint, p.generation)
+            })
+    {
         let active_endpoint = endpoints.active_id().clone();
         let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints);
         if let Some(shell) = shell {
@@ -681,8 +734,12 @@ pub(super) fn install_client_shell_snapshot(
         return Ok(());
     };
     let generation = connection.generation;
-    let project_snapshot =
-        !projection_pending && endpoints.active_id() == endpoint_id && connection.surface_active;
+    let deliberately_paused = state.shell.as_ref().is_some_and(|s| {
+        s.investigation_surface_paused(endpoint_id, generation, &snapshot.boot_id)
+    });
+    let project_snapshot = !projection_pending
+        && endpoints.active_id() == endpoint_id
+        && (connection.surface_active || deliberately_paused);
     let pixel_mouse_available = state.pixel_mouse_available();
     let (composed, resize, graphics_cleanup) = if let Some(shell) = &mut state.shell {
         let waits_for_selected_surface = projection_pending
@@ -738,7 +795,7 @@ pub(super) fn install_client_shell_snapshot(
 
 pub(super) fn finish_client_shell_input(
     state: &mut ClientState,
-    outcome: shell::ClientShellInput,
+    mut outcome: shell::ClientShellInput,
     frame: Option<super::frame_output::ComposedFrame>,
     endpoints: &mut endpoint::EndpointRegistry,
     pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
@@ -777,6 +834,44 @@ pub(super) fn finish_client_shell_input(
         query_host_terminal_theme();
     }
     sync_client_shell_keyboard_report_all(state)?;
+    if pending_activation.is_none() {
+        let id = endpoints.active_id().clone();
+        if let Some(connection) = endpoints.connection(&id) {
+            let generation = connection.generation;
+            let surface_active = connection.surface_active;
+            if let Some(shell) = state.shell.as_mut() {
+                let resumed = endpoints.active_surface_available()
+                    && shell
+                        .file_surface_pause()
+                        .is_some_and(|p| p.confirmed && p.resume_requested);
+                if resumed {
+                    let deferred = shell.take_investigation_terminal_actions();
+                    outcome.actions.splice(0..0, deferred);
+                    outcome
+                        .requests
+                        .extend(shell.take_investigation_terminal_input());
+                }
+                let boot = shell.endpoint_boot_id(&id).unwrap_or_default().to_owned();
+                // Release explicit terminal intents through the activation fence
+                // before a later turn may suspend presentation again.
+                if !resumed
+                    && shell.reconcile_investigation_surface(
+                        generation,
+                        &boot,
+                        surface_active,
+                        endpoint_commands.has_pending(&id),
+                        &mut outcome,
+                    )
+                {
+                    *scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
+                        endpoint_id: id,
+                        target: None,
+                        force: false,
+                    });
+                }
+            }
+        }
+    }
     let (replay, dispatch_repaint) = dispatch_client_shell_actions(
         outcome.actions,
         endpoint_commands,
@@ -803,6 +898,17 @@ pub(super) fn finish_client_shell_input(
         .is_none_or(|shell| shell.endpoint_is_online(endpoints.active_id()))
         && endpoints.active_surface_available();
     for request in outcome.requests {
+        if matches!(request, ClientMessage::ClientShellPaneInput { .. })
+            && state
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.file_surface_pause().is_some())
+        {
+            if let Some(shell) = state.shell.as_mut().filter(|s| s.investigation_active()) {
+                shell.defer_investigation_terminal_input(request);
+            }
+            continue;
+        }
         if let ClientMessage::ClientShellHostTheme { update } = &request {
             state.record_host_theme_update(update);
             if let Some(activation) = pending_activation.as_mut() {

@@ -17,7 +17,17 @@ pub(crate) fn supported_client_shell_method_names() -> &'static [&'static str] {
 }
 
 /// Advertised only where `crate::platform::FILE_VIEWER_SUPPORTED` holds.
-const FILE_VIEWER_METHODS: [&str; 3] = ["directory.index", "directory.list", "pane.open_editor"];
+const FILE_VIEWER_METHODS: [&str; 9] = [
+    "directory.index",
+    "directory.list",
+    "file.read",
+    "files.cancel",
+    "files.operate",
+    "files.plan",
+    "files.replace",
+    "files.search",
+    "pane.open_editor",
+];
 
 /// What the endpoint welcome advertises. Why not shrink
 /// `supported_client_shell_method_names` instead: method shapes are frozen on
@@ -313,6 +323,28 @@ mod tests {
             );
         }
 
+        let mut added = BTreeMap::new();
+        for method in [
+            "file.read",
+            "files.cancel",
+            "files.search",
+            "files.plan",
+            "files.replace",
+            "files.operate",
+            "pane.get",
+        ] {
+            added.insert(
+                method.to_owned(),
+                actual.remove(method).expect("new filesystem method"),
+            );
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/endpoint-method-shapes-investigation.json");
+        let added_expected: BTreeMap<String, String> = serde_json::from_str(
+            &std::fs::read_to_string(path).expect("investigation method fixture"),
+        )
+        .expect("new method shapes");
+        assert_eq!(added, added_expected, "new filesystem method shapes");
         assert_eq!(
             actual, expected,
             "an existing endpoint method changed shape; add load-bearing behavior as a new advertised method or explicitly gate new fields"
@@ -374,7 +406,17 @@ mod tests {
             .collect();
         assert_eq!(
             dropped,
-            ["directory.index", "directory.list", "pane.open_editor"]
+            [
+                "directory.index",
+                "directory.list",
+                "file.read",
+                "files.cancel",
+                "files.operate",
+                "files.plan",
+                "files.replace",
+                "files.search",
+                "pane.open_editor"
+            ]
         );
     }
 

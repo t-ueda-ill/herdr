@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 mod agent_view;
 mod agents;
 mod directory;
+mod files;
+pub(crate) use files::FileService;
 mod env;
 mod integrations;
 mod layouts;
@@ -1151,7 +1153,14 @@ impl App {
                     "ssh host lookups are handled asynchronously by the app runtime",
                 );
             }
-            Method::DirectoryList(_) | Method::DirectoryIndex(_) => {
+            Method::FilesCancel(_)
+            | Method::FilesPlan(_)
+            | Method::FileRead(_)
+            | Method::FilesSearch(_)
+            | Method::FilesReplace(_)
+            | Method::FilesOperate(_)
+            | Method::DirectoryList(_)
+            | Method::DirectoryIndex(_) => {
                 return responses::encode_error(
                     request.id,
                     "invalid_request",

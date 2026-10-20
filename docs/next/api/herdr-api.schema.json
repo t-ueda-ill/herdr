@@ -2291,6 +2291,176 @@
           ],
           "type": "object"
         },
+        "FileChange": {
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "revision",
+            "text"
+          ],
+          "type": "object"
+        },
+        "FileCollision": {
+          "enum": [
+            "skip",
+            "rename",
+            "replace"
+          ],
+          "type": "string"
+        },
+        "FileOperation": {
+          "enum": [
+            "copy",
+            "move",
+            "create_file",
+            "create_directory",
+            "trash",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "FileReadParams": {
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "revision": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "FilesCancelParams": {
+          "properties": {
+            "generation": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "search_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "search_id",
+            "generation"
+          ],
+          "type": "object"
+        },
+        "FilesOperateParams": {
+          "properties": {
+            "collision": {
+              "$ref": "#/schemas/request/$defs/FileCollision"
+            },
+            "confirmed": {
+              "default": false,
+              "description": "Destructive actions require an explicit affirmative request.",
+              "type": "boolean"
+            },
+            "destination": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "operation": {
+              "$ref": "#/schemas/request/$defs/FileOperation"
+            },
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "operation",
+            "paths",
+            "collision"
+          ],
+          "type": "object"
+        },
+        "FilesReplaceParams": {
+          "properties": {
+            "changes": {
+              "items": {
+                "$ref": "#/schemas/request/$defs/FileChange"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "changes"
+          ],
+          "type": "object"
+        },
+        "FilesSearchParams": {
+          "properties": {
+            "case_sensitive": {
+              "default": false,
+              "type": "boolean"
+            },
+            "exclude": {
+              "default": "",
+              "type": "string"
+            },
+            "generation": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "include": {
+              "default": "",
+              "type": "string"
+            },
+            "include_ignored": {
+              "default": false,
+              "type": "boolean"
+            },
+            "query": {
+              "type": "string"
+            },
+            "regex": {
+              "default": false,
+              "type": "boolean"
+            },
+            "root": {
+              "type": "string"
+            },
+            "search_id": {
+              "description": "Opaque client-owned cancellation key. New generations supersede old work.",
+              "type": "string"
+            },
+            "whole_word": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "root",
+            "query",
+            "search_id",
+            "generation"
+          ],
+          "type": "object"
+        },
         "IntegrationInstallParams": {
           "properties": {
             "target": {
@@ -6720,6 +6890,102 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "file.read",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FileReadParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "files.cancel",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FilesCancelParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "files.search",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FilesSearchParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "files.replace",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FilesReplaceParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "files.plan",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FilesOperateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "files.operate",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FilesOperateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -8019,6 +8285,106 @@
             "layout_updated"
           ],
           "type": "string"
+        },
+        "FileDocument": {
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "unchanged": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "revision",
+            "text",
+            "unchanged"
+          ],
+          "type": "object"
+        },
+        "FileMatch": {
+          "properties": {
+            "end": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "line": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "matched": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "replacement": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "revision": {
+              "type": "string"
+            },
+            "start": {
+              "description": "UTF-8 byte offsets into the original document, not into the displayed line.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "revision",
+            "start",
+            "end",
+            "line",
+            "text",
+            "matched"
+          ],
+          "type": "object"
+        },
+        "FileOutcome": {
+          "properties": {
+            "destination": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "revision": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
         },
         "InstalledPluginInfo": {
           "properties": {
@@ -11109,6 +11475,94 @@
               },
               "required": [
                 "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "document": {
+                  "$ref": "#/schemas/success_response/$defs/FileDocument"
+                },
+                "type": {
+                  "const": "file_document",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "document"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "cancelled": {
+                  "type": "boolean"
+                },
+                "matches": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/FileMatch"
+                  },
+                  "type": "array"
+                },
+                "truncated": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "file_search",
+                  "type": "string"
+                },
+                "warnings": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "type",
+                "matches",
+                "truncated",
+                "cancelled",
+                "warnings"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "outcomes": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/FileOutcome"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "files_planned",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "outcomes"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "outcomes": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/FileOutcome"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "files_changed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "outcomes"
               ],
               "type": "object"
             }

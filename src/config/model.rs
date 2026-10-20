@@ -990,6 +990,8 @@ pub struct UiConfig {
     /// Show Git-ignored entries when the file viewer opens; `i` toggles them
     /// for that session only. Default: false.
     pub file_viewer_show_ignored: bool,
+    /// Override investigation actions by name, e.g. next_file = "alt+right".
+    pub file_workbench_keys: std::collections::BTreeMap<String, String>,
     /// Draw borders around split panes. auto draws them only for split panes,
     /// always also frames a lone pane (only while pane_outer_borders is
     /// enabled, since every edge of a lone pane is an outer edge), off
@@ -1242,6 +1244,7 @@ impl Default for UiConfig {
             prompt_new_workspace_name: false,
             file_viewer_show_hidden: false,
             file_viewer_show_ignored: false,
+            file_workbench_keys: Default::default(),
             pane_borders: PaneBordersConfig::Auto,
             pane_outer_borders: true,
             pane_scrollbars: true,

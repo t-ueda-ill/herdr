@@ -18,6 +18,7 @@ mod endpoint_sidebar;
 mod endpoints;
 pub(super) use endpoints::*;
 mod file_viewer;
+mod investigation;
 use file_viewer::{ClientFileViewerOverlay, FileViewerButton, FileViewerRequest};
 mod global_menu;
 mod graphics;

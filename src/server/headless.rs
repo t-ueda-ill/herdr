@@ -3307,6 +3307,19 @@ impl HeadlessServer {
             );
             return changed | (deferred_changed && !read_only);
         }
+        if matches!(
+            &msg.request.method,
+            api::schema::Method::FilesCancel(_)
+                | api::schema::Method::FilesPlan(_)
+                | api::schema::Method::FileRead(_)
+                | api::schema::Method::FilesSearch(_)
+                | api::schema::Method::FilesReplace(_)
+                | api::schema::Method::FilesOperate(_)
+        ) {
+            self.app
+                .handle_deferred_files_api_request(msg.request, msg.respond_to);
+            return changed;
+        }
         // Read-only: the worker answers `respond_to` itself and changes no app state.
         if matches!(
             &msg.request.method,

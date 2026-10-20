@@ -43,6 +43,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) confirm_close: bool,
     pub(super) file_viewer_show_hidden: bool,
     pub(super) file_viewer_show_ignored: bool,
+    pub(super) file_workbench_keys: std::collections::BTreeMap<String, String>,
     pub(super) mouse_capture: bool,
     pub(super) mouse_scroll_lines: usize,
     pub(super) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
@@ -261,6 +262,11 @@ pub(crate) enum ClientShellAction {
         endpoint_id: ClientEndpointId,
         target: Option<ClientEndpointFocusTarget>,
     },
+    FileSearchCancel {
+        boot_id: String,
+        params: crate::api::schema::FilesCancelParams,
+    },
+    FileSurfacePaused,
     ReplayMouse(Vec<crossterm::event::MouseEvent>),
     Keybind(crate::input::KeybindAction),
 }
@@ -894,6 +900,8 @@ pub(super) enum PendingEndpointKind {
     /// Lists one docker host's containers for the second picker stage.
     ListContainers(OpenPickerHost),
     FileViewer(FileViewerRequest),
+    Investigation(investigation::FileRequest),
+    FileSurfacePause,
     /// `history_keys` are recorded only once the workspace exists.
     OpenPicker {
         history_keys: Vec<String>,
@@ -1013,6 +1021,7 @@ pub(super) enum ClientInputTarget {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ClientInputContext {
+    pub(super) investigation: Option<(u64, investigation::Focus, bool)>,
     pub(super) mode: ClientShellMode,
     pub(super) overlay: Option<ClientShellOverlayKind>,
     pub(super) popup_terminal_id: Option<String>,
@@ -1200,6 +1209,8 @@ pub(crate) struct ClientShellState {
     pub(super) next_request_id: u64,
     /// Tags file viewer requests so answers for a replaced root are dropped.
     pub(super) file_viewer_generation: u64,
+    pub(super) workbench: investigation::Workbench,
+    pub(super) investigation_hits: investigation::Hits,
     pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
     pub(super) pending_integration_installs: usize,
     pub(super) pending_notifications: Vec<ClientPendingNotification>,
@@ -1254,6 +1265,7 @@ pub(super) struct WorkspaceEntry {
 impl ClientShellState {
     pub(crate) fn new(mut config: ClientShellConfig) -> Self {
         let preferences = config.preferences.clone();
+        let saved_investigations = preferences.investigations.clone();
         let local_config_diagnostic = config.startup_config_diagnostic.take();
         let overlay = config
             .startup_onboarding
@@ -1370,6 +1382,11 @@ impl ClientShellState {
             popup_pending_deadline: None,
             next_request_id: 1,
             file_viewer_generation: 0,
+            workbench: investigation::Workbench {
+                saved: saved_investigations,
+                ..Default::default()
+            },
+            investigation_hits: investigation::Hits::default(),
             pending_requests: HashMap::new(),
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),
@@ -1484,7 +1501,20 @@ impl ClientShellState {
             cols,
             rows,
             self.sidebar_collapsed,
-            self.focused_tab_count(),
+            self.focused_tab_count()
+                + self
+                    .workbench
+                    .tabs
+                    .iter()
+                    .filter(|t| {
+                        t.endpoint == self.active_endpoint_id
+                            && t.browser.workspace_id
+                                == self
+                                    .snapshot
+                                    .as_ref()
+                                    .and_then(|s| s.focused_workspace_id.clone())
+                    })
+                    .count(),
             self.sidebar_width,
         )
     }

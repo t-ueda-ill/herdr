@@ -544,11 +544,18 @@ pub(in crate::client::shell) fn join_host_path(directory: &str, name: &str) -> S
 
 pub(in crate::client::shell) fn parent_host_path(path: &str) -> Option<&str> {
     let trimmed = path.trim_end_matches('/');
+    if trimmed.len() == 2 && trimmed.as_bytes()[1] == b':' {
+        return None;
+    }
+    if trimmed.starts_with("//") && trimmed[2..].split('/').count() <= 2 {
+        return None;
+    }
     if trimmed.is_empty() {
         return None;
     }
     match trimmed.rsplit_once('/') {
         Some(("", _)) => Some("/"),
+        Some((parent, _)) if parent.len() == 2 && parent.as_bytes()[1] == b':' => Some(&path[..3]),
         Some((parent, _)) => Some(parent),
         None => None,
     }

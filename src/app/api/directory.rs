@@ -72,9 +72,9 @@ impl DirectoryJob {
         let listing = listing::list_directory(path, git, listing::MAX_LIST_ENTRIES)?;
         let nonzero = |count: usize| u64::try_from(count).ok().filter(|count| *count > 0);
         Ok(ResponseResult::DirectoryList {
-            root: self.root.path.display().to_string(),
-            path: path.display().to_string(),
-            canonical: listing.canonical.display().to_string(),
+            root: crate::platform::file_path_display(&self.root.path),
+            path: crate::platform::file_path_display(path),
+            canonical: crate::platform::file_path_display(&listing.canonical),
             entries: listing.entries,
             truncated: listing.truncated,
             git_error: listing.git_error,
@@ -87,7 +87,9 @@ impl DirectoryJob {
     fn index(path: &Path, git: &GitCli<'_>) -> Result<ResponseResult, Failure> {
         let index = listing::index_repository(path, git, listing::MAX_INDEX_ENTRIES)?;
         Ok(ResponseResult::DirectoryIndex {
-            repo_root: index.repo_root.map(|root| root.display().to_string()),
+            repo_root: index
+                .repo_root
+                .map(|root| crate::platform::file_path_display(&root)),
             entries: index.entries,
             truncated: index.truncated,
             git_error: index.git_error,

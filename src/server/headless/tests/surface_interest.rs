@@ -866,3 +866,70 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     shutdown_test_runtimes(&mut source_server);
     shutdown_test_runtimes(&mut target_server);
 }
+
+#[tokio::test]
+async fn investigation_filesystem_requests_keep_terminal_surface_inactive() {
+    let mut server = test_headless_server();
+    let mut input_rx = install_focused_test_runtime(&mut server, b"");
+    let pane_id = server.app.session_snapshot().focused_pane_id.unwrap();
+    let original_size = server.effective_size;
+    let (writer, control_rx, render_rx) = test_client_writer();
+    let client_id = 953;
+    server.handle_server_event(ServerEvent::ClientShellConnected {
+        surface_reuse: false,
+        surface_delta: false,
+        surface_scroll: false,
+        client_id,
+        surface_cols: 101,
+        surface_rows: 37,
+        cell_width_px: 9,
+        cell_height_px: 18,
+        pixel_mouse: true,
+        direct_graphics: false,
+        endpoint_keybindings: true,
+        mouse_capture: true,
+        surface_active: false,
+        writer,
+    });
+    let _ = client_shell_snapshot(&control_rx);
+    let boot = server.client_shell_boot_id.clone();
+    server.handle_client_shell_endpoint_request(
+        client_id,
+        boot.clone(),
+        Box::new(api::schema::Request {
+            id: "file-metadata".into(),
+            method: api::schema::Method::PaneGet(api::schema::PaneTarget {
+                pane_id: pane_id.clone(),
+            }),
+        }),
+    );
+    assert_eq!(server.foreground_client_id, None);
+    assert_eq!(server.effective_size, original_size);
+    assert!(!server.clients[&client_id].shell_surface_active);
+    // Cancellation must bypass the occupied lane, while remaining client-local.
+    server.handle_client_shell_endpoint_request(
+        client_id,
+        boot,
+        Box::new(api::schema::Request {
+            id: "cancel-file-search".into(),
+            method: api::schema::Method::FilesCancel(api::schema::FilesCancelParams {
+                search_id: "same-client-local-id".into(),
+                generation: 2,
+            }),
+        }),
+    );
+    let message = read_server_message(control_rx.recv().expect("cancel response"));
+    assert!(
+        matches!(message, ServerMessage::ClientShellEndpointResponseChunk { request_id, .. } if request_id == "cancel-file-search")
+    );
+    server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id,
+        pane_id,
+        events: vec![crate::protocol::ClientPaneInputEvent::Paste(
+            "must not leak".into(),
+        )],
+    });
+    assert!(input_rx.try_recv().is_err());
+    server.render_and_stream();
+    assert!(render_rx.try_recv().is_err());
+}

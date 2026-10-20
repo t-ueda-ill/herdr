@@ -69,6 +69,12 @@ pub(super) struct EndpointCommands {
 }
 
 impl EndpointCommands {
+    pub(super) fn has_pending(&self, id: &ClientEndpointId) -> bool {
+        self.lanes
+            .get(id)
+            .is_some_and(|l| l.in_flight.is_some() || !l.queued.is_empty())
+    }
+
     pub(super) fn enqueue(
         &mut self,
         endpoint_id: ClientEndpointId,

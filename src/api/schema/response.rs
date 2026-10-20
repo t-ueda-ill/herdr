@@ -324,6 +324,21 @@ pub enum ResponseResult {
         projection_revision: u64,
     },
     Ok {},
+    FileDocument {
+        document: super::files::FileDocument,
+    },
+    FileSearch {
+        matches: Vec<super::files::FileMatch>,
+        truncated: bool,
+        cancelled: bool,
+        warnings: Vec<String>,
+    },
+    FilesPlanned {
+        outcomes: Vec<super::files::FileOutcome>,
+    },
+    FilesChanged {
+        outcomes: Vec<super::files::FileOutcome>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

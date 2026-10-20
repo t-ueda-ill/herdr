@@ -170,6 +170,9 @@ impl ClientShellState {
                     && pending.target.endpoint_id == self.active_endpoint_id
                     && self.navigation_target_valid(&pending.target)
             });
+        if self.investigation_active() {
+            return self.compose_investigation_only(cols, rows);
+        }
         if self.snapshot.is_none() || self.pane_surface.is_none() {
             return Some(self.compose_unavailable(cols, rows).into());
         }
@@ -642,7 +645,58 @@ impl ClientShellState {
         if let Some(bar) = mode_bar {
             occlusion.cover(bar);
         }
+        if self.workbench.tabs.iter().any(|t| {
+            t.endpoint == self.active_endpoint_id
+                && t.browser.workspace_id
+                    == self
+                        .snapshot
+                        .as_ref()
+                        .and_then(|s| s.focused_workspace_id.clone())
+        }) {
+            let active = self.investigation_active();
+            if active {
+                let mut composed = frame.to_ratatui_buffer()?;
+                let cursor = self.render_investigation(&mut composed, layout);
+                occlusion.cover(layout.pane_surface);
+                frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+                frame.clear_hyperlinks_in(layout.pane_surface);
+            } else {
+                // Only chrome changes while reading terminal output. Avoid a
+                // full-frame round trip for an inactive investigation tab.
+                self.render_investigation(&mut buffer, layout);
+                for y in layout.tab_bar.y..layout.tab_bar.bottom() {
+                    for x in layout.tab_bar.x..layout.tab_bar.right() {
+                        if let Some(cell) = buffer.cell((x, y)) {
+                            frame.cells
+                                [usize::from(y) * usize::from(frame.width) + usize::from(x)] =
+                                crate::protocol::CellData::from_ratatui_cell(cell);
+                        }
+                    }
+                }
+            }
+            restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
+        }
+
+        self.compose_shell_overlays(&mut frame, &mut occlusion)?;
+        if self.endpoint_status(&self.active_endpoint_id) != Some(ClientEndpointStatus::Online) {
+            frame.cursor = None;
+            self.hits.panes.clear();
+            self.hits.pane_splits.clear();
+            self.hits.popup = None;
+        }
+        let graphics = self.compose_graphics(layout, &occlusion);
+        Some(crate::client::frame_output::ComposedFrame { frame, graphics })
+    }
+}
+
+impl ClientShellState {
+    fn compose_shell_overlays(
+        &mut self,
+        frame: &mut FrameData,
+        occlusion: &mut crate::kitty_graphics::surface::Occlusion,
+    ) -> Option<()> {
         if let Some(overlay) = self.overlay.as_ref() {
+            let snapshot = self.snapshot.as_deref()?;
             let mut composed = frame.to_ratatui_buffer()?;
             let overlay_area;
             let cursor = if let ClientShellOverlay::ContextMenu(menu) = overlay {
@@ -731,12 +785,21 @@ impl ClientShellState {
                 .scroll
                 .min(u16::try_from(self.hits.release_notes_max_scroll).unwrap_or(u16::MAX));
         }
-        if self.endpoint_status(&self.active_endpoint_id) != Some(ClientEndpointStatus::Online) {
-            frame.cursor = None;
-            self.hits.panes.clear();
-            self.hits.pane_splits.clear();
-            self.hits.popup = None;
-        }
+        Some(())
+    }
+    fn compose_investigation_only(
+        &mut self,
+        cols: u16,
+        rows: u16,
+    ) -> Option<crate::client::frame_output::ComposedFrame> {
+        let layout = self.layout(cols, rows);
+        let frame = self.compose_unavailable(cols, rows);
+        let mut buffer = frame.to_ratatui_buffer()?;
+        let cursor = self.render_investigation(&mut buffer, layout);
+        let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &[]);
+        let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
+        occlusion.cover(layout.pane_surface);
+        self.compose_shell_overlays(&mut frame, &mut occlusion)?;
         let graphics = self.compose_graphics(layout, &occlusion);
         Some(crate::client::frame_output::ComposedFrame { frame, graphics })
     }

@@ -105,6 +105,15 @@ fn shell_state_with(
     projection: ClientShellSnapshot,
 ) -> ClientShellState {
     let mut state = ClientShellState::new(config);
+    // Characterize the legacy path picker against servers without file.read.
+    state.set_endpoint_methods(Some(
+        crate::api::schema::Method::OPERATIONS
+            .iter()
+            .map(|op| op.name)
+            .filter(|name| !name.starts_with("file.") && !name.starts_with("files."))
+            .map(str::to_owned)
+            .collect(),
+    ));
     state.set_snapshot(Box::new(projection));
     state.set_pane_surface(surface());
     state
@@ -386,13 +395,13 @@ fn opening_lists_the_focused_workspace_directory_then_indexes_it() {
         [
             Method::DirectoryList(DirectoryListParams {
                 workspace_id: Some("ws_1".into()),
-                pane_id: None,
+                pane_id: Some("pane_1".into()),
                 path: None,
                 trust_repository: false,
             }),
             Method::DirectoryIndex(DirectoryIndexParams {
                 workspace_id: Some("ws_1".into()),
-                pane_id: None,
+                pane_id: Some("pane_1".into()),
                 path: None,
                 trust_repository: false,
             }),

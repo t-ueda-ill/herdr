@@ -285,3 +285,38 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
 pub fn show_desktop_notification(_title: &str, _body: Option<&str>) -> std::io::Result<bool> {
     Ok(false)
 }
+
+pub(crate) fn trash_file(_path: &std::path::Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "trash is unavailable",
+    ))
+}
+
+pub(crate) fn rename_no_replace(
+    _source: &std::path::Path,
+    _target: &std::path::Path,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic no-replace rename is unavailable",
+    ))
+}
+
+pub(crate) fn file_path_display(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+pub(crate) fn open_text_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+pub(crate) fn copy_symbolic_link(
+    _source: &std::path::Path,
+    _target: &std::path::Path,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "symbolic links unavailable",
+    ))
+}
