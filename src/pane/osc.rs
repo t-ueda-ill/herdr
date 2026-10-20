@@ -496,15 +496,130 @@ pub(super) struct AgentOscStateTracker {
     latest_title: Option<String>,
     terminal_title: Option<String>,
     latest_progress: Option<String>,
+    offhost_claim: OffHostClaimState,
+}
+
+/// Private OSC number carrying `herdr-agent;v=1;...` claims from a remote
+/// shell function. 43737 is "herdr" on a phone keypad. Why not 21337: that
+/// number is already recorded as debug evidence by `OscDebugTracker`, and an
+/// authoritative contract must not share a number with passive evidence.
+/// 43737 is outside every range that terminals and multiplexers define
+/// (0-9, 99, 133, 633, 777, 1337, 3008, 5522, ...), so a collision would need
+/// another program to pick the same arbitrary number.
+pub(super) const OFFHOST_AGENT_OSC: &[u8] = b"43737";
+const OFFHOST_CLAIM_NAMESPACE: &[u8] = b"herdr-agent";
+const OFFHOST_CLAIM_VERSION: &[u8] = b"v=1";
+const OFFHOST_CLAIM_FIELD_MAX_BYTES: usize = 64;
+
+/// What a remote shell function said about an agent running in this pane.
+/// It is a claim, not evidence: any byte stream reaching the pane can forge it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum OffHostAgentClaim {
+    Started { label: String },
+    Exited,
+}
+
+/// Claims live outside `latest_title` / `latest_progress` so that
+/// `clear_retained` on an agent transition cannot erase a claim that caused
+/// that very transition.
+/// A claim newer than what the caller has handled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OffHostClaimUpdate {
+    pub(super) generation: u64,
+    pub(super) claim: OffHostAgentClaim,
+    /// Generation of the newest matched exit. It can precede `generation`
+    /// when a start overwrote the exit before the caller polled, and the
+    /// caller must still report that exit.
+    pub(super) released_generation: u64,
+}
+
+/// Positions a caller moves its cursor to after a detector reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OffHostClaimMarks {
+    /// Everything up to here counts as handled.
+    pub(super) generation: u64,
+    /// Handled up to here, except that a live `Started` claim is delivered again.
+    pub(super) rewound_generation: u64,
+    pub(super) released_generation: u64,
+}
+
+#[derive(Debug, Default)]
+struct OffHostClaimState {
+    generation: u64,
+    released_generation: u64,
+    latest: Option<OffHostAgentClaim>,
+    /// Pairs an exit with its start. A stale exit from an earlier invocation
+    /// must not release a newer claim, so it is dropped here.
+    active_token: Option<String>,
+}
+
+impl OffHostClaimState {
+    /// Returns true when a `start` was recorded.
+    fn observe(&mut self, payload: &[u8]) -> bool {
+        let Some(claim) = parse_offhost_claim(payload) else {
+            return false;
+        };
+        match claim {
+            ParsedOffHostClaim::Start { token, label } => {
+                self.active_token = Some(token);
+                self.latest = Some(OffHostAgentClaim::Started { label });
+                self.generation += 1;
+                true
+            }
+            ParsedOffHostClaim::Exit { token } => {
+                if self.active_token.as_deref() != Some(token.as_str()) {
+                    return false;
+                }
+                self.active_token = None;
+                self.latest = Some(OffHostAgentClaim::Exited);
+                self.generation += 1;
+                self.released_generation = self.generation;
+                false
+            }
+        }
+    }
+}
+
+enum ParsedOffHostClaim {
+    Start { token: String, label: String },
+    Exit { token: String },
+}
+
+fn offhost_claim_field(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() || bytes.len() > OFFHOST_CLAIM_FIELD_MAX_BYTES {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    (!text.chars().any(char::is_control)).then(|| text.to_string())
+}
+
+fn parse_offhost_claim(payload: &[u8]) -> Option<ParsedOffHostClaim> {
+    let mut fields = payload.split(|&byte| byte == b';');
+    if fields.next()? != OFFHOST_CLAIM_NAMESPACE || fields.next()? != OFFHOST_CLAIM_VERSION {
+        return None;
+    }
+    let verb = fields.next()?;
+    let token = offhost_claim_field(fields.next()?)?;
+    let claim = match verb {
+        b"start" => ParsedOffHostClaim::Start {
+            token,
+            label: offhost_claim_field(fields.next()?)?,
+        },
+        b"exit" => ParsedOffHostClaim::Exit { token },
+        _ => return None,
+    };
+    // Extra fields mean a newer writer; v=1 readers do not guess their meaning.
+    fields.next().is_none().then_some(claim)
 }
 
 impl AgentOscStateTracker {
     pub(super) fn observe(&mut self, bytes: &[u8]) -> bool {
-        let (collector, latest_title, terminal_title, latest_progress) = (
+        let (collector, latest_title, terminal_title, latest_progress, offhost_claim) = (
             &mut self.collector,
             &mut self.latest_title,
             &mut self.terminal_title,
             &mut self.latest_progress,
+            &mut self.offhost_claim,
         );
         let mut terminal_title_changed = false;
         collector.observe(bytes, |body| {
@@ -523,10 +638,48 @@ impl AgentOscStateTracker {
                     *latest_progress =
                         Some(sanitize_agent_osc_string(payload, AGENT_OSC_MAX_CHARS));
                 }
+                OFFHOST_AGENT_OSC => {
+                    // The shell's own title and progress predate the agent and
+                    // must not become its evidence.
+                    let started = offhost_claim.observe(payload);
+                    if started {
+                        *latest_title = None;
+                        *latest_progress = None;
+                    }
+                }
                 _ => {}
             }
         });
         terminal_title_changed
+    }
+
+    /// Returns the newest claim only when it is newer than `seen_generation`,
+    /// so the per-tick poll allocates nothing while no claim arrives.
+    pub(super) fn offhost_claim_since(&self, seen_generation: u64) -> Option<OffHostClaimUpdate> {
+        let claim = &self.offhost_claim;
+        if claim.generation <= seen_generation {
+            return None;
+        }
+        claim.latest.clone().map(|latest| OffHostClaimUpdate {
+            generation: claim.generation,
+            claim: latest,
+            released_generation: claim.released_generation,
+        })
+    }
+
+    #[cfg(test)]
+    fn offhost_claim_generation(&self) -> u64 {
+        self.offhost_claim.generation
+    }
+
+    pub(super) fn offhost_claim_marks(&self) -> OffHostClaimMarks {
+        let claim = &self.offhost_claim;
+        let live_start = matches!(claim.latest, Some(OffHostAgentClaim::Started { .. }));
+        OffHostClaimMarks {
+            generation: claim.generation,
+            rewound_generation: claim.generation - u64::from(live_start),
+            released_generation: claim.released_generation,
+        }
     }
 
     pub(super) fn terminal_title(&self) -> Option<&str> {
@@ -1143,6 +1296,171 @@ mod tests {
         // After recovery, subsequent valid sequences are captured normally.
         t.observe(b"\x1b]0;after\x07");
         assert_eq!(t.latest_title(), "after");
+    }
+
+    fn claim_start(token: &str, kind: &str) -> Vec<u8> {
+        format!("\x1b]43737;herdr-agent;v=1;start;{token};{kind}\x07").into_bytes()
+    }
+
+    fn claim_exit(token: &str) -> Vec<u8> {
+        format!("\x1b]43737;herdr-agent;v=1;exit;{token}\x07").into_bytes()
+    }
+
+    #[test]
+    fn offhost_claim_start_is_reported_once_per_generation() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(&claim_start("t1", "claude"));
+
+        assert_eq!(
+            t.offhost_claim_since(0),
+            Some(OffHostClaimUpdate {
+                generation: 1,
+                claim: OffHostAgentClaim::Started {
+                    label: "claude".into()
+                },
+                released_generation: 0,
+            })
+        );
+        assert_eq!(t.offhost_claim_since(1), None);
+    }
+
+    #[test]
+    fn offhost_claim_split_across_chunks_is_reassembled() {
+        let mut t = AgentOscStateTracker::default();
+        let bytes = claim_start("t1", "codex");
+        for chunk in bytes.chunks(3) {
+            t.observe(chunk);
+        }
+
+        assert!(matches!(
+            t.offhost_claim_since(0),
+            Some(OffHostClaimUpdate {
+                generation: 1,
+                claim: OffHostAgentClaim::Started { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn offhost_claim_accepts_bel_and_st_terminators() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(b"\x1b]43737;herdr-agent;v=1;start;t1;claude\x1b\\");
+        assert_eq!(t.offhost_claim_generation(), 1);
+        t.observe(b"\x1b]43737;herdr-agent;v=1;exit;t1\x07");
+        assert_eq!(t.offhost_claim_generation(), 2);
+        assert_eq!(
+            t.offhost_claim_since(1),
+            Some(OffHostClaimUpdate {
+                generation: 2,
+                claim: OffHostAgentClaim::Exited,
+                released_generation: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn offhost_claim_over_the_body_cap_is_ignored() {
+        let mut t = AgentOscStateTracker::default();
+        let mut oversized = b"\x1b]43737;herdr-agent;v=1;start;t1;".to_vec();
+        oversized.extend(std::iter::repeat_n(b'x', 4097));
+        oversized.push(0x07);
+        t.observe(&oversized);
+
+        assert_eq!(t.offhost_claim_generation(), 0);
+    }
+
+    #[test]
+    fn legacy_debug_osc_is_not_a_claim() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(b"\x1b]21337;status=working\x07");
+        t.observe(b"\x1b]21337;herdr-agent;v=1;start;t1;claude\x07");
+
+        assert_eq!(t.offhost_claim_generation(), 0);
+    }
+
+    #[test]
+    fn offhost_claim_with_unusable_fields_is_ignored() {
+        let mut t = AgentOscStateTracker::default();
+        for body in [
+            "herdr-agent;v=2;start;t1;claude",
+            "herdr-agent;v=1;start;t1",
+            "herdr-agent;v=1;start;;claude",
+            "herdr-agent;v=1;start;t1;claude;extra",
+            "herdr-agent;v=1;pause;t1",
+            "other;v=1;start;t1;claude",
+        ] {
+            t.observe(format!("\x1b]43737;{body}\x07").as_bytes());
+        }
+
+        assert_eq!(t.offhost_claim_generation(), 0);
+    }
+
+    #[test]
+    fn offhost_claim_exit_with_a_foreign_token_is_ignored() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(&claim_exit("never-started"));
+        assert_eq!(t.offhost_claim_generation(), 0);
+
+        t.observe(&claim_start("new", "claude"));
+        t.observe(&claim_exit("old"));
+        assert_eq!(t.offhost_claim_generation(), 1);
+
+        t.observe(&claim_exit("new"));
+        assert_eq!(t.offhost_claim_generation(), 2);
+    }
+
+    #[test]
+    fn offhost_claim_update_remembers_an_exit_that_a_later_start_overwrote() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(&claim_start("t1", "claude"));
+        t.observe(&claim_exit("t1"));
+        t.observe(&claim_start("t2", "claude"));
+
+        let update = t.offhost_claim_since(1).expect("newer claim");
+
+        assert_eq!(update.generation, 3);
+        assert_eq!(update.released_generation, 2);
+    }
+
+    #[test]
+    fn offhost_claim_marks_rewind_only_a_live_start() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(&claim_start("t1", "claude"));
+        let live = t.offhost_claim_marks();
+        assert_eq!((live.generation, live.rewound_generation), (1, 0));
+
+        t.observe(&claim_exit("t1"));
+        let exited = t.offhost_claim_marks();
+        assert_eq!((exited.generation, exited.rewound_generation), (2, 2));
+    }
+
+    #[test]
+    fn offhost_claim_survives_clear_retained() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(&claim_start("t1", "claude"));
+        t.clear_retained();
+
+        assert!(t.offhost_claim_since(0).is_some());
+    }
+
+    #[test]
+    fn offhost_claim_start_drops_the_shells_retained_title_and_progress() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(b"\x1b]0;user@host: ~\x07\x1b]9;4;3;\x07");
+        t.observe(&claim_start("t1", "claude"));
+
+        assert_eq!(t.latest_title(), "");
+        assert_eq!(t.latest_progress(), "");
+        assert_eq!(t.terminal_title(), Some("user@host: ~"));
+    }
+
+    #[test]
+    fn offhost_claim_inside_a_dcs_string_is_ignored() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(b"\x1bPtmux;\x1b\x1b]43737;herdr-agent;v=1;start;t1;claude\x07\x1b\\");
+
+        assert_eq!(t.offhost_claim_generation(), 0);
     }
 
     #[test]

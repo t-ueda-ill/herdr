@@ -7,6 +7,7 @@ mod env;
 mod file_ops;
 mod opencode_config;
 mod registry;
+mod remote_shell;
 mod targets;
 mod types;
 mod version;
@@ -23,6 +24,7 @@ pub(crate) use registry::{
     experimental_letta_integration_status, installed_integration_statuses,
     integration_recommendations, integration_target_label, print_outdated_update_notice,
 };
+pub(crate) use remote_shell::{remote_shell_function, RemoteShell};
 pub(crate) use types::{
     ExperimentalIntegrationStatus, IntegrationRecommendation, IntegrationStatus,
     IntegrationStatusKind,
