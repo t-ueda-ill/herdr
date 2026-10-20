@@ -1,23 +1,42 @@
 {
-  "version": "0.9.502",
+  "version": "0.9.503",
   "protocol": 22,
   "endpoint_generation": 1,
-  "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.502\n- Source commit: 41ea4dc848f181995dc29276fe25e72f4e2edd47\n\nSHA-256:\n\n```\nf656fe40bc2d67807c4a0efa743d245d8916e61a6388e3e188ec3b67b58f66b5  herdr-linux-x86_64\nd45cdebdcf2f95b6bdfca2ca8450541f512e27fc93bcabc83a9e36b1f942760f  herdr-linux-aarch64\n6bc5d23af6d8ce580d29658d7e4a5a61f8f6c9f8961a31f252ecb97fb5beb2b0  herdr-macos-x86_64\nf755b9473220ff1745af5d8569cd4d2037b9eeb5d4075dfd9cfb89f0d2cdd882  herdr-macos-aarch64\n6fda1d56a3514fa94e7068a44f6dab14721eb6eb3c6b3cb13e77e89bbacd8097  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* fix: correct Windows remote paths and installer CI channel by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/3\n* feat: file viewer overlay with directory.list, directory.index and pane.open_editor by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/4\n* ci: open a pull request for distribution/latest.json instead of pushing master by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/6\n* fix: focus workspaces opened from pickers; rank open pickers by favorites and recent opens by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/7\n* chore: refresh fork documentation and prepare v0.9.502 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/8\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.501...v0.9.502",
+  "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.503\n- Source commit: f2a07a3515bee8c9b239a7de626ec1ac2a0629e1\n\nSHA-256:\n\n```\nbeac45c62172191989c45edb9875865924f5864f068aa4acad8ba18dd7f16bc8  herdr-linux-x86_64\n1940d39f67dbc44d26a1ce07a9bcabf3e1a2b5a25ca5d7d68666ba7eed01df2f  herdr-linux-aarch64\n60e8ffc6190e5cdb3b18205b05837aff07cd2ddd635705d84b3d4f07f4b7bacc  herdr-macos-x86_64\n4fcb091d43739d1c4793282c660e598aa850a3302d37c493d986585ee7a612cb  herdr-macos-aarch64\nb6c312c8a6829249795efdf14ab960195da5b98de4c5935e4953d29ec5992455  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.502 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/9\n* feat: integrated file investigation workbench by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/10\n* feat: open favorite containers straight from the container host picker by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/11\n* feat: browse files inside ssh and container panes from investigations by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/12\n* chore: prepare v0.9.503 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/13\n* fix: link the no-replace rename on musl by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/14\n\n## New Contributors\n* @github-actions[bot] made their first contribution in https://github.com/t-ueda-ill/herdr/pull/9\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.502...v0.9.503",
   "assets": {
-    "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.502/herdr-linux-x86_64",
-    "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.502/herdr-linux-aarch64",
-    "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.502/herdr-macos-x86_64",
-    "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.502/herdr-macos-aarch64",
-    "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.502/herdr-windows-x86_64.zip"
+    "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.503/herdr-linux-x86_64",
+    "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.503/herdr-linux-aarch64",
+    "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.503/herdr-macos-x86_64",
+    "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.503/herdr-macos-aarch64",
+    "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.503/herdr-windows-x86_64.zip"
   },
   "sha256": {
-    "linux-x86_64": "f656fe40bc2d67807c4a0efa743d245d8916e61a6388e3e188ec3b67b58f66b5",
-    "linux-aarch64": "d45cdebdcf2f95b6bdfca2ca8450541f512e27fc93bcabc83a9e36b1f942760f",
-    "macos-x86_64": "6bc5d23af6d8ce580d29658d7e4a5a61f8f6c9f8961a31f252ecb97fb5beb2b0",
-    "macos-aarch64": "f755b9473220ff1745af5d8569cd4d2037b9eeb5d4075dfd9cfb89f0d2cdd882",
-    "windows-x86_64": "6fda1d56a3514fa94e7068a44f6dab14721eb6eb3c6b3cb13e77e89bbacd8097"
+    "linux-x86_64": "beac45c62172191989c45edb9875865924f5864f068aa4acad8ba18dd7f16bc8",
+    "linux-aarch64": "1940d39f67dbc44d26a1ce07a9bcabf3e1a2b5a25ca5d7d68666ba7eed01df2f",
+    "macos-x86_64": "60e8ffc6190e5cdb3b18205b05837aff07cd2ddd635705d84b3d4f07f4b7bacc",
+    "macos-aarch64": "4fcb091d43739d1c4793282c660e598aa850a3302d37c493d986585ee7a612cb",
+    "windows-x86_64": "b6c312c8a6829249795efdf14ab960195da5b98de4c5935e4953d29ec5992455"
   },
   "releases": {
+    "0.9.503": {
+      "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.503\n- Source commit: f2a07a3515bee8c9b239a7de626ec1ac2a0629e1\n\nSHA-256:\n\n```\nbeac45c62172191989c45edb9875865924f5864f068aa4acad8ba18dd7f16bc8  herdr-linux-x86_64\n1940d39f67dbc44d26a1ce07a9bcabf3e1a2b5a25ca5d7d68666ba7eed01df2f  herdr-linux-aarch64\n60e8ffc6190e5cdb3b18205b05837aff07cd2ddd635705d84b3d4f07f4b7bacc  herdr-macos-x86_64\n4fcb091d43739d1c4793282c660e598aa850a3302d37c493d986585ee7a612cb  herdr-macos-aarch64\nb6c312c8a6829249795efdf14ab960195da5b98de4c5935e4953d29ec5992455  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.502 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/9\n* feat: integrated file investigation workbench by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/10\n* feat: open favorite containers straight from the container host picker by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/11\n* feat: browse files inside ssh and container panes from investigations by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/12\n* chore: prepare v0.9.503 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/13\n* fix: link the no-replace rename on musl by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/14\n\n## New Contributors\n* @github-actions[bot] made their first contribution in https://github.com/t-ueda-ill/herdr/pull/9\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.502...v0.9.503",
+      "protocol": 22,
+      "endpoint_generation": 1,
+      "assets": {
+        "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.503/herdr-linux-x86_64",
+        "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.503/herdr-linux-aarch64",
+        "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.503/herdr-macos-x86_64",
+        "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.503/herdr-macos-aarch64",
+        "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.503/herdr-windows-x86_64.zip"
+      },
+      "sha256": {
+        "linux-x86_64": "beac45c62172191989c45edb9875865924f5864f068aa4acad8ba18dd7f16bc8",
+        "linux-aarch64": "1940d39f67dbc44d26a1ce07a9bcabf3e1a2b5a25ca5d7d68666ba7eed01df2f",
+        "macos-x86_64": "60e8ffc6190e5cdb3b18205b05837aff07cd2ddd635705d84b3d4f07f4b7bacc",
+        "macos-aarch64": "4fcb091d43739d1c4793282c660e598aa850a3302d37c493d986585ee7a612cb",
+        "windows-x86_64": "b6c312c8a6829249795efdf14ab960195da5b98de4c5935e4953d29ec5992455"
+      }
+    },
     "0.9.502": {
       "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.502\n- Source commit: 41ea4dc848f181995dc29276fe25e72f4e2edd47\n\nSHA-256:\n\n```\nf656fe40bc2d67807c4a0efa743d245d8916e61a6388e3e188ec3b67b58f66b5  herdr-linux-x86_64\nd45cdebdcf2f95b6bdfca2ca8450541f512e27fc93bcabc83a9e36b1f942760f  herdr-linux-aarch64\n6bc5d23af6d8ce580d29658d7e4a5a61f8f6c9f8961a31f252ecb97fb5beb2b0  herdr-macos-x86_64\nf755b9473220ff1745af5d8569cd4d2037b9eeb5d4075dfd9cfb89f0d2cdd882  herdr-macos-aarch64\n6fda1d56a3514fa94e7068a44f6dab14721eb6eb3c6b3cb13e77e89bbacd8097  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* fix: correct Windows remote paths and installer CI channel by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/3\n* feat: file viewer overlay with directory.list, directory.index and pane.open_editor by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/4\n* ci: open a pull request for distribution/latest.json instead of pushing master by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/6\n* fix: focus workspaces opened from pickers; rank open pickers by favorites and recent opens by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/7\n* chore: refresh fork documentation and prepare v0.9.502 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/8\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.501...v0.9.502",
       "protocol": 22,
