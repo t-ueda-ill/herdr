@@ -29,6 +29,7 @@ mod background_agent;
 mod cursor;
 mod input;
 mod kitty_keyboard;
+mod offhost_claim;
 mod osc;
 mod state;
 mod terminal;
@@ -42,6 +43,7 @@ use self::agent_detection::{
     ScreenDetectionPublishInput, AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
 };
 use self::background_agent::{AgentJobStatus, AgentJobTracker};
+use self::offhost_claim::{OffHostClaimAction, OffHostClaimWatcher};
 #[cfg(test)]
 pub(crate) use self::terminal::test_encode_key_for_app;
 #[cfg(unix)]
@@ -421,9 +423,20 @@ const PROCESS_ACQUISITION_FAST_RECHECK: std::time::Duration = std::time::Duratio
 const PROCESS_ACQUISITION_SLOW_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
 const PROCESS_ACQUISITION_IDLE_RESET: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Where the pane's agent identity came from. Only `Process` identities are
+/// disproved by a probe that finds no agent process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentIdentitySource {
+    Process,
+    /// Claimed in-band by a remote shell function. The agent runs on another
+    /// host, so the local process tree can neither confirm nor refute it.
+    OffHostClaim,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct AgentDetectionPresence {
     current_agent: Option<Agent>,
+    source: AgentIdentitySource,
     consecutive_misses: u8,
 }
 
@@ -506,6 +519,63 @@ fn foreground_shell_agent_action(
     }
 
     ForegroundShellAgentAction::ObserveProbe
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimOutcome {
+    Unchanged,
+    Adopted {
+        previous: Option<Agent>,
+        agent: Agent,
+    },
+    /// The claimed agent exited; the clear runs through the process-exit path.
+    Releasing,
+}
+
+/// Applies a claim decision to the presence state shared with the probe path.
+fn apply_off_host_claim_action(
+    action: OffHostClaimAction,
+    agent_presence: &mut AgentDetectionPresence,
+    pending_foreground_shell_clear: &mut bool,
+) -> ClaimOutcome {
+    match action {
+        OffHostClaimAction::None => ClaimOutcome::Unchanged,
+        OffHostClaimAction::Adopt(agent) => {
+            let previous = agent_presence.current_agent();
+            if agent_presence.adopt_off_host_claim(agent) {
+                ClaimOutcome::Adopted { previous, agent }
+            } else {
+                ClaimOutcome::Unchanged
+            }
+        }
+        OffHostClaimAction::Release => {
+            // Same path a local exit takes, so the pane emits one
+            // process-exit Idle before the identity clears.
+            *pending_foreground_shell_clear = true;
+            ClaimOutcome::Releasing
+        }
+    }
+}
+
+/// A pane shell in front, or a lost background job, says nothing about an
+/// agent that runs on another host. Exit of a claimed agent is reported only
+/// through the claim itself, so a probe that found no agent is demoted to a
+/// plain observation, except that it must not cancel an exit already pending.
+fn claimed_identity_action(
+    source: AgentIdentitySource,
+    action: ForegroundShellAgentAction,
+    process_exit_reported: bool,
+    pending_foreground_shell_clear: bool,
+    probe_found_agent: bool,
+) -> ForegroundShellAgentAction {
+    if source == AgentIdentitySource::Process || process_exit_reported || probe_found_agent {
+        return action;
+    }
+    if pending_foreground_shell_clear {
+        ForegroundShellAgentAction::ReportProcessExit
+    } else {
+        ForegroundShellAgentAction::ObserveProbe
+    }
 }
 
 /// Drops retained OSC evidence when changing away from an identified agent.
@@ -617,6 +687,13 @@ fn observe_foreground_agent(
         observation.foreground_is_pane_shell,
         *foreground_shell_exit_reported,
         agent_job_status,
+    );
+    let action = claimed_identity_action(
+        agent_presence.source,
+        action,
+        *foreground_shell_exit_reported,
+        *pending_foreground_shell_clear,
+        observation.agent.is_some(),
     );
     let changed = apply_foreground_shell_agent_action(
         agent_presence,
@@ -925,6 +1002,11 @@ fn probe_foreground_process(pid: u32, foreground_pgid: Option<u32>) -> ProcessPr
     )
 }
 
+// Why not claim support here: this loop revives panes after a live handoff
+// with `in_container` / `in_ssh` fixed to false, so it cannot tell an off-host
+// pane from a local one and would have to ignore claims anyway. Carrying the
+// claimed identity across a handoff is a separate stage that must also carry
+// those two flags; until then a handed-off pane loses its claimed identity.
 #[cfg(unix)]
 // Handoff detection needs both the write-bracketed text revision and detection epoch.
 #[allow(clippy::too_many_arguments)]
@@ -1264,6 +1346,7 @@ impl AgentDetectionPresence {
     fn from_agent(current_agent: Option<Agent>) -> Self {
         Self {
             current_agent,
+            source: AgentIdentitySource::Process,
             consecutive_misses: 0,
         }
     }
@@ -1272,7 +1355,13 @@ impl AgentDetectionPresence {
         self.current_agent
     }
 
+    /// Source of the current identity; `None` while the pane has no agent.
+    fn identity(&self) -> Option<(Agent, AgentIdentitySource)> {
+        self.current_agent.map(|agent| (agent, self.source))
+    }
+
     fn clear_current_agent(&mut self) -> bool {
+        self.source = AgentIdentitySource::Process;
         if self.current_agent.is_none() {
             self.consecutive_misses = 0;
             return false;
@@ -1282,10 +1371,24 @@ impl AgentDetectionPresence {
         true
     }
 
+    /// Takes an identity claimed by the remote shell. Returns whether the
+    /// agent changed.
+    fn adopt_off_host_claim(&mut self, agent: Agent) -> bool {
+        self.source = AgentIdentitySource::OffHostClaim;
+        self.consecutive_misses = 0;
+        if self.current_agent == Some(agent) {
+            return false;
+        }
+        self.current_agent = Some(agent);
+        true
+    }
+
     fn observe_process_probe(&mut self, identified_agent: Option<Agent>) -> bool {
         match identified_agent {
             Some(agent) => {
                 self.consecutive_misses = 0;
+                // A local agent is positive evidence and outranks any claim.
+                self.source = AgentIdentitySource::Process;
                 if Some(agent) == self.current_agent {
                     return false;
                 }
@@ -1293,7 +1396,9 @@ impl AgentDetectionPresence {
                 true
             }
             None => {
-                if self.current_agent.is_none() {
+                // Why not count a miss: the claimed agent was never in the
+                // local process tree, so its absence there proves nothing.
+                if self.current_agent.is_none() || self.source != AgentIdentitySource::Process {
                     self.consecutive_misses = 0;
                     return false;
                 }
@@ -3017,6 +3122,8 @@ impl PaneRuntime {
                 let mut last_codex_prompt_ready = false;
                 let mut last_self_reported_shell_check = None;
                 let mut agent_job = AgentJobTracker::default();
+                let mut offhost_claims = OffHostClaimWatcher::default();
+                let mut claimed_active_published = false;
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -3037,6 +3144,16 @@ impl PaneRuntime {
                     tokio::select! {
                         _ = tokio::time::sleep(tick) => {}
                         _ = detect_reset.notified() => {
+                            // Only an explicit release ends a claim. Other resets
+                            // (manifest reload, hook authority) leave the remote
+                            // agent running, so its claim must survive them.
+                            let graceful_release =
+                                active_pending_release(&pending_release_for_task, Instant::now())
+                                    .is_some();
+                            let was_claimed = matches!(
+                                agent_presence.identity(),
+                                Some((_, AgentIdentitySource::OffHostClaim))
+                            );
                             publish_codex_prompt_observation(
                                 &state_events, pane_id, Some(Agent::Codex), "", None, false,
                                 &mut last_codex_prompt_ready,
@@ -3060,6 +3177,33 @@ impl PaneRuntime {
                             agent_startup_grace_until = None;
                             pending_idle.clear();
                             agent_job = AgentJobTracker::default();
+                            if shell_off_host {
+                                let marks = terminal.offhost_agent_claim_marks();
+                                if graceful_release {
+                                    offhost_claims.consume(marks);
+                                } else {
+                                    offhost_claims.rewind(marks);
+                                }
+                                if claimed_active_published {
+                                    claimed_active_published = false;
+                                    terminal.set_claimed_agent_active(false);
+                                }
+                                if was_claimed && graceful_release {
+                                    // No process-exit path runs for a claimed
+                                    // identity, so tell the app directly.
+                                    publish_state_changed_event(
+                                        state_events.clone(),
+                                        pane_id,
+                                        None,
+                                        AgentState::Unknown,
+                                        false,
+                                        false,
+                                        false,
+                                        Instant::now(),
+                                    )
+                                    .await;
+                                }
+                            }
                         }
                     }
 
@@ -3245,6 +3389,57 @@ impl PaneRuntime {
                                 }
                                 agent_changed = true;
                             }
+                        }
+                    }
+
+                    let claim_action = offhost_claims.poll(
+                        shell_off_host,
+                        agent_presence.identity(),
+                        now,
+                        |seen| terminal.offhost_agent_claim_since(seen),
+                    );
+                    if let ClaimOutcome::Adopted {
+                        previous,
+                        agent: claimed,
+                    } = apply_off_host_claim_action(
+                        claim_action,
+                        &mut agent_presence,
+                        &mut pending_foreground_shell_clear,
+                    ) {
+                        agent = Some(claimed);
+                        pending_idle.clear();
+                        last_codex_prompt_ready = false;
+                        last_screen_scan_detection_content_seq = None;
+                        clear_osc_evidence_for_agent_transition(&terminal, previous);
+                        agent_startup_grace_until = Some(now + AGENT_STARTUP_GRACE_WINDOW);
+                        state = AgentState::Unknown;
+                        last_visible_idle = false;
+                        last_visible_blocker = false;
+                        last_visible_working = false;
+                        last_visible_signal_refresh = None;
+                        publish_agent_process_detected_event(
+                            state_events.clone(),
+                            pane_id,
+                            claimed,
+                            now,
+                        )
+                        .await;
+                        info!(
+                            pane = pane_id.raw(),
+                            previous_agent = ?previous,
+                            agent = ?claimed,
+                            "agent claimed in-band"
+                        );
+                        agent_changed = true;
+                    }
+                    if shell_off_host {
+                        let claimed_now = matches!(
+                            agent_presence.identity(),
+                            Some((_, AgentIdentitySource::OffHostClaim))
+                        );
+                        if claimed_now != claimed_active_published {
+                            claimed_active_published = claimed_now;
+                            terminal.set_claimed_agent_active(claimed_now);
                         }
                     }
 
@@ -3667,6 +3862,11 @@ impl PaneRuntime {
 
     pub fn agent_osc_progress(&self) -> String {
         self.terminal.agent_osc_progress()
+    }
+
+    /// True while the pane's agent identity is an in-band claim.
+    pub fn claimed_agent_active(&self) -> bool {
+        self.terminal.claimed_agent_active()
     }
 
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
@@ -4366,6 +4566,185 @@ mod tests {
         let _events = recreated.test_start_basic_detection();
         recreated.test_wait_for_detection_reads(1).await;
         assert!(recreated.visible_text().contains("second runtime"));
+    }
+
+    /// A pane whose shell prints in-band claims, run through the real detection loop.
+    #[cfg(unix)]
+    mod claim_loop {
+        use super::*;
+        use std::time::Duration;
+
+        pub(super) const START: &str = r"printf '\033]43737;herdr-agent;v=1;start;t1;claude\007'";
+        pub(super) const EXIT: &str = r"printf '\033]43737;herdr-agent;v=1;exit;t1\007'";
+
+        pub(super) fn spawn(script: &str, in_ssh: bool) -> (PaneRuntime, mpsc::Receiver<AppEvent>) {
+            let (events, rx) = mpsc::channel(64);
+            let cmd = crate::platform::pane_custom_command_pty_builder(script);
+            let runtime = PaneRuntime::spawn_command_builder(
+                PaneId::from_raw(7),
+                4,
+                40,
+                0,
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                events,
+                Arc::new(Notify::new()),
+                Arc::new(RenderSignal::new()),
+                cmd,
+                "failed to spawn claim pane",
+                SpawnInitialState {
+                    in_ssh,
+                    ..SpawnInitialState::default()
+                },
+                AgentDetection::Enabled,
+            )
+            .expect("spawn");
+            (runtime, rx)
+        }
+
+        pub(super) async fn next_matching(
+            rx: &mut mpsc::Receiver<AppEvent>,
+            within: Duration,
+            mut wanted: impl FnMut(&AppEvent) -> bool,
+        ) -> Option<AppEvent> {
+            tokio::time::timeout(within, async {
+                while let Some(event) = rx.recv().await {
+                    if wanted(&event) {
+                        return Some(event);
+                    }
+                }
+                None
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+
+        pub(super) fn detected(event: &AppEvent) -> bool {
+            matches!(
+                event,
+                AppEvent::AgentProcessDetected {
+                    agent: Agent::Claude,
+                    ..
+                }
+            )
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claimed_agent_in_an_off_host_pane_is_detected_and_its_exit_is_reported_as_idle() {
+        let script = format!(
+            "{}; sleep 1; {}; exec sleep 30",
+            claim_loop::START,
+            claim_loop::EXIT
+        );
+        let (_runtime, mut rx) = claim_loop::spawn(&script, true);
+        let wait = std::time::Duration::from_secs(8);
+
+        assert!(
+            claim_loop::next_matching(&mut rx, wait, claim_loop::detected)
+                .await
+                .is_some()
+        );
+        let exit = claim_loop::next_matching(&mut rx, wait, |event| {
+            matches!(
+                event,
+                AppEvent::StateChanged {
+                    agent: Some(Agent::Claude),
+                    process_exited: true,
+                    ..
+                }
+            )
+        })
+        .await;
+        assert!(
+            exit.is_some(),
+            "exit claim must publish a process-exit Idle"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_pane_ignores_claims_in_the_detection_loop() {
+        let script = format!("{}; exec sleep 30", claim_loop::START);
+        let (_runtime, mut rx) = claim_loop::spawn(&script, false);
+
+        let seen = claim_loop::next_matching(
+            &mut rx,
+            std::time::Duration::from_millis(1500),
+            claim_loop::detected,
+        )
+        .await;
+
+        assert!(seen.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detector_reset_keeps_a_claim_and_the_exit_still_releases_it() {
+        let script = format!(
+            "{}; sleep 3; {}; exec sleep 30",
+            claim_loop::START,
+            claim_loop::EXIT
+        );
+        let (runtime, mut rx) = claim_loop::spawn(&script, true);
+        let wait = std::time::Duration::from_secs(8);
+        assert!(
+            claim_loop::next_matching(&mut rx, wait, claim_loop::detected)
+                .await
+                .is_some()
+        );
+
+        runtime.reset_agent_detection();
+
+        assert!(
+            claim_loop::next_matching(&mut rx, wait, claim_loop::detected)
+                .await
+                .is_some(),
+            "claim must be adopted again after a reset"
+        );
+        let exit = claim_loop::next_matching(&mut rx, wait, |event| {
+            matches!(
+                event,
+                AppEvent::StateChanged {
+                    process_exited: true,
+                    ..
+                }
+            )
+        })
+        .await;
+        assert!(exit.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn graceful_release_drops_a_claim_and_it_is_not_adopted_again() {
+        let script = format!("{}; exec sleep 30", claim_loop::START);
+        let (runtime, mut rx) = claim_loop::spawn(&script, true);
+        let wait = std::time::Duration::from_secs(8);
+        assert!(
+            claim_loop::next_matching(&mut rx, wait, claim_loop::detected)
+                .await
+                .is_some()
+        );
+        assert!(runtime.claimed_agent_active());
+
+        runtime.begin_graceful_release(Agent::Claude);
+
+        let cleared = claim_loop::next_matching(&mut rx, wait, |event| {
+            matches!(event, AppEvent::StateChanged { agent: None, .. })
+        })
+        .await;
+        assert!(cleared.is_some(), "the app must be told the agent is gone");
+        assert!(!runtime.claimed_agent_active());
+        let again = claim_loop::next_matching(
+            &mut rx,
+            std::time::Duration::from_millis(1500),
+            claim_loop::detected,
+        )
+        .await;
+        assert!(again.is_none());
     }
 
     #[cfg(unix)]
@@ -6299,6 +6678,24 @@ mod tests {
         }
 
         impl Pane {
+            /// A pane whose agent identity comes from an in-band claim.
+            pub(super) fn with_claimed_agent(agent: Agent) -> Self {
+                let mut pane = Self {
+                    presence: AgentDetectionPresence::from_agent(None),
+                    job: AgentJobTracker::default(),
+                    processes: FakeProcesses::default(),
+                    pending_clear: false,
+                    exit_reported: false,
+                };
+                assert!(pane.presence.adopt_off_host_claim(agent));
+                pane
+            }
+
+            /// What the detection loop does when the claimed agent reports its exit.
+            pub(super) fn release_claim(&mut self) {
+                self.pending_clear = true;
+            }
+
             /// An agent process `AGENT_PID` under a wrapper that leads its job.
             pub(super) fn with_agent(agent: Agent) -> Self {
                 let processes = FakeProcesses::default();
@@ -6375,6 +6772,103 @@ mod tests {
                 assert!(!self.job.in_background());
             }
         }
+    }
+
+    #[test]
+    fn claimed_agent_survives_probes_that_only_see_the_transport_process() {
+        let mut pane = held_agent::Pane::with_claimed_agent(Agent::Claude);
+
+        for _ in 0..(AGENT_MISS_CONFIRMATION_ATTEMPTS * 3) {
+            // ssh in front of the pane shell, then the bare pane shell.
+            for group in [30, held_agent::SHELL] {
+                assert_eq!(
+                    pane.probe(None, group),
+                    (ForegroundShellAgentAction::ObserveProbe, false)
+                );
+            }
+        }
+
+        assert_eq!(pane.presence.current_agent(), Some(Agent::Claude));
+    }
+
+    #[test]
+    fn local_agent_found_by_a_probe_replaces_a_claimed_agent() {
+        let mut pane = held_agent::Pane::with_claimed_agent(Agent::Claude);
+
+        let (_, changed) = pane.probe(Some(Agent::Codex), held_agent::WRAPPER_JOB);
+
+        assert!(changed);
+        assert_eq!(
+            pane.presence.identity(),
+            Some((Agent::Codex, AgentIdentitySource::Process))
+        );
+    }
+
+    #[test]
+    fn claimed_agent_exit_is_reported_before_it_is_cleared() {
+        let mut pane = held_agent::Pane::with_claimed_agent(Agent::Claude);
+        pane.release_claim();
+
+        assert_eq!(
+            pane.probe(None, held_agent::SHELL),
+            (ForegroundShellAgentAction::ReportProcessExit, false)
+        );
+        assert_eq!(pane.presence.current_agent(), Some(Agent::Claude));
+        assert_eq!(
+            pane.probe(None, held_agent::SHELL),
+            (ForegroundShellAgentAction::ClearAgent, true)
+        );
+        assert_eq!(pane.presence.identity(), None);
+    }
+
+    #[test]
+    fn adopt_action_claims_the_agent_and_reports_what_it_replaced() {
+        let mut presence = AgentDetectionPresence::from_agent(None);
+        let mut pending = false;
+
+        let outcome = apply_off_host_claim_action(
+            OffHostClaimAction::Adopt(Agent::Claude),
+            &mut presence,
+            &mut pending,
+        );
+
+        assert_eq!(
+            outcome,
+            ClaimOutcome::Adopted {
+                previous: None,
+                agent: Agent::Claude
+            }
+        );
+        assert_eq!(
+            presence.identity(),
+            Some((Agent::Claude, AgentIdentitySource::OffHostClaim))
+        );
+        assert!(!pending);
+    }
+
+    #[test]
+    fn release_action_queues_the_process_exit_path_and_keeps_the_identity() {
+        let mut presence = AgentDetectionPresence::from_agent(None);
+        presence.adopt_off_host_claim(Agent::Claude);
+        let mut pending = false;
+
+        let outcome =
+            apply_off_host_claim_action(OffHostClaimAction::Release, &mut presence, &mut pending);
+
+        assert_eq!(outcome, ClaimOutcome::Releasing);
+        assert!(pending);
+        assert_eq!(presence.current_agent(), Some(Agent::Claude));
+    }
+
+    #[test]
+    fn process_identity_still_counts_probe_misses_as_before_claims_existed() {
+        let mut presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
+
+        for _ in 0..AGENT_MISS_CONFIRMATION_ATTEMPTS {
+            presence.observe_process_probe(None);
+        }
+
+        assert_eq!(presence.identity(), None);
     }
 
     #[test]

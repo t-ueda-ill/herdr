@@ -384,6 +384,10 @@ impl TerminalRuntime {
         self.0.agent_osc_progress()
     }
 
+    pub fn claimed_agent_active(&self) -> bool {
+        self.0.claimed_agent_active()
+    }
+
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> crate::pane::TerminalReadSnapshot {
         self.0.recent_text_snapshot(lines)
     }

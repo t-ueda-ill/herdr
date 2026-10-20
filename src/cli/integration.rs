@@ -10,6 +10,7 @@ pub(super) fn run_integration_command(args: &[String]) -> std::io::Result<i32> {
         "install" => integration_install(&args[1..]),
         "uninstall" => integration_uninstall(&args[1..]),
         "status" => integration_status(&args[1..]),
+        "remote-shell" => integration_remote_shell(&args[1..]),
         "help" | "--help" | "-h" => {
             print_integration_help();
             Ok(0)
@@ -19,6 +20,29 @@ pub(super) fn run_integration_command(args: &[String]) -> std::io::Result<i32> {
             Ok(2)
         }
     }
+}
+
+/// Prints a function for the machine that runs the agent, not for this one.
+fn integration_remote_shell(args: &[String]) -> std::io::Result<i32> {
+    let usage = || {
+        eprintln!(
+            "usage: herdr integration remote-shell [--shell {}]",
+            crate::integration::RemoteShell::LABELS.replace(", ", "|")
+        );
+        Ok(2)
+    };
+    let shell = match args {
+        [] => {
+            crate::integration::RemoteShell::from_shell_env(std::env::var("SHELL").ok().as_deref())
+        }
+        [flag, label] if flag == "--shell" => match crate::integration::RemoteShell::parse(label) {
+            Some(shell) => shell,
+            None => return usage(),
+        },
+        _ => return usage(),
+    };
+    print!("{}", crate::integration::remote_shell_function(shell));
+    Ok(0)
 }
 
 fn integration_status(args: &[String]) -> std::io::Result<i32> {
@@ -230,4 +254,5 @@ fn print_integration_help() {
     eprintln!("  herdr integration uninstall antigravity-cli");
     eprintln!("  herdr integration uninstall grok");
     eprintln!("  herdr integration status [--outdated-only]");
+    eprintln!("  herdr integration remote-shell [--shell bash|zsh|fish|sh]");
 }

@@ -307,6 +307,16 @@ fn integration_command() -> Command {
                 .about("Show integration status")
                 .arg(flag("outdated-only")),
         )
+        .subcommand(
+            Command::new("remote-shell")
+                .about("Print shell functions that announce claude and codex to a herdr in front of an ssh or container pane")
+                .arg(
+                    Arg::new("shell")
+                        .long("shell")
+                        .value_name("SHELL")
+                        .value_parser(["bash", "zsh", "fish", "sh"]),
+                ),
+        )
 }
 
 fn plugin_command() -> Command {

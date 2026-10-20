@@ -3003,12 +3003,14 @@ impl HeadlessServer {
             .terminals
             .values()
             .find(|terminal| terminal.id.as_str() == target.terminal_id)?;
-        if terminal.effective_known_agent().is_none()
-            || terminal.state != crate::detect::AgentState::Idle
-        {
+        let runtime = self.app.terminal_runtimes.get(&terminal.id)?;
+        if !alt_screen_wheel_read_allowed(
+            terminal.effective_known_agent().is_some(),
+            terminal.state == crate::detect::AgentState::Idle,
+            runtime.claimed_agent_active(),
+        ) {
             return None;
         }
-        let runtime = self.app.terminal_runtimes.get(&terminal.id)?;
         if runtime.wheel_routing() != Some(crate::pane::WheelRouting::MouseReport) {
             return None;
         }
@@ -3773,6 +3775,25 @@ fn server_config_diagnostic_summaries(diagnostics: &[String]) -> (Option<String>
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// Wheel events are typed into the pane, so they may only go to an agent the
+/// local process tree confirmed. A claimed identity can be forged by any output.
+fn alt_screen_wheel_read_allowed(known_agent: bool, idle: bool, claimed: bool) -> bool {
+    known_agent && idle && !claimed
+}
+
+#[cfg(test)]
+mod alt_screen_wheel_tests {
+    use super::alt_screen_wheel_read_allowed;
+
+    #[test]
+    fn wheel_input_is_refused_for_a_claimed_agent() {
+        assert!(alt_screen_wheel_read_allowed(true, true, false));
+        assert!(!alt_screen_wheel_read_allowed(true, true, true));
+        assert!(!alt_screen_wheel_read_allowed(false, true, false));
+        assert!(!alt_screen_wheel_read_allowed(true, false, false));
+    }
+}
 
 #[cfg(test)]
 mod tests;

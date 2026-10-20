@@ -1916,21 +1916,44 @@ impl App {
         id: String,
         params: PaneReleaseAgentParams,
     ) -> String {
-        let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent(id);
         };
+        let known_agent = crate::detect::parse_agent_label(&agent_label);
         self.handle_internal_event(crate::events::AppEvent::HookAgentReleased {
             pane_id,
             source: params.source,
-            known_agent: crate::detect::parse_agent_label(&agent_label),
+            known_agent,
             agent_label,
             seq: params.seq,
         });
+        self.release_claimed_agent(ws_idx, pane_id, known_agent);
 
         encode_success(id, ResponseResult::Ok {})
+    }
+
+    /// A claimed agent has no hook authority, so the hook release above never
+    /// reaches its detector. The explicit release is the only way to drop a
+    /// claim whose exit marker was lost (killed shell, mosh, Ctrl+Z).
+    fn release_claimed_agent(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        agent: Option<crate::detect::Agent>,
+    ) {
+        let Some(agent) = agent else { return };
+        let Some(runtime) =
+            self.state
+                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+        else {
+            return;
+        };
+        if runtime.claimed_agent_active() {
+            runtime.begin_graceful_release(agent);
+        }
     }
 
     pub(super) fn handle_pane_send_text(

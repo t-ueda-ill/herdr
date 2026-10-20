@@ -35,7 +35,8 @@ use super::{
         current_transient_default_color_owner, parse_reported_cwd,
         restore_host_terminal_theme_if_needed, write_host_terminal_theme_selective,
         AgentOscStateTracker, DefaultColorEvent, DefaultColorEventTracker, DefaultColorOscTracker,
-        DefaultColorQuery, DefaultColorTrackedEvent, OscDebugTracker,
+        DefaultColorQuery, DefaultColorTrackedEvent, OffHostClaimMarks, OffHostClaimUpdate,
+        OscDebugTracker,
     },
     xtgettcap::{C1XtgettcapQueryTracker, C1XtgettcapResponse},
 };
@@ -224,11 +225,15 @@ pub(crate) struct GhosttyPaneCore {
 
 pub(crate) struct PaneTerminal {
     pub(crate) ghostty: GhosttyPaneTerminal,
+    claimed_agent_active: std::sync::atomic::AtomicBool,
 }
 
 impl PaneTerminal {
     pub(crate) fn new(ghostty: GhosttyPaneTerminal) -> Self {
-        Self { ghostty }
+        Self {
+            ghostty,
+            claimed_agent_active: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 
     pub fn process_pty_bytes(
@@ -629,6 +634,29 @@ impl PaneTerminal {
     /// Clears retained OSC title/progress evidence on foreground agent change.
     pub fn clear_agent_osc_state(&self) {
         self.ghostty.clear_agent_osc_state()
+    }
+
+    pub(super) fn offhost_agent_claim_since(
+        &self,
+        seen_generation: u64,
+    ) -> Option<OffHostClaimUpdate> {
+        self.ghostty.offhost_agent_claim_since(seen_generation)
+    }
+
+    pub(super) fn offhost_agent_claim_marks(&self) -> OffHostClaimMarks {
+        self.ghostty.offhost_agent_claim_marks()
+    }
+
+    /// Whether the pane's agent identity is an in-band claim rather than a
+    /// local process, so input paths can refuse to treat it as verified.
+    pub fn claimed_agent_active(&self) -> bool {
+        self.claimed_agent_active
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(super) fn set_claimed_agent_active(&self, active: bool) {
+        self.claimed_agent_active
+            .store(active, std::sync::atomic::Ordering::Release);
     }
 
     pub fn keyboard_protocol(
@@ -1357,6 +1385,28 @@ impl GhosttyPaneTerminal {
         if let Ok(mut core) = self.core.lock() {
             core.agent_osc_state.clear_retained();
         }
+    }
+
+    /// Newest in-band agent claim newer than `seen_generation`, if any.
+    pub(super) fn offhost_agent_claim_since(
+        &self,
+        seen_generation: u64,
+    ) -> Option<OffHostClaimUpdate> {
+        self.core
+            .lock()
+            .ok()
+            .and_then(|core| core.agent_osc_state.offhost_claim_since(seen_generation))
+    }
+
+    pub(super) fn offhost_agent_claim_marks(&self) -> OffHostClaimMarks {
+        self.core
+            .lock()
+            .map(|core| core.agent_osc_state.offhost_claim_marks())
+            .unwrap_or(OffHostClaimMarks {
+                generation: 0,
+                rewound_generation: 0,
+                released_generation: 0,
+            })
     }
 
     pub fn process_pty_bytes(
