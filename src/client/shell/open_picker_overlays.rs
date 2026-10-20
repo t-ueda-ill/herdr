@@ -26,6 +26,7 @@ pub(super) fn render_open_picker_overlay(
             " no matching containers",
         ),
     };
+    let filtered = open.filtered_indices();
     super::list_picker_overlay::render_list_picker_overlay(
         b,
         &super::list_picker_overlay::ListPicker {
@@ -34,7 +35,20 @@ pub(super) fn render_open_picker_overlay(
             count_noun,
             empty_message,
             total: open.entries.len(),
-            filtered: open.filtered_indices(),
+            counted: (open.source == OpenPickerSource::ContainerHost).then(|| {
+                // Favorite container rows are not hosts, so the "hosts" label skips them.
+                let is_host = |entry: &ClientOpenPickerEntry| {
+                    matches!(entry.kind, super::OpenPickerRowKind::Host(_))
+                };
+                (
+                    filtered
+                        .iter()
+                        .filter(|index| open.entries.get(**index).is_some_and(is_host))
+                        .count(),
+                    open.entries.iter().filter(|entry| is_host(entry)).count(),
+                )
+            }),
+            filtered,
             selected: open.selected,
             query: &open.query,
             search_focused: open.search_focused,
@@ -49,6 +63,8 @@ pub(super) fn render_open_picker_overlay(
                 status: entry.status,
                 detail: &entry.detail,
                 favorite: entry.favorite,
+                unstarred: !entry.favorite
+                    && matches!(entry.kind, super::OpenPickerRowKind::FavoriteContainer(_)),
             }
         },
         p,

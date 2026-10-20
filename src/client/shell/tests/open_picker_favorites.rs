@@ -539,3 +539,308 @@ fn favorites_missing_from_the_listing_are_hidden_but_kept() {
     assert!(favorites.contains(&"ssh:prod".to_owned()), "{favorites:?}");
     assert!(favorites.contains(&"ssh:lab".to_owned()), "{favorites:?}");
 }
+
+fn detail_of(state: &ClientShellState, title: &str) -> String {
+    picker(state)
+        .entries
+        .iter()
+        .find(|entry| entry.title == title)
+        .map(|entry| entry.detail.clone())
+        .unwrap_or_else(|| panic!("no row titled {title}"))
+}
+
+fn press_enter(state: &mut ClientShellState) -> ClientShellInput {
+    state.handle_input_bytes(b"\r")
+}
+
+#[test]
+fn host_stage_lists_favorite_containers_above_every_host_row_most_recent_first() {
+    let prefs = TempPreferences::new(
+        "fav-container-order",
+        Some(memory(
+            &[
+                "container:prod:db-1",
+                "container:local:redis-1",
+                "container:lab:web-1",
+                "host:staging",
+            ],
+            &[
+                ("container:lab:web-1", 3_000, 1),
+                ("container:local:redis-1", 2_000, 1),
+            ],
+        )),
+    );
+    let mut state = prefs.state();
+
+    open_host_stage(&mut state);
+
+    assert_eq!(
+        listed(&state),
+        [
+            "web-1@lab",
+            "redis-1",
+            "db-1@prod",
+            "staging",
+            "local",
+            "prod",
+            "lab"
+        ]
+    );
+}
+
+#[test]
+fn host_stage_omits_favorite_containers_whose_host_is_not_a_listed_alias() {
+    let prefs = TempPreferences::new(
+        "fav-container-unknown-host",
+        Some(memory(
+            &["container:retired:db-1", "container:local:redis-1"],
+            &[],
+        )),
+    );
+    let mut state = prefs.state();
+
+    open_host_stage(&mut state);
+
+    assert_eq!(
+        listed(&state),
+        ["redis-1", "local", "prod", "lab", "staging"]
+    );
+}
+
+#[test]
+fn favorite_container_rows_describe_the_docker_host_with_fixed_text() {
+    let prefs = TempPreferences::new(
+        "fav-container-detail",
+        Some(memory(
+            &["container:prod:db-1", "container:local:redis-1"],
+            &[],
+        )),
+    );
+    let mut state = prefs.state();
+
+    open_host_stage(&mut state);
+
+    assert_eq!(detail_of(&state, "db-1@prod"), "docker on prod");
+    assert_eq!(detail_of(&state, "redis-1"), "local docker");
+    let text = frame_text(&mut state);
+    assert!(text.contains("★ db-1@prod"), "{text}");
+}
+
+#[test]
+fn enter_on_a_remote_favorite_container_opens_it_by_name_without_a_container_stage() {
+    let prefs = TempPreferences::new(
+        "fav-container-open-remote",
+        Some(memory(&["container:prod:db-1"], &[])),
+    );
+    let mut state = prefs.state();
+    open_host_stage(&mut state);
+
+    let open = press_enter(&mut state);
+
+    let crate::api::schema::Method::SshContainerOpen(params) =
+        &endpoint_request(&open.actions).method
+    else {
+        panic!("expected ssh.container.open: {:?}", open.actions);
+    };
+    assert_eq!(params.host, "prod");
+    assert_eq!(params.container, "db-1");
+    let crate::api::schema::ContainerOpenTarget::Workspace(target) = &params.target else {
+        panic!("expected a workspace target");
+    };
+    assert_eq!(target.label.as_deref(), Some("db-1@prod"));
+    assert!(target.focus);
+    assert_eq!(picker(&state).source, OpenPickerSource::ContainerHost);
+    assert!(picker(&state).opening);
+}
+
+#[test]
+fn enter_on_a_local_favorite_container_opens_it_through_container_open() {
+    let prefs = TempPreferences::new(
+        "fav-container-open-local",
+        Some(memory(&["container:local:redis-1"], &[])),
+    );
+    let mut state = prefs.state();
+    open_host_stage(&mut state);
+
+    let open = press_enter(&mut state);
+
+    let crate::api::schema::Method::ContainerOpen(params) = &endpoint_request(&open.actions).method
+    else {
+        panic!("expected container.open: {:?}", open.actions);
+    };
+    assert_eq!(params.container, "redis-1");
+    let crate::api::schema::ContainerOpenTarget::Workspace(target) = &params.target else {
+        panic!("expected a workspace target");
+    };
+    assert_eq!(target.label.as_deref(), Some("redis-1"));
+}
+
+#[test]
+fn double_click_on_a_favorite_container_row_opens_it_directly() {
+    let prefs = TempPreferences::new(
+        "fav-container-click",
+        Some(memory(&["container:prod:db-1"], &[])),
+    );
+    let mut state = prefs.state();
+    open_host_stage(&mut state);
+    frame_text(&mut state);
+
+    let (rect, index) = state.hits.worktree_rows[0];
+    assert_eq!(picker(&state).entries[index].title, "db-1@prod");
+    let clicked = click(&mut state, rect.x + 8, rect.y);
+
+    assert!(matches!(
+        &endpoint_request(&clicked.actions).method,
+        crate::api::schema::Method::SshContainerOpen(params) if params.container == "db-1"
+    ));
+}
+
+#[test]
+fn a_direct_container_open_records_the_container_and_its_host() {
+    let prefs = TempPreferences::new(
+        "fav-container-record",
+        Some(memory(&["container:prod:db-1"], &[])),
+    );
+    let mut state = prefs.state();
+    open_host_stage(&mut state);
+    let open = press_enter(&mut state);
+
+    answer(&mut state, &open.actions, workspace_created());
+
+    assert!(state.overlay.is_none());
+    let keys: Vec<String> = prefs.stored().recent.into_iter().map(|r| r.key).collect();
+    assert!(keys.contains(&"container:prod:db-1".to_owned()), "{keys:?}");
+    assert!(keys.contains(&"host:prod".to_owned()), "{keys:?}");
+}
+
+#[test]
+fn a_rejected_direct_container_open_keeps_the_picker_with_the_error_and_records_nothing() {
+    let prefs = TempPreferences::new(
+        "fav-container-failure",
+        Some(memory(&["container:prod:db-1"], &[])),
+    );
+    let mut state = prefs.state();
+    open_host_stage(&mut state);
+    let open = press_enter(&mut state);
+    let request_id = endpoint_request(&open.actions).id.clone();
+
+    state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Err(ClientShellEndpointError {
+            code: Some("container_not_found".into()),
+            message: "container db-1 not found".into(),
+        }),
+    );
+
+    assert_eq!(
+        picker(&state).error.as_deref(),
+        Some("container db-1 not found")
+    );
+    assert!(!picker(&state).opening);
+    assert!(prefs.stored().recent.is_empty());
+}
+
+#[test]
+fn star_on_a_favorite_container_row_unfavorites_it_but_keeps_the_row_until_toggled_back() {
+    let prefs = TempPreferences::new(
+        "fav-container-unstar",
+        Some(memory(&["container:prod:db-1"], &[])),
+    );
+    let mut state = prefs.state();
+    open_host_stage(&mut state);
+
+    state.handle_input_bytes(b"*");
+
+    assert_eq!(
+        listed(&state),
+        ["db-1@prod", "local", "prod", "lab", "staging"]
+    );
+    assert!(prefs.stored().favorites.is_empty());
+    let text = frame_text(&mut state);
+    assert!(text.contains("☆ db-1@prod"), "{text}");
+
+    state.handle_input_bytes(b"*");
+
+    assert_eq!(prefs.stored().favorites, ["container:prod:db-1"]);
+    assert_eq!(listed(&state)[0], "db-1@prod");
+    let text = frame_text(&mut state);
+    assert!(text.contains("★ db-1@prod"), "{text}");
+}
+
+#[test]
+fn an_unstarred_favorite_container_row_still_opens_on_enter() {
+    let prefs = TempPreferences::new(
+        "fav-container-unstar-open",
+        Some(memory(&["container:prod:db-1"], &[])),
+    );
+    let mut state = prefs.state();
+    open_host_stage(&mut state);
+    state.handle_input_bytes(b"*");
+
+    let open = press_enter(&mut state);
+
+    assert!(matches!(
+        &endpoint_request(&open.actions).method,
+        crate::api::schema::Method::SshContainerOpen(params) if params.container == "db-1"
+    ));
+}
+
+#[test]
+fn star_on_a_host_row_still_toggles_the_host_favorite() {
+    let prefs = TempPreferences::new(
+        "fav-container-host-star",
+        Some(memory(&["container:prod:db-1"], &[])),
+    );
+    let mut state = prefs.state();
+    open_host_stage(&mut state);
+    state.handle_input_bytes(b"\x1b[B");
+    assert_eq!(selected_title(&state), "local");
+
+    state.handle_input_bytes(b"*");
+
+    assert_eq!(
+        prefs.stored().favorites,
+        ["container:prod:db-1", "host:local"]
+    );
+}
+
+#[test]
+fn picking_a_host_row_still_lists_that_hosts_containers() {
+    let prefs = TempPreferences::new(
+        "fav-container-host-pick",
+        Some(memory(&["container:prod:db-1"], &[])),
+    );
+    let mut state = prefs.state();
+    open_host_stage(&mut state);
+    state.handle_input_bytes(b"\x1b[B\x1b[B");
+    assert_eq!(selected_title(&state), "prod");
+
+    let pick = press_enter(&mut state);
+
+    assert!(matches!(
+        &endpoint_request(&pick.actions).method,
+        crate::api::schema::Method::SshContainerList(params) if params.host == "prod"
+    ));
+}
+
+#[test]
+fn host_stage_count_label_counts_only_host_rows_not_favorite_containers() {
+    let prefs = TempPreferences::new(
+        "fav-container-count",
+        Some(memory(
+            &["container:prod:db-1", "container:local:redis-1"],
+            &[],
+        )),
+    );
+    let mut state = prefs.state();
+    open_host_stage(&mut state);
+
+    let text = frame_text(&mut state);
+    assert!(text.contains("4 hosts"), "{text}");
+    assert!(!text.contains("6 hosts"), "{text}");
+
+    state.handle_input_bytes(b"pro");
+    let text = frame_text(&mut state);
+    assert!(text.contains("1/4 hosts"), "{text}");
+}

@@ -7,6 +7,8 @@ pub(super) struct PickerRow<'a> {
     pub(super) detail: &'a str,
     /// Drawn only when the picker has a favorites column.
     pub(super) favorite: bool,
+    /// An unstarred row that stays listed so `*` can restore it; drawn ☆.
+    pub(super) unstarred: bool,
 }
 
 /// A filterable list modal: title, `/` filter, two-line rows, open/cancel
@@ -18,6 +20,10 @@ pub(super) struct ListPicker<'a> {
     pub(super) count_noun: &'a str,
     pub(super) empty_message: &'a str,
     pub(super) total: usize,
+    /// `(shown, total)` for the count label when some rows are not the
+    /// noun. Why not derive it from `total`: that also sizes the popup, which
+    /// must still fit every row.
+    pub(super) counted: Option<(usize, usize)>,
     pub(super) filtered: Vec<usize>,
     pub(super) selected: usize,
     pub(super) query: &'a TextEditor,
@@ -75,10 +81,11 @@ pub(super) fn render_list_picker_overlay<'a>(
             })
             .bg(p.panel_bg),
     );
-    let count = if filtered.len() == picker.total {
-        format!("{} {}", picker.total, picker.count_noun)
+    let (shown, counted_total) = picker.counted.unwrap_or((filtered.len(), picker.total));
+    let count = if shown == counted_total {
+        format!("{counted_total} {}", picker.count_noun)
     } else {
-        format!("{}/{} {}", filtered.len(), picker.total, picker.count_noun)
+        format!("{shown}/{counted_total} {}", picker.count_noun)
     };
     let cursor = if picker.search_focused {
         text_editor::render(
@@ -138,10 +145,11 @@ pub(super) fn render_list_picker_overlay<'a>(
         row_hits.push((rect, entry_index));
         // Every row reserves the column, so non-favorites have a target and
         // titles stay aligned whether starred or not.
-        let (title_mark, detail_mark) = match (picker.favorites, entry.favorite) {
-            (false, _) => ("", ""),
-            (true, true) => ("★ ", "  "),
-            (true, false) => ("  ", "  "),
+        let (title_mark, detail_mark) = match (picker.favorites, entry.favorite, entry.unstarred) {
+            (false, _, _) => ("", ""),
+            (true, true, _) => ("★ ", "  "),
+            (true, false, true) => ("☆ ", "  "),
+            (true, false, false) => ("  ", "  "),
         };
         if picker.favorites {
             favorite_marks.push((
