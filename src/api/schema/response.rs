@@ -342,6 +342,9 @@ pub enum ResponseResult {
     FilesChanged {
         outcomes: Vec<super::files::FileOutcome>,
     },
+    PaneUploadStarted(super::pane_upload::PaneUploadStarted),
+    PaneUploadProgress(super::pane_upload::PaneUploadProgress),
+    PaneUploadFinished(super::pane_upload::PaneUploadFinished),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

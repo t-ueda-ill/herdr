@@ -55,6 +55,30 @@ impl FileLocation {
         }
     }
 
+    /// The location a server reports for a pane there.
+    pub(in crate::client::shell) fn to_pane_location(
+        location: Option<&Self>,
+    ) -> crate::api::schema::PaneLocation {
+        use crate::api::schema::{PaneLocation, PaneLocationKind};
+        match location {
+            None => PaneLocation {
+                kind: PaneLocationKind::Host,
+                ssh_host: None,
+                container: None,
+            },
+            Some(Self::Ssh { host }) => PaneLocation {
+                kind: PaneLocationKind::Ssh,
+                ssh_host: Some(host.clone()),
+                container: None,
+            },
+            Some(Self::Container { name, ssh_host }) => PaneLocation {
+                kind: PaneLocationKind::Container,
+                ssh_host: ssh_host.clone(),
+                container: Some(name.clone()),
+            },
+        }
+    }
+
     /// `devbox`, `app`, or `app@devbox` (a container behind an ssh host).
     pub(in crate::client::shell) fn label(&self) -> String {
         match self {

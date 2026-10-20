@@ -3513,6 +3513,41 @@ pub(crate) fn rename_no_replace(
     }
 }
 
+/// Creates a file symlink. Why not detect directory targets: the target is
+/// never resolved (it may not exist on this host), and creating one usually
+/// needs Developer Mode, so callers treat every failure as a skipped entry.
+pub(crate) fn create_symlink(target: &str, link: &std::path::Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+/// Windows has no rwx bits; uploads send what a Unix receiver expects.
+pub(crate) fn permission_bits(metadata: &std::fs::Metadata) -> u32 {
+    if metadata.is_dir() {
+        0o755
+    } else {
+        0o644
+    }
+}
+
+/// Why not map a missing write bit to the read-only attribute: it would make
+/// the uploaded entry undeletable in Explorer without adding protection.
+pub(crate) fn set_permission_bits(_path: &std::path::Path, _mode: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Directories open only with `FILE_FLAG_BACKUP_SEMANTICS`.
+pub(crate) fn set_path_modified(
+    path: &std::path::Path,
+    modified: std::time::SystemTime,
+) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .access_mode(windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES)
+        .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?
+        .set_modified(modified)
+}
+
 /// Normalize server paths for clients running on a different operating system.
 pub(crate) fn file_path_display(path: &std::path::Path) -> String {
     let raw = path.to_string_lossy();
@@ -3543,6 +3578,45 @@ pub(crate) fn copy_symbolic_link(
     }
 }
 
+/// Drop text syntax on this host (see [`super::DropPathSyntax`]).
+pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
+    super::DropPathSyntax::Windows
+}
+
+/// Whether `name` can be one plain entry of a directory here. Why more than
+/// separators: `C:x` is drive-relative, so `PathBuf::push` lets it replace
+/// the whole path; `CON` or `nul.txt` open devices; a trailing dot or space is
+/// silently dropped, so the entry would get another name.
+pub(crate) fn stores_file_name(name: &str) -> bool {
+    if name.is_empty()
+        || name.chars().any(std::path::is_separator)
+        || name.contains([':', '<', '>', '"', '|', '?', '*'])
+        || name.ends_with(['.', ' '])
+    {
+        return false;
+    }
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let numbered = ["COM", "LPT"].iter().any(|prefix| {
+        let mut rest = stem.strip_prefix(prefix).unwrap_or_default().chars();
+        matches!(
+            (rest.next(), rest.next()),
+            (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+        )
+    });
+    !(numbered || ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str()))
+}
+
+/// The local path a dropped token names: `C:\…` or `\\server\share\…`.
+pub(crate) fn dropped_path(token: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(token);
+    path.is_absolute().then_some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -3556,6 +3630,48 @@ mod tests {
     use windows_sys::Win32::System::Console::{
         AllocConsole, FreeConsole, GetConsoleProcessList, GetConsoleWindow,
     };
+
+    #[test]
+    fn drive_prefixes_devices_and_trailing_dots_are_not_storable_names() {
+        for name in [
+            "C:x",
+            "D:",
+            "a:b",
+            "CON",
+            "con",
+            "nul.txt",
+            "Com1",
+            "LPT9.log",
+            "COM\u{b9}",
+            "a.",
+            "a ",
+            "a\\b",
+            "a/b",
+            "a?b",
+        ] {
+            assert!(!super::stores_file_name(name), "{name:?}");
+        }
+        for name in [
+            "a", "console", "COM10", "LPT", "nul-file", ".env", "a b.txt",
+        ] {
+            assert!(super::stores_file_name(name), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn dropped_paths_are_drive_or_share_paths_and_never_relative() {
+        assert_eq!(
+            super::dropped_path(r"C:\Users\a b\c.txt"),
+            Some(std::path::PathBuf::from(r"C:\Users\a b\c.txt"))
+        );
+        assert!(super::dropped_path(r"\\server\share\x").is_some());
+        assert_eq!(super::dropped_path(r"notes.txt"), None);
+        assert_eq!(super::dropped_path(r"C:relative"), None);
+        assert_eq!(
+            super::drop_path_syntax(),
+            super::super::DropPathSyntax::Windows
+        );
+    }
 
     #[test]
     fn busy_endpoint_connect_obeys_cancellation_and_deadline() {

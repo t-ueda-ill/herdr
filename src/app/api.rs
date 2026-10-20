@@ -10,6 +10,7 @@ mod integrations;
 mod layouts;
 mod open_editor;
 mod pane_directory;
+pub(crate) mod pane_upload;
 mod panes;
 pub(crate) mod plugins;
 pub(super) mod responses;
@@ -257,6 +258,7 @@ impl App {
 
         let mut worktree_restore_updates = Vec::new();
         if let AppEvent::PaneDied { pane_id, .. } = &ev {
+            self.upload_sessions.abort_pane(*pane_id);
             if self
                 .state
                 .popup_pane
@@ -1176,6 +1178,16 @@ impl App {
                     request.id,
                     "invalid_request",
                     "directory reads are handled asynchronously by the app runtime",
+                );
+            }
+            Method::PaneUploadBegin(_)
+            | Method::PaneUploadCancel(_)
+            | Method::PaneUploadFinish(_)
+            | Method::PaneUploadWrite(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "uploads are handled asynchronously by the app runtime",
                 );
             }
             Method::WorktreeCreate(params) => {

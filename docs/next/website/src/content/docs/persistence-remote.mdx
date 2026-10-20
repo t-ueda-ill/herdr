@@ -162,3 +162,15 @@ base64 bytes, `terminal.resize` changes the controller viewport,
 `terminal.scroll` scrolls the attached viewport, `terminal.mouse` sends a mouse
 event at a cell to applications that enabled mouse reporting, and
 `terminal.release` closes the controller. Only one controller owns input and resize at a time.
+
+## Dropping files
+
+Terminals deliver a file dropped from your desktop as a paste of its path. When the receiving shell cannot read this machine's files, Herdr uploads the dropped files instead and then pastes their paths on the other side. That is the case for an SSH or container pane, and for any pane, popup, or directly attached terminal of a server reached with `herdr --remote` or a saved SSH machine. A drop into a local host pane still pastes the local path, and a single image of up to 16 MiB keeps going to the temp directory like a clipboard image.
+
+A paste counts as a drop when the whole bracketed paste is one or more absolute paths that exist on this machine, separated by spaces or newlines and possibly quoted; anything else is pasted as typed. Under WSL, `C:\...` paths and `\\wsl$\<distro>\...` paths of the same distribution are read through `/mnt/c` and `/`. Folders are sent recursively, symbolic links are sent as links, and FIFOs, sockets, and devices are skipped. Executable bits and modification times are kept.
+
+The files go to the pane's working directory when its shell reports one (OSC 7) or the container has one, and to the remote home directory otherwise. A name that already exists becomes `name (1).ext`, and Herdr never removes uploaded files. The upload is published all at once, so a failed or cancelled upload leaves nothing behind. Afterwards the absolute remote paths are pasted into the pane you dropped on, separated by spaces and single-quoted when needed. Input you type while Herdr checks the dropped paths is held and sent after the paste.
+
+A progress card in the top-right corner shows the items and megabytes sent; click it to cancel until publishing starts. A drop of more than `ui.upload_confirm_bytes` (100 MiB) or `ui.upload_confirm_entries` (1,000 items) asks first, and one of more than `ui.upload_max_bytes` (2 GiB) or `ui.upload_max_entries` (10,000 items) is refused. Set `ui.upload_on_drop = false` to paste dropped paths as text. Only one drop uploads at a time. The [file workbench](/docs/keyboard/#file-viewer) accepts drops onto its list too, and `herdr pane upload` does the same from scripts; see [Files](/docs/cli-reference/#files).
+
+SSH panes upload over the pane's own shared connection. When ControlMaster is unavailable the drop fails with `the pane's ssh connection is not shared`; reopen the SSH pane from Herdr and drop again. A direct terminal attach cannot show the dialog or the card: it refuses drops past a confirm value, reports progress through terminal notifications, and cancels when you detach. A direct attach to a server on this machine pastes the local path, as it cannot tell whether the terminal runs elsewhere. A server without the upload methods keeps the old behavior of pasting the local path.

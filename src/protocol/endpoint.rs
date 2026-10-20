@@ -31,6 +31,24 @@ pub const AGENT_VIEW_PROJECTION_CAPABILITY: &str = "agent_view_projection";
 pub const AGENT_VIEW_PROJECTION_KIND: &str = "endpoint.agent-view.v1";
 pub const AGENT_COMPLETIONS_CAPABILITY: &str = "agent_completions";
 pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
+/// The server accepts `pane.upload.*` requests as endpoint controls.
+pub const PANE_UPLOAD_CONTROL_CAPABILITY: &str = "pane_upload_control";
+/// Client to server: one `pane.upload.*` API request as JSON.
+pub const UPLOAD_REQUEST_KIND: &str = "endpoint.upload.request.v1";
+/// Server to client: the JSON response, with the request's id.
+pub const UPLOAD_RESPONSE_KIND: &str = "endpoint.upload.response.v1";
+/// Client to server, empty: asks whether uploads work on this connection.
+/// Direct attach clients have no welcome capabilities, so they probe.
+pub const UPLOAD_PROBE_KIND: &str = "endpoint.upload.probe.v1";
+/// Server to client: [`EndpointUploadReady`].
+pub const UPLOAD_READY_KIND: &str = "endpoint.upload.ready.v1";
+
+/// Answer to [`UPLOAD_PROBE_KIND`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointUploadReady {
+    pub chunk_bytes: u64,
+    pub window: u32,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointAgentCompletions {
@@ -174,6 +192,7 @@ impl EndpointServerWelcome {
                 HEALTH_CHECK_CAPABILITY.into(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
+                PANE_UPLOAD_CONTROL_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -473,6 +492,7 @@ mod tests {
                 HEALTH_CHECK_CAPABILITY.to_string(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
+                PANE_UPLOAD_CONTROL_CAPABILITY.to_string(),
             ]
         );
     }

@@ -607,6 +607,36 @@ fn datetime_from_tm(value: &libc::tm) -> Option<time::PrimitiveDateTime> {
     Some(time::PrimitiveDateTime::new(date, time))
 }
 
+/// Whether `name` can be one entry of a directory here: anything without `/`
+/// or NUL, which callers already refuse.
+pub(crate) fn stores_file_name(_name: &str) -> bool {
+    true
+}
+
+/// Creates `link` pointing at `target` as written; the target is never resolved.
+pub(crate) fn create_symlink(target: &str, link: &std::path::Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+/// The rwx bits of `metadata`, without setuid, setgid, or sticky.
+pub(crate) fn permission_bits(metadata: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o777
+}
+
+pub(crate) fn set_permission_bits(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o777))
+}
+
+/// Sets the modification time of a file or directory, following symlinks.
+pub(crate) fn set_path_modified(
+    path: &std::path::Path,
+    modified: std::time::SystemTime,
+) -> std::io::Result<()> {
+    std::fs::File::open(path)?.set_modified(modified)
+}
+
 pub(crate) fn set_default_plugin_pane_pwd(env: &mut Vec<(String, String)>, cwd: &std::path::Path) {
     if !env.iter().any(|(key, _)| key == "PWD") {
         env.push(("PWD".to_string(), cwd.display().to_string()));

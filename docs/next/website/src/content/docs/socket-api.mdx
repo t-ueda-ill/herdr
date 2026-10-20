@@ -104,7 +104,7 @@ Raw socket method names use dot notation:
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Container | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH hosts | `ssh.open`, `ssh.hosts` |
-| Files | `directory.list`, `directory.index`, `pane.open_editor`, `pane.directory.list`, `pane.directory.index`, `pane.directory.open_editor`, `pane.file.read` |
+| Files | `directory.list`, `directory.index`, `pane.open_editor`, `pane.directory.list`, `pane.directory.index`, `pane.directory.open_editor`, `pane.file.read`, `pane.upload.begin`, `pane.upload.write`, `pane.upload.finish`, `pane.upload.cancel` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
 | Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
@@ -543,6 +543,36 @@ Errors:
 | `pane_not_live` | the `pane.open_editor` target has no running shell, for example after a failed restore |
 | `editor_failed` | the editor pane could not be started |
 | `platform_unsupported` | the server runs on Windows, which also leaves these methods out of what it advertises to TUI clients |
+
+### Uploads
+
+`pane.upload.begin`, `pane.upload.write`, `pane.upload.finish`, and `pane.upload.cancel` copy files a client holds into the environment a pane's shell sees: the server host, a container, or an SSH host. `herdr pane upload` and drops in the TUI use them. Nothing is visible in the destination until finish publishes everything at once; a failed, cancelled, or abandoned upload leaves nothing behind.
+
+```json
+{ "id": "u1", "method": "pane.upload.begin", "params": { "pane_id": "w1:p2", "names": ["notes.txt", "assets"], "entries": 3, "bytes": 2048 } }
+```
+
+`begin` takes a `pane_id` (a workspace pane) or a `terminal_id` (a popup or a directly attached terminal), or neither for the server's own filesystem, in which case `destination` is required. `destination` is an absolute directory in that environment; without it the files go to the pane's working directory (OSC 7, then the container's working directory), else the remote home directory. `names` lists the 1 to 1,024 top-level names (each at most 255 bytes, without `/` or control characters, and not starting with `.herdr-upload-`), and `entries` and `bytes` declare the totals. It answers `pane_upload_started` with `upload_id`, `location` (`kind` is also `host` here), the resolved `destination`, the `conflicts` among `names` that already exist there, `chunk_bytes` (524,288), and `window` (2).
+
+Each `write` carries `upload_id`, a `/`-separated `path` starting with one of the names, a base64 `data` chunk of at most `chunk_bytes` decoded bytes, its `offset`, and `last` on the final chunk of a file. The first chunk of a path also carries `entry`: `kind` (`file`, `directory`, or `symlink`), `mode` (permission bits up to `0o777`), optional `mtime` in Unix seconds, `size` for files, and `link_target` for links. Parents come before their children and a file's chunks are sent in order. Write answers `pane_upload_progress` with `received_entries` and `received_bytes`. At most `window` writes may be unanswered on one ordered stream; a client that opens a new socket per request, like the CLI, sends one at a time.
+
+`finish` takes `upload_id` and `collision`: `fail` publishes nothing when a name exists and keeps the upload open for another finish, `rename` publishes `name (1).ext`, and `replace` replaces existing entries, directories as a whole. It answers `pane_upload_finished` with `location`, `destination`, the published absolute `paths` in the order of `names`, and `warnings` such as a modification time that could not be set. `cancel` takes `upload_id` and answers `ok`. An upload also ends when its pane or popup closes, its client disconnects, a server handoff starts, or nothing arrives for 10 minutes before the first write or 2 minutes between writes. The server allows 4 uploads at a time, 2 per client, of at most 16 GiB and 100,000 entries each.
+
+| Code | Meaning |
+| --- | --- |
+| `invalid_params` | a path, name, chunk, offset, or entry header is not valid, or a write came out of order |
+| `upload_too_large` | the declared or received totals pass the server's limits or the declaration |
+| `upload_busy` | too many uploads, or more writes than `window` |
+| `upload_not_found`, `upload_cancelled` | the upload ended, expired, or belongs to another client |
+| `upload_conflict` | `collision` was `fail` and a name exists; the message names them |
+| `upload_failed` | writing, publishing, or rolling back failed; the message has the details |
+| `stale_pane_target` | the pane's environment changed or the pane ended during the upload |
+| `not_found`, `not_a_directory`, `permission_denied` | the destination directory is missing, not a directory, or not writable |
+| `container_unavailable`, `container_not_found`, `offhost_shell_unavailable` | as for `pane.directory.*` |
+| `ssh_unavailable` | the SSH pane's connection is not shared (ControlMaster), or the host cannot be reached |
+| `platform_unsupported` | a container or SSH destination on a Windows server |
+
+Shell-mode TUI clients send these requests as `endpoint.upload.request.v1` endpoint controls and use them only when the server advertises all four methods and the `pane_upload_control` capability; a direct attach asks with `endpoint.upload.probe.v1`. Without them, drops paste the local path as before.
 
 ## Agent view queries
 

@@ -77,6 +77,8 @@ pub(super) struct ClientState {
     pub(super) presentation_frozen: bool,
     /// Latest explicit Local selection awaiting this client's replacement Local connection.
     pub(super) deferred_local_activation: Option<endpoint::EndpointActivationIntent>,
+    /// Dropped-file uploads: the pending check, the worker, and the transfer.
+    pub(super) uploads: upload::runtime::UploadRuntime,
     pub(super) draw_host_cursor: bool,
     pub(super) detached_process_children: Vec<std::process::Child>,
     pub(super) shell: Option<shell::ClientShellState>,
@@ -140,6 +142,9 @@ impl ClientState {
             deferred_local_activation: None,
             draw_host_cursor: false,
             detached_process_children: Vec::new(),
+            uploads: upload::runtime::UploadRuntime::new(upload::UploadSettings::from_config(
+                &crate::config::Config::default(),
+            )),
             shell: Some(shell::ClientShellState::new(
                 shell::ClientShellConfig::from_config(&crate::config::Config::default()),
             )),

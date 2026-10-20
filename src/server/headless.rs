@@ -83,6 +83,7 @@ mod notifications;
 mod render;
 mod retained_surface;
 mod surface_interest;
+mod uploads;
 
 // Producers can refill even a bounded channel while it is being drained.
 // Yield to scheduled work and rendering between batches; select! below
@@ -260,6 +261,8 @@ pub struct HeadlessServer {
     server_event_rx: mpsc::Receiver<ServerEvent>,
     /// Sender for server events (cloned for each client thread).
     server_event_tx: mpsc::Sender<ServerEvent>,
+    /// Upload answers for endpoint-control clients, as `(client_id, json)`.
+    upload_responses: std::sync::mpsc::Sender<(u64, String)>,
 }
 
 #[cfg(windows)]
@@ -396,6 +399,7 @@ impl HeadlessServer {
             should_quit,
             server_stop,
             server_event_rx,
+            upload_responses: uploads::spawn_upload_response_pump(server_event_tx.clone()),
             server_event_tx,
         })
     }
@@ -962,6 +966,9 @@ impl HeadlessServer {
             })
         });
         let was_foreground = self.foreground_client_id == Some(client_id);
+        self.app
+            .upload_sessions
+            .abort_owner(crate::upload::registry::UploadOwner::Client(client_id));
         let removed = self.clients.remove(&client_id);
         self.tab_geometry_controllers
             .retain(|_, controller_id| *controller_id != client_id);
@@ -2870,6 +2877,21 @@ impl HeadlessServer {
                 );
                 navigation_changed | geometry_changed
             }
+            ServerEvent::ClientUploadRequest { client_id, request } => {
+                self.handle_client_upload_request(client_id, request)
+            }
+            ServerEvent::ClientUploadRequestError {
+                client_id,
+                request_id,
+                code,
+                message,
+            } => self.handle_client_upload_request_error(client_id, request_id, code, message),
+            ServerEvent::ClientUploadProbe { client_id } => {
+                self.handle_client_upload_probe(client_id)
+            }
+            ServerEvent::ClientUploadResponseReady { client_id, data } => {
+                self.handle_client_upload_response(client_id, data)
+            }
             ServerEvent::ClientDetach { client_id } => {
                 info!(client_id, "client detached");
                 self.send_terminal_stream_detach_shutdown(client_id);
@@ -2909,6 +2931,8 @@ impl HeadlessServer {
             ServerEvent::ClientConnected { .. }
                 | ServerEvent::ClientShellConnected { .. }
                 | ServerEvent::ClientShellEndpointResponseChunkReady { .. }
+                | ServerEvent::ClientUploadRequest { .. }
+                | ServerEvent::ClientUploadResponseReady { .. }
                 | ServerEvent::ClientDisconnected { .. }
                 | ServerEvent::ClientWriterDrained { .. }
                 | ServerEvent::QuitSignal
@@ -3340,6 +3364,17 @@ impl HeadlessServer {
         ) {
             self.app
                 .handle_deferred_pane_directory_api_request(msg.request, msg.respond_to);
+            return changed;
+        }
+        if matches!(
+            &msg.request.method,
+            api::schema::Method::PaneUploadBegin(_)
+                | api::schema::Method::PaneUploadWrite(_)
+                | api::schema::Method::PaneUploadFinish(_)
+                | api::schema::Method::PaneUploadCancel(_)
+        ) {
+            self.app
+                .handle_deferred_pane_upload_api_request(msg.request, msg.respond_to);
             return changed;
         }
         if matches!(

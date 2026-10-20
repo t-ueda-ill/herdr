@@ -72,7 +72,12 @@ pub(crate) fn render_client_overlay(
             render_release_notes_overlay(b, v, &s.update_install_command, p)
         }
         ClientShellOverlay::Rename(v) => render_rename_overlay(b, v, p),
-        ClientShellOverlay::ConfirmClose(v) => render_confirm_close_overlay(b, v, p),
+        ClientShellOverlay::ConfirmClose(v) => {
+            render_confirm_overlay(b, &v.title, &v.detail, " ↵ confirm ", p.red, p)
+        }
+        ClientShellOverlay::UploadConfirm(v) => {
+            render_confirm_overlay(b, &v.title, &v.detail, " ↵ upload ", p.accent, p)
+        }
         ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, p),
         ClientShellOverlay::Navigator(v) => {
             render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
@@ -1285,21 +1290,25 @@ fn render_help_overlay(
         ..OverlayRender::default()
     })
 }
-fn render_confirm_close_overlay(
+/// A title, one detail line, and confirm/cancel buttons in `accent`.
+fn render_confirm_overlay(
     b: &mut Buffer,
-    c: &ClientConfirmCloseOverlay,
+    title: &str,
+    detail: &str,
+    confirm: &str,
+    accent: ratatui::style::Color,
     p: &Palette,
 ) -> Option<OverlayRender> {
     let q = popup(b.area, 64, 6)?;
-    let i = panel(b, q, p.red, p.panel_bg)?;
+    let i = panel(b, q, accent, p.panel_bg)?;
     put_text(
         b,
         i.x,
         i.y,
         i.width,
-        &format!(" {}", c.title),
+        &format!(" {title}"),
         Style::default()
-            .fg(p.red)
+            .fg(accent)
             .bg(p.panel_bg)
             .add_modifier(Modifier::BOLD),
     );
@@ -1308,7 +1317,7 @@ fn render_confirm_close_overlay(
         i.x,
         i.y + 1,
         i.width,
-        &format!(" {}", c.detail),
+        &format!(" {detail}"),
         Style::default().fg(p.text).bg(p.panel_bg),
     );
     let rs = row(i, &[13, 12], 2, 3);
@@ -1318,10 +1327,10 @@ fn render_confirm_close_overlay(
     button(
         b,
         *ok,
-        " ↵ confirm ",
+        confirm,
         Style::default()
             .fg(contrast(p))
-            .bg(p.red)
+            .bg(accent)
             .add_modifier(Modifier::BOLD),
     );
     button(

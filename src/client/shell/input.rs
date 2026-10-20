@@ -1163,6 +1163,11 @@ impl ClientShellState {
         {
             return None;
         }
+        // The workbench covers the panes and takes their pastes; a drop
+        // there must not reach the pane hidden behind it.
+        if self.overlay.is_none() && self.investigation_active() {
+            return None;
+        }
         if let Some(terminal_id) = self.popup_input_target().and_then(|target| match target {
             ClientInputTarget::Popup(terminal_id) => Some(terminal_id),
             ClientInputTarget::Pane(_) => None,

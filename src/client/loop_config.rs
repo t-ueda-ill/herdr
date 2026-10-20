@@ -16,4 +16,7 @@ pub(super) struct ClientLoopConfig {
     pub(super) remote_image_paste_key:
         Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
     pub(super) shell_config: Option<shell::ClientShellConfig>,
+    pub(super) upload_settings: upload::UploadSettings,
+    /// Direct attach: the terminal uploads are addressed to.
+    pub(super) attach_terminal_id: Option<String>,
 }

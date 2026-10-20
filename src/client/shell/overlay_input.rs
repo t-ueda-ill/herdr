@@ -888,6 +888,15 @@ impl ClientShellState {
             return;
         }
 
+        if matches!(self.overlay, Some(ClientShellOverlay::UploadConfirm(_))) {
+            match key.code {
+                KeyCode::Enter => self.answer_upload_confirm(true, outcome),
+                KeyCode::Esc => self.answer_upload_confirm(false, outcome),
+                _ => {}
+            }
+            return;
+        }
+
         if matches!(self.overlay, Some(ClientShellOverlay::ConfirmClose(_))) {
             if key.code == KeyCode::Enter {
                 self.accept_close_confirmation(outcome);

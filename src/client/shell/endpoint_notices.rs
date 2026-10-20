@@ -68,9 +68,10 @@ pub(super) fn render_notice(
         crate::config::ToastHerdrPosition::TopRight,
         top_offset,
         match notice.key.kind {
-            ClientEndpointNoticeKind::Unsupported | ClientEndpointNoticeKind::Rejected => {
-                palette.red
-            }
+            ClientEndpointNoticeKind::Unsupported
+            | ClientEndpointNoticeKind::Rejected
+            | ClientEndpointNoticeKind::UploadFailed => palette.red,
+            ClientEndpointNoticeKind::Uploaded => palette.green,
             ClientEndpointNoticeKind::Timeout | ClientEndpointNoticeKind::Unavailable => {
                 palette.yellow
             }

@@ -320,3 +320,43 @@ pub(crate) fn copy_symbolic_link(
         "symbolic links unavailable",
     ))
 }
+
+#[cfg(not(unix))]
+pub(crate) fn create_symlink(_target: &str, _link: &std::path::Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "symlinks are unavailable",
+    ))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn permission_bits(metadata: &std::fs::Metadata) -> u32 {
+    if metadata.is_dir() {
+        0o755
+    } else {
+        0o644
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn set_permission_bits(_path: &std::path::Path, _mode: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn set_path_modified(
+    path: &std::path::Path,
+    modified: std::time::SystemTime,
+) -> std::io::Result<()> {
+    std::fs::File::open(path)?.set_modified(modified)
+}
+
+/// Drop text syntax on this host (see [`super::DropPathSyntax`]).
+pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
+    super::DropPathSyntax::Posix
+}
+
+/// The local path a dropped token names, or `None` when it is not absolute.
+pub(crate) fn dropped_path(token: &str) -> Option<std::path::PathBuf> {
+    super::drop_paths::posix_drop_path(token)
+}

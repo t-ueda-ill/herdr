@@ -55,6 +55,7 @@ impl HeadlessServer {
         }
 
         self.handoff_in_progress = true;
+        self.abort_uploads(Duration::from_secs(2));
         self.disconnect_all_clients_for_handoff();
         let _ = reject_pending_client_connections(&self.client_listener);
 
@@ -314,6 +315,7 @@ impl HeadlessServer {
         };
         info!(%reason, "server shutdown initiated");
         self.shutting_down = true;
+        self.abort_uploads(Duration::from_secs(2));
 
         // Clear client-local host graphics, then send ServerShutdown to all connected clients.
         let shutdown_msg = ServerMessage::ServerShutdown {

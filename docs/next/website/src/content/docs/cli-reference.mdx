@@ -349,6 +349,16 @@ Relative `--path` values resolve against the current directory; with `--machine`
 
 `pane open-editor` opens the file with `${EDITOR:-vi}` from the pane's shell environment, in a zoomed overlay pane over the target. Quitting the editor closes the overlay and restores the previous focus and zoom. The target must be the focused pane of the active workspace and have a running shell, and directories are rejected.
 
+Upload local files into the environment a pane's shell sees:
+
+```bash
+herdr pane upload <pane_id> <path>... [--dest DIR] [--on-conflict fail|rename|replace] [--json]
+```
+
+`pane upload` copies local files and folders, recursively, into a host, container, or SSH pane's environment. Relative paths start in the current directory, at most 1,024 paths are accepted, and two paths may not share a last name. Without `--dest`, the files go to the pane's working directory as its shell last reported it, then the container's working directory, then the remote home directory. Everything is staged in a hidden `.herdr-upload-*` directory beside the destination and published at once, so a failed or interrupted upload leaves nothing behind. Executable bits and modification times are kept, symbolic links are sent as links without being followed, and FIFOs, sockets, and devices are skipped. Files are owned by the user the pane connects as (`-u` for a container).
+
+`--on-conflict` decides what happens when a name already exists in the destination: `fail` (the default) publishes nothing and exits 3, `rename` publishes `name (1).ext`, and `replace` replaces the existing file or directory. The command prints each published absolute path on its own line, or the finish result with `--json`. It exits 0 on success, 1 on any other error, and 130 when interrupted with Ctrl-C, which cancels the upload. An SSH pane needs SSH connection sharing (ControlMaster), as for clipboard images; without it the upload is refused with a hint instead of opening another connection. Windows hosts return `platform_unsupported` for container and SSH panes.
+
 In the TUI, bind `keys.open_files` (unset by default), choose `open files` from the global menu, or choose `Browse files...` from a workspace's right-click menu to browse the same listing; see [Keyboard](/docs/keyboard/#file-viewer). A server too old for these methods, or one running on Windows, shows an `Action unavailable` notice instead. Windows hosts return `platform_unsupported` to these commands.
 
 ## Containers
