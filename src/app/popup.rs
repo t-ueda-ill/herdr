@@ -17,6 +17,7 @@ impl App {
         let Some(popup) = self.state.popup_pane.take() else {
             return false;
         };
+        self.upload_sessions.abort_terminal(&popup.terminal_id);
         self.state
             .direct_attach_resize_locks
             .remove(&popup.terminal_id);

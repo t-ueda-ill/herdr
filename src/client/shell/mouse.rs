@@ -681,6 +681,14 @@ impl ClientShellState {
     /// Hit-test order determines which overlapping control receives the event;
     /// the sidebar toggle takes precedence over the agent scrollbar beneath it.
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
+        // Why not with an overlay open: it is drawn over the card, so the
+        // click is meant for the overlay.
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.overlay.is_none()
+            && self.click_upload_progress((mouse.column, mouse.row), outcome)
+        {
+            return;
+        }
         if self.overlay.is_none() && self.handle_investigation_mouse(mouse, outcome) {
             return;
         }
@@ -1792,6 +1800,9 @@ impl ClientShellState {
                     Some(ClientShellOverlay::ConfirmClose(_)) => {
                         self.accept_close_confirmation(outcome);
                     }
+                    Some(ClientShellOverlay::UploadConfirm(_)) => {
+                        self.answer_upload_confirm(true, outcome);
+                    }
                     _ => {}
                 }
             } else if super::contains(self.hits.overlay_clear, point) {
@@ -1799,6 +1810,8 @@ impl ClientShellState {
                     rename.input.clear();
                     outcome.repaint = true;
                 }
+            } else if matches!(self.overlay, Some(ClientShellOverlay::UploadConfirm(_))) {
+                self.answer_upload_confirm(false, outcome);
             } else {
                 self.overlay = None;
                 outcome.repaint = true;

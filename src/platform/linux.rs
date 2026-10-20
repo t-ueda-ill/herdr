@@ -250,6 +250,30 @@ pub(crate) fn should_query_host_terminal_palette() -> bool {
     !running_inside_wsl()
 }
 
+/// Drop text syntax on this host (see [`super::DropPathSyntax`]).
+pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
+    if running_inside_wsl() {
+        super::DropPathSyntax::WslAuto
+    } else {
+        super::DropPathSyntax::Posix
+    }
+}
+
+/// The local path a dropped token names, or `None` when it is not absolute.
+pub(crate) fn dropped_path(token: &str) -> Option<std::path::PathBuf> {
+    if !running_inside_wsl() {
+        return super::drop_paths::posix_drop_path(token);
+    }
+    static AUTOMOUNT_ROOT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        std::fs::read_to_string("/etc/wsl.conf")
+            .ok()
+            .and_then(|conf| super::drop_paths::parse_wsl_automount_root(&conf))
+            .unwrap_or_else(|| super::drop_paths::DEFAULT_WSL_AUTOMOUNT_ROOT.to_owned())
+    });
+    let distro = std::env::var("WSL_DISTRO_NAME").ok();
+    super::drop_paths::translate_wsl_drop_path(token, &AUTOMOUNT_ROOT, distro.as_deref())
+}
+
 fn running_inside_wsl() -> bool {
     static RUNNING_INSIDE_WSL: OnceLock<bool> = OnceLock::new();
     *RUNNING_INSIDE_WSL.get_or_init(detect_running_inside_wsl)

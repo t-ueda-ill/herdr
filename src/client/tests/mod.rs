@@ -365,6 +365,32 @@ fn remote_image_file_drop_bridge_ignores_non_remote_and_non_image_input() {
     .is_none());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_single_windows_image_path_dropped_into_wsl_is_still_an_image_drop() {
+    let translate = |token: &str| {
+        (token == r"C:\Users\u\shot.png")
+            .then(|| std::path::PathBuf::from("/mnt/c/Users/u/shot.png"))
+    };
+
+    let found = clipboard_images::translated_image_path(
+        r"C:\Users\u\shot.png",
+        crate::platform::DropPathSyntax::WslAuto,
+        translate,
+    );
+    let two = clipboard_images::translated_image_path(
+        "C:\\Users\\u\\shot.png\r/b.png",
+        crate::platform::DropPathSyntax::WslAuto,
+        translate,
+    );
+
+    assert_eq!(
+        found,
+        Some((std::path::PathBuf::from("/mnt/c/Users/u/shot.png"), "png"))
+    );
+    assert_eq!(two, None, "more than one path is an upload, not an image");
+}
+
 #[test]
 fn graphics_bytes_are_written_inside_synchronized_blit_with_saved_cursor() {
     let mut output = Vec::new();
@@ -715,7 +741,7 @@ fn reload_local_client_config_refreshes_local_client_presentation_state() {
     ));
     std::fs::write(
         &path,
-        "[ui]\nredraw_on_focus_gained = false\nhost_cursor = \"drawn\"\nmouse_capture = false\n",
+        "[ui]\nredraw_on_focus_gained = false\nhost_cursor = \"drawn\"\nmouse_capture = false\nupload_on_drop = false\nupload_confirm_entries = 3\n",
     )
     .unwrap();
     let path_string = path.to_string_lossy().to_string();
@@ -725,6 +751,8 @@ fn reload_local_client_config_refreshes_local_client_presentation_state() {
     let mut draw_host_cursor = false;
     let mut remote_image_paste_key = None;
     let mut mouse_capture = true;
+    let mut upload_settings =
+        upload::UploadSettings::from_config(&crate::config::Config::default());
 
     reload_local_client_config(
         &mut sound_config,
@@ -732,11 +760,14 @@ fn reload_local_client_config_refreshes_local_client_presentation_state() {
         &mut draw_host_cursor,
         &mut remote_image_paste_key,
         &mut mouse_capture,
+        &mut upload_settings,
     );
 
     assert!(!redraw_on_focus_gained);
     assert!(draw_host_cursor);
     assert!(!mouse_capture);
+    assert!(!upload_settings.upload_on_drop);
+    assert_eq!(upload_settings.limits.confirm_entries, 3);
     let _ = std::fs::remove_file(path);
 }
 
@@ -759,6 +790,8 @@ fn reload_local_client_config_keeps_ui_preferences_when_ui_is_invalid() {
     let mut draw_host_cursor = true;
     let mut remote_image_paste_key = None;
     let mut mouse_capture = false;
+    let mut upload_settings =
+        upload::UploadSettings::from_config(&crate::config::Config::default());
 
     reload_local_client_config(
         &mut sound_config,
@@ -766,6 +799,7 @@ fn reload_local_client_config_keeps_ui_preferences_when_ui_is_invalid() {
         &mut draw_host_cursor,
         &mut remote_image_paste_key,
         &mut mouse_capture,
+        &mut upload_settings,
     );
 
     assert!(!mouse_capture);
@@ -986,4 +1020,224 @@ fn terminal_control_scroll_command_maps_to_attach_scroll() {
     assert_eq!(source, AttachScrollSource::Wheel);
     assert_eq!(direction, AttachScrollDirection::Up);
     assert_eq!(lines, 3);
+}
+
+struct NullTransport;
+
+impl endpoint::EndpointTransport for NullTransport {
+    fn send(&mut self, _: &ClientMessage) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn upload_drop_offered(advertised: bool, bridge_active: bool) -> (bool, bool) {
+    let negotiation = if advertised {
+        endpoint::EndpointNegotiation::new(
+            upload::gate::UPLOAD_METHODS
+                .iter()
+                .map(|method| (*method).to_owned())
+                .collect(),
+            vec![crate::protocol::endpoint::PANE_UPLOAD_CONTROL_CAPABILITY.to_owned()],
+        )
+    } else {
+        endpoint::EndpointNegotiation::default()
+    };
+    let mut endpoints = endpoint::EndpointRegistry::new(NullTransport, 1, negotiation);
+    let mut state = ClientState::test_new();
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+    let path = if cfg!(windows) { r"C:\x\y" } else { "/x/y" };
+
+    let taken = offer_upload_drop(
+        &mut state,
+        &mut endpoints,
+        &event_tx,
+        path,
+        upload::transfer::UploadTarget::Pane("p1".into()),
+        bridge_active,
+        false,
+        || ClientLoopEvent::Timer,
+        std::time::Instant::now(),
+    );
+    (taken, state.uploads.holding())
+}
+
+#[test]
+fn a_drop_onto_a_server_without_upload_methods_pastes_the_paths_as_before() {
+    assert_eq!(upload_drop_offered(false, true), (false, false));
+}
+
+#[test]
+fn a_drop_onto_a_local_host_pane_pastes_the_paths_as_before() {
+    assert_eq!(upload_drop_offered(true, false), (false, false));
+}
+
+#[test]
+fn a_drop_onto_an_off_host_pane_of_an_upload_capable_server_is_held_for_checking() {
+    assert_eq!(upload_drop_offered(true, true), (true, true));
+}
+
+#[cfg(unix)]
+#[derive(Clone, Default)]
+struct RecordingTransport(std::sync::Arc<std::sync::Mutex<Vec<ClientMessage>>>);
+
+#[cfg(unix)]
+impl endpoint::EndpointTransport for RecordingTransport {
+    fn send(&mut self, message: &ClientMessage) -> io::Result<()> {
+        self.0.lock().unwrap().push(message.clone());
+        Ok(())
+    }
+}
+
+/// A tree drop of one existing file through `offer_workbench_drop`.
+#[cfg(unix)]
+struct WorkbenchDropRun {
+    outcome: Option<shell::ClientShellInput>,
+    notice: String,
+    begin: Option<crate::api::schema::PaneUploadBeginParams>,
+}
+
+#[cfg(unix)]
+fn workbench_drop_routed(
+    place: shell::WorkbenchDropPlace,
+    advertised: bool,
+    is_remote_client: bool,
+) -> WorkbenchDropRun {
+    let dir = crate::upload::test_support::TempDir::new("client-tree-drop");
+    let file = dir.join("a.txt");
+    std::fs::write(&file, b"hi").unwrap();
+    let negotiation = if advertised {
+        endpoint::EndpointNegotiation::new(
+            upload::gate::UPLOAD_METHODS
+                .iter()
+                .map(|method| (*method).to_owned())
+                .collect(),
+            vec![crate::protocol::endpoint::PANE_UPLOAD_CONTROL_CAPABILITY.to_owned()],
+        )
+    } else {
+        endpoint::EndpointNegotiation::default()
+    };
+    let sent = RecordingTransport::default();
+    let mut endpoints = endpoint::EndpointRegistry::new(sent.clone(), 1, negotiation);
+    let mut state = ClientState::test_new();
+    let tab = state
+        .shell
+        .as_mut()
+        .unwrap()
+        .push_test_investigation("/srv");
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(8);
+
+    let outcome = offer_workbench_drop(
+        &mut state,
+        &mut endpoints,
+        &event_tx,
+        &file.display().to_string(),
+        shell::WorkbenchDropTarget {
+            tab,
+            destination: "/srv".into(),
+            place,
+            location: crate::api::schema::PaneLocation {
+                kind: crate::api::schema::PaneLocationKind::Host,
+                ssh_host: None,
+                container: None,
+            },
+        },
+        is_remote_client,
+    );
+    if state.uploads.busy_for_test() {
+        // Checked, then Scanned: the scan answer sends begin.
+        for _ in 0..2 {
+            let Some(ClientLoopEvent::Upload(event)) = event_rx.blocking_recv() else {
+                panic!("worker event");
+            };
+            let now = std::time::Instant::now();
+            let effects = state.uploads.worker_event(event, now);
+            upload::runtime::apply_upload_effects(&mut state, &mut endpoints, effects, now);
+        }
+    }
+    let begin = sent
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|message| match message {
+            ClientMessage::EndpointControl { data, .. } => {
+                let request: crate::api::schema::Request = serde_json::from_str(data).ok()?;
+                match request.method {
+                    crate::api::schema::Method::PaneUploadBegin(params) => Some(params),
+                    _ => None,
+                }
+            }
+            _ => None,
+        });
+    let notice = state
+        .shell
+        .as_ref()
+        .unwrap()
+        .workbench_notice_for_test(tab)
+        .unwrap_or_default()
+        .to_owned();
+    WorkbenchDropRun {
+        outcome,
+        notice,
+        begin,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tree_drop_onto_this_machines_server_uploads_through_the_host_sink() {
+    let run = workbench_drop_routed(shell::WorkbenchDropPlace::Host, true, false);
+
+    let begin = run.begin.expect("begin sent");
+    assert_eq!(begin.pane_id, None);
+    assert_eq!(begin.terminal_id, None);
+    assert_eq!(begin.destination.as_deref(), Some("/srv"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tree_drop_into_an_off_host_tab_uploads_through_its_pane() {
+    let run = workbench_drop_routed(shell::WorkbenchDropPlace::Pane("p2".into()), true, false);
+
+    let begin = run.begin.expect("begin sent");
+    assert_eq!(begin.pane_id.as_deref(), Some("p2"));
+    assert_eq!(begin.destination.as_deref(), Some("/srv"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tree_drop_onto_a_remote_servers_host_uploads_without_a_pane() {
+    let run = workbench_drop_routed(shell::WorkbenchDropPlace::Host, true, true);
+
+    let begin = run.begin.expect("begin sent");
+    assert_eq!(begin.pane_id, None);
+    assert_eq!(begin.terminal_id, None);
+    assert_eq!(begin.destination.as_deref(), Some("/srv"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tree_drop_onto_a_server_without_upload_methods_only_says_so() {
+    let run = workbench_drop_routed(shell::WorkbenchDropPlace::Pane("p2".into()), false, false);
+
+    assert!(run.outcome.is_some());
+    assert!(run.begin.is_none());
+    assert!(
+        run.notice.contains("cannot receive dropped files"),
+        "{}",
+        run.notice
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tree_drop_into_a_location_without_a_live_pane_names_it() {
+    let run = workbench_drop_routed(
+        shell::WorkbenchDropPlace::NoPane("no pane running in app".into()),
+        true,
+        false,
+    );
+
+    assert!(run.begin.is_none());
+    assert_eq!(run.notice, "no pane running in app");
 }

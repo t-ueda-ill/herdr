@@ -100,7 +100,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | コンテナ | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH ホスト | `ssh.open`, `ssh.hosts` |
-| ファイル | `directory.list`、`directory.index`、`pane.open_editor`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.file.read` |
+| ファイル | `directory.list`、`directory.index`、`pane.open_editor`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.file.read`、`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel` |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
@@ -468,6 +468,36 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 | `pane_not_live` | `pane.open_editor` の対象ペインで動いているシェルがない（復元に失敗した場合など） |
 | `editor_failed` | エディタのペインを起動できなかった |
 | `platform_unsupported` | サーバーが Windows 上で動作している。この場合、これらのメソッドは TUI クライアントにも提示されない |
+
+### アップロード
+
+`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel` は、クライアントが持つファイルを、ペインのシェルから見える環境（サーバーのホスト、コンテナ、SSH ホスト）へコピーします。`herdr pane upload` と TUI のドロップが使います。finish がまとめて公開するまで送り先には何も現れず、失敗、中止、放置されたアップロードは何も残しません。
+
+```json
+{ "id": "u1", "method": "pane.upload.begin", "params": { "pane_id": "w1:p2", "names": ["notes.txt", "assets"], "entries": 3, "bytes": 2048 } }
+```
+
+`begin` は `pane_id`（ワークスペースのペイン）か `terminal_id`（ポップアップかダイレクトアタッチ中のターミナル）を取ります。どちらも無いときはサーバー自身のファイルシステムが対象で、`destination` が必須です。`destination` はその環境の絶対ディレクトリで、省略するとペインの作業ディレクトリ（OSC 7、次にコンテナの作業ディレクトリ）、なければリモートのホームディレクトリへ送ります。`names` は 1〜1,024 個の一番上の名前（それぞれ 255 バイト以下、`/` と制御文字を含まず、`.herdr-upload-` で始まらない）で、`entries` と `bytes` で合計を宣言します。応答は `pane_upload_started` で、`upload_id`、`location`（ここでは `kind` が `host` にもなる）、解決済みの `destination`、`names` のうち送り先に既にある `conflicts`、`chunk_bytes`（524,288）、`window`（2）を返します。
+
+`write` は `upload_id`、names のどれかで始まる `/` 区切りの `path`、デコード後 `chunk_bytes` 以下の base64 の `data`、その `offset`、ファイルの最後の chunk であることを示す `last` を持ちます。ある path の最初の chunk には `entry` も付けます。`kind`（`file`、`directory`、`symlink`）、`mode`（`0o777` までの権限ビット）、省略可能な `mtime`（UNIX 秒）、ファイルの `size`、リンクの `link_target` です。親は子より先に送り、ファイルの chunk は順に送ります。write の応答は `received_entries` と `received_bytes` を持つ `pane_upload_progress` です。順序が保たれる 1 本のストリームで、応答待ちの write は `window` 個までです。要求ごとにソケットを開き直すクライアント（CLI など）は 1 つずつ送ります。
+
+`finish` は `upload_id` と `collision` を取ります。`fail` は名前があれば何も公開せず、別の finish を送れるようにアップロードを残します。`rename` は `name (1).ext` として公開し、`replace` は既存の項目をディレクトリごと置き換えます。応答は `pane_upload_finished` で、`location`、`destination`、`names` と同じ順の公開後の絶対パス `paths`、更新時刻を付けられなかったなどの `warnings` を返します。`cancel` は `upload_id` を取り、`ok` を返します。ペインやポップアップが閉じたとき、クライアントが切断したとき、サーバーのハンドオフが始まったとき、最初の write まで 10 分、write の間で 2 分何も届かないときにも、アップロードは終わります。サーバーが同時に受けるのは 4 件（クライアントごとに 2 件）で、1 件あたり 16 GiB、100,000 項目までです。
+
+| コード | 意味 |
+| --- | --- |
+| `invalid_params` | パス、名前、chunk、offset、entry ヘッダが不正、または write の順序が違う |
+| `upload_too_large` | 宣言値か受信量がサーバーの上限か宣言値を超えた |
+| `upload_busy` | アップロードが多すぎる、または `window` を超える write が来た |
+| `upload_not_found`、`upload_cancelled` | アップロードが終わった、期限が切れた、または別のクライアントのもの |
+| `upload_conflict` | `collision` が `fail` で名前が既にある。メッセージに名前が入る |
+| `upload_failed` | 書き込み、公開、巻き戻しに失敗した。メッセージに詳細が入る |
+| `stale_pane_target` | アップロード中にペインの環境が変わった、またはペインが終わった |
+| `not_found`、`not_a_directory`、`permission_denied` | 送り先のディレクトリが無い、ディレクトリでない、または書き込めない |
+| `container_unavailable`、`container_not_found`、`offhost_shell_unavailable` | `pane.directory.*` と同じ |
+| `ssh_unavailable` | SSH ペインの接続が共有されていない（ControlMaster）、またはホストに届かない |
+| `platform_unsupported` | Windows のサーバーでコンテナか SSH を送り先にした |
+
+シェルモードの TUI クライアントは、これらの要求を endpoint control の `endpoint.upload.request.v1` で送ります。使うのは、サーバーが 4 つのメソッドと `pane_upload_control` capability をすべて advertise しているときだけです。ダイレクトアタッチは `endpoint.upload.probe.v1` で確かめます。どちらも無ければ、ドロップは従来どおりローカルのパスを貼り付けます。
 
 ## エージェントビューのクエリ
 

@@ -1266,6 +1266,16 @@ pub(crate) fn copy_symbolic_link(
     std::os::unix::fs::symlink(std::fs::read_link(source)?, target)
 }
 
+/// Drop text syntax on this host (see [`super::DropPathSyntax`]).
+pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
+    super::DropPathSyntax::Posix
+}
+
+/// The local path a dropped token names, or `None` when it is not absolute.
+pub(crate) fn dropped_path(token: &str) -> Option<std::path::PathBuf> {
+    super::drop_paths::posix_drop_path(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

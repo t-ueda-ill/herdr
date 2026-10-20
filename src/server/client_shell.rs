@@ -23,7 +23,7 @@ pub(crate) enum RunningOffHostShell<'a> {
 
 /// Why not read `TerminalState.container` or `.ssh` alone: a cold restore
 /// keeps them while the pane runs a plain host shell.
-pub(super) fn running_off_host_shell<'a>(
+pub(crate) fn running_off_host_shell<'a>(
     app: &'a app::App,
     runtime: &crate::terminal::TerminalRuntime,
     terminal_id: &crate::terminal::TerminalId,

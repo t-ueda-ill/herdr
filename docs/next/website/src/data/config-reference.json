@@ -971,6 +971,36 @@
           "description": "Ask for confirmation before closing a workspace."
         },
         {
+          "key": "ui.upload_on_drop",
+          "type": "boolean",
+          "default": "true",
+          "description": "Upload files dropped onto ssh and container panes, or onto any pane of a remote server, and paste their remote paths; also copy files dropped onto the file workbench list into its selected folder. A single small image dropped on a pane keeps the clipboard image path either way."
+        },
+        {
+          "key": "ui.upload_confirm_bytes",
+          "type": "integer",
+          "default": "104857600",
+          "description": "Ask before uploading more than this many bytes."
+        },
+        {
+          "key": "ui.upload_confirm_entries",
+          "type": "integer",
+          "default": "1000",
+          "description": "Ask before uploading more than this many files, directories, and symlinks."
+        },
+        {
+          "key": "ui.upload_max_bytes",
+          "type": "integer",
+          "default": "2147483648",
+          "description": "Refuse uploads of more than this many bytes."
+        },
+        {
+          "key": "ui.upload_max_entries",
+          "type": "integer",
+          "default": "10000",
+          "description": "Refuse uploads of more than this many files, directories, and symlinks."
+        },
+        {
           "key": "ui.prompt_new_tab_name",
           "type": "boolean",
           "default": "true",

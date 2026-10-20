@@ -17,6 +17,10 @@ mod surface_delta_tests;
 mod surface_interest_tests;
 #[path = "surface_scroll.rs"]
 mod surface_scroll_tests;
+// Upload tests stage into Unix scratch directories.
+#[cfg(unix)]
+#[path = "uploads.rs"]
+mod upload_tests;
 
 fn client_shell_projection(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
@@ -143,6 +147,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         should_quit,
         server_stop,
         server_event_rx,
+        upload_responses: super::uploads::spawn_upload_response_pump(server_event_tx.clone()),
         server_event_tx,
     }
 }

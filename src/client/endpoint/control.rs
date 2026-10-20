@@ -11,6 +11,9 @@ pub(crate) enum EndpointControlMessage {
     AgentViewProjection(DecodedAgentViewProjection),
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
+    /// The JSON response to one `pane.upload.*` control, matched by its id.
+    UploadResponse(String),
+    UploadReady(crate::protocol::endpoint::EndpointUploadReady),
     Ignored,
 }
 
@@ -24,6 +27,14 @@ pub(crate) fn decode_endpoint_control(
     if kind == crate::protocol::endpoint::AGENT_COMPLETIONS_KIND {
         return Ok(serde_json::from_str(data)
             .map(EndpointControlMessage::AgentCompletions)
+            .unwrap_or(EndpointControlMessage::Ignored));
+    }
+    if kind == crate::protocol::endpoint::UPLOAD_RESPONSE_KIND {
+        return Ok(EndpointControlMessage::UploadResponse(data.to_owned()));
+    }
+    if kind == crate::protocol::endpoint::UPLOAD_READY_KIND {
+        return Ok(serde_json::from_str(data)
+            .map(EndpointControlMessage::UploadReady)
             .unwrap_or(EndpointControlMessage::Ignored));
     }
     if kind == crate::protocol::endpoint::AGENT_VIEW_PROJECTION_KIND {
@@ -79,6 +90,30 @@ mod tests {
     fn unknown_optional_controls_are_ignored() {
         assert!(matches!(
             decode_endpoint_control("future.optional", "not json").unwrap(),
+            EndpointControlMessage::Ignored
+        ));
+    }
+
+    #[test]
+    fn upload_answers_decode_and_a_malformed_ready_is_ignored() {
+        let EndpointControlMessage::UploadResponse(data) = decode_endpoint_control(
+            crate::protocol::endpoint::UPLOAD_RESPONSE_KIND,
+            r#"{"id":"upload:1:begin"}"#,
+        )
+        .unwrap() else {
+            panic!("expected an upload response");
+        };
+        assert_eq!(data, r#"{"id":"upload:1:begin"}"#);
+        let EndpointControlMessage::UploadReady(ready) = decode_endpoint_control(
+            crate::protocol::endpoint::UPLOAD_READY_KIND,
+            r#"{"chunk_bytes":524288,"window":2}"#,
+        )
+        .unwrap() else {
+            panic!("expected upload ready");
+        };
+        assert_eq!((ready.chunk_bytes, ready.window), (524288, 2));
+        assert!(matches!(
+            decode_endpoint_control(crate::protocol::endpoint::UPLOAD_READY_KIND, "{}").unwrap(),
             EndpointControlMessage::Ignored
         ));
     }

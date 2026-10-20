@@ -51,7 +51,10 @@ pub(crate) use self::{
     window_title::{sanitize_window_title_text, window_title_diagnostics},
 };
 
-pub(crate) use self::{keybinds::CommandKeybindType, model::KeysConfig};
+pub(crate) use self::{
+    keybinds::CommandKeybindType,
+    model::{KeysConfig, UploadLimits},
+};
 
 pub const CONFIG_PATH_ENV_VAR: &str = "HERDR_CONFIG_PATH";
 
@@ -120,6 +123,7 @@ impl Config {
             .chain(self.theme.diagnostics())
             .chain(self.ui.sound.diagnostics())
             .chain(tab_bar_right_diagnostics(&self.ui.tab_bar_right))
+            .chain(self.ui.upload_limit_diagnostics())
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())
             .chain(self.invalid_headless_size_diagnostic())

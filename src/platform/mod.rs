@@ -225,6 +225,10 @@ impl ChildExitReason {
 pub(crate) use unix_common::{
     classify_child_exit, poll_fd_readable, read_fd, shared_ssh_control_path,
 };
+#[cfg(unix)]
+pub(crate) use unix_common::{
+    create_symlink, permission_bits, set_path_modified, set_permission_bits, stores_file_name,
+};
 
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn classify_child_exit(_status: &portable_pty::ExitStatus) -> ChildExitReason {
@@ -511,6 +515,8 @@ pub(crate) use unix_common::{
     local_stream_peer_description, spawn_server_signal_monitor, ChildPipe, RemoteBridgeWake,
 };
 
+mod drop_paths;
+pub(crate) use drop_paths::{starts_with_windows_path, DropPathSyntax};
 mod client_state;
 pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};
 

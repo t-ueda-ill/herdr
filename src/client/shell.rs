@@ -39,16 +39,19 @@ mod settings;
 mod state;
 mod surface_patch;
 mod text_editor;
+mod uploads;
 mod word_selection;
 mod worktrees;
 use text_editor::TextEditor;
 use word_selection::ClientWordSelection;
 
+pub(crate) use investigation::{ClientUploadQuestion, WorkbenchDropPlace, WorkbenchDropTarget};
 pub(in crate::client::shell) use render::sidebar;
 pub(crate) use state::*;
 #[cfg(test)]
 pub(super) use surface_patch::apply_composed_surface_patch;
 pub(super) use surface_patch::{ClientComposedSurfacePatch, ClientPaneSurfacePatchOutcome};
+pub(crate) use uploads::ClientUploadDecision;
 
 use crossterm::event::KeyCode;
 #[cfg(test)]

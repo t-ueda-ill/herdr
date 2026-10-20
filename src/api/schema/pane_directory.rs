@@ -9,7 +9,8 @@ use super::files::FileDocument;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PaneLocationKind {
-    /// Reserved: requests for host panes are rejected with `invalid_params`.
+    /// The server's own filesystem. `pane.directory.*` rejects host panes with
+    /// `invalid_params`; `pane.upload.*` reports it for uploads to this host.
     Host,
     Ssh,
     Container,

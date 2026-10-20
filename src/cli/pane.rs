@@ -1,4 +1,5 @@
 pub(crate) mod bindings;
+pub(crate) mod upload;
 
 use clap::ArgMatches;
 
@@ -7,7 +8,7 @@ use crate::api::schema::panes::{PaneMetadataProjection, PaneMoveProjection, Pane
 use crate::api::schema::{Method, PaneDirection, PaneMoveDestination};
 
 pub(crate) fn command() -> clap::Command {
-    bindings::command()
+    bindings::command().subcommand(upload::command())
 }
 
 pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
@@ -20,6 +21,9 @@ pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
         command().print_help()?;
         println!();
         return Ok(0);
+    }
+    if name == "upload" {
+        return upload::run(&args[1..]);
     }
     let Some(leaf) = bindings::LEAVES.iter().find(|leaf| leaf.name == name) else {
         if let Err(error) = command().no_binary_name(true).try_get_matches_from(args) {

@@ -462,6 +462,27 @@ impl ClientShellState {
                 }
                 _ => {}
             },
+            Dialog::Upload(dialog) => {
+                let choices = dialog.choices();
+                let count = choices.len();
+                let chosen = match code {
+                    KeyCode::Left => {
+                        dialog.selected = (dialog.selected + count - 1) % count;
+                        None
+                    }
+                    KeyCode::Right | KeyCode::Tab => {
+                        dialog.selected = (dialog.selected + 1) % count;
+                        None
+                    }
+                    KeyCode::Enter => choices.get(dialog.selected).copied(),
+                    // The buttons, left to right.
+                    KeyCode::Char(c @ '1'..='9') => choices.get(c as usize - '1' as usize).copied(),
+                    _ => None,
+                };
+                if let Some(choice) = chosen {
+                    self.answer_upload_dialog(choice, outcome);
+                }
+            }
             Dialog::Send { path, pane, boot } => {
                 if code == KeyCode::Enter {
                     let path = path.clone();

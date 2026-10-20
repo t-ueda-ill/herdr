@@ -191,9 +191,39 @@ pub(super) fn image_path_from_terminal_drop(
 ) -> Option<(PathBuf, &'static str)> {
     let bytes = bracketed_paste_payload(data).unwrap_or(data);
     let text = std::str::from_utf8(bytes).ok()?;
+    let raw = text;
     let text = normalized_terminal_drop_text(text)?;
     let text = unescape_terminal_drop_path(strip_matching_path_quotes(text));
-    image_path_from_drop_text(&text, is_remote_client)
+    image_path_from_drop_text(&text, is_remote_client).or_else(|| {
+        // Why also the upload tokenizer: under WSL a Windows terminal drops
+        // `C:\…`, which only its translation turns into a local path, and one
+        // image must keep its clipboard staging path (spec Q19).
+        is_remote_client
+            .then(|| {
+                translated_image_path(
+                    raw,
+                    crate::platform::drop_path_syntax(),
+                    crate::platform::dropped_path,
+                )
+            })
+            .flatten()
+    })
+}
+
+/// The one image a drop names, read the way an upload drop reads paths.
+#[cfg(unix)]
+pub(super) fn translated_image_path(
+    text: &str,
+    syntax: crate::platform::DropPathSyntax,
+    dropped_path: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<(PathBuf, &'static str)> {
+    let drop = super::upload::drop_text::split_drop_text(text, syntax)?;
+    let [token] = drop.tokens.as_slice() else {
+        return None;
+    };
+    let path = dropped_path(token)?;
+    let extension = recognized_image_extension(path.extension()?.to_str()?)?;
+    Some((path, extension))
 }
 
 fn normalized_terminal_drop_text(text: &str) -> Option<&str> {
@@ -214,6 +244,14 @@ fn image_path_from_drop_text(
     }
     let extension = recognized_image_extension(path.extension()?.to_str()?)?;
     Some((path, extension))
+}
+
+/// The text of one bracketed paste, the only input offered as a file drop.
+/// Why not bare input too: typed keys arrive unbracketed, and a lone `/`
+/// is an absolute path that exists.
+#[cfg(unix)]
+pub(super) fn bracketed_drop_text(data: &[u8]) -> Option<&str> {
+    std::str::from_utf8(bracketed_paste_payload(data)?).ok()
 }
 
 #[cfg(unix)]

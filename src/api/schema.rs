@@ -10,6 +10,7 @@ pub mod files;
 pub mod integrations;
 pub(crate) mod operations;
 pub mod pane_directory;
+pub mod pane_upload;
 pub mod panes;
 pub mod plugins;
 pub mod response;
@@ -29,6 +30,7 @@ pub use events::*;
 pub use files::*;
 pub use integrations::*;
 pub use pane_directory::*;
+pub use pane_upload::*;
 pub use panes::*;
 pub use plugins::*;
 pub use response::*;
@@ -174,6 +176,10 @@ operations::define_operations! {
     FilesReplace(FilesReplaceParams) => "files.replace", false, true;
     FilesPlan(FilesOperateParams) => "files.plan", false, true;
     FilesOperate(FilesOperateParams) => "files.operate", false, true;
+    PaneUploadBegin(PaneUploadBeginParams) => "pane.upload.begin", false, true;
+    PaneUploadCancel(PaneUploadCancelParams) => "pane.upload.cancel", false, true;
+    PaneUploadFinish(PaneUploadFinishParams) => "pane.upload.finish", false, true;
+    PaneUploadWrite(PaneUploadWriteParams) => "pane.upload.write", false, true;
 }
 
 #[cfg(test)]
@@ -196,6 +202,10 @@ impl Method {
                 | Self::FilesReplace(_)
                 | Self::FilesOperate(_)
                 | Self::PaneGet(_)
+                | Self::PaneUploadBegin(_)
+                | Self::PaneUploadCancel(_)
+                | Self::PaneUploadFinish(_)
+                | Self::PaneUploadWrite(_)
         )
     }
 }

@@ -477,6 +477,7 @@ impl ClientShellState {
     }
     pub(crate) fn tick_investigation(&mut self, now: Instant, outcome: &mut ClientShellInput) {
         self.reconcile_investigation_boot(outcome);
+        self.refresh_after_upload(outcome);
         let editor_request = self
             .workbench
             .editor

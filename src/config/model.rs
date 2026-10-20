@@ -980,6 +980,22 @@ pub struct UiConfig {
     pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
+    /// Upload files dropped onto ssh and container panes, or onto any pane
+    /// of a remote server, and paste their remote paths; also copy files
+    /// dropped onto the file workbench list into its selected folder. A single
+    /// small image dropped on a pane keeps the clipboard image path either
+    /// way. Default: true.
+    pub upload_on_drop: bool,
+    /// Ask before uploading more than this many bytes. Default: 104857600.
+    pub upload_confirm_bytes: u64,
+    /// Ask before uploading more than this many files, directories, and
+    /// symlinks. Default: 1000.
+    pub upload_confirm_entries: u64,
+    /// Refuse uploads of more than this many bytes. Default: 2147483648.
+    pub upload_max_bytes: u64,
+    /// Refuse uploads of more than this many files, directories, and
+    /// symlinks. Default: 10000.
+    pub upload_max_entries: u64,
     /// Ask for a tab name before creating a new tab. Default: true.
     pub prompt_new_tab_name: bool,
     /// Ask for a workspace name before interactive creation. Default: false.
@@ -1240,6 +1256,11 @@ impl Default for UiConfig {
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
             confirm_close: true,
+            upload_on_drop: true,
+            upload_confirm_bytes: 100 * 1024 * 1024,
+            upload_confirm_entries: 1000,
+            upload_max_bytes: 2 * 1024 * 1024 * 1024,
+            upload_max_entries: 10_000,
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
             file_viewer_show_hidden: false,
@@ -1276,6 +1297,55 @@ impl UiConfig {
     pub fn right_click_passthrough_modifiers(&self) -> Option<KeyModifiers> {
         self.right_click_passthrough_modifier.modifiers()
     }
+
+    /// Upload thresholds, each capped at the server's own limit so a value
+    /// the server would refuse anyway never reaches it.
+    pub(crate) fn upload_limits(&self) -> UploadLimits {
+        let bytes = |value: u64| value.min(crate::upload::MAX_UPLOAD_BYTES);
+        let entries = |value: u64| value.min(crate::upload::MAX_UPLOAD_ENTRIES);
+        UploadLimits {
+            confirm_bytes: bytes(self.upload_confirm_bytes),
+            confirm_entries: entries(self.upload_confirm_entries),
+            max_bytes: bytes(self.upload_max_bytes),
+            max_entries: entries(self.upload_max_entries),
+        }
+    }
+
+    pub(crate) fn upload_limit_diagnostics(&self) -> Vec<String> {
+        let mut diagnostics = Vec::new();
+        for (key, value) in [
+            ("ui.upload_confirm_bytes", self.upload_confirm_bytes),
+            ("ui.upload_max_bytes", self.upload_max_bytes),
+        ] {
+            if value > crate::upload::MAX_UPLOAD_BYTES {
+                diagnostics.push(format!(
+                    "{key} = {value} is above the server limit; using {}",
+                    crate::upload::MAX_UPLOAD_BYTES
+                ));
+            }
+        }
+        for (key, value) in [
+            ("ui.upload_confirm_entries", self.upload_confirm_entries),
+            ("ui.upload_max_entries", self.upload_max_entries),
+        ] {
+            if value > crate::upload::MAX_UPLOAD_ENTRIES {
+                diagnostics.push(format!(
+                    "{key} = {value} is above the server limit; using {}",
+                    crate::upload::MAX_UPLOAD_ENTRIES
+                ));
+            }
+        }
+        diagnostics
+    }
+}
+
+/// Client-side upload thresholds (spec Q16), already capped at the server limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UploadLimits {
+    pub(crate) confirm_bytes: u64,
+    pub(crate) confirm_entries: u64,
+    pub(crate) max_bytes: u64,
+    pub(crate) max_entries: u64,
 }
 
 impl Default for ToastConfig {
@@ -1908,6 +1978,49 @@ mouse_scroll_lines = 1
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ui.mouse_scroll_lines(), 1);
+    }
+
+    #[test]
+    fn upload_settings_default_to_the_spec_thresholds() {
+        let ui = UiConfig::default();
+
+        assert!(ui.upload_on_drop);
+        assert_eq!(
+            ui.upload_limits(),
+            UploadLimits {
+                confirm_bytes: 100 * 1024 * 1024,
+                confirm_entries: 1000,
+                max_bytes: 2 * 1024 * 1024 * 1024,
+                max_entries: 10_000,
+            }
+        );
+        assert!(ui.upload_limit_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn upload_limits_above_the_server_caps_are_capped_with_a_diagnostic() {
+        let config: Config = toml::from_str(
+            r#"
+[ui]
+upload_on_drop = false
+upload_max_bytes = 99999999999999999
+upload_max_entries = 5000000
+upload_confirm_entries = 5
+"#,
+        )
+        .unwrap();
+
+        assert!(!config.ui.upload_on_drop);
+        let limits = config.ui.upload_limits();
+        assert_eq!(limits.max_bytes, crate::upload::MAX_UPLOAD_BYTES);
+        assert_eq!(limits.max_entries, crate::upload::MAX_UPLOAD_ENTRIES);
+        assert_eq!(limits.confirm_entries, 5);
+        let diagnostics = config.collect_diagnostics().join("\n");
+        assert!(diagnostics.contains("ui.upload_max_bytes"), "{diagnostics}");
+        assert!(
+            diagnostics.contains("ui.upload_max_entries"),
+            "{diagnostics}"
+        );
     }
 
     #[test]

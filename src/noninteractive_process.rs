@@ -155,6 +155,80 @@ pub(crate) fn run_with_deadline_raw<S: AsRef<OsStr>>(
     }
 }
 
+/// A child that keeps its stdin open for the caller to stream into.
+pub(crate) struct StreamingChild {
+    pub(crate) child: Child,
+    pub(crate) stdin: ChildStdin,
+    pub(crate) stdout: std::process::ChildStdout,
+    /// The first [`STREAMING_STDERR_LIMIT`] bytes of stderr, once it closes.
+    pub(crate) stderr: Receiver<Vec<u8>>,
+}
+
+/// Why a bound: a remote that writes errors in a loop must not grow the
+/// server's memory; the first lines are the ones that explain the failure.
+pub(crate) const STREAMING_STDERR_LIMIT: usize = 64 * 1024;
+
+/// Starts `program` with piped stdio and returns it without waiting. Unlike
+/// [`run_with_deadline`], the caller owns the deadline and the stdout reader.
+pub(crate) fn spawn_streaming<S: AsRef<OsStr>>(
+    program: &Path,
+    args: &[S],
+) -> Result<StreamingChild, RunError> {
+    let mut child = command(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| match err.kind() {
+            io::ErrorKind::NotFound => RunError::NotFound,
+            _ => RunError::Failed {
+                status: None,
+                detail: err.to_string(),
+            },
+        })?;
+    let (Some(stdin), Some(stdout), Some(stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(RunError::Failed {
+            status: None,
+            detail: "child stdio was not piped".into(),
+        });
+    };
+    let (tx, stderr_rx) = mpsc::channel();
+    let spawned = crate::thread_spawn::spawn_named("herdr-stream-stderr", move || {
+        let mut kept = Vec::new();
+        let mut buf = [0u8; 8192];
+        let mut stderr = stderr;
+        loop {
+            match stderr.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    let room = STREAMING_STDERR_LIMIT.saturating_sub(kept.len());
+                    kept.extend_from_slice(&buf[..read.min(room)]);
+                }
+            }
+        }
+        let _ = tx.send(kept);
+    });
+    if let Err(err) = spawned {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(RunError::Failed {
+            status: None,
+            detail: err.to_string(),
+        });
+    }
+    Ok(StreamingChild {
+        child,
+        stdin,
+        stdout,
+        stderr: stderr_rx,
+    })
+}
+
 fn feed(stdin: Option<ChildStdin>, input: Vec<u8>) -> io::Result<Receiver<io::Result<()>>> {
     let mut stdin = stdin.ok_or_else(|| io::Error::other("stdin was not piped"))?;
     let (tx, rx) = mpsc::channel();
@@ -334,6 +408,32 @@ mod tests {
 
         assert_eq!(output.stdout, b"a\xff\0b");
         assert_eq!(output.stderr, b"\xfe");
+    }
+
+    #[test]
+    fn a_streaming_child_echoes_what_is_written_and_keeps_only_bounded_stderr() {
+        let mut child = spawn_streaming(
+            Path::new("/bin/sh"),
+            &["-c", "cat; head -c 70000 /dev/zero | tr '\\0' e >&2"],
+        )
+        .expect("spawn should succeed");
+        child.stdin.write_all(b"hello").unwrap();
+        drop(child.stdin);
+        let mut out = Vec::new();
+        child.stdout.read_to_end(&mut out).unwrap();
+        let status = child.child.wait().unwrap();
+        let stderr = child.stderr.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        assert!(status.success());
+        assert_eq!(out, b"hello");
+        assert_eq!(stderr.len(), STREAMING_STDERR_LIMIT);
+    }
+
+    #[test]
+    fn a_missing_streaming_program_is_not_found() {
+        let result = spawn_streaming(Path::new("/nonexistent/program"), &["x"]);
+
+        assert!(matches!(result, Err(RunError::NotFound)));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 //! Client-owned investigation tabs. Server terminal identities are never repurposed.
+mod drops;
 mod input;
 mod model;
 mod operations;
@@ -8,6 +9,7 @@ mod surface;
 #[cfg(test)]
 mod tests;
 use super::*;
+pub(crate) use drops::{ClientUploadQuestion, WorkbenchDropPlace, WorkbenchDropTarget};
 pub(super) use model::*;
 
 impl ClientShellState {

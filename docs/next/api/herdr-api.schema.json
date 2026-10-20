@@ -3764,6 +3764,212 @@
           ],
           "type": "object"
         },
+        "PaneUploadBeginParams": {
+          "description": "Without `pane_id` and `terminal_id` the target is the server's own filesystem.",
+          "properties": {
+            "bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "destination": {
+              "description": "Absolute directory inside the target environment. Defaults to the pane's working\ndirectory, then its login directory. Required without a pane or terminal.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "entries": {
+              "description": "Declared totals. Entries count files, directories, and symlinks.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "names": {
+              "description": "Top-level names, as they will be published: 1 to 1,024 unique names.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pane_id": {
+              "description": "Workspace pane whose environment receives the files.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "terminal_id": {
+              "description": "Popup or directly attached terminal whose environment receives the files.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "names",
+            "entries",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        "PaneUploadCancelParams": {
+          "properties": {
+            "upload_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "upload_id"
+          ],
+          "type": "object"
+        },
+        "PaneUploadCollision": {
+          "oneOf": [
+            {
+              "const": "fail",
+              "description": "Publish nothing when a name exists; the upload stays open for another finish.",
+              "type": "string"
+            },
+            {
+              "const": "rename",
+              "description": "Publish a colliding name as `name (1).ext`.",
+              "type": "string"
+            },
+            {
+              "const": "replace",
+              "description": "Replace an existing entry, directories as a whole.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A policy a newer client sends. Rejected with `invalid_params`.",
+              "type": "string"
+            }
+          ]
+        },
+        "PaneUploadEntryHeader": {
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/request/$defs/PaneUploadEntryKind"
+            },
+            "link_target": {
+              "description": "Required for symlinks: 1 to 4,096 bytes without control characters.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mode": {
+              "description": "Permission bits, at most 0o777.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mtime": {
+              "description": "Modification time in UNIX seconds.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "size": {
+              "description": "Required for files.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "mode"
+          ],
+          "type": "object"
+        },
+        "PaneUploadEntryKind": {
+          "oneOf": [
+            {
+              "enum": [
+                "file",
+                "directory"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "symlink",
+              "description": "Sent as the link itself; its target is never followed.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind a newer client sends. Rejected with `invalid_params`.",
+              "type": "string"
+            }
+          ]
+        },
+        "PaneUploadFinishParams": {
+          "properties": {
+            "collision": {
+              "$ref": "#/schemas/request/$defs/PaneUploadCollision"
+            },
+            "upload_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "upload_id",
+            "collision"
+          ],
+          "type": "object"
+        },
+        "PaneUploadWriteParams": {
+          "properties": {
+            "data": {
+              "default": "",
+              "description": "Standard padded base64 of at most `chunk_bytes` decoded bytes.",
+              "type": "string"
+            },
+            "entry": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/PaneUploadEntryHeader"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Required on the first chunk of an entry (offset 0) and omitted afterwards."
+            },
+            "last": {
+              "default": false,
+              "description": "The entry's final chunk. Always true for directories and symlinks.",
+              "type": "boolean"
+            },
+            "offset": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "path": {
+              "description": "`/`-separated relative path whose first component is one of the begin names.",
+              "type": "string"
+            },
+            "upload_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "upload_id",
+            "path"
+          ],
+          "type": "object"
+        },
         "PaneWaitForOutputParams": {
           "properties": {
             "lines": {
@@ -7137,6 +7343,70 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.upload.begin",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneUploadBeginParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.upload.cancel",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneUploadCancelParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.upload.finish",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneUploadFinishParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.upload.write",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneUploadWriteParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -9350,7 +9620,7 @@
             },
             {
               "const": "host",
-              "description": "Reserved: requests for host panes are rejected with `invalid_params`.",
+              "description": "The server's own filesystem. `pane.directory.*` rejects host panes with\n`invalid_params`; `pane.upload.*` reports it for uploads to this host.",
               "type": "string"
             },
             {
@@ -9747,6 +10017,101 @@
           "required": [
             "start",
             "end"
+          ],
+          "type": "object"
+        },
+        "PaneUploadFinished": {
+          "description": "Body of a `pane.upload.finish` result.",
+          "properties": {
+            "destination": {
+              "type": "string"
+            },
+            "location": {
+              "$ref": "#/schemas/success_response/$defs/PaneLocation"
+            },
+            "paths": {
+              "description": "Published absolute paths, in the order of the begin names.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "warnings": {
+              "default": [],
+              "description": "Non-fatal problems, such as a modification time that could not be set.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "location",
+            "destination",
+            "paths"
+          ],
+          "type": "object"
+        },
+        "PaneUploadProgress": {
+          "description": "Body of a `pane.upload.write` result.",
+          "properties": {
+            "received_bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "received_entries": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "received_entries",
+            "received_bytes"
+          ],
+          "type": "object"
+        },
+        "PaneUploadStarted": {
+          "description": "Body of a `pane.upload.begin` result.",
+          "properties": {
+            "chunk_bytes": {
+              "description": "Largest decoded chunk a `pane.upload.write` may carry.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "conflicts": {
+              "description": "Names that already exist in the destination.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "destination": {
+              "description": "The resolved physical destination directory.",
+              "type": "string"
+            },
+            "location": {
+              "$ref": "#/schemas/success_response/$defs/PaneLocation"
+            },
+            "upload_id": {
+              "type": "string"
+            },
+            "window": {
+              "description": "Writes that may be in flight at once on one ordered stream.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "upload_id",
+            "location",
+            "destination",
+            "conflicts",
+            "chunk_bytes",
+            "window"
           ],
           "type": "object"
         },
@@ -11908,6 +12273,45 @@
               "required": [
                 "type",
                 "outcomes"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/success_response/$defs/PaneUploadStarted",
+              "properties": {
+                "type": {
+                  "const": "pane_upload_started",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/success_response/$defs/PaneUploadProgress",
+              "properties": {
+                "type": {
+                  "const": "pane_upload_progress",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/success_response/$defs/PaneUploadFinished",
+              "properties": {
+                "type": {
+                  "const": "pane_upload_finished",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
               ],
               "type": "object"
             }

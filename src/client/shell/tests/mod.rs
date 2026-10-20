@@ -271,3 +271,4 @@ mod overlay_backdrop;
 mod popup_focus_projection;
 mod ssh_hosts;
 mod startup_overlays;
+mod uploads;

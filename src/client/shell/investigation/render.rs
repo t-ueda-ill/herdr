@@ -620,6 +620,43 @@ fn render_dialog(
                 ));
             }
         }
+        Dialog::Upload(dialog) => {
+            values.push("Upload dropped files into".into());
+            values.push(dialog.destination.clone());
+            values.push(dialog.summary.clone());
+            if !dialog.conflicts.is_empty() {
+                values.push(format!("already there: {}", dialog.conflicts.join(", ")));
+            }
+            if let Some(note) = &dialog.note {
+                values.push(note.clone());
+            }
+            values.push("Left/Right choose · Enter confirm · Esc cancel".into());
+            if popup.height >= 2 {
+                use crossterm::event::KeyModifiers as M;
+                let y = popup.bottom().saturating_sub(1);
+                let mut x = popup.x;
+                for (index, choice) in dialog.choices().iter().enumerate() {
+                    let label = choice.label();
+                    let rect = Rect::new(
+                        x,
+                        y,
+                        display_width(label).min(popup.right().saturating_sub(x)),
+                        1,
+                    );
+                    let style = if index == dialog.selected {
+                        base.bg(p.accent).fg(p.panel_bg)
+                    } else {
+                        base.fg(p.accent)
+                    };
+                    text(b, rect, label, style);
+                    // `1`.. picks the n-th button, as the keys do.
+                    let key = char::from_digit(index as u32 + 1, 10).unwrap_or('1');
+                    hits.dialog_keys
+                        .push((rect, KeyCode::Char(key), M::empty()));
+                    x = rect.right().saturating_add(2).min(popup.right());
+                }
+            }
+        }
         Dialog::Send { path, pane, .. } => {
             values.push(format!("Send path to terminal pane {pane}?"));
             values.push(path.clone());
@@ -646,7 +683,7 @@ fn render_dialog(
     for (i, value) in values.iter().enumerate().take(popup.height as usize) {
         text(b, line(popup, i as u16), value, base);
     }
-    if !matches!(dialog, Dialog::Menu { .. }) && popup.height >= 4 {
+    if !matches!(dialog, Dialog::Menu { .. } | Dialog::Upload(_)) && popup.height >= 4 {
         use crossterm::event::KeyModifiers as M;
         let y = popup.bottom().saturating_sub(1);
         let label = match dialog {

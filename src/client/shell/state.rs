@@ -116,6 +116,7 @@ pub(super) struct ShellHitMap {
     pub(super) mobile_max_scroll: usize,
     pub(super) global_launcher: Rect,
     pub(super) notification_toast: Rect,
+    pub(super) upload_progress: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     pub(super) overlay_primary: Rect,
@@ -308,6 +309,7 @@ pub(super) enum ClientShellOverlayKind {
     ContextMenu,
     GlobalMenu,
     Settings,
+    UploadConfirm,
 }
 
 #[derive(Debug)]
@@ -856,6 +858,14 @@ pub(super) struct ClientTabCloseConfirmation {
     pub(super) workspace: WorkspaceNavigationTarget,
 }
 
+/// Asks before an upload past a `ui.upload_confirm_*` threshold (spec Q16).
+#[derive(Debug)]
+pub(super) struct ClientUploadConfirmOverlay {
+    pub(super) job: u64,
+    pub(super) title: String,
+    pub(super) detail: String,
+}
+
 #[derive(Debug)]
 pub(super) struct ClientConfirmCloseOverlay {
     pub(super) workspace_id: String,
@@ -882,6 +892,7 @@ pub(super) enum ClientShellOverlay {
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
+    UploadConfirm(ClientUploadConfirmOverlay),
 }
 
 impl ClientShellOverlay {
@@ -902,6 +913,7 @@ impl ClientShellOverlay {
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
+            Self::UploadConfirm(_) => ClientShellOverlayKind::UploadConfirm,
         }
     }
 }
@@ -989,6 +1001,10 @@ pub(super) enum ClientEndpointNoticeKind {
     Rejected,
     Timeout,
     Unavailable,
+    /// An upload published its files.
+    Uploaded,
+    /// An upload failed, was refused, or was cancelled.
+    UploadFailed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1254,6 +1270,10 @@ pub(crate) struct ClientShellState {
     pub(super) queued_notifications: VecDeque<ClientVisibleNotification>,
     pub(super) endpoint_notice_seen: HashSet<ClientEndpointNoticeKey>,
     pub(super) visible_endpoint_notice: Option<ClientVisibleEndpointNotice>,
+    pub(super) upload_progress: Option<super::super::upload::transfer::UploadProgressView>,
+    pub(super) upload_decisions: Vec<ClientUploadDecision>,
+    /// The job whose confirm dialog was opened and not yet answered.
+    pub(super) confirming_upload: Option<super::super::upload::transfer::JobId>,
     pub(super) outer_focused: Option<bool>,
     pub(super) ascii_input_source_active: bool,
     pub(super) pending_input_source_changes: Vec<bool>,
@@ -1430,6 +1450,9 @@ impl ClientShellState {
             queued_notifications: VecDeque::new(),
             endpoint_notice_seen: HashSet::new(),
             visible_endpoint_notice: None,
+            upload_progress: None,
+            upload_decisions: Vec::new(),
+            confirming_upload: None,
             outer_focused: None,
             ascii_input_source_active: false,
             pending_input_source_changes: Vec::new(),

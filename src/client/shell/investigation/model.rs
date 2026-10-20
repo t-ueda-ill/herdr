@@ -226,6 +226,10 @@ pub(in crate::client::shell) struct Investigation {
     pub prepare_pending: usize,
     pub operation_pending: bool,
     pub notice: String,
+    /// A finished upload's folder to list again, and the row to select then.
+    /// Why deferred to the tick: the upload ends outside input handling,
+    /// where no listing request can be sent.
+    pub upload_refresh: Option<(String, Option<String>)>,
 }
 #[derive(Debug)]
 pub(in crate::client::shell) struct Replacement {
@@ -257,6 +261,54 @@ pub(in crate::client::shell) enum Dialog {
         pane: String,
         boot: String,
     },
+    /// Files dropped onto the tree: where they go and how to treat names
+    /// that exist (spec Q4, Q18). Asked for every tree drop.
+    Upload(UploadDialog),
+}
+#[derive(Debug)]
+pub(in crate::client::shell) struct UploadDialog {
+    /// The client loop's upload job, whose session waits for the answer.
+    pub job: u64,
+    pub destination: String,
+    pub summary: String,
+    /// Top-level names that already exist in the destination.
+    pub conflicts: Vec<String>,
+    /// Why the question is asked again (a name that appeared after begin).
+    pub note: Option<String>,
+    /// Offer replace / keep both even without named conflicts: a late
+    /// conflict names them only in `note`.
+    pub ask_collision: bool,
+    pub selected: usize,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::client::shell) enum UploadChoice {
+    Upload,
+    Replace,
+    KeepBoth,
+    Cancel,
+}
+impl UploadChoice {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Upload => "[upload]",
+            Self::Replace => "[replace]",
+            Self::KeepBoth => "[keep both]",
+            Self::Cancel => "[cancel]",
+        }
+    }
+}
+impl UploadDialog {
+    pub fn choices(&self) -> &'static [UploadChoice] {
+        if self.ask_collision || !self.conflicts.is_empty() {
+            &[
+                UploadChoice::Replace,
+                UploadChoice::KeepBoth,
+                UploadChoice::Cancel,
+            ]
+        } else {
+            &[UploadChoice::Upload, UploadChoice::Cancel]
+        }
+    }
 }
 impl Investigation {
     pub fn new(browser: ClientFileViewerOverlay, endpoint: ClientEndpointId, boot: String) -> Self {
@@ -302,6 +354,7 @@ impl Investigation {
             prepare_pending: 0,
             operation_pending: false,
             notice: String::new(),
+            upload_refresh: None,
         }
     }
     pub fn document(&self) -> Option<&Document> {
@@ -421,6 +474,9 @@ pub(in crate::client::shell) struct Workbench {
     pub terminal_input: Vec<ClientMessage>,
     pub terminal_requested: bool,
     pub editor_opening: bool,
+    /// Upload jobs whose question a tab's dialog shows. Why tracked: a dialog
+    /// closed any other way than answering must still cancel its job.
+    pub asking_uploads: Vec<u64>,
 }
 /// Saved investigations kept per endpoint; older ones are dropped first.
 pub(in crate::client::shell) const SAVED_INVESTIGATIONS_PER_ENDPOINT: usize = 50;

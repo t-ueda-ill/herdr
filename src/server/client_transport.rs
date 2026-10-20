@@ -114,6 +114,32 @@ fn decode_endpoint_request(request: &str) -> serde_json::Result<DecodedEndpointR
         },
     )
 }
+/// Decodes one upload control. Why only `pane.upload.*`: the control lane has
+/// no surface lease, so it must not become a second door to every method.
+fn decode_upload_request(request: &str) -> serde_json::Result<DecodedEndpointRequest> {
+    let head = serde_json::from_str::<EndpointRequestHead>(request)?;
+    if !head.method.starts_with("pane.upload.") {
+        return Ok(DecodedEndpointRequest::Error {
+            request_id: head.id,
+            code: "unsupported_endpoint_command",
+            message: format!(
+                "method {:?} cannot be sent as an upload control",
+                head.method
+            ),
+        });
+    }
+    Ok(
+        match serde_json::from_str::<crate::api::schema::Request>(request) {
+            Ok(request) => DecodedEndpointRequest::Dispatch(Box::new(request)),
+            Err(error) => DecodedEndpointRequest::Error {
+                request_id: head.id,
+                code: "invalid_request",
+                message: format!("invalid upload request: {error}"),
+            },
+        },
+    )
+}
+
 /// Maximum structured input events accepted in one client message.
 const MAX_INPUT_EVENT_BATCH: usize = 4096;
 
@@ -544,6 +570,22 @@ pub(crate) enum ServerEvent {
         final_chunk: bool,
         data: Vec<u8>,
     },
+    /// A client sent one `pane.upload.*` request as an endpoint control.
+    ClientUploadRequest {
+        client_id: u64,
+        request: Box<crate::api::schema::Request>,
+    },
+    /// A well-framed upload control could not be dispatched.
+    ClientUploadRequestError {
+        client_id: u64,
+        request_id: String,
+        code: &'static str,
+        message: String,
+    },
+    /// A client asked whether uploads work on its connection.
+    ClientUploadProbe { client_id: u64 },
+    /// An upload session answered a client's control request.
+    ClientUploadResponseReady { client_id: u64, data: String },
     /// A client detached gracefully.
     ClientDetach { client_id: u64 },
     /// A client connection was lost.
@@ -1337,6 +1379,60 @@ fn client_read_loop_with_endpoint_controls(
                         message,
                     },
                 }
+            }
+            ClientMessage::EndpointControl { kind, data }
+                if kind == crate::protocol::endpoint::UPLOAD_REQUEST_KIND =>
+            {
+                if data.len() > crate::server::client_commands::MAX_ENDPOINT_COMMAND_BYTES {
+                    warn!(
+                        client_id,
+                        request_size = data.len(),
+                        "oversized upload control, closing"
+                    );
+                    let _ = server_event_tx
+                        .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                    break;
+                }
+                let decoded = match decode_upload_request(&data) {
+                    Ok(decoded) => decoded,
+                    Err(error) => {
+                        warn!(client_id, %error, "invalid upload control envelope, closing");
+                        let _ = server_event_tx
+                            .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                        break;
+                    }
+                };
+                let request_id = match &decoded {
+                    DecodedEndpointRequest::Dispatch(request) => request.id.as_str(),
+                    DecodedEndpointRequest::Error { request_id, .. } => request_id,
+                };
+                if request_id.len() > crate::server::client_commands::MAX_ENDPOINT_REQUEST_ID_BYTES
+                {
+                    warn!(client_id, "oversized upload control request id, closing");
+                    let _ = server_event_tx
+                        .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                    break;
+                }
+                match decoded {
+                    DecodedEndpointRequest::Dispatch(request) => {
+                        ServerEvent::ClientUploadRequest { client_id, request }
+                    }
+                    DecodedEndpointRequest::Error {
+                        request_id,
+                        code,
+                        message,
+                    } => ServerEvent::ClientUploadRequestError {
+                        client_id,
+                        request_id,
+                        code,
+                        message,
+                    },
+                }
+            }
+            ClientMessage::EndpointControl { kind, .. }
+                if kind == crate::protocol::endpoint::UPLOAD_PROBE_KIND =>
+            {
+                ServerEvent::ClientUploadProbe { client_id }
             }
             ClientMessage::EndpointControl { kind, data }
                 if kind == crate::protocol::endpoint::PRESENTATION_EFFECTS_SYNC_KIND =>
@@ -2220,6 +2316,99 @@ mod tests {
             .join()
             .expect("read thread join")
             .expect("read thread result");
+    }
+
+    fn upload_control(data: String) -> ClientMessage {
+        ClientMessage::EndpointControl {
+            kind: crate::protocol::endpoint::UPLOAD_REQUEST_KIND.into(),
+            data,
+        }
+    }
+
+    #[test]
+    fn upload_controls_reach_the_server_from_connections_without_a_shell_writer() {
+        let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-upload");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(8);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let read_quit = should_quit.clone();
+        // `client_read_loop` passes no endpoint control writer, like a direct attach.
+        let handle = std::thread::spawn(move || {
+            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+        });
+        let cancel = r#"{"id":"u1","method":"pane.upload.cancel","params":{"upload_id":"up-1"}}"#;
+        let other = r#"{"id":"u2","method":"pane.close","params":{"pane_id":"p"}}"#;
+
+        for message in [
+            ClientMessage::EndpointControl {
+                kind: crate::protocol::endpoint::UPLOAD_PROBE_KIND.into(),
+                data: String::new(),
+            },
+            upload_control(cancel.into()),
+            upload_control(other.into()),
+            ClientMessage::Detach,
+        ] {
+            protocol::write_message(&mut client_stream, &message).unwrap();
+        }
+
+        assert!(matches!(
+            recv_server_event(&mut server_event_rx, "probe"),
+            ServerEvent::ClientUploadProbe { client_id: 7 }
+        ));
+        assert!(matches!(
+            recv_server_event(&mut server_event_rx, "upload request"),
+            ServerEvent::ClientUploadRequest { client_id: 7, request }
+                if request.id == "u1"
+                    && matches!(request.method, crate::api::schema::Method::PaneUploadCancel(_))
+        ));
+        assert!(matches!(
+            recv_server_event(&mut server_event_rx, "other method"),
+            ServerEvent::ClientUploadRequestError {
+                client_id: 7,
+                request_id,
+                code: "unsupported_endpoint_command",
+                ..
+            } if request_id == "u2"
+        ));
+        assert!(matches!(
+            recv_server_event(&mut server_event_rx, "detach"),
+            ServerEvent::ClientDetach { client_id: 7 }
+        ));
+        handle
+            .join()
+            .expect("read thread join")
+            .expect("read thread result");
+    }
+
+    #[test]
+    fn an_oversized_or_malformed_upload_control_closes_the_connection() {
+        for (label, data) in [
+            (
+                "client-read-upload-big",
+                "x".repeat(crate::server::client_commands::MAX_ENDPOINT_COMMAND_BYTES + 1),
+            ),
+            ("client-read-upload-bad", "not json".to_owned()),
+        ] {
+            let (mut client_stream, server_stream, _path) = local_stream_pair(label);
+            let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+            let should_quit = Arc::new(AtomicBool::new(false));
+            let read_quit = should_quit.clone();
+            let handle = std::thread::spawn(move || {
+                client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            });
+
+            protocol::write_message(&mut client_stream, &upload_control(data)).unwrap();
+
+            assert!(matches!(
+                recv_server_event(&mut server_event_rx, label),
+                ServerEvent::ClientDisconnected { client_id: 7 }
+            ));
+            drop(client_stream);
+            should_quit.store(true, Ordering::Release);
+            handle
+                .join()
+                .expect("read thread join")
+                .expect("read thread result");
+        }
     }
 
     #[test]

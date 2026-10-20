@@ -251,7 +251,7 @@ pub(crate) fn run_script_with(
     Err(classify_failure(env, output.status, &stderr, over_ssh))
 }
 
-fn classify_failure(
+pub(crate) fn classify_failure(
     env: &PaneEnvironment,
     status: Option<i32>,
     stderr: &str,

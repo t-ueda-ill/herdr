@@ -40,6 +40,7 @@ mod terminal_sessions;
 mod terminal_setup;
 mod timer;
 mod transport;
+mod upload;
 
 #[cfg(test)]
 use clipboard_forwarding::decode_clipboard_payload;
@@ -213,6 +214,7 @@ fn run_client_with_mode(
     let endpoint_keybindings = shell_config
         .as_ref()
         .is_some_and(shell::ClientShellConfig::uses_endpoint_keybindings);
+    let upload_settings = upload::UploadSettings::from_config(&loaded_config.config);
     let mut loop_config = ClientLoopConfig {
         sound_config: loaded_config.config.ui.sound,
         mouse_scroll_lines,
@@ -228,6 +230,10 @@ fn run_client_with_mode(
         endpoint_keybindings,
         remote_image_paste_key,
         shell_config,
+        upload_settings,
+        attach_terminal_id: attach_request
+            .as_ref()
+            .map(|(terminal_id, _)| terminal_id.clone()),
     };
 
     crate::logging::startup("client");
@@ -492,8 +498,10 @@ async fn run_client_loop(
         deferred_local_activation: None,
         draw_host_cursor,
         detached_process_children: Vec::new(),
-        shell: config.shell_config.map(shell::ClientShellState::new),
+        uploads: upload::runtime::UploadRuntime::new(config.upload_settings),
+        shell: config.shell_config.take().map(shell::ClientShellState::new),
     };
+    let attach_terminal_id = config.attach_terminal_id.take();
     let mut federated = endpoint_catalog.has_enabled_ssh();
     if let Some(shell) = state.shell.as_mut() {
         shell.set_host_reports_key_releases(config.host_escape_disambiguation_active);
@@ -642,6 +650,15 @@ async fn run_client_loop(
         if state.shell.is_some() {
             registry.send(&ClientMessage::ClientShellFocus { focused: true });
         }
+        if attach_terminal_id.is_some() {
+            // Why probe: the direct attach welcome is frozen and cannot carry
+            // capabilities. An older server ignores the unknown control, so
+            // drops keep pasting paths.
+            registry.send(&ClientMessage::EndpointControl {
+                kind: crate::protocol::endpoint::UPLOAD_PROBE_KIND.into(),
+                data: String::new(),
+            });
+        }
         registry
     } else {
         endpoint::EndpointRegistry::empty()
@@ -787,6 +804,20 @@ async fn run_client_loop(
                 supervisors.retry_now(&endpoint_id, now);
             }
         }
+        let decisions = state
+            .shell
+            .as_mut()
+            .map(shell::ClientShellState::take_upload_decisions)
+            .unwrap_or_default();
+        if !decisions.is_empty() {
+            let effects = decisions
+                .into_iter()
+                .flat_map(|decision| state.uploads.decision(decision, now))
+                .collect();
+            if upload::runtime::apply_upload_effects(&mut state, &mut write_stream, effects, now) {
+                present_shell_repaint(&mut state);
+            }
+        }
         if let Some(shell) = state.shell.as_ref() {
             supervisors.spawn_due(
                 now,
@@ -810,8 +841,16 @@ async fn run_client_loop(
             .map_or(Duration::from_millis(100), |shell| {
                 shell.timer_delay(std::time::Instant::now())
             });
+        let timer_delay = state
+            .uploads
+            .next_deadline()
+            .map_or(timer_delay, |deadline| {
+                timer_delay.min(deadline.saturating_duration_since(std::time::Instant::now()))
+            });
         let timer_deadline = client_timer.deadline(std::time::Instant::now(), timer_delay);
-        let immediate_event = scheduled_activation.take();
+        let immediate_event = scheduled_activation
+            .take()
+            .or_else(|| state.uploads.next_replay());
         #[cfg(windows)]
         let event = if let Some(event) = immediate_event {
             event
@@ -846,8 +885,37 @@ async fn run_client_loop(
         if let Some(shell) = state.shell.as_mut() {
             shell.tick_popup_pending(now);
         }
+        if state.uploads.holding() && event.is_input() {
+            state.uploads.hold(event);
+            continue;
+        }
+        // A replayed plain paste skips the drop and image hooks.
+        let (event, plain) = match event {
+            #[cfg(unix)]
+            ClientLoopEvent::StdinPlain(data) => (ClientLoopEvent::StdinInput(data), true),
+            #[cfg(windows)]
+            ClientLoopEvent::StdinEventsPlain(events) => {
+                (ClientLoopEvent::StdinEvents(events), true)
+            }
+            event => (event, false),
+        };
 
         match event {
+            ClientLoopEvent::Upload(event) => {
+                let effects = state.uploads.worker_event(event, now);
+                if upload::runtime::apply_upload_effects(
+                    &mut state,
+                    &mut write_stream,
+                    effects,
+                    now,
+                ) {
+                    present_shell_repaint(&mut state);
+                }
+            }
+            #[cfg(unix)]
+            ClientLoopEvent::StdinPlain(_) => {}
+            #[cfg(windows)]
+            ClientLoopEvent::StdinEventsPlain(_) => {}
             ClientLoopEvent::HostPower(event) => {
                 if supervisors.host_power_event(event, now) {
                     write_stream.resume_health(now);
@@ -877,6 +945,48 @@ async fn run_client_loop(
                             store_reported_cell_size(&reported_cell_size, width_px, height_px);
                         }
                     }
+                    // The byte check first: the target is worked out only for pastes.
+                    let workbench_drop = match (plain, clipboard_images::bracketed_drop_text(&data))
+                    {
+                        (false, Some(text)) => state
+                            .shell
+                            .as_ref()
+                            .and_then(shell::ClientShellState::workbench_drop_target)
+                            .map(|target| (target, text)),
+                        _ => None,
+                    };
+                    if let Some((target, text)) = workbench_drop {
+                        if let Some(outcome) = offer_workbench_drop(
+                            &mut state,
+                            &mut write_stream,
+                            &event_tx,
+                            text,
+                            target,
+                            is_remote_client,
+                        ) {
+                            let frame = outcome
+                                .repaint
+                                .then(|| {
+                                    state.shell.as_mut().and_then(|shell| {
+                                        shell.compose(state.reported_size.0, state.reported_size.1)
+                                    })
+                                })
+                                .flatten();
+                            if finish_client_shell_input(
+                                &mut state,
+                                outcome,
+                                frame,
+                                &mut write_stream,
+                                &mut pending_activation,
+                                &mut endpoint_commands,
+                                &mut prefix_input_source,
+                                &mut scheduled_activation,
+                            )? {
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                    }
                     if let Some(target) = image_target.clone() {
                         if should_bridge_clipboard_image_paste(
                             &data,
@@ -896,16 +1006,46 @@ async fn run_client_loop(
                                 "clipboard image paste trigger received, but local clipboard has no image"
                             );
                         }
-                        if let Some(image) =
-                            read_image_file_from_terminal_drop(&data, image_bridge_active)
-                        {
-                            write_remote_image_to_server(
-                                &mut write_stream,
-                                target,
-                                image,
-                                "file drop",
-                            )?;
-                            continue;
+                        if !plain {
+                            if let Some(image) =
+                                read_image_file_from_terminal_drop(&data, image_bridge_active)
+                            {
+                                write_remote_image_to_server(
+                                    &mut write_stream,
+                                    target,
+                                    image,
+                                    "file drop",
+                                )?;
+                                continue;
+                            }
+                            if let Some(text) = clipboard_images::bracketed_drop_text(&data) {
+                                let target = match target {
+                                    crate::protocol::ClientClipboardImageTarget::Pane(pane_id) => {
+                                        Some(upload::transfer::UploadTarget::Pane(pane_id))
+                                    }
+                                    crate::protocol::ClientClipboardImageTarget::Popup(
+                                        terminal_id,
+                                    ) => Some(upload::transfer::UploadTarget::Popup(terminal_id)),
+                                    crate::protocol::ClientClipboardImageTarget::DirectTerminal => {
+                                        None
+                                    }
+                                };
+                                if let Some(target) = target {
+                                    if offer_upload_drop(
+                                        &mut state,
+                                        &mut write_stream,
+                                        &event_tx,
+                                        text,
+                                        target,
+                                        image_bridge_active,
+                                        is_remote_client,
+                                        || ClientLoopEvent::StdinPlain(data.clone()),
+                                        now,
+                                    ) {
+                                        continue;
+                                    }
+                                }
+                            }
                         }
                     }
                     let events = crate::raw_input::parse_framed_input(&data);
@@ -951,6 +1091,14 @@ async fn run_client_loop(
                         &mut scheduled_activation,
                     )? {
                         return Ok(());
+                    }
+                    continue;
+                }
+                if plain {
+                    if let Err(e) =
+                        write_to_server(&mut write_stream, &ClientMessage::Input { data })
+                    {
+                        return Err(ClientError::ConnectionLost(e));
                     }
                     continue;
                 }
@@ -1044,6 +1192,27 @@ async fn run_client_loop(
                         "file drop",
                     )?;
                     continue;
+                }
+                if let (Some(text), Some(terminal_id)) = (
+                    clipboard_images::bracketed_drop_text(&data),
+                    attach_terminal_id.as_ref(),
+                ) {
+                    if offer_upload_drop(
+                        &mut state,
+                        &mut write_stream,
+                        &event_tx,
+                        text,
+                        upload::transfer::UploadTarget::Direct {
+                            terminal_id: terminal_id.clone(),
+                            bracketed: true,
+                        },
+                        image_bridge_active,
+                        is_remote_client,
+                        || ClientLoopEvent::StdinPlain(data.clone()),
+                        now,
+                    ) {
+                        continue;
+                    }
                 }
                 let msg = ClientMessage::Input { data };
                 if let Err(e) = write_to_server(&mut write_stream, &msg) {
@@ -1206,6 +1375,46 @@ async fn run_client_loop(
                             false,
                         );
                     }
+                    let workbench_drop = match (plain, events.as_slice()) {
+                        (false, [crate::protocol::ClientInputEvent::Paste { text }]) => state
+                            .shell
+                            .as_ref()
+                            .and_then(shell::ClientShellState::workbench_drop_target)
+                            .map(|target| (target, text.clone())),
+                        _ => None,
+                    };
+                    if let Some((target, text)) = workbench_drop {
+                        if let Some(outcome) = offer_workbench_drop(
+                            &mut state,
+                            &mut write_stream,
+                            &event_tx,
+                            &text,
+                            target,
+                            is_remote_client,
+                        ) {
+                            let frame = outcome
+                                .repaint
+                                .then(|| {
+                                    state.shell.as_mut().and_then(|shell| {
+                                        shell.compose(state.reported_size.0, state.reported_size.1)
+                                    })
+                                })
+                                .flatten();
+                            if finish_client_shell_input(
+                                &mut state,
+                                outcome,
+                                frame,
+                                &mut write_stream,
+                                &mut pending_activation,
+                                &mut endpoint_commands,
+                                &mut prefix_input_source,
+                                &mut scheduled_activation,
+                            )? {
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                    }
                     if let Some(target) = image_target.clone() {
                         if should_bridge_clipboard_image_events(
                             &events,
@@ -1225,16 +1434,46 @@ async fn run_client_loop(
                                 "clipboard image paste trigger received, but local clipboard has no image"
                             );
                         }
-                        if let Some(image) =
-                            read_image_file_from_client_events(&events, image_bridge_active)
-                        {
-                            write_remote_image_to_server(
-                                &mut write_stream,
-                                target,
-                                image,
-                                "file drop",
-                            )?;
-                            continue;
+                        if !plain {
+                            if let Some(image) =
+                                read_image_file_from_client_events(&events, image_bridge_active)
+                            {
+                                write_remote_image_to_server(
+                                    &mut write_stream,
+                                    target,
+                                    image,
+                                    "file drop",
+                                )?;
+                                continue;
+                            }
+                            let upload_target = match target {
+                                crate::protocol::ClientClipboardImageTarget::Pane(pane_id) => {
+                                    Some(upload::transfer::UploadTarget::Pane(pane_id))
+                                }
+                                crate::protocol::ClientClipboardImageTarget::Popup(terminal_id) => {
+                                    Some(upload::transfer::UploadTarget::Popup(terminal_id))
+                                }
+                                crate::protocol::ClientClipboardImageTarget::DirectTerminal => None,
+                            };
+                            if let (
+                                [crate::protocol::ClientInputEvent::Paste { text }],
+                                Some(upload_target),
+                            ) = (events.as_slice(), upload_target)
+                            {
+                                if offer_upload_drop(
+                                    &mut state,
+                                    &mut write_stream,
+                                    &event_tx,
+                                    text,
+                                    upload_target,
+                                    image_bridge_active,
+                                    is_remote_client,
+                                    || ClientLoopEvent::StdinEventsPlain(events.clone()),
+                                    now,
+                                ) {
+                                    continue;
+                                }
+                            }
                         }
                     }
                     let (outcome, frame) = {
@@ -2150,6 +2389,31 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            Ok(endpoint::EndpointControlMessage::UploadResponse(data)) => {
+                                let effects =
+                                    state.uploads.response(&endpoint_id, generation, &data, now);
+                                if upload::runtime::apply_upload_effects(
+                                    &mut state,
+                                    &mut write_stream,
+                                    effects,
+                                    now,
+                                ) {
+                                    present_shell_repaint(&mut state);
+                                }
+                                continue;
+                            }
+                            Ok(endpoint::EndpointControlMessage::UploadReady(ready)) => {
+                                // A zero chunk or window could never send a byte.
+                                if state.shell.is_none()
+                                    && ready.chunk_bytes > 0
+                                    && ready.window > 0
+                                {
+                                    state
+                                        .uploads
+                                        .mark_direct_ready(endpoint_id.clone(), generation);
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;
@@ -2284,6 +2548,15 @@ async fn run_client_loop(
             }
             ClientLoopEvent::Timer => {
                 client_timer.fired();
+                let effects = state.uploads.tick(now);
+                if upload::runtime::apply_upload_effects(
+                    &mut state,
+                    &mut write_stream,
+                    effects,
+                    now,
+                ) {
+                    present_shell_repaint(&mut state);
+                }
                 #[cfg(unix)]
                 if let Ok(mut matcher) = state.direct_graphics_response.lock() {
                     matcher.expire();
@@ -2302,6 +2575,15 @@ async fn run_client_loop(
                         endpoint = %failure.endpoint_id.storage_key(),
                         error = %failure.message,
                         "endpoint transport failed"
+                    );
+                    let effects = state
+                        .uploads
+                        .endpoint_lost(&failure.endpoint_id, failure.generation);
+                    upload::runtime::apply_upload_effects(
+                        &mut state,
+                        &mut write_stream,
+                        effects,
+                        now,
                     );
                     if !federated && failure.endpoint_id.is_local() {
                         return Err(ClientError::ConnectionLost(io::Error::new(
@@ -2414,6 +2696,161 @@ async fn run_client_loop(
     let _ = io::stdout().flush();
 
     Ok(())
+}
+
+/// Composes and presents the shell after a change outside input handling.
+fn present_shell_repaint(state: &mut ClientState) {
+    let size = state.reported_size;
+    if let Some(frame) = state
+        .shell
+        .as_mut()
+        .and_then(|shell| shell.compose(size.0, size.1))
+    {
+        state.present_frame(frame);
+    }
+}
+
+/// Offers a bracketed paste as a file drop (spec Q7). Returns true when the
+/// paste was taken: held for the existence check, or refused while busy.
+#[allow(clippy::too_many_arguments)] // Why: one call per input source; a struct would only rename these.
+fn offer_upload_drop(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    text: &str,
+    target: upload::transfer::UploadTarget,
+    bridge_active: bool,
+    is_remote_client: bool,
+    plain: impl FnOnce() -> ClientLoopEvent,
+    now: std::time::Instant,
+) -> bool {
+    let endpoint_id = endpoints.active_id().clone();
+    let Some(connection) = endpoints.connection(&endpoint_id) else {
+        return false;
+    };
+    let generation = connection.generation;
+    let direct = matches!(target, upload::transfer::UploadTarget::Direct { .. });
+    let server_supports = if direct {
+        state.uploads.direct_ready(&endpoint_id, generation)
+    } else {
+        upload::gate::negotiation_supports_upload(
+            |method| connection.negotiation.supports_method(method),
+            |capability| connection.negotiation.supports_capability(capability),
+        )
+    };
+    if !state.uploads.gate(bridge_active, server_supports, true) {
+        return false;
+    }
+    let chunk_cap = if endpoint_id.is_local() && !is_remote_client {
+        crate::upload::UPLOAD_CHUNK_BYTES
+    } else {
+        upload::transfer::REMOTE_CHUNK_BYTES
+    };
+    let events = event_tx.clone();
+    let outcome = state.uploads.offer_drop(
+        upload::runtime::DropCandidate {
+            text: text.to_owned(),
+            target,
+            endpoint_id,
+            generation,
+            chunk_cap,
+            can_confirm: state.shell.is_some(),
+        },
+        plain,
+        move |event| events.blocking_send(ClientLoopEvent::Upload(event)).is_ok(),
+        now,
+    );
+    match outcome {
+        upload::runtime::DropStart::NotADrop => false,
+        upload::runtime::DropStart::Pending => true,
+        upload::runtime::DropStart::Busy => {
+            let notice = vec![upload::transfer::UploadEffect::Notice {
+                failed: true,
+                title: "Upload not started".into(),
+                body: "Another upload is still running".into(),
+            }];
+            if upload::runtime::apply_upload_effects(state, endpoints, notice, now) {
+                present_shell_repaint(state);
+            }
+            true
+        }
+    }
+}
+
+/// Offers a paste onto the file workbench tree as a drop (spec Q1, Q18,
+/// Q22; design §4). Returns the shell outcome when the paste was taken; a
+/// paste that is not paths goes on to the tree as usual.
+fn offer_workbench_drop(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    text: &str,
+    target: shell::WorkbenchDropTarget,
+    is_remote_client: bool,
+) -> Option<shell::ClientShellInput> {
+    let paths = upload::runtime::drop_paths(text)?;
+    if !state.uploads.upload_on_drop() {
+        return None;
+    }
+    let endpoint_id = endpoints.active_id().clone();
+    let connection = endpoints.connection(&endpoint_id)?;
+    let generation = connection.generation;
+    let server_supports = upload::gate::negotiation_supports_upload(
+        |method| connection.negotiation.supports_method(method),
+        |capability| connection.negotiation.supports_capability(capability),
+    );
+    // Why no files.plan/files.operate copy on the same machine: the tree
+    // drop must name collisions as `name (1)`, be all-or-nothing and replace
+    // folders (Q4, Q12, Q22), which only the upload sink does. The test only
+    // picks the chunk size: a local socket has no bandwidth to spare for.
+    let same_machine = endpoint_id.is_local() && !is_remote_client;
+    let tab = target.tab;
+    let notice = |state: &mut ClientState, text: String| {
+        let shell = state.shell.as_mut()?;
+        shell.set_workbench_notice(tab, text);
+        Some(shell::ClientShellInput {
+            repaint: true,
+            ..shell::ClientShellInput::default()
+        })
+    };
+    let pane_id = match target.place {
+        shell::WorkbenchDropPlace::Host => None,
+        shell::WorkbenchDropPlace::Pane(pane_id) => Some(pane_id),
+        shell::WorkbenchDropPlace::NoPane(text) => return notice(state, text),
+    };
+    if !server_supports {
+        return notice(
+            state,
+            "this server cannot receive dropped files; update Herdr there".into(),
+        );
+    }
+    let chunk_cap = if same_machine {
+        crate::upload::UPLOAD_CHUNK_BYTES
+    } else {
+        upload::transfer::REMOTE_CHUNK_BYTES
+    };
+    let events = event_tx.clone();
+    let started = state.uploads.offer_workbench_drop(
+        upload::runtime::WorkbenchDrop {
+            paths,
+            target: upload::transfer::WorkbenchTarget {
+                tab,
+                destination: target.destination,
+                pane_id,
+                location: target.location,
+            },
+            endpoint_id,
+            generation,
+            chunk_cap,
+        },
+        move |event| events.blocking_send(ClientLoopEvent::Upload(event)).is_ok(),
+    );
+    let text = match started {
+        upload::runtime::DropStart::Pending => "preparing upload…",
+        upload::runtime::DropStart::Busy => "another upload is still running",
+        upload::runtime::DropStart::NotADrop => "the upload could not be started",
+    };
+    notice(state, text.into())
 }
 
 #[cfg(test)]

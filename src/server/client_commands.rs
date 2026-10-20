@@ -352,6 +352,25 @@ mod tests {
         }
         assert_eq!(offhost_actual, offhost, "off-host method shapes");
 
+        let upload: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-method-shapes-upload.json"
+        )))
+        .expect("upload endpoint method shape fixture");
+        let mut upload_actual = BTreeMap::new();
+        for method in [
+            "pane.upload.begin",
+            "pane.upload.cancel",
+            "pane.upload.finish",
+            "pane.upload.write",
+        ] {
+            upload_actual.insert(
+                method.to_owned(),
+                actual.remove(method).expect("upload method"),
+            );
+        }
+        assert_eq!(upload_actual, upload, "upload method shapes");
+
         let mut added = BTreeMap::new();
         for method in [
             "file.read",

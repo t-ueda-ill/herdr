@@ -2443,4 +2443,342 @@ mod offhost {
         assert!(tab.search_due.is_none());
         assert!(tab.omitted.contains(&1));
     }
+
+    #[test]
+    fn an_off_host_tree_drop_goes_through_a_live_pane_of_its_location() {
+        let mut state = offhost_state();
+        state.investigation_mut().unwrap().browser.location_pane = Some("pane_2".into());
+
+        let target = state.workbench_drop_target().expect("tree accepts drops");
+
+        assert_eq!(
+            target.place,
+            crate::client::shell::WorkbenchDropPlace::Pane("pane_2".into())
+        );
+    }
+
+    #[test]
+    fn an_off_host_tree_without_a_live_pane_names_the_missing_location() {
+        let mut state = offhost_state();
+        set_panes(&mut state, &[("pane_9", None, None)]);
+
+        let target = state.workbench_drop_target().expect("tree accepts drops");
+
+        assert_eq!(
+            target.place,
+            crate::client::shell::WorkbenchDropPlace::NoPane(
+                "no pane running in app@devbox".into()
+            )
+        );
+    }
+}
+
+// ---- dropping files onto the tree (spec Q1, Q4, Q10, Q18) ----
+
+mod drops {
+    use super::*;
+    use crate::api::schema::{DirectoryEntry, DirectoryEntryKind, Method, PaneUploadCollision};
+    use crate::client::shell::file_viewer::model::{DirectoryListing, DirectoryState};
+    use crate::client::shell::{ClientUploadDecision, ClientUploadQuestion, WorkbenchDropPlace};
+
+    fn listing(entries: &[(&str, DirectoryEntryKind)]) -> DirectoryState {
+        DirectoryState::Loaded(DirectoryListing {
+            canonical: "/repo".into(),
+            entries: entries
+                .iter()
+                .map(|(name, kind)| DirectoryEntry {
+                    name: (*name).into(),
+                    kind: *kind,
+                    target_kind: None,
+                    size: None,
+                    mtime: None,
+                    hidden: false,
+                    ignored: Some(false),
+                })
+                .collect(),
+            truncated: false,
+            omitted: None,
+            unlistable: None,
+            git_error: None,
+        })
+    }
+
+    /// The tree of `/repo` holding `src/` and `a.txt`, with `path` selected.
+    fn tree_with_selected(path: Option<&str>) -> ClientShellState {
+        let mut state = state();
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.directories.insert(
+            "/repo".into(),
+            listing(&[
+                ("src", DirectoryEntryKind::Dir),
+                ("a.txt", DirectoryEntryKind::File),
+            ]),
+        );
+        tab.browser.rebuild(false);
+        match path {
+            Some(path) => {
+                tab.browser.selected = tab
+                    .browser
+                    .rows
+                    .iter()
+                    .position(|row| row.entry.as_ref().is_some_and(|e| e.path == path))
+                    .expect("row of the path");
+            }
+            None => tab.browser.rows.clear(),
+        }
+        state
+    }
+
+    fn requests(outcome: &ClientShellInput) -> Vec<Method> {
+        outcome
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                ClientShellAction::Endpoint { request, .. } => Some(request.method.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn question(job: u64, conflicts: &[&str]) -> ClientUploadQuestion {
+        ClientUploadQuestion {
+            job,
+            destination: "/repo/src".into(),
+            summary: "2 items · 0.0 MB".into(),
+            conflicts: conflicts.iter().map(|name| (*name).to_owned()).collect(),
+            note: None,
+        }
+    }
+
+    fn tab_id(state: &ClientShellState) -> u64 {
+        state.investigation().unwrap().id
+    }
+
+    #[test]
+    fn a_drop_on_a_selected_folder_goes_into_that_folder() {
+        let state = tree_with_selected(Some("/repo/src"));
+
+        let target = state.workbench_drop_target().expect("tree accepts drops");
+
+        assert_eq!(target.destination, "/repo/src");
+        assert_eq!(target.place, WorkbenchDropPlace::Host);
+    }
+
+    #[test]
+    fn a_drop_on_a_selected_file_goes_into_its_parent() {
+        let state = tree_with_selected(Some("/repo/a.txt"));
+
+        assert_eq!(state.workbench_drop_target().unwrap().destination, "/repo");
+    }
+
+    #[test]
+    fn a_drop_with_nothing_selected_goes_into_the_root() {
+        let state = tree_with_selected(None);
+
+        assert_eq!(state.workbench_drop_target().unwrap().destination, "/repo");
+    }
+
+    #[test]
+    fn only_the_focused_tree_without_a_dialog_takes_drops() {
+        let mut state = tree_with_selected(None);
+        state.investigation_mut().unwrap().focus = Focus::Query;
+        assert!(state.workbench_drop_target().is_none(), "a text field");
+
+        let mut state = tree_with_selected(None);
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu { selected: 0 });
+        assert!(state.workbench_drop_target().is_none(), "an open dialog");
+
+        let mut state = tree_with_selected(None);
+        state.investigation_mut().unwrap().content_search = true;
+        assert!(state.workbench_drop_target().is_none(), "search results");
+
+        let mut state = tree_with_selected(None);
+        state.workbench.visible = false;
+        assert!(state.workbench_drop_target().is_none(), "terminals shown");
+    }
+
+    #[test]
+    fn a_paste_into_a_text_field_still_types_the_paths() {
+        let mut state = tree_with_selected(None);
+        state.investigation_mut().unwrap().focus = Focus::Query;
+
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Paste(
+            "/tmp/a.txt".into(),
+        )]);
+
+        assert_eq!(state.investigation().unwrap().query.as_str(), "/tmp/a.txt");
+    }
+
+    #[test]
+    fn the_shown_workbench_keeps_image_drops_away_from_the_hidden_pane() {
+        let state = tree_with_selected(None);
+
+        assert!(state.clipboard_image_target().is_none());
+    }
+
+    #[test]
+    fn upload_conflicts_offer_replace_keep_both_and_cancel_mapped_to_collisions() {
+        for (key, expected) in [
+            (KeyCode::Char('1'), Some(PaneUploadCollision::Replace)),
+            (KeyCode::Char('2'), Some(PaneUploadCollision::Rename)),
+            (KeyCode::Char('3'), None),
+        ] {
+            let mut state = tree_with_selected(None);
+            let tab = tab_id(&state);
+            assert!(state.open_workbench_upload_dialog(tab, question(4, &["a.txt"])));
+
+            press(&mut state, key, crossterm::event::KeyModifiers::NONE);
+
+            assert_eq!(
+                state.take_upload_decisions(),
+                [ClientUploadDecision::Collision {
+                    job: 4,
+                    collision: expected
+                }],
+                "{key:?}"
+            );
+            assert!(state.investigation().unwrap().dialog.is_none());
+        }
+    }
+
+    #[test]
+    fn an_upload_without_conflicts_publishes_with_fail_so_a_late_conflict_asks_again() {
+        let mut state = tree_with_selected(None);
+        let tab = tab_id(&state);
+        state.open_workbench_upload_dialog(tab, question(4, &[]));
+
+        press(
+            &mut state,
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+
+        assert_eq!(
+            state.take_upload_decisions(),
+            [ClientUploadDecision::Collision {
+                job: 4,
+                collision: Some(PaneUploadCollision::Fail)
+            }]
+        );
+        assert_eq!(state.investigation().unwrap().notice, "uploading…");
+    }
+
+    #[test]
+    fn a_question_asked_again_after_a_late_conflict_offers_all_three_choices() {
+        let mut state = tree_with_selected(None);
+        let tab = tab_id(&state);
+        state.open_workbench_upload_dialog(
+            tab,
+            ClientUploadQuestion {
+                note: Some("already exists in the destination: a.txt".into()),
+                ..question(4, &[])
+            },
+        );
+
+        let Some(Dialog::Upload(dialog)) = &state.investigation().unwrap().dialog else {
+            panic!("upload dialog");
+        };
+        assert_eq!(dialog.choices()[0], UploadChoice::Replace);
+    }
+
+    #[test]
+    fn dismissing_the_upload_dialog_any_way_cancels_the_upload() {
+        let mut state = tree_with_selected(None);
+        let tab = tab_id(&state);
+        state.open_workbench_upload_dialog(tab, question(4, &["a.txt"]));
+        press(
+            &mut state,
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(
+            state.take_upload_decisions(),
+            [ClientUploadDecision::Collision {
+                job: 4,
+                collision: None
+            }]
+        );
+
+        let mut state = tree_with_selected(None);
+        let tab = tab_id(&state);
+        state.open_workbench_upload_dialog(tab, question(5, &[]));
+        state.remove_investigation(0);
+        assert_eq!(
+            state.take_upload_decisions(),
+            [ClientUploadDecision::Collision {
+                job: 5,
+                collision: None
+            }]
+        );
+        assert!(state.take_upload_decisions().is_empty(), "asked once");
+    }
+
+    #[test]
+    fn a_tab_with_another_dialog_open_refuses_the_question() {
+        let mut state = tree_with_selected(None);
+        let tab = tab_id(&state);
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu { selected: 0 });
+
+        assert!(!state.open_workbench_upload_dialog(tab, question(4, &[])));
+        assert!(state.take_upload_decisions().is_empty());
+    }
+
+    #[test]
+    fn the_upload_dialog_shows_the_destination_and_conflicts() {
+        let mut state = tree_with_selected(None);
+        let tab = tab_id(&state);
+        state.open_workbench_upload_dialog(tab, question(4, &["a.txt"]));
+
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        let frame = state.compose(100, 30).expect("composed investigation");
+        let text: String = frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|cells| cells.iter().map(|c| c.symbol.as_str()).collect::<String>() + "\n")
+            .collect();
+
+        assert!(text.contains("/repo/src"), "{text}");
+        assert!(text.contains("a.txt"), "{text}");
+        assert!(text.contains("[keep both]"), "{text}");
+    }
+
+    #[test]
+    fn a_finished_upload_lists_the_folder_again_and_selects_the_first_name() {
+        let mut state = tree_with_selected(None);
+        let tab = tab_id(&state);
+
+        assert!(state.workbench_upload_done(tab, "/repo".into(), vec!["b (1).txt".into()]));
+        let mut outcome = ClientShellInput::default();
+        state.tick_investigation(std::time::Instant::now(), &mut outcome);
+
+        assert!(requests(&outcome).iter().any(|method| matches!(method,
+            Method::DirectoryList(params) if params.path.as_deref() == Some("/repo"))));
+        assert_eq!(
+            state
+                .investigation()
+                .unwrap()
+                .browser
+                .pending_select
+                .as_deref(),
+            Some("/repo/b (1).txt")
+        );
+        let mut again = ClientShellInput::default();
+        state.tick_investigation(std::time::Instant::now(), &mut again);
+        assert!(!requests(&again).iter().any(|method| matches!(method,
+            Method::DirectoryList(params) if params.path.as_deref() == Some("/repo"))));
+    }
+
+    #[test]
+    fn upload_notices_reach_only_their_tab() {
+        let mut state = tree_with_selected(None);
+        let tab = tab_id(&state);
+
+        assert!(state.set_workbench_notice(tab, "upload failed: disk full".into()));
+        assert!(!state.set_workbench_notice(tab + 100, "elsewhere".into()));
+
+        assert_eq!(
+            state.investigation().unwrap().notice,
+            "upload failed: disk full"
+        );
+    }
 }

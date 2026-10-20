@@ -338,7 +338,14 @@ impl ClientShellState {
             code: code.into(),
         };
         let body = body.into();
-        if kind == ClientEndpointNoticeKind::Rejected {
+        // Why repeatable: each refusal or upload is its own event, unlike an
+        // unsupported method, which is worth saying once per server boot.
+        if matches!(
+            kind,
+            ClientEndpointNoticeKind::Rejected
+                | ClientEndpointNoticeKind::Uploaded
+                | ClientEndpointNoticeKind::UploadFailed
+        ) {
             if self
                 .visible_endpoint_notice
                 .as_ref()

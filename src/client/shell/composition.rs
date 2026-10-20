@@ -154,6 +154,9 @@ impl ClientShellState {
     ) -> Option<crate::client::frame_output::ComposedFrame> {
         self.last_composed_at = Some(std::time::Instant::now());
         self.selection_repaint_deadline = None;
+        // Every path below either redraws the card or leaves it undrawn, so a
+        // stale area must never cancel an upload.
+        self.hits.upload_progress = Rect::default();
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
             self.reveal_navigation_workspace = true;
             self.reveal_mobile_workspace = true;
@@ -466,6 +469,7 @@ impl ClientShellState {
             || active_lifecycle.is_some()
             || self.visible_endpoint_notice.is_some()
             || self.visible_notification.is_some()
+            || self.upload_progress.is_some()
         {
             let cursor = frame.cursor.clone();
             let mut composed = frame.to_ratatui_buffer()?;
@@ -533,6 +537,28 @@ impl ClientShellState {
                 };
             }
             occlusion.cover(self.hits.notification_toast);
+            if let Some(progress) = self.upload_progress.as_ref() {
+                // Below any notice, so a failure toast never hides the card.
+                let below_notice = self.hits.notification_toast.height;
+                self.hits.upload_progress = notifications::render_notification_card(
+                    &mut composed,
+                    Rect::new(0, 0, cols, rows),
+                    &progress.title,
+                    &progress.body,
+                    crate::config::ToastHerdrPosition::TopRight,
+                    u16::from(has_config_diagnostic)
+                        + lifecycle_offset
+                        + layout.mobile_header.height
+                        + below_notice,
+                    if progress.cancellable {
+                        self.config.palette.accent
+                    } else {
+                        self.config.palette.yellow
+                    },
+                    &self.config.palette,
+                );
+                occlusion.cover(self.hits.upload_progress);
+            }
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
         }
         if let Some(feedback) = self.copy_feedback.as_ref() {
@@ -796,6 +822,24 @@ impl ClientShellState {
         let frame = self.compose_unavailable(cols, rows);
         let mut buffer = frame.to_ratatui_buffer()?;
         let cursor = self.render_investigation(&mut buffer, layout);
+        if let Some(progress) = self.upload_progress.as_ref() {
+            // Toasts are not drawn over the workbench, yet a tree upload must
+            // stay cancellable from its card (spec Q5).
+            self.hits.upload_progress = notifications::render_notification_card(
+                &mut buffer,
+                Rect::new(0, 0, cols, rows),
+                &progress.title,
+                &progress.body,
+                crate::config::ToastHerdrPosition::TopRight,
+                layout.mobile_header.height,
+                if progress.cancellable {
+                    self.config.palette.accent
+                } else {
+                    self.config.palette.yellow
+                },
+                &self.config.palette,
+            );
+        }
         let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &[]);
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         occlusion.cover(layout.pane_surface);
