@@ -61,6 +61,20 @@ impl ClientShellState {
         self.workbench.active = Some(self.workbench.tabs.len() - 1);
         self.workbench.visible = true;
     }
+    pub(super) fn remove_investigation(&mut self, index: usize) {
+        if index >= self.workbench.tabs.len() {
+            return;
+        }
+        self.workbench.tabs.remove(index);
+        match self.workbench.active {
+            Some(active) if active == index => {
+                self.workbench.active = None;
+                self.workbench.visible = false;
+            }
+            Some(active) if active > index => self.workbench.active = Some(active - 1),
+            _ => {}
+        }
+    }
     pub(super) fn toggle_investigation(&mut self) -> bool {
         if self.investigation_active() {
             self.workbench.visible = false;

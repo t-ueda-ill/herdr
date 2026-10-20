@@ -559,10 +559,25 @@ impl ClientShellState {
         else {
             return;
         };
-        let saved = self.workbench.saved.remove(position);
+        // Why not retry blindly: opening an endpoint without directory.list
+        // would raise an "Action unavailable" notice on every tick.
+        if !self.supports_endpoint_method(&Method::DirectoryList(DirectoryListParams {
+            workspace_id: None,
+            pane_id: None,
+            path: None,
+            trust_repository: false,
+        })) {
+            return;
+        }
         let previous = (self.workbench.active, self.workbench.visible);
+        let tabs_before = self.workbench.tabs.len();
         self.open_file_viewer_for(workspace, outcome);
-        let Some(tab) = self.investigation_mut() else {
+        // Consumed only once a tab exists; a failed open keeps the entry for the next tick.
+        if self.workbench.tabs.len() == tabs_before {
+            return;
+        }
+        let saved = self.workbench.saved.remove(position);
+        let Some(tab) = self.workbench.tabs.last_mut() else {
             return;
         };
         tab.browser.root = Some(saved.root.clone());

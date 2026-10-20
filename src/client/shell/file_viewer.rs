@@ -908,7 +908,12 @@ impl ClientShellState {
                 viewer.rebuild(false);
             }
             (None, Err(notice)) => {
-                self.overlay = None;
+                // A promoted tab has no root to show, so it closes like the
+                // overlay did instead of staying on "loading…".
+                match self.workbench.dispatch {
+                    Some(index) => self.remove_investigation(index),
+                    None => self.overlay = None,
+                }
                 // A rejection already raised the endpoint notice.
                 if !rejected {
                     self.set_endpoint_error(notice);

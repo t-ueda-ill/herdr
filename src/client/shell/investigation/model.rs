@@ -403,6 +403,8 @@ pub(in crate::client::shell) struct Workbench {
     pub active: Option<usize>,
     pub visible: bool,
     pub saved: Vec<SavedInvestigation>,
+    /// Connection generation whose first snapshot already pruned `saved`, by endpoint storage key.
+    pub saved_judged: HashMap<String, Option<u64>>,
     pub clipboard: Option<FileClipboard>,
     pub editor: Option<EditorReturn>,
     pub pause: Option<SurfacePause>,
@@ -411,6 +413,54 @@ pub(in crate::client::shell) struct Workbench {
     pub terminal_requested: bool,
     pub editor_opening: bool,
 }
+/// Saved investigations kept per endpoint; older ones are dropped first.
+pub(in crate::client::shell) const SAVED_INVESTIGATIONS_PER_ENDPOINT: usize = 50;
+
+impl Workbench {
+    /// Drops saved investigations of `endpoint` whose workspace is absent from
+    /// the first snapshot of this connection. Only workspace existence counts:
+    /// an off-host investigation may wait for a pane that has not appeared yet.
+    pub fn judge_saved_on_snapshot(
+        &mut self,
+        endpoint: &str,
+        generation: Option<u64>,
+        workspaces: &[crate::protocol::ClientShellWorkspace],
+    ) {
+        if self.saved_judged.get(endpoint) == Some(&generation) {
+            return;
+        }
+        self.saved_judged.insert(endpoint.to_owned(), generation);
+        self.saved.retain(|saved| {
+            saved.endpoint != endpoint
+                || saved
+                    .workspace
+                    .as_ref()
+                    .is_none_or(|id| workspaces.iter().any(|w| &w.workspace_id == id))
+        });
+    }
+}
+
+/// Keeps the newest `limit` entries per endpoint, in the order given (oldest first).
+pub(in crate::client::shell) fn retain_newest_per_endpoint(
+    entries: Vec<SavedInvestigation>,
+    limit: usize,
+) -> Vec<SavedInvestigation> {
+    let mut remaining: HashMap<String, usize> = HashMap::new();
+    for entry in &entries {
+        *remaining.entry(entry.endpoint.clone()).or_default() += 1;
+    }
+    entries
+        .into_iter()
+        .filter(|entry| match remaining.get_mut(&entry.endpoint) {
+            Some(count) if *count > limit => {
+                *count -= 1;
+                false
+            }
+            _ => true,
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 pub(in crate::client::shell) struct FileClipboard {
     pub endpoint: ClientEndpointId,

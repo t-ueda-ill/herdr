@@ -481,3 +481,192 @@ fn investigation_surface_reconnect_discards_old_terminal_intents() {
     assert!(!state.workbench.terminal_requested);
     assert!(!state.investigation_surface_paused(&ClientEndpointId::Local, 7, "boot-1"));
 }
+
+fn saved_in(endpoint: &str, workspace: &str, root: &str) -> SavedInvestigation {
+    SavedInvestigation {
+        endpoint: endpoint.into(),
+        workspace: Some(workspace.into()),
+        root: root.into(),
+        ..Default::default()
+    }
+}
+
+fn first_listing_error() -> Result<crate::api::schema::ResponseResult, ClientShellEndpointError> {
+    Err(ClientShellEndpointError {
+        code: Some("permission_denied".into()),
+        message: "denied".into(),
+    })
+}
+
+#[test]
+fn failed_first_listing_closes_the_promoted_tab_and_raises_a_notice() {
+    let mut state = state();
+    let tab = state.investigation_mut().unwrap();
+    tab.browser.root = None;
+    let generation = tab.browser.generation;
+    state.handle_file_viewer_endpoint_result(
+        FileViewerRequest::List {
+            generation,
+            path: None,
+        },
+        first_listing_error(),
+        &mut ClientShellInput::default(),
+    );
+    assert!(state.workbench.tabs.is_empty());
+    assert!(!state.investigation_active());
+}
+
+#[test]
+fn unusable_first_listing_answer_closes_the_promoted_tab_with_a_notice() {
+    let mut state = state();
+    let tab = state.investigation_mut().unwrap();
+    tab.browser.root = None;
+    let generation = tab.browser.generation;
+    state.handle_file_viewer_endpoint_result(
+        FileViewerRequest::List {
+            generation,
+            path: None,
+        },
+        Ok(crate::api::schema::ResponseResult::Pong {
+            version: String::new(),
+            protocol: 0,
+            capabilities: None,
+        }),
+        &mut ClientShellInput::default(),
+    );
+    assert!(state.workbench.tabs.is_empty());
+    assert_eq!(
+        state.endpoint_error.as_deref(),
+        Some("endpoint returned an unexpected listing")
+    );
+}
+
+#[test]
+fn failed_first_listing_keeps_the_other_investigation_tabs() {
+    let mut state = state();
+    let loading = ClientFileViewerOverlay::new(
+        crate::client::shell::file_viewer::model::FileViewerOptions {
+            generation: 9,
+            workspace_id: Some("ws_1".into()),
+            show_hidden: true,
+            show_ignored: false,
+            index_supported: false,
+        },
+    );
+    state.workbench.tabs.push(Investigation::new(
+        loading,
+        ClientEndpointId::Local,
+        "boot-1".into(),
+    ));
+    state.handle_file_viewer_endpoint_result(
+        FileViewerRequest::List {
+            generation: 9,
+            path: None,
+        },
+        first_listing_error(),
+        &mut ClientShellInput::default(),
+    );
+    assert_eq!(state.workbench.tabs.len(), 1);
+    assert_eq!(state.workbench.active, Some(0));
+    assert!(state.investigation_active());
+}
+
+#[test]
+fn failed_listing_of_a_restored_root_keeps_the_tab_with_a_failed_root_row() {
+    let mut state = state();
+    let tab = state.investigation_mut().unwrap();
+    let generation = tab.browser.generation;
+    state.handle_file_viewer_endpoint_result(
+        FileViewerRequest::List {
+            generation,
+            path: Some("/repo".into()),
+        },
+        Err(ClientShellEndpointError {
+            code: Some("not_found".into()),
+            message: "gone".into(),
+        }),
+        &mut ClientShellInput::default(),
+    );
+    assert_eq!(state.workbench.tabs.len(), 1);
+    assert!(matches!(
+        state.workbench.tabs[0].browser.directories.get("/repo"),
+        Some(crate::client::shell::file_viewer::model::DirectoryState::Failed(notice))
+            if notice == "not found"
+    ));
+}
+
+#[test]
+fn restore_keeps_the_saved_entry_while_the_viewer_cannot_be_opened() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(crate::client::shell::tests::snapshot()));
+    state.workbench.saved = vec![saved_in("local", "ws_1", "/repo")];
+    state.set_endpoint_methods(Some(vec!["file.read".into()]));
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    state.tick_investigation(later, &mut ClientShellInput::default());
+    assert!(state.workbench.tabs.is_empty());
+    assert_eq!(state.workbench.saved.len(), 1);
+    state.set_endpoint_methods(None);
+    state.tick_investigation(later, &mut ClientShellInput::default());
+    assert_eq!(state.workbench.tabs.len(), 1);
+    assert!(state.workbench.saved.is_empty());
+    assert_eq!(
+        state.workbench.tabs[0].browser.root.as_deref(),
+        Some("/repo")
+    );
+}
+
+#[test]
+fn first_snapshot_drops_saved_entries_of_missing_workspaces_for_that_endpoint_only() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.workbench.saved = vec![
+        saved_in("local", "ws_gone", "/a"),
+        saved_in("local", "ws_1", "/b"),
+        saved_in("ssh:other", "ws_gone", "/c"),
+    ];
+    assert_eq!(state.persisted_investigations().len(), 3);
+    state.set_snapshot(Box::new(crate::client::shell::tests::snapshot()));
+    let roots: Vec<_> = state
+        .persisted_investigations()
+        .into_iter()
+        .map(|s| s.root)
+        .collect();
+    assert_eq!(roots, ["/b", "/c"]);
+}
+
+#[test]
+fn saved_entries_are_judged_once_per_connection() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(crate::client::shell::tests::snapshot()));
+    state.workbench.saved = vec![saved_in("local", "ws_later", "/a")];
+    let mut next = crate::client::shell::tests::snapshot();
+    next.revision = 2;
+    state.set_snapshot(Box::new(next));
+    assert_eq!(state.workbench.saved.len(), 1);
+
+    let mut reconnected = crate::client::shell::tests::snapshot();
+    reconnected.revision = 3;
+    state.cache_endpoint_snapshot_for_generation(
+        &crate::client::endpoint::ClientEndpointId::Local,
+        2,
+        Box::new(reconnected),
+    );
+    assert!(state.workbench.saved.is_empty());
+}
+
+#[test]
+fn persisted_investigations_keep_the_newest_fifty_per_endpoint() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.workbench.saved = (0..55)
+        .map(|i| saved_in("local", "ws_1", &format!("/l{i}")))
+        .chain((0..3).map(|i| saved_in("ssh:other", "ws_1", &format!("/s{i}"))))
+        .collect();
+    let persisted = state.persisted_investigations();
+    let local: Vec<_> = persisted.iter().filter(|s| s.endpoint == "local").collect();
+    assert_eq!(local.len(), 50);
+    assert_eq!(local[0].root, "/l5");
+    assert_eq!(local[49].root, "/l54");
+    assert_eq!(
+        persisted.iter().filter(|s| s.endpoint != "local").count(),
+        3
+    );
+}

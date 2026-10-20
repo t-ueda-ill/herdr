@@ -621,6 +621,12 @@ impl ClientShellState {
         let endpoint = &mut self.endpoints[index];
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
+        self.workbench.judge_saved_on_snapshot(
+            &endpoint_id.storage_key(),
+            generation,
+            &snapshot.workspaces,
+        );
+        let endpoint = &mut self.endpoints[index];
         endpoint.snapshot = Some(snapshot);
         let pending_matches =
             endpoint
