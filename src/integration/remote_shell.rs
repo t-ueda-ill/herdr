@@ -155,9 +155,12 @@ end
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::io::Write;
+    #[cfg(unix)]
     use std::process::{Command, Stdio};
 
+    #[cfg(unix)]
     fn syntax_check(shell: &str, flag: &str, source: &str) {
         let Ok(mut child) = Command::new(shell)
             .args([flag, "/dev/stdin"])
@@ -179,6 +182,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn sh_function_is_valid_dash() {
         syntax_check("dash", "-n", &remote_shell_function(RemoteShell::Sh));
@@ -222,8 +226,11 @@ mod tests {
     #[test]
     fn zsh_function_runs_an_alias_target_that_is_not_on_path() {
         let script = "alias claude=FAKE; . FUNCTION; claude hi";
-        if Command::new("zsh").arg("--version").output().is_ok() {
-            let out = run_without_tty("zsh", RemoteShell::Zsh, script).unwrap_or_default();
+        if Command::new("zsh").arg("--version").output().is_err() {
+            return;
+        }
+        // macOS has zsh but no setsid, so the run cannot detach from the tty.
+        if let Some(out) = run_without_tty("zsh", RemoteShell::Zsh, script) {
             assert_eq!(out.trim(), "ran:hi");
         }
     }
@@ -246,16 +253,19 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn bash_function_is_valid_bash() {
         syntax_check("bash", "-n", &remote_shell_function(RemoteShell::Bash));
     }
 
+    #[cfg(unix)]
     #[test]
     fn zsh_function_is_valid_zsh() {
         syntax_check("zsh", "-n", &remote_shell_function(RemoteShell::Zsh));
     }
 
+    #[cfg(unix)]
     #[test]
     fn fish_function_is_valid_fish() {
         syntax_check("fish", "-n", &remote_shell_function(RemoteShell::Fish));
