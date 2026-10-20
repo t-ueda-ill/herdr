@@ -1271,9 +1271,12 @@ pub(crate) fn rename_no_replace(
     use std::os::unix::ffi::OsStrExt;
     let source = std::ffi::CString::new(source.as_os_str().as_bytes())?;
     let target = std::ffi::CString::new(target.as_os_str().as_bytes())?;
-    // Both C strings live through the syscall; RENAME_NOREPLACE is atomic.
+    // Why not libc::renameat2: musl provides no wrapper for it, so the musl
+    // release build fails to link. The raw syscall exists on glibc and musl.
+    // SAFETY: both C strings live through the syscall; RENAME_NOREPLACE is atomic.
     if unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             source.as_ptr(),
             libc::AT_FDCWD,
@@ -1316,6 +1319,25 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn rename_no_replace_moves_to_absent_target_and_refuses_existing_target() {
+        let dir = std::env::temp_dir().join(format!("herdr-rename-nr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (source, target) = (dir.join("source"), dir.join("target"));
+        std::fs::write(&source, "new").unwrap();
+
+        rename_no_replace(&source, &target).unwrap();
+        assert!(!source.exists());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+
+        std::fs::write(&source, "other").unwrap();
+        let error = rename_no_replace(&source, &target).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "other");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
