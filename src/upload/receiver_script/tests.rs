@@ -731,20 +731,12 @@ fn the_stale_sweep_removes_only_old_empty_stages_and_warns_about_kept_originals(
         }
         std::fs::write(old_kept.join("o/1"), b"original").unwrap();
         let two_days_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 86_400);
+        // Not `touch -d @secs`: BSD touch on macOS does not take that form.
         for stage in [&old_empty, &old_kept] {
-            let status = Command::new("touch")
-                .arg("-d")
-                .arg(format!(
-                    "@{}",
-                    two_days_ago
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs()
-                ))
-                .arg(stage)
-                .status()
+            std::fs::File::open(stage)
+                .unwrap()
+                .set_modified(two_days_ago)
                 .unwrap();
-            assert!(status.success());
         }
 
         let tokens = run(&shell, dest.str(), Input::default());
