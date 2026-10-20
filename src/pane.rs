@@ -2072,6 +2072,11 @@ fn shell_mode_uses_login_shell(
     }
 }
 
+/// Whether panes started now get a login shell, so an editor shell can match them.
+pub(crate) fn current_target_uses_login_shell(mode: crate::config::ShellModeConfig) -> bool {
+    shell_mode_uses_login_shell(mode, ShellLaunchTarget::current())
+}
+
 pub(crate) fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
@@ -2324,7 +2329,14 @@ fn publish_reported_cwd(
         }
         *current = Some(cwd.clone());
     }
-    if let Err(err) = events.try_send(AppEvent::TerminalCwdReported { pane_id, cwd }) {
+    // Why not skip the event: the runtime's reported cwd is already updated, and
+    // the event tells the state layer, which must not take a path from the
+    // other side for a host directory.
+    if let Err(err) = events.try_send(AppEvent::TerminalCwdReported {
+        pane_id,
+        cwd,
+        off_host: shell_off_host,
+    }) {
         warn!(
             pane = pane_id.raw(),
             err = %err,
@@ -2824,6 +2836,7 @@ impl PaneRuntime {
         pane_terminal.set_windows_powershell_prompt_cwd_reporting(
             initial_state.windows_powershell_prompt_cwd_reporting,
         );
+        pane_terminal.set_shell_runs_off_host(initial_state.in_container || initial_state.in_ssh);
         if let Some(ansi) = initial_state.history_ansi {
             pane_terminal.seed_history_ansi(ansi);
         }

@@ -1,3 +1,4 @@
+use super::super::file_viewer::FileLocation;
 use super::super::*;
 use crate::api::schema::{FileChange, FileCollision, FileMatch, FileOperation, FilesSearchParams};
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,9 @@ pub(in crate::client::shell) struct SavedInvestigation {
     pub whole_word: bool,
     pub ignored: bool,
     pub content_search: bool,
+    /// `None` for the host. Absent in entries saved before off-host browsing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<FileLocation>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(in crate::client::shell) struct SavedDocument {
@@ -393,6 +397,7 @@ impl Investigation {
             whole_word: self.whole_word,
             ignored: self.ignored,
             content_search: self.content_search,
+            location: self.browser.location.clone(),
         })
     }
 }

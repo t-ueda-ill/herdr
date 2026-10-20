@@ -3331,6 +3331,17 @@ impl HeadlessServer {
         }
         if matches!(
             &msg.request.method,
+            api::schema::Method::PaneDirectoryList(_)
+                | api::schema::Method::PaneDirectoryIndex(_)
+                | api::schema::Method::PaneDirectoryOpenEditor(_)
+                | api::schema::Method::PaneFileRead(_)
+        ) {
+            self.app
+                .handle_deferred_pane_directory_api_request(msg.request, msg.respond_to);
+            return changed;
+        }
+        if matches!(
+            &msg.request.method,
             api::schema::Method::SshOpen(_) | api::schema::Method::SshHosts(_)
         ) {
             let read_only = matches!(&msg.request.method, api::schema::Method::SshHosts(_));

@@ -16,7 +16,7 @@ pub(super) fn snapshot(
 
 /// Where a terminal's shell runs right now when that is not the server host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RunningOffHostShell<'a> {
+pub(crate) enum RunningOffHostShell<'a> {
     Container(&'a crate::container::ContainerLaunch),
     Ssh(&'a crate::ssh_host::SshLaunch),
 }
@@ -43,7 +43,7 @@ pub(super) fn running_off_host_shell<'a>(
     None
 }
 
-pub(super) fn running_pane_off_host_shell(
+pub(crate) fn running_pane_off_host_shell(
     app: &app::App,
     workspace_index: usize,
     pane_id: crate::layout::PaneId,

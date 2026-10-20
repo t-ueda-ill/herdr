@@ -476,6 +476,11 @@ pub(crate) const REMOTE_BRIDGE_IDLE_TIMEOUT_SUPPORTED: bool =
 pub(crate) const FILE_VIEWER_SUPPORTED: bool =
     cfg!(any(target_os = "linux", target_os = "macos", windows));
 
+/// Reading inside ssh and container panes. Why not `FILE_VIEWER_SUPPORTED`:
+/// Windows servers cannot run those panes, so advertising the methods there
+/// would only invite requests that always fail.
+pub(crate) const OFFHOST_FILE_VIEWER_SUPPORTED: bool = cfg!(unix);
+
 #[cfg(unix)]
 mod remote_bridge;
 #[cfg(all(test, unix))]

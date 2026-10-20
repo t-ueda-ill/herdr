@@ -1,3 +1,4 @@
+use super::super::file_viewer::FileLocation;
 use super::*;
 use crate::api::schema::*;
 use regex::RegexBuilder;
@@ -95,6 +96,11 @@ pub(in crate::client::shell) fn prepare_document(
     }
     Ok(())
 }
+/// Said in place of content search, replacement and file operations, which
+/// only know the host's filesystem.
+pub(in crate::client::shell) fn unavailable_notice(location: &FileLocation) -> String {
+    format!("not available inside {}", location.label())
+}
 impl ClientShellState {
     pub(in crate::client::shell) fn investigation_menu_action(
         &mut self,
@@ -105,6 +111,15 @@ impl ClientShellState {
             return;
         };
         tab.dialog = None;
+        // Kept in the menu and on their keys, but never sent to a server that
+        // would act on the host: the notice says where it does not work.
+        if matches!(index, 6..=15 | 22) {
+            if let Some(location) = tab.browser.location.as_ref() {
+                tab.notice = unavailable_notice(location);
+                outcome.repaint = true;
+                return;
+            }
+        }
         match index {
             0 => {
                 let workspace = self.workspace_action_id();
@@ -129,14 +144,15 @@ impl ClientShellState {
                 }
             }
             4 => {
-                if let (Some(path), Some(pane)) =
-                    (tab.paths().first(), tab.browser.pane_id.as_ref())
-                {
-                    tab.dialog = Some(Dialog::Send {
-                        path: path.clone(),
-                        pane: pane.clone(),
-                        boot: tab.boot.clone(),
-                    });
+                if let Some(path) = tab.paths().first().cloned() {
+                    let boot = tab.boot.clone();
+                    let target = self.file_viewer_send_target();
+                    if let Some(tab) = self.investigation_mut() {
+                        match target {
+                            Ok(pane) => tab.dialog = Some(Dialog::Send { path, pane, boot }),
+                            Err(notice) => tab.notice = notice,
+                        }
+                    }
                 }
             }
             5 => self.investigation_open_editor(outcome),
@@ -257,6 +273,12 @@ impl ClientShellState {
         let Some(tab) = self.investigation() else {
             return;
         };
+        if let Some(location) = tab.browser.location.clone() {
+            if let Some(tab) = self.investigation_mut() {
+                tab.notice = unavailable_notice(&location);
+            }
+            return;
+        }
         let Some(clipboard) = self.workbench.clipboard.as_ref() else {
             return;
         };
@@ -298,6 +320,10 @@ impl ClientShellState {
         let Some(tab) = self.investigation_mut() else {
             return;
         };
+        if let Some(location) = tab.browser.location.as_ref() {
+            tab.notice = unavailable_notice(location);
+            return;
+        }
         if tab.operation_pending {
             return;
         }
@@ -322,6 +348,10 @@ impl ClientShellState {
         let Some(tab) = self.investigation_mut() else {
             return;
         };
+        if let Some(location) = tab.browser.location.as_ref() {
+            tab.notice = unavailable_notice(location);
+            return;
+        }
         if tab.operation_pending {
             return;
         }
@@ -347,6 +377,10 @@ impl ClientShellState {
         let Some(tab) = self.investigation_mut() else {
             return;
         };
+        if let Some(location) = tab.browser.location.as_ref() {
+            tab.notice = unavailable_notice(location);
+            return;
+        }
         if !tab.search_ready || tab.search_due.is_some() || tab.searching || tab.operation_pending {
             tab.notice = "wait for a current search before replacing".into();
             return;
@@ -377,6 +411,10 @@ impl ClientShellState {
         let Some(tab) = self.investigation_mut() else {
             return;
         };
+        if let Some(location) = tab.browser.location.as_ref() {
+            tab.notice = unavailable_notice(location);
+            return;
+        }
         if tab.operation_pending || tab.prepare_pending > 0 || !tab.prepare_queue.is_empty() {
             return;
         }
@@ -422,11 +460,26 @@ impl ClientShellState {
             return;
         };
         let id = tab.id;
-        let method = Method::PaneOpenEditor(PaneOpenEditorParams {
-            workspace_id: tab.browser.workspace_id.clone(),
-            pane_id: self.focused_pane_id(),
-            path,
-        });
+        let method = if tab.browser.location.is_some() {
+            // Only the focused pane can host the overlay, and it must be in the
+            // tab's location: the editor opens there.
+            let pane_id = match self.file_viewer_send_target() {
+                Ok(pane_id) => pane_id,
+                Err(notice) => {
+                    if let Some(tab) = self.investigation_mut() {
+                        tab.notice = notice;
+                    }
+                    return;
+                }
+            };
+            Method::PaneDirectoryOpenEditor(PaneDirectoryOpenEditorParams { pane_id, path })
+        } else {
+            Method::PaneOpenEditor(PaneOpenEditorParams {
+                workspace_id: tab.browser.workspace_id.clone(),
+                pane_id: self.focused_pane_id(),
+                path,
+            })
+        };
         self.workbench.editor_opening = true;
         let sent = self.push_endpoint_method_with_kind(
             method,

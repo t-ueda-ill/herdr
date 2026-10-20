@@ -591,6 +591,19 @@ impl HeadlessServer {
             AppEvent::ContainerListFinished(_) | AppEvent::SshHostsFinished(_) => {
                 self.app.handle_internal_event_with_render_impact(ev)
             }
+            // The overlay appears now, not when the request arrived, so the
+            // reconcile and geometry claim a synchronous `pane.open_editor`
+            // gets at request time must happen here.
+            AppEvent::PaneEditorProbed(_) => {
+                let spawned = self.app.handle_internal_event_with_render_impact(ev);
+                if spawned {
+                    self.reconcile_client_shell_locations();
+                    let geometry_changed = self.reapply_controlled_shell_tab_geometry(false);
+                    spawned | geometry_changed
+                } else {
+                    spawned
+                }
+            }
             AppEvent::WorktreeAddFinished(_)
             | AppEvent::WorktreeReadFinished(_)
             | AppEvent::ContainerOpenFinished(_)

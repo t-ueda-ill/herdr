@@ -29,22 +29,37 @@ const FILE_VIEWER_METHODS: [&str; 9] = [
     "pane.open_editor",
 ];
 
+/// Advertised only where `crate::platform::OFFHOST_FILE_VIEWER_SUPPORTED` holds.
+const OFFHOST_FILE_VIEWER_METHODS: [&str; 4] = [
+    "pane.directory.index",
+    "pane.directory.list",
+    "pane.directory.open_editor",
+    "pane.file.read",
+];
+
 /// What the endpoint welcome advertises. Why not shrink
 /// `supported_client_shell_method_names` instead: method shapes are frozen on
 /// every platform. A client treats an unadvertised method as missing and
 /// disables only that action, instead of opening a view the host cannot fill.
 pub(crate) fn advertised_client_shell_method_names() -> &'static [&'static str] {
     static NAMES: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
-        advertised_method_names(crate::platform::FILE_VIEWER_SUPPORTED)
+        advertised_method_names(
+            crate::platform::FILE_VIEWER_SUPPORTED,
+            crate::platform::OFFHOST_FILE_VIEWER_SUPPORTED,
+        )
     });
     &NAMES
 }
 
-fn advertised_method_names(file_viewer_supported: bool) -> Vec<&'static str> {
+fn advertised_method_names(
+    file_viewer_supported: bool,
+    offhost_supported: bool,
+) -> Vec<&'static str> {
     supported_client_shell_method_names()
         .iter()
         .copied()
         .filter(|method| file_viewer_supported || !FILE_VIEWER_METHODS.contains(method))
+        .filter(|method| offhost_supported || !OFFHOST_FILE_VIEWER_METHODS.contains(method))
         .collect()
 }
 
@@ -323,6 +338,20 @@ mod tests {
             );
         }
 
+        let offhost: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-method-shapes-offhost.json"
+        )))
+        .expect("off-host endpoint method shape fixture");
+        let mut offhost_actual = BTreeMap::new();
+        for method in OFFHOST_FILE_VIEWER_METHODS {
+            offhost_actual.insert(
+                method.to_owned(),
+                actual.remove(method).expect("off-host method"),
+            );
+        }
+        assert_eq!(offhost_actual, offhost, "off-host method shapes");
+
         let mut added = BTreeMap::new();
         for method in [
             "file.read",
@@ -396,9 +425,9 @@ mod tests {
     fn hosts_without_the_file_viewer_leave_its_methods_unadvertised() {
         let supported = supported_client_shell_method_names();
 
-        let without: Vec<&str> = advertised_method_names(false);
+        let without: Vec<&str> = advertised_method_names(false, true);
 
-        assert_eq!(advertised_method_names(true), supported);
+        assert_eq!(advertised_method_names(true, true), supported);
         let dropped: Vec<&str> = supported
             .iter()
             .copied()
@@ -417,6 +446,25 @@ mod tests {
                 "files.search",
                 "pane.open_editor"
             ]
+        );
+    }
+
+    #[test]
+    fn hosts_without_off_host_panes_leave_the_pane_directory_methods_unadvertised() {
+        let supported = supported_client_shell_method_names();
+
+        let without = advertised_method_names(true, false);
+
+        let dropped: Vec<&str> = supported
+            .iter()
+            .copied()
+            .filter(|method| !without.contains(method))
+            .collect();
+        assert_eq!(dropped, OFFHOST_FILE_VIEWER_METHODS);
+        assert_eq!(
+            crate::platform::OFFHOST_FILE_VIEWER_SUPPORTED,
+            cfg!(unix),
+            "only Unix servers can run ssh and container panes"
         );
     }
 

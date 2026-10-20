@@ -90,6 +90,21 @@ pub struct WorkspaceRepoRoot {
     pub(crate) repo_root: Option<std::path::PathBuf>,
 }
 
+/// What `pane.directory.open_editor` learned about its path off the app thread.
+/// The overlay is spawned only after the pane is looked up again: it may have
+/// lost focus or died while the probe ran.
+#[derive(Debug)]
+pub struct PaneEditorProbeResult {
+    pub(crate) id: String,
+    pub(crate) pane_id: String,
+    pub(crate) path: String,
+    /// The environment the probe ran in; a pane that moved elsewhere is stale.
+    pub(crate) environment: crate::offhost::PaneEnvironment,
+    pub(crate) cwd: Option<String>,
+    pub(crate) probe: Result<(), (&'static str, String)>,
+    pub(crate) respond_to: std::sync::mpsc::Sender<String>,
+}
+
 /// Running containers for a `container.list` request, listed off the app thread.
 #[derive(Debug)]
 pub struct ContainerListResult {
@@ -245,6 +260,8 @@ pub enum AppEvent {
     TerminalCwdReported {
         pane_id: PaneId,
         cwd: std::path::PathBuf,
+        /// The shell runs in a container or over ssh, so `cwd` is a path there.
+        off_host: bool,
     },
     /// Background git status refresh completed for workspaces.
     GitStatusRefreshed {
@@ -282,6 +299,8 @@ pub enum AppEvent {
     ContainerOpenFinished(Box<ContainerOpenResult>),
     /// Background container listing completed for an API `container.list` request.
     ContainerListFinished(Box<ContainerListResult>),
+    /// Background path probe completed for an API `pane.directory.open_editor` request.
+    PaneEditorProbed(Box<PaneEditorProbeResult>),
     /// Background copy of a client clipboard image into a container pane finished.
     ClipboardImageStaged(Box<ClipboardImageStagedResult>),
     /// Background ssh config lookup completed for an API `ssh.open` request.

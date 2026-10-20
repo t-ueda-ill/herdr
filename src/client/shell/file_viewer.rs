@@ -8,16 +8,18 @@ mod fuzzy;
 pub(super) mod model;
 
 use model::{
-    git_error_notice, host_path_chain, host_path_contains, indexed_paths, join_host_path,
-    parent_host_path, shell_quote_path, DirectoryListing, DirectoryState, FileIndex,
-    FileViewerOptions, CONTROL_CHARACTERS_IN_PATH, EDIT_FILES_ONLY, NO_LIVE_PANE, PANE_NOT_FOCUSED,
+    git_error_notice, host_path_contains, indexed_paths, join_host_path, shell_quote_path,
+    DirectoryListing, DirectoryState, FileIndex, FileViewerOptions, CONTROL_CHARACTERS_IN_PATH,
+    EDIT_FILES_ONLY, NO_LIVE_PANE, PANE_NOT_FOCUSED,
 };
+pub(super) use model::{location_label, FileLocation};
 pub(super) use model::{ClientFileViewerOverlay, FileViewerButton};
 
 use super::*;
 use crate::api::schema::{
-    DirectoryIndexParams, DirectoryListParams, Method, PaneOpenEditorParams, ResponseResult,
-    WorkspaceTarget,
+    DirectoryIndexParams, DirectoryListParams, FileReadParams, Method, PaneDirectoryIndexParams,
+    PaneDirectoryListParams, PaneDirectoryOpenEditorParams, PaneFileReadParams,
+    PaneOpenEditorParams, ResponseResult, WorkspaceTarget,
 };
 
 const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(350);
@@ -75,15 +77,39 @@ impl ClientShellState {
         workspace_id: Option<String>,
         outcome: &mut ClientShellInput,
     ) {
+        self.open_file_viewer_in(workspace_id, None, None, outcome);
+    }
+
+    /// `forced_location` (`Some(None)` is the host) is for restoring a saved
+    /// tab, whose environment is no longer the focused pane's.
+    pub(super) fn open_file_viewer_in(
+        &mut self,
+        workspace_id: Option<String>,
+        forced_location: Option<Option<FileLocation>>,
+        initial_root: Option<String>,
+        outcome: &mut ClientShellInput,
+    ) {
         outcome.repaint = true;
-        let list = Method::DirectoryList(DirectoryListParams {
-            workspace_id: workspace_id.clone(),
-            pane_id: self
-                .focused_pane_id()
-                .filter(|_| workspace_id == self.workspace_action_id()),
-            path: None,
-            trust_repository: false,
-        });
+        // Decided here, from the snapshot, so nothing waits for an answer to
+        // know which filesystem the tab shows. An old server cannot list the
+        // pane's own environment: it keeps listing the host's.
+        let location = forced_location
+            .unwrap_or_else(|| self.workspace_file_location(workspace_id.as_deref()));
+        let host_pane = self
+            .focused_pane_id()
+            .filter(|_| workspace_id == self.workspace_action_id());
+        let list = match self.file_list_method(
+            &workspace_id,
+            &location,
+            host_pane,
+            initial_root.clone(),
+        ) {
+            Ok(list) => list,
+            Err(notice) => {
+                self.set_endpoint_error(notice);
+                return;
+            }
+        };
         // Checked before focusing: an endpoint without the method only gets
         // the "Action unavailable" notice from the push, and nothing moves.
         if !self.supports_endpoint_method(&list) {
@@ -111,55 +137,245 @@ impl ClientShellState {
             list,
             PendingEndpointKind::FileViewer(FileViewerRequest::List {
                 generation,
-                path: None,
+                path: initial_root.clone(),
             }),
             outcome,
         ) {
             return;
         }
-        let index_supported =
-            self.request_file_viewer_index(generation, workspace_id.clone(), None, outcome);
-        self.overlay = Some(ClientShellOverlay::FileViewer(Box::new(
-            ClientFileViewerOverlay::new(FileViewerOptions {
-                generation,
-                workspace_id,
-                show_hidden: self.config.file_viewer_show_hidden,
-                show_ignored: self.config.file_viewer_show_ignored,
-                index_supported,
-            }),
-        )));
+        let index_supported = self.request_file_viewer_index(
+            generation,
+            workspace_id.clone(),
+            &location,
+            initial_root.clone(),
+            outcome,
+        );
+        let mut viewer = ClientFileViewerOverlay::new(FileViewerOptions {
+            generation,
+            location,
+            workspace_id,
+            show_hidden: self.config.file_viewer_show_hidden,
+            show_ignored: self.config.file_viewer_show_ignored,
+            index_supported,
+        });
+        // A restored tab already knows its root, so the one listing asked for
+        // is the root's, as after a root change.
+        if let Some(root) = initial_root {
+            viewer
+                .directories
+                .insert(root.clone(), DirectoryState::Loading);
+            viewer.expanded.insert(root.clone());
+            viewer.root = Some(root);
+            viewer.rebuild(false);
+        }
+        self.overlay = Some(ClientShellOverlay::FileViewer(Box::new(viewer)));
         self.promote_file_viewer();
     }
 
     /// Whether `pane_id` runs in a container or over ssh, as the snapshot says.
+    /// Only the old-server fallback asks: it lists the host for such a pane.
     fn file_viewer_pane_off_host(&self, pane_id: &str) -> bool {
         self.snapshot
             .as_deref()
             .and_then(|snapshot| snapshot.panes.iter().find(|pane| pane.pane_id == pane_id))
-            .is_some_and(|pane| pane.container.is_some() || pane.ssh_host.is_some())
+            .is_some_and(|pane| FileLocation::of_pane(pane).is_some())
     }
 
-    /// The focused pane, when it is the live pane the listing came from;
-    /// otherwise the notice that explains why nothing is sent. Why not the
-    /// snapshot's focused pane alone: right after opening for another
-    /// workspace it still names the old workspace's pane until the focus
-    /// change comes back, and a restored pane without a shell is still listed.
-    fn file_viewer_send_target(&self) -> Result<String, &'static str> {
-        let listed = match self.overlay.as_ref() {
-            Some(ClientShellOverlay::FileViewer(viewer)) => viewer.pane_id.as_deref(),
-            _ => self
-                .investigation()
-                .and_then(|t| t.browser.pane_id.as_deref()),
+    pub(super) fn supports_pane_directory(&self) -> bool {
+        self.supports_endpoint_method(&Method::PaneDirectoryList(PaneDirectoryListParams {
+            pane_id: String::new(),
+            path: None,
+            trust_repository: false,
+        }))
+    }
+
+    /// Environment of `workspace_id`'s pane that the viewer opens for. Why not
+    /// a focused pane per workspace: the snapshot only names the globally
+    /// focused pane, so another workspace is judged by its active tab.
+    pub(super) fn workspace_file_location(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Option<FileLocation> {
+        // Gated here so opening and toggling cannot disagree: an old server
+        // lists the host, and its tabs have no location.
+        if !self.supports_pane_directory() {
+            return None;
         }
-        .ok_or(NO_LIVE_PANE)?;
+        let snapshot = self.snapshot.as_deref()?;
+        let workspace_id = workspace_id.or(snapshot.focused_workspace_id.as_deref())?;
+        let active_tab = snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == workspace_id)
+            .map(|workspace| workspace.active_tab_id.as_str());
+        let mut panes = snapshot.panes.iter().filter(|pane| {
+            pane.workspace_id == workspace_id && active_tab.is_none_or(|tab| pane.tab_id == tab)
+        });
+        let first = panes.clone().find(|pane| pane.focused).or(panes.next())?;
+        FileLocation::of_pane(first)
+    }
+
+    /// A live pane of `workspace_id` running in `location`, the focused one first.
+    pub(super) fn file_location_pane(
+        &self,
+        workspace_id: Option<&str>,
+        location: &FileLocation,
+    ) -> Option<String> {
+        let snapshot = self.snapshot.as_deref()?;
+        let mut candidates = snapshot.panes.iter().filter(|pane| {
+            workspace_id.is_none_or(|id| pane.workspace_id == id)
+                && FileLocation::of_pane(pane).as_ref() == Some(location)
+        });
+        candidates
+            .clone()
+            .find(|pane| snapshot.focused_pane_id.as_deref() == Some(pane.pane_id.as_str()))
+            .or(candidates.next())
+            .map(|pane| pane.pane_id.clone())
+    }
+
+    pub(super) fn no_pane_notice(location: &FileLocation) -> String {
+        format!("no pane running in {}", location.label())
+    }
+
+    /// `host_pane` only matters for the host's `directory.list`, which names the
+    /// pane whose directory is shown.
+    fn file_list_method(
+        &self,
+        workspace_id: &Option<String>,
+        location: &Option<FileLocation>,
+        host_pane: Option<String>,
+        path: Option<String>,
+    ) -> Result<Method, String> {
+        let Some(location) = location else {
+            return Ok(Method::DirectoryList(DirectoryListParams {
+                workspace_id: workspace_id.clone(),
+                pane_id: host_pane,
+                path,
+                trust_repository: false,
+            }));
+        };
+        let pane_id = self
+            .file_location_pane(workspace_id.as_deref(), location)
+            .ok_or_else(|| Self::no_pane_notice(location))?;
+        Ok(Method::PaneDirectoryList(PaneDirectoryListParams {
+            pane_id,
+            path,
+            trust_repository: false,
+        }))
+    }
+
+    fn file_index_method(
+        &self,
+        workspace_id: &Option<String>,
+        location: &Option<FileLocation>,
+        host_pane: Option<String>,
+        path: Option<String>,
+    ) -> Result<Method, String> {
+        let Some(location) = location else {
+            return Ok(Method::DirectoryIndex(DirectoryIndexParams {
+                workspace_id: workspace_id.clone(),
+                pane_id: host_pane,
+                path,
+                trust_repository: false,
+            }));
+        };
+        let pane_id = self
+            .file_location_pane(workspace_id.as_deref(), location)
+            .ok_or_else(|| Self::no_pane_notice(location))?;
+        Ok(Method::PaneDirectoryIndex(PaneDirectoryIndexParams {
+            pane_id,
+            path,
+            trust_repository: false,
+        }))
+    }
+
+    /// `poll` marks a background refresh, which the server gives a short deadline.
+    pub(super) fn file_read_method(
+        &self,
+        workspace_id: &Option<String>,
+        location: &Option<FileLocation>,
+        path: String,
+        revision: Option<String>,
+        poll: bool,
+    ) -> Result<Method, String> {
+        let Some(location) = location else {
+            return Ok(Method::FileRead(FileReadParams { path, revision }));
+        };
+        let pane_id = self
+            .file_location_pane(workspace_id.as_deref(), location)
+            .ok_or_else(|| Self::no_pane_notice(location))?;
+        Ok(Method::PaneFileRead(PaneFileReadParams {
+            pane_id,
+            path,
+            revision,
+            poll,
+        }))
+    }
+
+    /// The focused pane when paths may go there; otherwise the notice that
+    /// explains why nothing is sent. Why not the snapshot's focused pane
+    /// alone: right after opening for another workspace it still names the
+    /// old workspace's pane until the focus change comes back, and a restored
+    /// pane without a shell is still listed. Why not any pane of the tab's
+    /// location: the path would land in a terminal the user is not looking at.
+    pub(super) fn file_viewer_send_target(&self) -> Result<String, String> {
+        let (listed, location) = match self.overlay.as_ref() {
+            Some(ClientShellOverlay::FileViewer(viewer)) => {
+                (Some(viewer.pane_id.as_deref()), viewer.location.clone())
+            }
+            _ => match self.investigation() {
+                // A tab sends to whatever pane is focused in its location, not
+                // to the pane its first listing happened to name.
+                Some(tab) => (None, tab.browser.location.clone()),
+                None => return Err(NO_LIVE_PANE.to_owned()),
+            },
+        };
         let snapshot = self.snapshot.as_deref().ok_or(NO_LIVE_PANE)?;
-        if !snapshot.panes.iter().any(|pane| pane.pane_id == listed) {
-            return Err(NO_LIVE_PANE);
+        let focused = snapshot.focused_pane_id.as_deref().ok_or(NO_LIVE_PANE)?;
+        if let Some(listed) = listed {
+            let listed = listed.ok_or(NO_LIVE_PANE)?;
+            if !snapshot.panes.iter().any(|pane| pane.pane_id == listed) {
+                return Err(NO_LIVE_PANE.to_owned());
+            }
+            if focused != listed {
+                return Err(PANE_NOT_FOCUSED.to_owned());
+            }
         }
-        if snapshot.focused_pane_id.as_deref() != Some(listed) {
-            return Err(PANE_NOT_FOCUSED);
+        let pane = snapshot
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == focused)
+            .ok_or(NO_LIVE_PANE)?;
+        if FileLocation::of_pane(pane) != location {
+            return Err(format!(
+                "terminal destination is not in {}",
+                location_label(location.as_ref())
+            ));
         }
-        Ok(listed.to_owned())
+        Ok(focused.to_owned())
+    }
+
+    /// Asks again for an index that failed for lack of a pane.
+    pub(super) fn retry_file_viewer_index(&mut self, outcome: &mut ClientShellInput) {
+        let Some((generation, workspace_id, location, root)) = self.file_viewer().and_then(|v| {
+            v.index_retry.then(|| {
+                (
+                    v.generation,
+                    v.workspace_id.clone(),
+                    v.location.clone(),
+                    v.root.clone(),
+                )
+            })
+        }) else {
+            return;
+        };
+        if self.request_file_viewer_index(generation, workspace_id, &location, root, outcome) {
+            if let Some(viewer) = self.file_viewer() {
+                viewer.index_retry = false;
+                viewer.index = FileIndex::Loading;
+                viewer.rebuild(true);
+            }
+        }
     }
 
     /// Returns false when the endpoint cannot index, so search falls back to
@@ -168,18 +384,16 @@ impl ClientShellState {
         &mut self,
         generation: u64,
         workspace_id: Option<String>,
+        location: &Option<FileLocation>,
         path: Option<String>,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        let pane_id = self
+        let host_pane = self
             .focused_pane_id()
             .filter(|_| workspace_id == self.workspace_action_id());
-        let method = Method::DirectoryIndex(DirectoryIndexParams {
-            workspace_id,
-            pane_id,
-            path,
-            trust_repository: false,
-        });
+        let Ok(method) = self.file_index_method(&workspace_id, location, host_pane, path) else {
+            return false;
+        };
         // Checked up front, not through the push: a missing index must not
         // raise "Action unavailable" while the tree itself works.
         self.supports_endpoint_method(&method)
@@ -212,20 +426,27 @@ impl ClientShellState {
             return;
         };
         let generation = viewer.generation;
-        let method = Method::DirectoryList(DirectoryListParams {
-            workspace_id: viewer.workspace_id.clone(),
-            pane_id: None,
-            path: Some(path.clone()),
-            trust_repository: false,
-        });
-        let sent = self.push_endpoint_method_with_kind(
-            method,
-            PendingEndpointKind::FileViewer(FileViewerRequest::List {
-                generation,
-                path: Some(path.clone()),
-            }),
-            outcome,
-        );
+        let (workspace_id, location) = (viewer.workspace_id.clone(), viewer.location.clone());
+        let method = self.file_list_method(&workspace_id, &location, None, Some(path.clone()));
+        let sent = match method {
+            Ok(method) => self.push_endpoint_method_with_kind(
+                method,
+                PendingEndpointKind::FileViewer(FileViewerRequest::List {
+                    generation,
+                    path: Some(path.clone()),
+                }),
+                outcome,
+            ),
+            Err(notice) => {
+                if let Some(viewer) = self.file_viewer() {
+                    viewer
+                        .directories
+                        .insert(path, DirectoryState::Failed(notice));
+                    viewer.rebuild(true);
+                }
+                return;
+            }
+        };
         if let Some(viewer) = self.file_viewer() {
             let state = if sent {
                 DirectoryState::Loading
@@ -244,19 +465,23 @@ impl ClientShellState {
         select: Option<String>,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        let Some(workspace_id) = self.file_viewer().map(|viewer| viewer.workspace_id.clone())
+        let Some((workspace_id, location)) = self
+            .file_viewer()
+            .map(|viewer| (viewer.workspace_id.clone(), viewer.location.clone()))
         else {
             return false;
+        };
+        let list = match self.file_list_method(&workspace_id, &location, None, Some(root.clone())) {
+            Ok(list) => list,
+            Err(notice) => {
+                self.set_file_viewer_notice(notice);
+                return false;
+            }
         };
         self.file_viewer_generation = self.file_viewer_generation.wrapping_add(1);
         let generation = self.file_viewer_generation;
         if !self.push_endpoint_method_with_kind(
-            Method::DirectoryList(DirectoryListParams {
-                workspace_id: workspace_id.clone(),
-                pane_id: None,
-                path: Some(root.clone()),
-                trust_repository: false,
-            }),
+            list,
             PendingEndpointKind::FileViewer(FileViewerRequest::List {
                 generation,
                 path: Some(root.clone()),
@@ -265,8 +490,13 @@ impl ClientShellState {
         ) {
             return false;
         }
-        let index_supported =
-            self.request_file_viewer_index(generation, workspace_id, Some(root.clone()), outcome);
+        let index_supported = self.request_file_viewer_index(
+            generation,
+            workspace_id,
+            &location,
+            Some(root.clone()),
+            outcome,
+        );
         let Some(viewer) = self.file_viewer() else {
             return false;
         };
@@ -298,7 +528,10 @@ impl ClientShellState {
         let Some(root) = self.file_viewer().and_then(|viewer| viewer.root.clone()) else {
             return;
         };
-        let Some(parent) = parent_host_path(&root).map(str::to_owned) else {
+        let Some(parent) = self
+            .file_viewer()
+            .and_then(|viewer| viewer.parent_path(&root).map(str::to_owned))
+        else {
             return;
         };
         self.change_file_viewer_root(parent, Some(root), outcome);
@@ -371,7 +604,7 @@ impl ClientShellState {
         let Some(root) = viewer.root.clone() else {
             return;
         };
-        for directory in host_path_chain(&root, &path).into_iter().skip(1) {
+        for directory in viewer.path_chain(&root, &path).into_iter().skip(1) {
             // An earlier failure (a busy server) is retried, as expanding would.
             if matches!(
                 viewer.directories.get(&directory),
@@ -398,7 +631,7 @@ impl ClientShellState {
         let (Some(target), Some(root)) = (viewer.revealing.clone(), viewer.root.clone()) else {
             return;
         };
-        let chain = host_path_chain(&root, &target);
+        let chain = viewer.path_chain(&root, &target);
         let mut next = None;
         let mut reachable = true;
         for (index, directory) in chain.iter().enumerate() {
@@ -544,18 +777,26 @@ impl ClientShellState {
                 return;
             }
         };
-        let Some((workspace_id, instance)) = self
-            .file_viewer()
-            .map(|viewer| (viewer.workspace_id.clone(), viewer.instance))
-        else {
+        let Some((workspace_id, instance, offhost)) = self.file_viewer().map(|viewer| {
+            (
+                viewer.workspace_id.clone(),
+                viewer.instance,
+                viewer.location.is_some(),
+            )
+        }) else {
             return;
         };
-        let sent = self.push_endpoint_method_with_kind(
+        let method = if offhost {
+            Method::PaneDirectoryOpenEditor(PaneDirectoryOpenEditorParams { pane_id, path })
+        } else {
             Method::PaneOpenEditor(PaneOpenEditorParams {
                 workspace_id,
                 pane_id: Some(pane_id),
                 path,
-            }),
+            })
+        };
+        let sent = self.push_endpoint_method_with_kind(
+            method,
             PendingEndpointKind::FileViewer(FileViewerRequest::OpenEditor { instance }),
             outcome,
         );
@@ -686,7 +927,7 @@ impl ClientShellState {
             self.set_file_viewer_expanded(entry.path, Some(false), outcome);
             return;
         }
-        let Some(parent) = parent_host_path(&entry.path) else {
+        let Some(parent) = viewer.parent_path(&entry.path).map(str::to_owned) else {
             return;
         };
         if let Some(index) = viewer.rows.iter().position(|row| {
@@ -818,6 +1059,7 @@ impl ClientShellState {
         result: Result<ResponseResult, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
     ) -> bool {
+        let result = result.map(offhost_result_as_host);
         match request {
             FileViewerRequest::List { generation, path } => {
                 self.complete_file_viewer_listing(generation, path, result, outcome)
@@ -833,7 +1075,9 @@ impl ClientShellState {
                     return false;
                 };
                 match result {
-                    Ok(ResponseResult::PaneInfo { .. }) => self.overlay = None,
+                    Ok(ResponseResult::PaneInfo { .. } | ResponseResult::Ok {}) => {
+                        self.overlay = None
+                    }
                     Ok(_) => {
                         viewer.notice =
                             Some("endpoint returned an unexpected editor result".into());
@@ -897,8 +1141,10 @@ impl ClientShellState {
         match (requested, listing) {
             (None, Ok((root, pane_id, listing))) => {
                 viewer.root = Some(root.clone());
-                viewer.off_host = off_host;
-                if pane_id.is_none() {
+                viewer.host_fallback = off_host && viewer.location.is_none();
+                // An off-host tab sends to the focused pane of its location,
+                // so the answer naming no pane says nothing about sending.
+                if pane_id.is_none() && viewer.location.is_none() {
                     viewer.notice = Some(NO_LIVE_PANE.to_owned());
                 }
                 viewer.pane_id = pane_id;
@@ -964,6 +1210,13 @@ impl ClientShellState {
         else {
             return false;
         };
+        viewer.index_retry = matches!(
+            &result,
+            Err(error) if matches!(
+                error.code.as_deref(),
+                Some("pane_not_found" | "pane_not_live" | "stale_pane_target")
+            )
+        );
         viewer.index = match result {
             Ok(ResponseResult::DirectoryIndex {
                 repo_root: Some(repo_root),
@@ -994,6 +1247,35 @@ impl ClientShellState {
         let searching = viewer.searching();
         viewer.rebuild(!searching);
         true
+    }
+}
+
+/// Answers of `pane.directory.*` and `pane.file.read` carry the same data as the
+/// host methods' with a `location` added; the handlers read one shape.
+/// Why not a pane id: off-host tabs choose their pane per request.
+pub(super) fn offhost_result_as_host(result: ResponseResult) -> ResponseResult {
+    match result {
+        ResponseResult::PaneDirectoryList(list) => ResponseResult::DirectoryList {
+            root: list.root,
+            path: list.path,
+            canonical: list.canonical,
+            entries: list.entries,
+            truncated: list.truncated,
+            git_error: list.git_error,
+            pane_id: None,
+            omitted: list.omitted,
+            unlistable: list.unlistable,
+        },
+        ResponseResult::PaneDirectoryIndex(index) => ResponseResult::DirectoryIndex {
+            repo_root: index.repo_root,
+            entries: index.entries,
+            truncated: index.truncated,
+            git_error: index.git_error,
+        },
+        ResponseResult::PaneFileDocument(content) => ResponseResult::FileDocument {
+            document: content.document,
+        },
+        other => other,
     }
 }
 

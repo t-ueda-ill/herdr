@@ -43,6 +43,7 @@ fn state() -> ClientShellState {
         show_hidden: true,
         show_ignored: false,
         index_supported: false,
+        location: None,
     });
     browser.root = Some("/repo".into());
     browser.pane_id = Some("pane_1".into());
@@ -551,6 +552,7 @@ fn failed_first_listing_keeps_the_other_investigation_tabs() {
             show_hidden: true,
             show_ignored: false,
             index_supported: false,
+            location: None,
         },
     );
     state.workbench.tabs.push(Investigation::new(
@@ -669,4 +671,865 @@ fn persisted_investigations_keep_the_newest_fifty_per_endpoint() {
         persisted.iter().filter(|s| s.endpoint != "local").count(),
         3
     );
+}
+
+// ---- off-host tabs (ssh / container locations) ----
+
+mod offhost {
+    use super::*;
+    use crate::api::schema::{
+        DirectoryEntry, DirectoryEntryKind, FileDocument, Method, PaneDirectoryListing,
+        PaneFileContent, PaneLocation, PaneLocationKind, ResponseResult,
+    };
+    use crate::client::shell::file_viewer::FileLocation;
+    use crate::protocol::ClientShellPane;
+
+    fn pane(
+        id: &str,
+        container: Option<&str>,
+        ssh: Option<&str>,
+        focused: bool,
+    ) -> ClientShellPane {
+        let mut pane = crate::client::shell::tests::snapshot().panes.remove(0);
+        pane.pane_id = id.into();
+        pane.focused = focused;
+        pane.container = container.map(str::to_owned);
+        pane.ssh_host = ssh.map(str::to_owned);
+        pane
+    }
+
+    fn container() -> FileLocation {
+        FileLocation::Container {
+            name: "app".into(),
+            ssh_host: Some("devbox".into()),
+        }
+    }
+
+    /// Panes of ws_1 as `(id, container, ssh_host)`; the first is focused.
+    fn set_panes(state: &mut ClientShellState, panes: &[(&str, Option<&str>, Option<&str>)]) {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.panes = panes
+            .iter()
+            .enumerate()
+            .map(|(i, (id, c, s))| pane(id, *c, *s, i == 0))
+            .collect();
+        snapshot.focused_pane_id = Some(panes[0].0.into());
+        state_set_snapshot(state, snapshot);
+    }
+
+    fn state_set_snapshot(
+        state: &mut ClientShellState,
+        mut snapshot: crate::protocol::ClientShellSnapshot,
+    ) {
+        snapshot.revision = state.snapshot.as_ref().map_or(1, |s| s.revision + 1);
+        state.set_snapshot(Box::new(snapshot));
+    }
+
+    /// An investigation tab of the container `app@devbox` with two panes there.
+    fn offhost_state() -> ClientShellState {
+        let mut state = state();
+        set_panes(
+            &mut state,
+            &[
+                ("pane_1", Some("app"), Some("devbox")),
+                ("pane_2", Some("app"), Some("devbox")),
+            ],
+        );
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.location = Some(container());
+        tab.browser.root = Some("/work".into());
+        tab.preview = None;
+        state
+    }
+
+    fn entry(name: &str, kind: DirectoryEntryKind) -> DirectoryEntry {
+        DirectoryEntry {
+            name: name.into(),
+            kind,
+            target_kind: None,
+            size: None,
+            mtime: None,
+            hidden: false,
+            ignored: None,
+        }
+    }
+
+    fn pane_listing(path: &str) -> ResponseResult {
+        ResponseResult::PaneDirectoryList(PaneDirectoryListing {
+            location: PaneLocation {
+                kind: PaneLocationKind::Container,
+                ssh_host: Some("devbox".into()),
+                container: Some("app".into()),
+            },
+            root: "/work".into(),
+            path: path.into(),
+            canonical: path.into(),
+            entries: vec![
+                entry("src", DirectoryEntryKind::Dir),
+                entry("a.txt", DirectoryEntryKind::File),
+            ],
+            truncated: false,
+            git_error: None,
+            omitted: None,
+            unlistable: None,
+        })
+    }
+
+    fn requests(outcome: &ClientShellInput) -> Vec<(String, Method)> {
+        outcome
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                ClientShellAction::Endpoint { request, .. } => {
+                    Some((request.id.clone(), request.method.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn answer(
+        state: &mut ClientShellState,
+        id: &str,
+        result: Result<ResponseResult, ClientShellEndpointError>,
+    ) {
+        state.handle_endpoint_result("boot-1", id, result);
+    }
+
+    fn later(seconds: u64) -> std::time::Instant {
+        std::time::Instant::now() + std::time::Duration::from_secs(seconds)
+    }
+
+    fn tick(state: &mut ClientShellState, seconds: u64) -> Vec<(String, Method)> {
+        let mut outcome = ClientShellInput::default();
+        state.tick_investigation(later(seconds), &mut outcome);
+        requests(&outcome)
+    }
+
+    fn with_loaded_preview(state: &mut ClientShellState) {
+        let tab = state.investigation_mut().unwrap();
+        let mut document = Document::new("/work/a.txt".into());
+        document.update("hello\n".into(), "cksum:1:6".into());
+        tab.preview = Some(document);
+    }
+
+    #[test]
+    fn a_new_viewer_takes_its_location_from_the_focused_pane_before_any_answer() {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(crate::client::shell::tests::snapshot()));
+        set_panes(
+            &mut state,
+            &[
+                ("pane_1", Some("app"), Some("devbox")),
+                ("pane_2", None, None),
+            ],
+        );
+        let mut outcome = ClientShellInput::default();
+
+        state.open_file_viewer_for(Some("ws_1".into()), &mut outcome);
+
+        let [(_, Method::PaneDirectoryList(list)), (_, Method::PaneDirectoryIndex(_))] =
+            &requests(&outcome)[..]
+        else {
+            panic!("an off-host pane lists and indexes through pane.directory.*");
+        };
+        assert_eq!(list.pane_id, "pane_1");
+        assert_eq!(list.path, None);
+        assert_eq!(state.workbench.tabs[0].browser.location, Some(container()));
+    }
+
+    #[test]
+    fn browsing_another_workspace_decides_the_location_from_that_workspace() {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        let mut second = snapshot.workspaces[0].clone();
+        second.workspace_id = "ws_2".into();
+        second.active_tab_id = "tab_2".into();
+        second.focused = false;
+        snapshot.workspaces.push(second);
+        let mut remote = pane("pane_9", None, Some("devbox"), false);
+        remote.workspace_id = "ws_2".into();
+        remote.tab_id = "tab_2".into();
+        snapshot.panes.push(remote);
+        state.set_snapshot(Box::new(snapshot));
+        let mut outcome = ClientShellInput::default();
+
+        state.open_file_viewer_for(Some("ws_2".into()), &mut outcome);
+
+        let methods = requests(&outcome);
+        assert!(
+            methods.iter().any(|(_, m)| matches!(
+                m,
+                Method::PaneDirectoryList(list) if list.pane_id == "pane_9"
+            )),
+            "{methods:?}"
+        );
+        assert_eq!(
+            state.workbench.tabs[0].browser.location,
+            Some(FileLocation::Ssh {
+                host: "devbox".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_server_without_pane_directory_methods_keeps_listing_the_host() {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_endpoint_methods(Some(
+            Method::OPERATIONS
+                .iter()
+                .map(|op| op.name)
+                .filter(|name| {
+                    !name.starts_with("pane.directory.") && !name.starts_with("pane.file.")
+                })
+                .map(str::to_owned)
+                .collect(),
+        ));
+        state.set_snapshot(Box::new(crate::client::shell::tests::snapshot()));
+        set_panes(&mut state, &[("pane_1", Some("app"), None)]);
+        let mut outcome = ClientShellInput::default();
+
+        state.open_file_viewer_for(Some("ws_1".into()), &mut outcome);
+
+        assert!(matches!(&requests(&outcome)[0].1, Method::DirectoryList(_)));
+        assert_eq!(state.workbench.tabs[0].browser.location, None);
+    }
+
+    #[test]
+    fn expanding_lists_through_the_focused_pane_of_the_tabs_location() {
+        let mut state = offhost_state();
+        set_panes(
+            &mut state,
+            &[
+                ("pane_1", Some("app"), Some("devbox")),
+                ("pane_2", Some("app"), Some("devbox")),
+            ],
+        );
+        let mut snapshot = state.snapshot.as_deref().unwrap().clone();
+        snapshot.focused_pane_id = Some("pane_2".into());
+        state_set_snapshot(&mut state, snapshot);
+        let mut outcome = ClientShellInput::default();
+
+        state.request_file_viewer_listing("/work/src".into(), &mut outcome);
+
+        let [(_, Method::PaneDirectoryList(list))] = &requests(&outcome)[..] else {
+            panic!("{:?}", requests(&outcome));
+        };
+        assert_eq!(list.pane_id, "pane_2");
+        assert_eq!(list.path.as_deref(), Some("/work/src"));
+    }
+
+    #[test]
+    fn a_closed_pane_hands_requests_to_another_pane_of_the_location() {
+        let mut state = offhost_state();
+        set_panes(
+            &mut state,
+            &[
+                ("pane_9", None, None),
+                ("pane_2", Some("app"), Some("devbox")),
+            ],
+        );
+        let mut outcome = ClientShellInput::default();
+
+        state.request_file_viewer_listing("/work/src".into(), &mut outcome);
+
+        let [(_, Method::PaneDirectoryList(list))] = &requests(&outcome)[..] else {
+            panic!("{:?}", requests(&outcome));
+        };
+        assert_eq!(list.pane_id, "pane_2");
+    }
+
+    #[test]
+    fn a_pane_of_another_location_is_never_used_for_the_tab() {
+        let mut state = offhost_state();
+        set_panes(&mut state, &[("pane_1", Some("app"), None)]);
+        let mut outcome = ClientShellInput::default();
+
+        state.request_file_viewer_listing("/work/src".into(), &mut outcome);
+
+        assert!(requests(&outcome).is_empty());
+        let tab = state.investigation().unwrap();
+        assert!(matches!(
+            tab.browser.directories.get("/work/src"),
+            Some(crate::client::shell::file_viewer::model::DirectoryState::Failed(n))
+                if n == "no pane running in app@devbox"
+        ));
+    }
+
+    #[test]
+    fn a_tab_without_a_pane_stops_polling_and_resumes_when_one_returns() {
+        let mut state = offhost_state();
+        with_loaded_preview(&mut state);
+        set_panes(&mut state, &[("pane_9", None, None)]);
+        let mut outcome = ClientShellInput::default();
+        state.request_file_viewer_listing("/work/src".into(), &mut outcome);
+
+        assert!(tick(&mut state, 6).is_empty());
+        assert_eq!(
+            state.investigation().unwrap().notice,
+            "no pane running in app@devbox"
+        );
+
+        set_panes(
+            &mut state,
+            &[
+                ("pane_9", None, None),
+                ("pane_3", Some("app"), Some("devbox")),
+            ],
+        );
+        let resumed = tick(&mut state, 12);
+
+        assert!(
+            resumed.iter().any(|(_, m)| matches!(
+                m,
+                Method::PaneDirectoryList(list) if list.pane_id == "pane_3" && list.path.as_deref() == Some("/work/src")
+            )),
+            "{resumed:?}"
+        );
+        assert_eq!(state.investigation().unwrap().notice, "");
+    }
+
+    #[test]
+    fn selecting_a_file_reads_it_through_pane_file_read_without_poll() {
+        let mut state = offhost_state();
+        let tab = state.investigation_mut().unwrap();
+        tab.preview = Some(Document::new("/work/a.txt".into()));
+        let mut outcome = ClientShellInput::default();
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.directories.insert(
+            "/work".into(),
+            crate::client::shell::file_viewer::model::DirectoryState::Loaded(
+                crate::client::shell::file_viewer::model::DirectoryListing {
+                    canonical: "/work".into(),
+                    entries: vec![entry("a.txt", DirectoryEntryKind::File)],
+                    truncated: false,
+                    omitted: None,
+                    unlistable: None,
+                    git_error: None,
+                },
+            ),
+        );
+        tab.browser.rebuild(false);
+        tab.preview = None;
+
+        state.request_investigation_preview(false, false, &mut outcome);
+
+        let [(_, Method::PaneFileRead(read))] = &requests(&outcome)[..] else {
+            panic!("{:?}", requests(&outcome));
+        };
+        assert_eq!(read.path, "/work/a.txt");
+        assert!(!read.poll);
+        assert_eq!(read.revision, None);
+        assert_eq!(read.pane_id, "pane_1");
+    }
+
+    #[test]
+    fn a_pane_file_answer_loads_the_document_like_a_host_answer() {
+        let mut state = offhost_state();
+        let tab = state.investigation_mut().unwrap();
+        let mut document = Document::new("/work/a.txt".into());
+        document.request_generation = 5;
+        tab.preview = Some(document);
+        let mut outcome = ClientShellInput::default();
+
+        state.handle_investigation_result(
+            FileRequest::Read {
+                id: 1,
+                path: "/work/a.txt".into(),
+                generation: 5,
+                prepare: false,
+            },
+            Ok(ResponseResult::PaneFileDocument(PaneFileContent {
+                location: PaneLocation {
+                    kind: PaneLocationKind::Container,
+                    ssh_host: Some("devbox".into()),
+                    container: Some("app".into()),
+                },
+                document: FileDocument {
+                    path: "/work/a.txt".into(),
+                    text: "remote\n".into(),
+                    revision: "cksum:9:7".into(),
+                    unchanged: false,
+                },
+            })),
+            &mut outcome,
+        );
+
+        assert_eq!(
+            state.investigation().unwrap().document().unwrap().text,
+            "remote\n"
+        );
+    }
+
+    #[test]
+    fn a_pane_directory_answer_fills_the_tree_and_names_no_pane() {
+        let mut state = offhost_state();
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.root = None;
+        let generation = tab.browser.generation;
+
+        state.handle_file_viewer_endpoint_result(
+            FileViewerRequest::List {
+                generation,
+                path: None,
+            },
+            Ok(pane_listing("/work")),
+            &mut ClientShellInput::default(),
+        );
+
+        let tab = state.investigation().unwrap();
+        assert_eq!(tab.browser.root.as_deref(), Some("/work"));
+        assert_eq!(tab.browser.rows.len(), 2);
+        assert_eq!(tab.notice, "");
+    }
+
+    #[test]
+    fn off_host_polls_every_five_seconds_with_poll_set() {
+        let mut state = offhost_state();
+        with_loaded_preview(&mut state);
+        state.investigation_mut().unwrap().last_poll = std::time::Instant::now();
+
+        assert!(tick(&mut state, 4).is_empty());
+        let due = tick(&mut state, 6);
+
+        let [(_, Method::PaneFileRead(read))] = &due[..] else {
+            panic!("{due:?}");
+        };
+        assert!(read.poll);
+        assert_eq!(read.revision.as_deref(), Some("cksum:1:6"));
+    }
+
+    #[test]
+    fn host_tabs_keep_polling_every_second_through_file_read() {
+        let mut state = state();
+        state.investigation_mut().unwrap().last_poll = std::time::Instant::now();
+
+        assert!(tick(&mut state, 0).is_empty());
+        let due = tick(&mut state, 2);
+
+        assert!(matches!(&due[..], [(_, Method::FileRead(_))]), "{due:?}");
+    }
+
+    #[test]
+    fn off_host_polling_waits_while_any_endpoint_request_is_pending() {
+        let mut state = offhost_state();
+        with_loaded_preview(&mut state);
+        state.investigation_mut().unwrap().last_poll = std::time::Instant::now();
+        let mut outcome = ClientShellInput::default();
+        state.request_file_viewer_listing("/work/src".into(), &mut outcome);
+        let (list_id, _) = requests(&outcome).remove(0);
+
+        assert!(tick(&mut state, 6).is_empty());
+
+        answer(&mut state, &list_id, Ok(pane_listing("/work/src")));
+        assert!(matches!(
+            &tick(&mut state, 7)[..],
+            [(_, Method::PaneFileRead(_))]
+        ));
+    }
+
+    #[test]
+    fn off_host_polling_skips_a_tick_while_the_previous_read_is_pending() {
+        let mut state = offhost_state();
+        with_loaded_preview(&mut state);
+        let tab = state.investigation_mut().unwrap();
+        tab.last_poll = std::time::Instant::now();
+        tab.pending_reads.insert("/work/a.txt".into());
+
+        assert!(tick(&mut state, 6).is_empty());
+    }
+
+    #[test]
+    fn content_search_replace_and_file_operations_only_say_they_are_unavailable() {
+        use crossterm::event::KeyModifiers as M;
+        let mut state = offhost_state();
+        with_loaded_preview(&mut state);
+        for index in (6..=15).chain([22]) {
+            let mut outcome = ClientShellInput::default();
+            state.investigation_menu_action(index, &mut outcome);
+            assert!(requests(&outcome).is_empty(), "menu {index}");
+            assert_eq!(
+                state.investigation().unwrap().notice,
+                "not available inside app@devbox",
+                "menu {index}"
+            );
+            state.investigation_mut().unwrap().notice.clear();
+        }
+        for (code, modifiers) in [
+            (KeyCode::Char('f'), M::CONTROL | M::SHIFT),
+            (KeyCode::Char('h'), M::CONTROL),
+            (KeyCode::F(2), M::empty()),
+            (KeyCode::Delete, M::empty()),
+        ] {
+            state.investigation_mut().unwrap().focus = Focus::Results;
+            let outcome = press(&mut state, code, modifiers);
+            assert!(requests(&outcome).is_empty(), "{code:?}");
+            let tab = state.investigation().unwrap();
+            assert!(!tab.content_search, "{code:?}");
+            assert_eq!(tab.notice, "not available inside app@devbox", "{code:?}");
+            state.investigation_mut().unwrap().notice.clear();
+        }
+        let mut outcome = ClientShellInput::default();
+        state.investigation_paste(&mut outcome);
+        assert_eq!(
+            state.investigation().unwrap().notice,
+            "not available inside app@devbox"
+        );
+    }
+
+    #[test]
+    fn host_tabs_still_run_their_file_operations() {
+        let mut state = state();
+        let mut outcome = ClientShellInput::default();
+        state.investigation_menu_action(12, &mut outcome);
+        assert!(state.investigation().unwrap().notice.is_empty());
+    }
+
+    #[test]
+    fn toggling_reshows_the_tab_whose_location_is_the_focused_panes() {
+        let mut state = offhost_state();
+        let host = {
+            let mut tab = state_tab_host(&state);
+            tab.id = 77;
+            tab
+        };
+        state.workbench.tabs.push(host);
+        state.workbench.visible = false;
+
+        set_panes(&mut state, &[("pane_1", Some("app"), Some("devbox"))]);
+        assert!(state.toggle_investigation());
+        assert_eq!(state.workbench.active, Some(0));
+
+        state.workbench.visible = false;
+        set_panes(&mut state, &[("pane_9", None, None)]);
+        assert!(state.toggle_investigation());
+        assert_eq!(state.workbench.active, Some(1));
+
+        state.workbench.visible = false;
+        set_panes(&mut state, &[("pane_5", None, Some("other"))]);
+        assert!(!state.toggle_investigation(), "no tab of that location yet");
+    }
+
+    #[test]
+    fn toggling_on_a_server_without_pane_directory_reshows_the_host_fallback_tab() {
+        let mut state = state();
+        state.set_endpoint_methods(Some(
+            Method::OPERATIONS
+                .iter()
+                .map(|op| op.name)
+                .filter(|name| {
+                    !name.starts_with("pane.directory.") && !name.starts_with("pane.file.")
+                })
+                .map(str::to_owned)
+                .collect(),
+        ));
+        set_panes(&mut state, &[("pane_1", Some("app"), None)]);
+        state.workbench.visible = false;
+
+        assert!(state.toggle_investigation());
+        assert_eq!(state.workbench.active, Some(0));
+    }
+
+    fn state_tab_host(state: &ClientShellState) -> Investigation {
+        use crate::client::shell::file_viewer::model::FileViewerOptions;
+        let mut browser = ClientFileViewerOverlay::new(FileViewerOptions {
+            generation: 50,
+            workspace_id: state.workbench.tabs[0].browser.workspace_id.clone(),
+            show_hidden: true,
+            show_ignored: false,
+            index_supported: false,
+            location: None,
+        });
+        browser.root = Some("/repo".into());
+        Investigation::new(browser, ClientEndpointId::Local, "boot-1".into())
+    }
+
+    #[test]
+    fn titles_and_tab_labels_prefix_the_location() {
+        let mut state = offhost_state();
+        let tab = state.investigation_mut().unwrap();
+        assert_eq!(tab.browser.title(), "files · app@devbox:/work");
+        tab.browser.location = Some(FileLocation::Container {
+            name: "app".into(),
+            ssh_host: None,
+        });
+        assert_eq!(tab.browser.title(), "files · app:/work");
+        tab.browser.location = Some(FileLocation::Ssh {
+            host: "devbox".into(),
+        });
+        tab.browser.root = Some("/home/u/proj".into());
+        assert_eq!(tab.browser.title(), "files · devbox:/home/u/proj");
+        tab.browser.location = None;
+        assert_eq!(tab.browser.title(), "files · /home/u/proj");
+
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.location = Some(container());
+        tab.browser.root = Some("/work".into());
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        let frame = state.compose(120, 32).expect("composed investigation");
+        let text: String = frame.cells.iter().map(|c| c.symbol.as_str()).collect();
+        assert!(text.contains("app@devbox:work"), "tab label");
+        assert!(text.contains("app@devbox:/work"), "header path");
+    }
+
+    #[test]
+    fn paths_go_only_to_the_focused_pane_in_the_tabs_location() {
+        let mut state = offhost_state();
+        let mut outcome = ClientShellInput::default();
+
+        state.send_file_viewer_path("/work/a.txt", false, &mut outcome);
+        assert!(!outcome.requests.is_empty(), "same location sends");
+
+        set_panes(&mut state, &[("pane_9", None, None)]);
+        let mut outcome = ClientShellInput::default();
+        state.send_file_viewer_path("/work/a.txt", false, &mut outcome);
+        assert!(outcome.requests.is_empty());
+        assert_eq!(
+            state.investigation().unwrap().browser.notice.as_deref(),
+            Some("terminal destination is not in app@devbox")
+        );
+    }
+
+    #[test]
+    fn a_host_tab_refuses_to_send_host_paths_into_an_off_host_pane() {
+        let mut state = state();
+        set_panes(&mut state, &[("pane_1", None, Some("devbox"))]);
+        let mut outcome = ClientShellInput::default();
+
+        state.send_file_viewer_path("/repo/a.txt", false, &mut outcome);
+
+        assert!(outcome.requests.is_empty());
+        assert_eq!(
+            state.investigation().unwrap().browser.notice.as_deref(),
+            Some("terminal destination is not in host")
+        );
+    }
+
+    #[test]
+    fn the_send_menu_names_the_focused_pane_of_the_location_not_a_stored_one() {
+        let mut state = offhost_state();
+        with_loaded_preview(&mut state);
+        let tab = state.investigation_mut().unwrap();
+        tab.focus = Focus::Body;
+        let mut outcome = ClientShellInput::default();
+
+        state.investigation_menu_action(4, &mut outcome);
+
+        assert!(matches!(
+            &state.investigation().unwrap().dialog,
+            Some(Dialog::Send { pane, .. }) if pane == "pane_1"
+        ));
+    }
+
+    #[test]
+    fn the_editor_opens_in_the_focused_pane_and_tracks_the_overlay_pane_it_answers_with() {
+        let mut state = offhost_state();
+        with_loaded_preview(&mut state);
+        state.investigation_mut().unwrap().focus = Focus::Body;
+        let mut outcome = ClientShellInput::default();
+
+        state.investigation_menu_action(5, &mut outcome);
+
+        let [(id, Method::PaneDirectoryOpenEditor(edit))] = &requests(&outcome)[..] else {
+            panic!("{:?}", requests(&outcome));
+        };
+        assert_eq!(
+            (edit.pane_id.as_str(), edit.path.as_str()),
+            ("pane_1", "/work/a.txt")
+        );
+        let pane: crate::api::schema::PaneInfo = serde_json::from_value(serde_json::json!({
+            "pane_id": "pane_editor", "terminal_id": "t9", "workspace_id": "ws_1",
+            "tab_id": "tab_1", "focused": true, "agent_status": "unknown", "revision": 0
+        }))
+        .unwrap();
+        answer(&mut state, id, Ok(ResponseResult::PaneInfo { pane }));
+        assert!(!state.workbench.visible);
+        assert_eq!(state.workbench.editor.as_ref().unwrap().pane, "pane_editor");
+    }
+
+    #[test]
+    fn an_editor_answer_without_a_pane_is_reported_and_keeps_the_tab() {
+        let mut state = offhost_state();
+        with_loaded_preview(&mut state);
+        state.investigation_mut().unwrap().focus = Focus::Body;
+        let mut outcome = ClientShellInput::default();
+        state.investigation_menu_action(5, &mut outcome);
+        let (id, _) = requests(&outcome).remove(0);
+
+        answer(&mut state, &id, Ok(ResponseResult::Ok {}));
+
+        assert!(state.workbench.editor.is_none());
+        assert!(state.workbench.visible);
+        assert_eq!(
+            state.investigation().unwrap().notice,
+            "unexpected editor response"
+        );
+    }
+
+    #[test]
+    fn saved_entries_keep_their_location_and_old_entries_load_as_host() {
+        let saved = SavedInvestigation {
+            location: Some(container()),
+            root: "/work".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: SavedInvestigation = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.location, Some(container()));
+
+        let old: SavedInvestigation = serde_json::from_str(
+            r#"{"endpoint":"local","workspace":"ws_1","root":"/r","files":[],"active_file":null,"horizontal":false,"query":"","include":"","exclude":"","regex":false,"case_sensitive":false,"whole_word":false,"ignored":false,"content_search":false}"#,
+        )
+        .unwrap();
+        assert_eq!(old.location, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("location"));
+    }
+
+    #[test]
+    fn an_off_host_saved_entry_waits_for_a_pane_of_its_location() {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(crate::client::shell::tests::snapshot()));
+        state.workbench.saved = vec![
+            SavedInvestigation {
+                location: Some(container()),
+                ..saved_in("local", "ws_1", "/work")
+            },
+            saved_in("local", "ws_1", "/repo"),
+        ];
+
+        state.tick_investigation(later(1), &mut ClientShellInput::default());
+        assert_eq!(
+            state.workbench.tabs.len(),
+            1,
+            "the host entry is not held back"
+        );
+        assert_eq!(
+            state.workbench.tabs[0].browser.root.as_deref(),
+            Some("/repo")
+        );
+        assert_eq!(
+            state.workbench.saved.len(),
+            1,
+            "the off-host entry stays saved"
+        );
+
+        set_panes(
+            &mut state,
+            &[
+                ("pane_1", None, None),
+                ("pane_3", Some("app"), Some("devbox")),
+            ],
+        );
+        let mut outcome = ClientShellInput::default();
+        state.tick_investigation(later(2), &mut outcome);
+
+        assert!(state.workbench.saved.is_empty());
+        let restored = &state.workbench.tabs[1];
+        assert_eq!(restored.browser.location, Some(container()));
+        assert_eq!(restored.browser.root.as_deref(), Some("/work"));
+        assert!(requests(&outcome).iter().any(|(_, m)| matches!(
+            m,
+            Method::PaneDirectoryList(list) if list.pane_id == "pane_3" && list.path.as_deref() == Some("/work")
+        )));
+    }
+
+    #[test]
+    fn an_index_lost_for_lack_of_a_pane_is_requested_again_when_one_returns() {
+        let mut state = offhost_state();
+        let generation = state.investigation().unwrap().browser.generation;
+        state.handle_file_viewer_endpoint_result(
+            FileViewerRequest::Index { generation },
+            Err(ClientShellEndpointError {
+                code: Some("pane_not_found".into()),
+                message: "pane not found: pane_1".into(),
+            }),
+            &mut ClientShellInput::default(),
+        );
+        set_panes(&mut state, &[("pane_3", Some("app"), Some("devbox"))]);
+
+        let resumed = tick(&mut state, 2);
+
+        assert!(
+            resumed.iter().any(|(_, m)| matches!(
+                m,
+                Method::PaneDirectoryIndex(index)
+                    if index.pane_id == "pane_3" && index.path.as_deref() == Some("/work")
+            )),
+            "{resumed:?}"
+        );
+        assert!(state.investigation().unwrap().browser.indexing());
+        assert!(
+            !tick(&mut state, 3)
+                .iter()
+                .any(|(_, m)| matches!(m, Method::PaneDirectoryIndex(_))),
+            "asked once, not on every tick"
+        );
+    }
+
+    #[test]
+    fn an_index_that_is_simply_not_a_repository_is_not_requested_again() {
+        let mut state = offhost_state();
+        let generation = state.investigation().unwrap().browser.generation;
+        state.handle_file_viewer_endpoint_result(
+            FileViewerRequest::Index { generation },
+            Ok(ResponseResult::DirectoryIndex {
+                repo_root: None,
+                entries: Vec::new(),
+                truncated: false,
+                git_error: None,
+            }),
+            &mut ClientShellInput::default(),
+        );
+
+        assert!(!tick(&mut state, 2)
+            .iter()
+            .any(|(_, m)| matches!(m, Method::PaneDirectoryIndex(_))));
+    }
+
+    fn restored_requests(location: Option<FileLocation>) -> Vec<(String, Method)> {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(crate::client::shell::tests::snapshot()));
+        set_panes(
+            &mut state,
+            &[(
+                "pane_1",
+                location.as_ref().map(|_| "app"),
+                location.as_ref().map(|_| "devbox"),
+            )],
+        );
+        state.workbench.saved = vec![SavedInvestigation {
+            location,
+            ..saved_in("local", "ws_1", "/saved/root")
+        }];
+        let mut outcome = ClientShellInput::default();
+        state.tick_investigation(later(1), &mut outcome);
+        assert_eq!(
+            state.workbench.tabs[0].browser.root.as_deref(),
+            Some("/saved/root")
+        );
+        requests(&outcome)
+    }
+
+    #[test]
+    fn restoring_a_host_tab_lists_and_indexes_the_saved_root_in_the_first_requests() {
+        let sent = restored_requests(None);
+        let [(_, Method::DirectoryList(list)), (_, Method::DirectoryIndex(index))] = &sent[..]
+        else {
+            panic!("{sent:?}");
+        };
+        assert_eq!(list.path.as_deref(), Some("/saved/root"));
+        assert_eq!(index.path.as_deref(), Some("/saved/root"));
+    }
+
+    #[test]
+    fn restoring_an_off_host_tab_lists_and_indexes_the_saved_root_in_the_first_requests() {
+        let sent = restored_requests(Some(container()));
+        let [(_, Method::PaneDirectoryList(list)), (_, Method::PaneDirectoryIndex(index))] =
+            &sent[..]
+        else {
+            panic!("{sent:?}");
+        };
+        assert_eq!(list.path.as_deref(), Some("/saved/root"));
+        assert_eq!(index.path.as_deref(), Some("/saved/root"));
+    }
 }

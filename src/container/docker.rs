@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use super::labels::parse_inspect_output;
 use super::{ContainerInfo, ContainerListError, ContainerRef};
 use crate::noninteractive_process::{run_with_deadline, ProcessOutput, RunError};
-use crate::ssh_host::launch::shell_quote;
+use crate::ssh_host::launch::{is_ssh_login_failure, shell_quote, ssh_batch_argv};
 
 /// Total budget for one resolution (`ps` followed by `inspect`).
 pub(crate) const DOCKER_CLI_TIMEOUT: Duration = Duration::from_secs(5);
@@ -159,71 +159,21 @@ fn failed(output: ProcessOutput) -> ContainerListError {
     }
 }
 
-/// `ssh [-S <control> -o ControlMaster=auto -o ControlPersist=600] <batch options> <host> "docker '<arg>'…"`.
+/// `ssh` running one `docker '<arg>'…` command, see [`ssh_batch_argv`].
 ///
-/// Why `ControlMaster=auto` and not `no` like the clipboard side channel: a
-/// listing may be the first contact with the host, and the master it creates
-/// is the one a pane opened afterwards joins through the same `ControlPath`.
-/// Why `BatchMode`: nothing here can answer a password or host key prompt, so
-/// an unauthenticated host must fail fast and send the user to an ssh pane.
-/// Why not `-F`: the user's own config must resolve `host` exactly as it does
-/// for ssh panes, or `%C` in the control path would name another socket.
 /// Why one pre-quoted command: ssh joins its remaining arguments with spaces
 /// for the remote login shell, which would split filters at `=` and `;`.
-/// The remaining options match the clipboard side channel: no tty (stdin may
-/// carry raw bytes), no `RemoteCommand` (ssh refuses a second command), and
-/// no forwardings or local commands.
 pub(super) fn ssh_docker_argv(
     host: &str,
     control_path: Option<&Path>,
     docker_args: &[&str],
 ) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = Vec::new();
-    if let Some(control_path) = control_path {
-        argv.extend([
-            "-S".into(),
-            control_path.as_os_str().to_owned(),
-            "-o".into(),
-            "ControlMaster=auto".into(),
-            "-o".into(),
-            "ControlPersist=600".into(),
-        ]);
-    }
-    for option in [
-        "BatchMode=yes",
-        "ConnectTimeout=5",
-        "RequestTTY=no",
-        "RemoteCommand=none",
-        "ClearAllForwardings=yes",
-        "PermitLocalCommand=no",
-        "ForwardX11=no",
-        "ForwardAgent=no",
-    ] {
-        argv.push("-o".into());
-        argv.push(option.into());
-    }
-    argv.push(host.into());
     let mut command = String::from("docker");
     for arg in docker_args {
         command.push(' ');
         command.push_str(&shell_quote(arg));
     }
-    argv.push(command.into());
-    argv
-}
-
-/// Exit status 255 is ssh's own failure; these are the ones a prompt-free
-/// run cannot get past but an interactive ssh pane can.
-fn is_ssh_login_failure(stderr: &str) -> bool {
-    [
-        "Permission denied",
-        "Host key verification failed",
-        "REMOTE HOST IDENTIFICATION HAS CHANGED",
-        "Could not resolve",
-        "Too many authentication failures",
-    ]
-    .iter()
-    .any(|marker| stderr.contains(marker))
+    ssh_batch_argv(host, control_path, &command)
 }
 
 /// Runs one docker CLI call, locally or on the ssh host. `stdin` is streamed

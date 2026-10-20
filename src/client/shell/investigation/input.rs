@@ -66,6 +66,14 @@ impl ClientShellState {
                     tab.focus = Focus::Paths;
                     return;
                 }
+                KeyCode::Char('f' | 'h')
+                    if (shift || code == KeyCode::Char('h')) && tab.browser.location.is_some() =>
+                {
+                    if let Some(location) = tab.browser.location.as_ref() {
+                        tab.notice = super::operations::unavailable_notice(location);
+                    }
+                    return;
+                }
                 KeyCode::Char('f') if shift => {
                     tab.content_search = true;
                     tab.focus = Focus::Query;
@@ -483,7 +491,6 @@ impl ClientShellState {
                 .find(|(r, _)| contains(*r, point))
             {
                 let index = *index;
-                self.workbench.tabs[index].browser.pane_id = self.focused_pane_id();
                 self.workbench.active = Some(index);
                 self.workbench.visible = true;
                 outcome.repaint = true;

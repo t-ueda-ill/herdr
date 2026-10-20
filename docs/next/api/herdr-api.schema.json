@@ -2880,6 +2880,66 @@
           ],
           "type": "string"
         },
+        "PaneDirectoryIndexParams": {
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "path": {
+              "description": "Absolute path inside the pane's environment. Defaults to the pane's working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trust_repository": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        "PaneDirectoryListParams": {
+          "properties": {
+            "pane_id": {
+              "description": "Off-host pane whose environment is listed.",
+              "type": "string"
+            },
+            "path": {
+              "description": "Absolute directory inside the pane's environment. Defaults to the pane's working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trust_repository": {
+              "description": "Passes `safe.directory` for the discovered repository.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        "PaneDirectoryOpenEditorParams": {
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "path": {
+              "description": "Absolute path of the file to edit inside the pane's environment. Directories are rejected.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "path"
+          ],
+          "type": "object"
+        },
         "PaneEdgesParams": {
           "properties": {
             "pane_id": {
@@ -2889,6 +2949,33 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "PaneFileReadParams": {
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "path": {
+              "description": "Absolute path inside the pane's environment.",
+              "type": "string"
+            },
+            "poll": {
+              "description": "A background refresh: the request gets a short deadline so it cannot starve other work.",
+              "type": "boolean"
+            },
+            "revision": {
+              "description": "Revision the client already holds; a match answers `unchanged` without content.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id",
+            "path"
+          ],
           "type": "object"
         },
         "PaneFocusDirectionParams": {
@@ -6910,6 +6997,70 @@
         {
           "properties": {
             "method": {
+              "const": "pane.directory.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneDirectoryListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.directory.index",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneDirectoryIndexParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.directory.open_editor",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneDirectoryOpenEditorParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.file.read",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneFileReadParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "files.cancel",
               "type": "string"
             },
@@ -8694,6 +8845,98 @@
           ],
           "type": "string"
         },
+        "PaneDirectoryIndexing": {
+          "description": "Body of a `pane.directory.index` result.",
+          "properties": {
+            "entries": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "git_error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "location": {
+              "$ref": "#/schemas/success_response/$defs/PaneLocation"
+            },
+            "repo_root": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "location",
+            "entries",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        "PaneDirectoryListing": {
+          "description": "Body of a `pane.directory.list` result.",
+          "properties": {
+            "canonical": {
+              "type": "string"
+            },
+            "entries": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/DirectoryEntry"
+              },
+              "type": "array"
+            },
+            "git_error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "location": {
+              "$ref": "#/schemas/success_response/$defs/PaneLocation"
+            },
+            "omitted": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "root": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "unlistable": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "location",
+            "root",
+            "path",
+            "canonical",
+            "entries",
+            "truncated"
+          ],
+          "type": "object"
+        },
         "PaneEdgesResult": {
           "properties": {
             "down": {
@@ -8722,6 +8965,22 @@
             "up",
             "down",
             "layout"
+          ],
+          "type": "object"
+        },
+        "PaneFileContent": {
+          "description": "Body of a `pane.file.read` result.",
+          "properties": {
+            "document": {
+              "$ref": "#/schemas/success_response/$defs/FileDocument"
+            },
+            "location": {
+              "$ref": "#/schemas/success_response/$defs/PaneLocation"
+            }
+          },
+          "required": [
+            "location",
+            "document"
           ],
           "type": "object"
         },
@@ -9053,6 +9312,53 @@
             "end_col"
           ],
           "type": "object"
+        },
+        "PaneLocation": {
+          "description": "The environment a pane's shell runs in.",
+          "properties": {
+            "container": {
+              "description": "`container`: the canonical container name.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/PaneLocationKind"
+            },
+            "ssh_host": {
+              "description": "`ssh`: the alias. `container`: the alias of the ssh host whose docker runs it, if any.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "PaneLocationKind": {
+          "oneOf": [
+            {
+              "enum": [
+                "ssh",
+                "container"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "host",
+              "description": "Reserved: requests for host panes are rejected with `invalid_params`.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind a newer server adds.",
+              "type": "string"
+            }
+          ]
         },
         "PaneMoveReason": {
           "enum": [
@@ -11491,6 +11797,45 @@
               "required": [
                 "type",
                 "document"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/success_response/$defs/PaneDirectoryListing",
+              "properties": {
+                "type": {
+                  "const": "pane_directory_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/success_response/$defs/PaneDirectoryIndexing",
+              "properties": {
+                "type": {
+                  "const": "pane_directory_index",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/success_response/$defs/PaneFileContent",
+              "properties": {
+                "type": {
+                  "const": "pane_file_document",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
               ],
               "type": "object"
             },

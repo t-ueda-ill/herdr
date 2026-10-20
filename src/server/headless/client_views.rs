@@ -222,7 +222,7 @@ impl HeadlessServer {
         self.focus_shell_client_on_tab(client_id, &tab_id)
     }
 
-    fn shell_locations_may_need_reconcile(method: &api::schema::Method) -> bool {
+    pub(super) fn shell_locations_may_need_reconcile(method: &api::schema::Method) -> bool {
         use api::schema::Method;
 
         matches!(
@@ -231,6 +231,7 @@ impl HeadlessServer {
                 | Method::PaneClose(_)
                 | Method::PaneEditScrollback(_)
                 | Method::PaneOpenEditor(_)
+                | Method::PaneDirectoryOpenEditor(_)
                 | Method::PaneMove(_)
                 | Method::PaneSplit(_)
                 | Method::TabClose(_)
@@ -246,7 +247,7 @@ impl HeadlessServer {
         )
     }
 
-    fn shell_endpoint_claims_geometry(method: &api::schema::Method) -> bool {
+    pub(super) fn shell_endpoint_claims_geometry(method: &api::schema::Method) -> bool {
         use api::schema::Method;
 
         matches!(
@@ -259,6 +260,7 @@ impl HeadlessServer {
                 | Method::PaneCopySearch(_)
                 | Method::PaneEditScrollback(_)
                 | Method::PaneOpenEditor(_)
+                | Method::PaneDirectoryOpenEditor(_)
                 | Method::PaneFocus(_)
                 | Method::PaneFocusDirection(_)
                 | Method::PaneInputSet(_)
@@ -291,7 +293,7 @@ impl HeadlessServer {
         )
     }
 
-    fn public_request_may_change_geometry(method: &api::schema::Method) -> bool {
+    pub(super) fn public_request_may_change_geometry(method: &api::schema::Method) -> bool {
         use api::schema::Method;
 
         matches!(
@@ -302,6 +304,7 @@ impl HeadlessServer {
                 | Method::PaneClose(_)
                 | Method::PaneEditScrollback(_)
                 | Method::PaneOpenEditor(_)
+                | Method::PaneDirectoryOpenEditor(_)
                 | Method::PaneFocus(_)
                 | Method::PaneFocusDirection(_)
                 | Method::PaneResize(_)

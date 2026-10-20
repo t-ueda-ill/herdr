@@ -218,6 +218,8 @@ pub(crate) struct GhosttyPaneCore {
     decscusr_tracker: DecscusrTracker,
     cursor_settle_state: CursorPositionSettleState,
     windows_powershell_prompt_cwd_reporting: bool,
+    /// The shell is a docker or ssh CLI child, so OSC 7 names the far side.
+    shell_runs_off_host: bool,
 }
 
 pub(crate) struct PaneTerminal {
@@ -1204,10 +1206,17 @@ impl GhosttyPaneTerminal {
                 decscusr_tracker: DecscusrTracker::default(),
                 cursor_settle_state: CursorPositionSettleState::default(),
                 windows_powershell_prompt_cwd_reporting: false,
+                shell_runs_off_host: false,
             }),
             key_encoder: Mutex::new(key_encoder),
             pending_pty_responses,
         })
+    }
+
+    pub(super) fn set_shell_runs_off_host(&self, off_host: bool) {
+        if let Ok(mut core) = self.core.lock() {
+            core.shell_runs_off_host = off_host;
+        }
     }
 
     pub(super) fn set_windows_powershell_prompt_cwd_reporting(&self, enabled: bool) {
@@ -1421,11 +1430,12 @@ impl GhosttyPaneTerminal {
         );
         let terminal_bells = core.terminal.take_bell_count();
         let clipboard_writes = core.terminal.take_clipboard_writes();
+        let shell_runs_off_host = core.shell_runs_off_host;
         let reported_cwd = core
             .terminal
             .take_pwd_changes()
             .into_iter()
-            .filter_map(|value| parse_reported_cwd(&value))
+            .filter_map(|value| parse_reported_cwd(&value, shell_runs_off_host))
             .next_back();
         #[cfg(windows)]
         windows_recent_fallback::update_after_write(&mut core);
@@ -4161,6 +4171,29 @@ mod tests {
         assert_eq!(
             latest.reported_cwd,
             Some(std::path::PathBuf::from("/tmp/iterm2"))
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn process_pty_bytes_accepts_a_foreign_osc7_host_only_when_the_shell_runs_off_host() {
+        let (tx, _rx) = mpsc::channel(4);
+        let report = b"\x1b]7;file://devbox.internal/home/u/proj\x07";
+        let pane_id = PaneId::from_raw(1);
+        let pane = |off_host: bool| {
+            let terminal = crate::ghostty::Terminal::new(80, 24, 100).unwrap();
+            let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+            pane.set_shell_runs_off_host(off_host);
+            pane
+        };
+
+        let host = pane(false).process_pty_bytes(pane_id, 0, report, &tx);
+        let off_host = pane(true).process_pty_bytes(pane_id, 0, report, &tx);
+
+        assert_eq!(host.reported_cwd, None);
+        assert_eq!(
+            off_host.reported_cwd,
+            Some(std::path::PathBuf::from("/home/u/proj"))
         );
     }
 
