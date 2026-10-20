@@ -242,6 +242,7 @@ impl ClientShellState {
                 }
             }
             22 => tab.schedule_search(),
+            23 => self.refresh_investigation_files(),
             21 => {
                 if let Some(found) = tab.matches.get(tab.selected_match) {
                     let indexes: Vec<_> = tab

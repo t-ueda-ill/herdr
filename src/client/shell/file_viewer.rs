@@ -36,6 +36,15 @@ pub(super) enum FileViewerRequest {
     Index {
         generation: u64,
     },
+    /// Background re-listing of a directory already shown; the answer is
+    /// merged without passing through `DirectoryState::Loading`.
+    Refresh {
+        generation: u64,
+        path: String,
+    },
+    IndexRefresh {
+        generation: u64,
+    },
     OpenEditor {
         instance: u64,
     },
@@ -442,6 +451,25 @@ impl ClientShellState {
         preferred: Option<&str>,
         outcome: &mut ClientShellInput,
     ) -> bool {
+        self.request_file_viewer_index_as(
+            FileViewerRequest::Index { generation },
+            workspace_id,
+            location,
+            path,
+            preferred,
+            outcome,
+        )
+    }
+
+    fn request_file_viewer_index_as(
+        &mut self,
+        request: FileViewerRequest,
+        workspace_id: Option<String>,
+        location: &Option<FileLocation>,
+        path: Option<String>,
+        preferred: Option<&str>,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
         let host_pane = self
             .focused_pane_id()
             .filter(|_| workspace_id == self.workspace_action_id());
@@ -455,9 +483,47 @@ impl ClientShellState {
         self.supports_endpoint_method(&method)
             && self.push_endpoint_method_with_kind(
                 method,
-                PendingEndpointKind::FileViewer(FileViewerRequest::Index { generation }),
+                PendingEndpointKind::FileViewer(request),
                 outcome,
             )
+    }
+
+    /// Asks again for the index without clearing it, so Ctrl+P keeps ranking
+    /// the old paths until the new ones arrive. Why not `Loading`: the
+    /// search rows would blank on every refresh.
+    pub(super) fn request_file_viewer_index_refresh(
+        &mut self,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let Some((generation, workspace_id, location, root)) = self.file_viewer().map(|v| {
+            (
+                v.generation,
+                v.workspace_id.clone(),
+                v.location.clone(),
+                v.root.clone(),
+            )
+        }) else {
+            return false;
+        };
+        let preferred = self.location_pane_hint();
+        let pane = location.as_ref().and_then(|location| {
+            self.file_location_pane(workspace_id.as_deref(), location, preferred.as_deref())
+        });
+        let sent = self.request_file_viewer_index_as(
+            FileViewerRequest::IndexRefresh { generation },
+            workspace_id,
+            &location,
+            root,
+            preferred.as_deref(),
+            outcome,
+        );
+        if sent {
+            self.remember_location_pane(pane);
+            if let Some(viewer) = self.file_viewer() {
+                viewer.refresh.index_in_flight = true;
+            }
+        }
+        sent
     }
 
     pub(super) fn file_viewer(&mut self) -> Option<&mut ClientFileViewerOverlay> {
@@ -530,6 +596,46 @@ impl ClientShellState {
         }
     }
 
+    /// Lists `path` again while the old listing stays on screen. Not
+    /// `request_file_viewer_listing`: that marks the directory `Loading`.
+    pub(super) fn request_file_viewer_refresh(
+        &mut self,
+        path: String,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let Some(viewer) = self.file_viewer() else {
+            return false;
+        };
+        let generation = viewer.generation;
+        let (workspace_id, location) = (viewer.workspace_id.clone(), viewer.location.clone());
+        let preferred = self.location_pane_hint();
+        let Ok(method) = self.file_list_method(
+            &workspace_id,
+            &location,
+            None,
+            Some(path.clone()),
+            preferred.as_deref(),
+        ) else {
+            return false;
+        };
+        let pane = Self::method_location_pane(&method);
+        let sent = self.push_endpoint_method_with_kind(
+            method,
+            PendingEndpointKind::FileViewer(FileViewerRequest::Refresh {
+                generation,
+                path: path.clone(),
+            }),
+            outcome,
+        );
+        if sent {
+            self.remember_location_pane(pane);
+            if let Some(viewer) = self.file_viewer() {
+                viewer.refresh.in_flight.insert(path);
+            }
+        }
+        sent
+    }
+
     /// Lists `root` and indexes it again; the old tree is dropped.
     pub(super) fn change_file_viewer_root(
         &mut self,
@@ -585,6 +691,9 @@ impl ClientShellState {
         viewer.generation = generation;
         viewer.directories.clear();
         viewer.listing_retry.clear();
+        // Answers of the old root are dropped by generation, so nothing would
+        // ever take these out of the in-flight set.
+        viewer.refresh.forget();
         viewer
             .directories
             .insert(root.clone(), DirectoryState::Loading);
@@ -1150,6 +1259,12 @@ impl ClientShellState {
             FileViewerRequest::Index { generation } => {
                 self.complete_file_viewer_index(generation, result)
             }
+            FileViewerRequest::Refresh { generation, path } => {
+                self.complete_file_viewer_refresh(generation, path, result)
+            }
+            FileViewerRequest::IndexRefresh { generation } => {
+                self.complete_file_viewer_index_refresh(generation, result)
+            }
             FileViewerRequest::OpenEditor { instance } => {
                 let Some(viewer) = self
                     .file_viewer()
@@ -1299,36 +1414,173 @@ impl ClientShellState {
             return false;
         };
         viewer.index_retry = matches!(&result, Err(error) if pane_unavailable(error));
-        viewer.index = match result {
-            Ok(ResponseResult::DirectoryIndex {
-                repo_root: Some(repo_root),
-                entries,
-                truncated,
-                ..
-            }) => FileIndex::Ready {
-                repo_root,
-                paths: indexed_paths(entries),
-                truncated,
-            },
-            Ok(ResponseResult::DirectoryIndex { git_error, .. }) => FileIndex::Unavailable {
-                notice: git_error.as_deref().map(|error| {
-                    if error == "git timed out" {
-                        "index timed out".to_owned()
-                    } else {
-                        git_error_notice(error)
-                    }
-                }),
-            },
-            Ok(_) => FileIndex::Unavailable {
-                notice: Some("index unavailable".to_owned()),
-            },
-            Err(error) => FileIndex::Unavailable {
-                notice: Some(format!("index unavailable: {}", error.message)),
-            },
-        };
+        viewer.index = index_from_response(result);
         let searching = viewer.searching();
         viewer.rebuild(!searching);
         true
+    }
+
+    fn complete_file_viewer_refresh(
+        &mut self,
+        generation: u64,
+        path: String,
+        result: Result<ResponseResult, ClientShellEndpointError>,
+    ) -> bool {
+        let Some(viewer) = self
+            .file_viewer()
+            .filter(|viewer| viewer.generation == generation)
+        else {
+            return false;
+        };
+        viewer.refresh.in_flight.remove(&path);
+        let is_root = viewer.root.as_deref() == Some(path.as_str());
+        // A root that lists again has recovered; only its own failure notice
+        // goes, never one raised by something else since.
+        let recovered = is_root
+            && result.is_ok()
+            && viewer
+                .refresh
+                .failure_notice
+                .take()
+                .is_some_and(|failure| viewer.notice.as_ref() == Some(&failure))
+            && viewer.notice.take().is_some();
+        // Collapsed, re-requested or dropped meanwhile: the answer no longer
+        // describes anything on screen.
+        if !matches!(
+            viewer.directories.get(&path),
+            Some(DirectoryState::Loaded(_))
+        ) || !(is_root || viewer.expanded.contains(&path))
+        {
+            return false;
+        }
+        match result {
+            Ok(ResponseResult::DirectoryList {
+                canonical,
+                entries,
+                truncated,
+                git_error,
+                omitted,
+                unlistable,
+                ..
+            }) => {
+                let changed = viewer.apply_refreshed_listing(
+                    &path,
+                    DirectoryListing {
+                        canonical,
+                        entries,
+                        truncated,
+                        omitted,
+                        unlistable,
+                        git_error,
+                    },
+                );
+                changed || recovered
+            }
+            Ok(_) => recovered,
+            Err(error) if is_root => {
+                let notice = Some(format!("refresh failed: {}", listing_error_notice(&error)));
+                let changed = viewer.notice != notice;
+                viewer.refresh.failure_notice = notice.clone();
+                viewer.notice = notice;
+                changed
+            }
+            // Only a directory the server says is gone leaves the tree; a
+            // timeout or a busy server must not collapse what the user opened.
+            Err(error)
+                if matches!(
+                    error.code.as_deref(),
+                    Some("not_found" | "not_a_directory" | "permission_denied")
+                ) =>
+            {
+                viewer.drop_directory(&path);
+                viewer.refresh.index_due = true;
+                viewer.rebuild(true);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn complete_file_viewer_index_refresh(
+        &mut self,
+        generation: u64,
+        result: Result<ResponseResult, ClientShellEndpointError>,
+    ) -> bool {
+        let Some(viewer) = self
+            .file_viewer()
+            .filter(|viewer| viewer.generation == generation)
+        else {
+            return false;
+        };
+        viewer.refresh.index_in_flight = false;
+        let Ok(response) = result else {
+            return false;
+        };
+        let index = index_from_response(Ok(response));
+        // A failed refresh must not take away an index that works.
+        let replace = match (&viewer.index, &index) {
+            (FileIndex::Ready { .. }, FileIndex::Ready { .. }) => {
+                !same_index(&viewer.index, &index)
+            }
+            (FileIndex::Ready { .. }, _) => false,
+            _ => true,
+        };
+        if !replace {
+            return false;
+        }
+        viewer.index = index;
+        viewer.rebuild(true);
+        true
+    }
+}
+
+/// What an index answer says about the index, shared by the first request and
+/// its refreshes.
+fn index_from_response(result: Result<ResponseResult, ClientShellEndpointError>) -> FileIndex {
+    match result {
+        Ok(ResponseResult::DirectoryIndex {
+            repo_root: Some(repo_root),
+            entries,
+            truncated,
+            ..
+        }) => FileIndex::Ready {
+            repo_root,
+            paths: indexed_paths(entries),
+            truncated,
+        },
+        Ok(ResponseResult::DirectoryIndex { git_error, .. }) => FileIndex::Unavailable {
+            notice: git_error.as_deref().map(|error| {
+                if error == "git timed out" {
+                    "index timed out".to_owned()
+                } else {
+                    git_error_notice(error)
+                }
+            }),
+        },
+        Ok(_) => FileIndex::Unavailable {
+            notice: Some("index unavailable".to_owned()),
+        },
+        Err(error) => FileIndex::Unavailable {
+            notice: Some(format!("index unavailable: {}", error.message)),
+        },
+    }
+}
+
+fn same_index(a: &FileIndex, b: &FileIndex) -> bool {
+    match (a, b) {
+        (
+            FileIndex::Ready {
+                repo_root: a_root,
+                paths: a_paths,
+                truncated: a_truncated,
+            },
+            FileIndex::Ready {
+                repo_root: b_root,
+                paths: b_paths,
+                truncated: b_truncated,
+            },
+        ) => a_root == b_root && a_truncated == b_truncated && a_paths == b_paths,
+        _ => false,
     }
 }
 

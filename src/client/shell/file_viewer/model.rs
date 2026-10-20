@@ -3,7 +3,7 @@
 //! Rows are rebuilt here whenever an input changes, so drawing a frame only
 //! walks the cached rows.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -73,7 +73,7 @@ pub(in crate::client::shell) fn location_label(location: Option<&FileLocation>) 
     location.map_or_else(|| "host".to_owned(), FileLocation::label)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::client::shell) struct DirectoryListing {
     pub(in crate::client::shell) canonical: String,
     pub(in crate::client::shell) entries: Vec<DirectoryEntry>,
@@ -162,6 +162,36 @@ impl FileViewerButton {
     ];
 }
 
+/// Bookkeeping of the background refresh of listings already shown. Kept apart
+/// from `DirectoryState` on purpose: a refresh must never turn a `Loaded`
+/// directory into `Loading`, which would blank the rows until the answer.
+#[derive(Debug, Default)]
+pub(in crate::client::shell) struct ListingRefresh {
+    /// Directories with a refresh request on the wire.
+    pub(in crate::client::shell) in_flight: HashSet<String>,
+    /// Directories a manual refresh still has to ask for, one per tick.
+    pub(in crate::client::shell) queue: VecDeque<String>,
+    /// The tree changed shape (or the user asked), so the index is stale.
+    pub(in crate::client::shell) index_due: bool,
+    pub(in crate::client::shell) index_in_flight: bool,
+    /// A manual refresh asked for the index, so the rate limit does not apply.
+    pub(in crate::client::shell) index_forced: bool,
+    pub(in crate::client::shell) last_index_refresh: Option<std::time::Instant>,
+    /// The notice a failed root refresh raised, so a later success clears
+    /// that one and never an unrelated notice.
+    pub(in crate::client::shell) failure_notice: Option<String>,
+}
+
+impl ListingRefresh {
+    pub(in crate::client::shell) fn busy(&self) -> bool {
+        !self.in_flight.is_empty() || self.index_in_flight
+    }
+
+    pub(in crate::client::shell) fn forget(&mut self) {
+        *self = Self::default();
+    }
+}
+
 #[derive(Debug)]
 pub(in crate::client::shell) struct ClientFileViewerOverlay {
     /// Fixed for one opened viewer. Why not `generation`: a root change bumps
@@ -199,6 +229,7 @@ pub(in crate::client::shell) struct ClientFileViewerOverlay {
     /// Directories whose listing failed for lack of a pane, to ask again once
     /// one runs. Why not every failed directory: a permission error stays one.
     pub(in crate::client::shell) listing_retry: HashSet<String>,
+    pub(in crate::client::shell) refresh: ListingRefresh,
     pub(in crate::client::shell) rows: Vec<FileViewerRow>,
     /// Selectable rows while searching, counted once per rebuild.
     pub(in crate::client::shell) match_count: usize,
@@ -246,6 +277,7 @@ impl ClientFileViewerOverlay {
             },
             index_retry: false,
             listing_retry: HashSet::new(),
+            refresh: ListingRefresh::default(),
             rows: Vec::new(),
             match_count: 0,
             selected: 0,
@@ -307,6 +339,113 @@ impl ClientFileViewerOverlay {
     /// Directories from `root` down to `path`, in this viewer's path syntax.
     pub(in crate::client::shell) fn path_chain(&self, root: &str, path: &str) -> Vec<String> {
         path_chain_with(root, path, self.parent_fn())
+    }
+
+    /// The root and every shown expanded directory whose listing is held,
+    /// sorted so a sweep walks them in a stable order. Why not the collapsed
+    /// cached listings: nothing shows them, so asking for them is wasted work.
+    /// Collapsing a folder removes only its own path from `expanded`, so a
+    /// folder counts as shown only when every folder between it and the root
+    /// is expanded as well.
+    pub(in crate::client::shell) fn refresh_targets(&self) -> Vec<String> {
+        let Some(root) = self.root.as_deref() else {
+            return Vec::new();
+        };
+        let loaded =
+            |path: &str| matches!(self.directories.get(path), Some(DirectoryState::Loaded(_)));
+        let shown = |path: &str| {
+            let chain = self.path_chain(root, path);
+            chain.first().map(String::as_str) == Some(root)
+                && chain
+                    .iter()
+                    .skip(1)
+                    .all(|directory| self.expanded.contains(directory))
+        };
+        let mut targets: Vec<String> = self
+            .expanded
+            .iter()
+            .filter(|path| shown(path))
+            .map(String::as_str)
+            .chain([root])
+            .filter(|path| loaded(path))
+            .map(str::to_owned)
+            .collect();
+        targets.sort();
+        targets.dedup();
+        targets
+    }
+
+    /// Forgets `path` and everything below it, as a directory that is gone.
+    pub(in crate::client::shell) fn drop_directory(&mut self, path: &str) {
+        let inside = |other: &str| host_path_contains(path, other);
+        self.expanded.retain(|other| !inside(other));
+        self.directories.retain(|other, _| !inside(other));
+        self.listing_retry.retain(|other| !inside(other));
+        self.refresh.queue.retain(|other| !inside(other));
+    }
+
+    /// Replaces the listing of `path` with a newer one. Returns false, with
+    /// nothing touched, when it says the same thing as the one held.
+    pub(in crate::client::shell) fn apply_refreshed_listing(
+        &mut self,
+        path: &str,
+        listing: DirectoryListing,
+    ) -> bool {
+        let is_root = self.root.as_deref() == Some(path);
+        let state = if !is_root && self.loops_back(path, &listing.canonical) {
+            DirectoryState::Loop
+        } else {
+            DirectoryState::Loaded(listing)
+        };
+        let shape_changed = match (self.directories.get(path), &state) {
+            (Some(DirectoryState::Loaded(old)), DirectoryState::Loaded(new)) => {
+                if old == new {
+                    return false;
+                }
+                names_differ(old, new)
+            }
+            _ => true,
+        };
+        let selected = self.selected_entry().map(|entry| entry.path.clone());
+        if let DirectoryState::Loaded(new) = &state {
+            let children: HashSet<String> = new
+                .entries
+                .iter()
+                .filter(|entry| entry_is_dir(entry))
+                .map(|entry| join_host_path(path, &entry.name))
+                .collect();
+            let vanished: Vec<String> = self
+                .expanded
+                .iter()
+                .filter(|other| self.parent_path(other) == Some(path) && !children.contains(*other))
+                .cloned()
+                .collect();
+            for other in vanished {
+                self.drop_directory(&other);
+            }
+        }
+        self.directories.insert(path.to_owned(), state);
+        self.rebuild(true);
+        // A row that disappeared leaves the selection on whatever slid into
+        // its place; the nearest surviving ancestor is the less surprising row.
+        if let Some(mut gone) = selected.filter(|selected| {
+            self.selected_entry()
+                .is_none_or(|entry| entry.path != *selected)
+        }) {
+            while let Some(parent) = self.parent_path(&gone).map(str::to_owned) {
+                if let Some(index) = self
+                    .rows
+                    .iter()
+                    .position(|row| row.entry.as_ref().is_some_and(|entry| entry.path == parent))
+                {
+                    self.selected = index;
+                    break;
+                }
+                gone = parent;
+            }
+        }
+        self.refresh.index_due |= shape_changed;
+        true
     }
 
     pub(in crate::client::shell) fn selected_entry(&self) -> Option<&FileViewerEntry> {
@@ -573,6 +712,16 @@ impl ClientFileViewerOverlay {
         }
         false
     }
+}
+
+/// Whether entries were added, removed or changed kind, as opposed to only
+/// their size or mtime changing. Why not any difference: a growing log would
+/// otherwise ask for the repository index again on every poll.
+fn names_differ(old: &DirectoryListing, new: &DirectoryListing) -> bool {
+    let key = |entry: &DirectoryEntry| (entry.name.clone(), entry_is_dir(entry), entry.hidden);
+    // Servers list in a stable order, so an order change counts as a change.
+    old.entries.len() != new.entries.len()
+        || !old.entries.iter().map(key).eq(new.entries.iter().map(key))
 }
 
 pub(in crate::client::shell) fn entry_is_dir(entry: &DirectoryEntry) -> bool {

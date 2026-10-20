@@ -1632,4 +1632,815 @@ mod offhost {
         assert_eq!(list.path.as_deref(), Some("/saved/root"));
         assert_eq!(index.path.as_deref(), Some("/saved/root"));
     }
+
+    // Listing refresh: the tree follows the server without being reloaded.
+
+    fn dir_listing(path: &str, names: &[(&str, DirectoryEntryKind)]) -> ResponseResult {
+        let ResponseResult::PaneDirectoryList(mut list) = pane_listing(path) else {
+            unreachable!();
+        };
+        list.entries = names
+            .iter()
+            .map(|(name, kind)| entry(name, *kind))
+            .collect();
+        ResponseResult::PaneDirectoryList(list)
+    }
+
+    fn loaded_listing(
+        path: &str,
+        names: &[(&str, DirectoryEntryKind)],
+    ) -> crate::client::shell::file_viewer::model::DirectoryState {
+        use crate::client::shell::file_viewer::model::{DirectoryListing, DirectoryState};
+        DirectoryState::Loaded(DirectoryListing {
+            canonical: path.into(),
+            entries: names
+                .iter()
+                .map(|(name, kind)| entry(name, *kind))
+                .collect(),
+            truncated: false,
+            omitted: None,
+            unlistable: None,
+            git_error: None,
+        })
+    }
+
+    const ROOT_ENTRIES: [(&str, DirectoryEntryKind); 2] = [
+        ("src", DirectoryEntryKind::Dir),
+        ("a.txt", DirectoryEntryKind::File),
+    ];
+    const SRC_ENTRIES: [(&str, DirectoryEntryKind); 1] = [("main.rs", DirectoryEntryKind::File)];
+
+    /// `/work` with `src` expanded, a ready index and no open document.
+    fn refreshable_state() -> ClientShellState {
+        use crate::client::shell::file_viewer::model::FileIndex;
+        let mut state = offhost_state();
+        let browser = &mut state.investigation_mut().unwrap().browser;
+        browser
+            .directories
+            .insert("/work".into(), loaded_listing("/work", &ROOT_ENTRIES));
+        browser.directories.insert(
+            "/work/src".into(),
+            loaded_listing("/work/src", &SRC_ENTRIES),
+        );
+        browser.expanded.insert("/work/src".into());
+        browser.index = FileIndex::Ready {
+            repo_root: "/work".into(),
+            paths: Vec::new(),
+            truncated: false,
+        };
+        browser.rebuild(false);
+        select(&mut state, "/work/src/main.rs");
+        // The selected file is already previewed and its poll is far off, so
+        // an answer starts no read of its own and only listings are on the wire.
+        let tab = state.investigation_mut().unwrap();
+        let mut document = Document::new("/work/src/main.rs".into());
+        document.update("fn main() {}\n".into(), "cksum:1:1".into());
+        tab.preview = Some(document);
+        tab.last_poll = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        state
+    }
+
+    fn select(state: &mut ClientShellState, path: &str) {
+        let browser = &mut state.investigation_mut().unwrap().browser;
+        browser.selected = browser
+            .rows
+            .iter()
+            .position(|row| row.entry.as_ref().is_some_and(|e| e.path == path))
+            .unwrap();
+    }
+
+    fn selected_path(state: &ClientShellState) -> Option<String> {
+        state
+            .investigation()
+            .unwrap()
+            .browser
+            .selected_entry()
+            .map(|e| e.path.clone())
+    }
+
+    fn row_labels(state: &ClientShellState) -> Vec<String> {
+        state
+            .investigation()
+            .unwrap()
+            .browser
+            .rows
+            .iter()
+            .map(|row| row.label.clone())
+            .collect()
+    }
+
+    fn list_path(method: &Method) -> Option<&str> {
+        match method {
+            Method::PaneDirectoryList(list) => list.path.as_deref(),
+            Method::DirectoryList(list) => list.path.as_deref(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn off_host_listing_sweep_lists_shown_directories_one_after_another_each_interval() {
+        let mut state = refreshable_state();
+
+        assert!(tick(&mut state, 4).is_empty());
+        let first = tick(&mut state, 6);
+        let [(first_id, method)] = &first[..] else {
+            panic!("{first:?}");
+        };
+        assert_eq!(list_path(method), Some("/work"));
+        assert!(
+            matches!(
+                state
+                    .investigation()
+                    .unwrap()
+                    .browser
+                    .directories
+                    .get("/work"),
+                Some(crate::client::shell::file_viewer::model::DirectoryState::Loaded(_))
+            ),
+            "a refresh keeps the old rows on screen"
+        );
+        assert!(tick(&mut state, 12).is_empty(), "one request at a time");
+
+        answer(
+            &mut state,
+            first_id,
+            Ok(dir_listing("/work", &ROOT_ENTRIES)),
+        );
+        let second = tick(&mut state, 12);
+        let [(_, method)] = &second[..] else {
+            panic!("{second:?}");
+        };
+        assert_eq!(list_path(method), Some("/work/src"));
+        answer(
+            &mut state,
+            &second[0].0,
+            Ok(dir_listing("/work/src", &SRC_ENTRIES)),
+        );
+
+        assert!(
+            tick(&mut state, 8).is_empty(),
+            "the next sweep waits for its interval"
+        );
+        let again = tick(&mut state, 12);
+        assert_eq!(list_path(&again[0].1), Some("/work"));
+    }
+
+    #[test]
+    fn off_host_listing_poll_waits_for_a_hidden_investigation() {
+        let mut state = refreshable_state();
+        state.workbench.visible = false;
+
+        assert!(tick(&mut state, 6).is_empty());
+    }
+
+    #[test]
+    fn off_host_listing_poll_waits_while_another_request_is_pending() {
+        let mut state = refreshable_state();
+        let mut outcome = ClientShellInput::default();
+        state.request_file_viewer_listing("/work/lib".into(), &mut outcome);
+
+        assert!(tick(&mut state, 6).is_empty());
+    }
+
+    #[test]
+    fn an_unchanged_refreshed_listing_leaves_rows_selection_and_index_alone() {
+        let mut state = refreshable_state();
+        let rows = row_labels(&state);
+        let selected = state.investigation().unwrap().browser.selected;
+        let (id, _) = tick(&mut state, 6).remove(0);
+
+        let (repaint, _) =
+            state.handle_endpoint_result("boot-1", &id, Ok(dir_listing("/work", &ROOT_ENTRIES)));
+
+        assert!(!repaint);
+        assert_eq!(row_labels(&state), rows);
+        assert_eq!(state.investigation().unwrap().browser.selected, selected);
+        assert!(!state.investigation().unwrap().browser.refresh.index_due);
+    }
+
+    #[test]
+    fn a_changed_refreshed_listing_updates_rows_keeps_state_and_schedules_the_index() {
+        let mut state = refreshable_state();
+        let (id, _) = tick(&mut state, 6).remove(0);
+        let mut grown = ROOT_ENTRIES.to_vec();
+        grown.push(("new.txt", DirectoryEntryKind::File));
+
+        let (repaint, _) =
+            state.handle_endpoint_result("boot-1", &id, Ok(dir_listing("/work", &grown)));
+
+        assert!(repaint);
+        assert!(row_labels(&state).contains(&"new.txt".to_owned()));
+        let tab = state.investigation().unwrap();
+        assert!(tab.browser.expanded.contains("/work/src"));
+        assert_eq!(selected_path(&state).as_deref(), Some("/work/src/main.rs"));
+        let sweep = tick(&mut state, 7);
+        assert_eq!(list_path(&sweep[0].1), Some("/work/src"));
+        answer(
+            &mut state,
+            &sweep[0].0,
+            Ok(dir_listing("/work/src", &SRC_ENTRIES)),
+        );
+        let next = tick(&mut state, 7);
+        let [(index_id, Method::PaneDirectoryIndex(_))] = &next[..] else {
+            panic!("{next:?}");
+        };
+        assert!(
+            matches!(
+                state.investigation().unwrap().browser.index,
+                crate::client::shell::file_viewer::model::FileIndex::Ready { .. }
+            ),
+            "the old index serves Ctrl+P while the new one is on its way"
+        );
+        assert!(tick(&mut state, 8).is_empty());
+        answer(
+            &mut state,
+            index_id,
+            Ok(ResponseResult::PaneDirectoryIndex(
+                crate::api::schema::PaneDirectoryIndexing {
+                    location: PaneLocation {
+                        kind: PaneLocationKind::Container,
+                        ssh_host: Some("devbox".into()),
+                        container: Some("app".into()),
+                    },
+                    repo_root: Some("/work".into()),
+                    entries: vec!["new.txt".into()],
+                    truncated: false,
+                    git_error: None,
+                },
+            )),
+        );
+        let crate::client::shell::file_viewer::model::FileIndex::Ready { paths, .. } =
+            &state.investigation().unwrap().browser.index
+        else {
+            panic!("the refreshed index replaces the old one");
+        };
+        assert!(paths.iter().any(|p| p.relative == "new.txt"));
+    }
+
+    #[test]
+    fn a_refresh_that_only_changes_metadata_does_not_ask_for_the_index() {
+        let mut state = refreshable_state();
+        let (id, _) = tick(&mut state, 6).remove(0);
+        let ResponseResult::PaneDirectoryList(mut list) = dir_listing("/work", &ROOT_ENTRIES)
+        else {
+            unreachable!();
+        };
+        list.entries[1].size = Some(99);
+
+        let (repaint, _) = state.handle_endpoint_result(
+            "boot-1",
+            &id,
+            Ok(ResponseResult::PaneDirectoryList(list)),
+        );
+
+        assert!(repaint);
+        let Some(crate::client::shell::file_viewer::model::DirectoryState::Loaded(held)) = state
+            .investigation()
+            .unwrap()
+            .browser
+            .directories
+            .get("/work")
+        else {
+            panic!("the root stays loaded");
+        };
+        assert_eq!(held.entries[1].size, Some(99));
+        assert!(!state.investigation().unwrap().browser.refresh.index_due);
+    }
+
+    #[test]
+    fn a_refresh_selects_the_nearest_surviving_ancestor_of_a_vanished_selected_row() {
+        let mut state = refreshable_state();
+        let (id, _) = tick(&mut state, 6).remove(0);
+        answer(&mut state, &id, Ok(dir_listing("/work", &ROOT_ENTRIES)));
+        let (id, _) = tick(&mut state, 12).remove(0);
+
+        answer(
+            &mut state,
+            &id,
+            Ok(dir_listing(
+                "/work/src",
+                &[("other.rs", DirectoryEntryKind::File)],
+            )),
+        );
+
+        assert_eq!(selected_path(&state).as_deref(), Some("/work/src"));
+    }
+
+    #[test]
+    fn an_expanded_directory_that_vanished_from_its_parent_is_dropped() {
+        let mut state = refreshable_state();
+        let (id, _) = tick(&mut state, 6).remove(0);
+
+        answer(
+            &mut state,
+            &id,
+            Ok(dir_listing("/work", &[("a.txt", DirectoryEntryKind::File)])),
+        );
+
+        let tab = state.investigation().unwrap();
+        assert!(!tab.browser.expanded.contains("/work/src"));
+        assert!(!tab.browser.directories.contains_key("/work/src"));
+    }
+
+    #[test]
+    fn a_refreshed_directory_the_server_no_longer_finds_is_dropped_with_its_children() {
+        let mut state = refreshable_state();
+        let browser = &mut state.investigation_mut().unwrap().browser;
+        browser.directories.insert(
+            "/work/src/deep".into(),
+            loaded_listing("/work/src/deep", &[]),
+        );
+        browser.expanded.insert("/work/src/deep".into());
+        let (id, _) = tick(&mut state, 6).remove(0);
+        answer(&mut state, &id, Ok(dir_listing("/work", &ROOT_ENTRIES)));
+        let (id, method) = tick(&mut state, 12).remove(0);
+        assert_eq!(list_path(&method), Some("/work/src"));
+
+        answer(
+            &mut state,
+            &id,
+            Err(ClientShellEndpointError {
+                code: Some("not_found".into()),
+                message: "gone".into(),
+            }),
+        );
+
+        let tab = state.investigation().unwrap();
+        assert!(tab.browser.expanded.is_empty());
+        assert!(!tab.browser.directories.contains_key("/work/src"));
+        assert!(!tab.browser.directories.contains_key("/work/src/deep"));
+    }
+
+    #[test]
+    fn a_failed_root_refresh_keeps_the_old_listing_and_keeps_polling() {
+        let mut state = refreshable_state();
+        let rows = row_labels(&state);
+        let (id, _) = tick(&mut state, 6).remove(0);
+
+        answer(
+            &mut state,
+            &id,
+            Err(ClientShellEndpointError {
+                code: Some("permission_denied".into()),
+                message: "denied".into(),
+            }),
+        );
+
+        assert_eq!(row_labels(&state), rows);
+        assert_eq!(
+            state.investigation().unwrap().browser.notice.as_deref(),
+            Some("refresh failed: permission denied")
+        );
+        assert!(!tick(&mut state, 12).is_empty());
+    }
+
+    #[test]
+    fn a_transient_failure_of_a_nested_refresh_keeps_the_directory_open() {
+        let mut state = refreshable_state();
+        let (id, _) = tick(&mut state, 6).remove(0);
+        answer(&mut state, &id, Ok(dir_listing("/work", &ROOT_ENTRIES)));
+        let (id, _) = tick(&mut state, 12).remove(0);
+
+        answer(
+            &mut state,
+            &id,
+            Err(ClientShellEndpointError {
+                code: Some("directory_busy".into()),
+                message: "busy".into(),
+            }),
+        );
+
+        assert!(state
+            .investigation()
+            .unwrap()
+            .browser
+            .expanded
+            .contains("/work/src"));
+    }
+
+    fn drain_manual_refresh(state: &mut ClientShellState) -> Vec<Method> {
+        let mut sent = Vec::new();
+        for _ in 0..6 {
+            let batch = tick(state, 0);
+            if batch.is_empty() {
+                break;
+            }
+            for (id, method) in batch {
+                let result = match &method {
+                    Method::PaneDirectoryList(list) => {
+                        let path = list.path.clone().unwrap();
+                        if path == "/work" {
+                            dir_listing(&path, &ROOT_ENTRIES)
+                        } else {
+                            dir_listing(&path, &SRC_ENTRIES)
+                        }
+                    }
+                    Method::PaneFileRead(_) => {
+                        sent.push(method);
+                        answer(
+                            state,
+                            &id,
+                            Err(ClientShellEndpointError {
+                                code: Some("not_found".into()),
+                                message: "gone".into(),
+                            }),
+                        );
+                        continue;
+                    }
+                    _ => ResponseResult::PaneDirectoryIndex(
+                        crate::api::schema::PaneDirectoryIndexing {
+                            location: PaneLocation {
+                                kind: PaneLocationKind::Container,
+                                ssh_host: Some("devbox".into()),
+                                container: Some("app".into()),
+                            },
+                            repo_root: Some("/work".into()),
+                            entries: Vec::new(),
+                            truncated: false,
+                            git_error: None,
+                        },
+                    ),
+                };
+                sent.push(method);
+                answer(state, &id, Ok(result));
+            }
+        }
+        sent
+    }
+
+    #[test]
+    fn f5_and_the_menu_entry_relist_every_shown_directory_and_the_index_one_at_a_time() {
+        use crossterm::event::KeyModifiers as M;
+        for via_menu in [false, true] {
+            let mut state = refreshable_state();
+            state.investigation_mut().unwrap().last_poll = std::time::Instant::now();
+            if via_menu {
+                let mut outcome = ClientShellInput::default();
+                state.investigation_menu_action(23, &mut outcome);
+                assert_eq!(MENU[23], "refresh files");
+            } else {
+                press(&mut state, KeyCode::F(5), M::empty());
+            }
+            let tab = state.investigation().unwrap();
+            assert!(tab.last_poll.elapsed() >= std::time::Duration::from_secs(9));
+            assert!(
+                matches!(
+                    tab.browser.directories.get("/work"),
+                    Some(crate::client::shell::file_viewer::model::DirectoryState::Loaded(_))
+                ),
+                "no Loading flicker"
+            );
+
+            let sent = drain_manual_refresh(&mut state);
+
+            assert!(
+                matches!(sent[0], Method::PaneFileRead(_)),
+                "the open document is read at once"
+            );
+            let paths: Vec<_> = sent.iter().filter_map(list_path).collect();
+            assert_eq!(paths, ["/work", "/work/src"]);
+            assert!(matches!(sent.last(), Some(Method::PaneDirectoryIndex(_))));
+            assert_eq!(sent.len(), 4);
+            let tab = state.investigation().unwrap();
+            assert!(tab.browser.expanded.contains("/work/src"));
+            assert_eq!(selected_path(&state).as_deref(), Some("/work/src/main.rs"));
+        }
+    }
+
+    #[test]
+    fn host_tabs_poll_listings_through_directory_list_every_second() {
+        let mut state = state();
+
+        let document = tick(&mut state, 2);
+        assert!(
+            matches!(&document[..], [(_, Method::FileRead(_))]),
+            "{document:?}"
+        );
+        let listing = tick(&mut state, 2);
+        let [(_, method)] = &listing[..] else {
+            panic!("{listing:?}");
+        };
+        assert!(matches!(method, Method::DirectoryList(_)));
+        assert_eq!(list_path(method), Some("/repo"));
+        assert!(tick(&mut state, 3)
+            .iter()
+            .all(|(_, m)| list_path(m).is_none()));
+    }
+
+    #[test]
+    fn rebinding_refresh_moves_it_to_the_configured_key_and_disables_f5() {
+        use crossterm::event::KeyModifiers as M;
+        let mut state = state();
+        state
+            .config
+            .file_workbench_keys
+            .insert("refresh".into(), "ctrl+r".into());
+
+        press(&mut state, KeyCode::F(5), M::empty());
+        assert!(state
+            .investigation()
+            .unwrap()
+            .browser
+            .refresh
+            .queue
+            .is_empty());
+        assert!(!state.investigation().unwrap().browser.refresh.index_due);
+
+        press(&mut state, KeyCode::Char('r'), M::CONTROL);
+        assert!(!state
+            .investigation()
+            .unwrap()
+            .browser
+            .refresh
+            .queue
+            .is_empty());
+    }
+
+    #[test]
+    fn the_refresh_header_button_refreshes_and_never_overlaps_the_actions_button() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        for width in [120u16, 60, 36] {
+            let mut state = refreshable_state();
+            state.set_pane_surface(crate::client::shell::tests::surface());
+            state.compose(width, 32).expect("composed investigation");
+            let buttons = state.investigation_hits.buttons.clone();
+            let actions = buttons.iter().find(|(_, i)| *i == usize::MAX).unwrap().0;
+            let refresh = buttons.iter().find(|(_, i)| *i == 23).map(|(r, _)| *r);
+            if width == 36 {
+                assert!(refresh.is_none(), "no room beside the title");
+                continue;
+            }
+            let refresh = refresh.expect("[F5 refresh] is shown");
+            assert!(refresh.right() < actions.x, "{refresh:?} {actions:?}");
+
+            let mut outcome = ClientShellInput::default();
+            state.handle_investigation_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: refresh.x + 1,
+                    row: refresh.y,
+                    modifiers: crossterm::event::KeyModifiers::empty(),
+                },
+                &mut outcome,
+            );
+
+            assert!(state.investigation().unwrap().browser.refresh.index_due);
+        }
+    }
+
+    #[test]
+    fn the_refresh_menu_entry_still_works_inside_an_environment() {
+        let mut state = refreshable_state();
+        let mut outcome = ClientShellInput::default();
+
+        state.investigation_menu_action(23, &mut outcome);
+
+        assert!(state.investigation().unwrap().notice.is_empty());
+        assert!(!state
+            .investigation()
+            .unwrap()
+            .browser
+            .refresh
+            .queue
+            .is_empty());
+    }
+
+    fn refresh_error(code: &str) -> Result<ResponseResult, ClientShellEndpointError> {
+        Err(ClientShellEndpointError {
+            code: Some(code.into()),
+            message: code.into(),
+        })
+    }
+
+    fn index_answer(
+        repo_root: Option<&str>,
+        git_error: Option<&str>,
+    ) -> Result<ResponseResult, ClientShellEndpointError> {
+        Ok(ResponseResult::PaneDirectoryIndex(
+            crate::api::schema::PaneDirectoryIndexing {
+                location: PaneLocation {
+                    kind: PaneLocationKind::Container,
+                    ssh_host: Some("devbox".into()),
+                    container: Some("app".into()),
+                },
+                repo_root: repo_root.map(str::to_owned),
+                entries: Vec::new(),
+                truncated: false,
+                git_error: git_error.map(str::to_owned),
+            },
+        ))
+    }
+
+    /// Ticks `seconds` ahead, answering every other request unchanged, until
+    /// `wanted` asks for something; returns that request's id.
+    fn request_until(
+        state: &mut ClientShellState,
+        seconds: u64,
+        wanted: impl Fn(&Method) -> bool,
+    ) -> String {
+        for _ in 0..6 {
+            for (id, method) in tick(state, seconds) {
+                if wanted(&method) {
+                    return id;
+                }
+                let result = match &method {
+                    Method::PaneDirectoryList(list) if list.path.as_deref() == Some("/work") => {
+                        Ok(dir_listing("/work", &ROOT_ENTRIES))
+                    }
+                    Method::PaneDirectoryList(list) => {
+                        Ok(dir_listing(list.path.as_deref().unwrap(), &SRC_ENTRIES))
+                    }
+                    _ => refresh_error("not_found"),
+                };
+                answer(state, &id, result);
+            }
+        }
+        panic!("no matching request");
+    }
+
+    fn pending_index_refresh(state: &mut ClientShellState) -> String {
+        state.refresh_investigation_files();
+        request_until(state, 0, |m| matches!(m, Method::PaneDirectoryIndex(_)))
+    }
+
+    #[test]
+    fn a_failed_or_empty_index_refresh_keeps_the_old_index_and_clears_its_flight() {
+        for result in [
+            refresh_error("endpoint_timeout"),
+            index_answer(Some("/work"), Some("git failed")),
+            index_answer(None, None),
+        ] {
+            let mut state = refreshable_state();
+            let id = pending_index_refresh(&mut state);
+            assert!(
+                state
+                    .investigation()
+                    .unwrap()
+                    .browser
+                    .refresh
+                    .index_in_flight
+            );
+
+            answer(&mut state, &id, result);
+
+            let browser = &state.investigation().unwrap().browser;
+            assert!(!browser.refresh.index_in_flight);
+            assert!(matches!(
+                browser.index,
+                crate::client::shell::file_viewer::model::FileIndex::Ready { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn the_index_refresh_is_rate_limited_but_f5_bypasses_the_limit() {
+        let is_index = |m: &Method| matches!(m, Method::PaneDirectoryIndex(_));
+        let mut state = refreshable_state();
+        let id = pending_index_refresh(&mut state);
+        answer(&mut state, &id, index_answer(Some("/work"), None));
+
+        // Another change soon after: the index waits out the 30 seconds.
+        state.investigation_mut().unwrap().browser.refresh.index_due = true;
+        for seconds in [8, 14, 20] {
+            for (id, method) in tick(&mut state, seconds) {
+                assert!(!is_index(&method), "{seconds}s: {method:?}");
+                match list_path(&method) {
+                    Some(path) => answer(&mut state, &id, Ok(dir_listing(path, &ROOT_ENTRIES))),
+                    None => answer(&mut state, &id, refresh_error("not_found")),
+                }
+            }
+        }
+        assert!(state.investigation().unwrap().browser.refresh.index_due);
+        let id = request_until(&mut state, 60, is_index);
+        answer(&mut state, &id, index_answer(Some("/work"), None));
+
+        // F5 asks at once, however recent the last request was.
+        let id = pending_index_refresh(&mut state);
+        answer(&mut state, &id, index_answer(Some("/work"), None));
+        let id = pending_index_refresh(&mut state);
+        answer(&mut state, &id, index_answer(Some("/work"), None));
+    }
+
+    #[test]
+    fn a_background_refresh_answer_leaves_a_scrolled_pinned_document_and_a_selection_alone() {
+        let mut state = refreshable_state();
+        let text = "a\nb\nc\nd\ne\nf\n";
+        let tab = state.investigation_mut().unwrap();
+        let mut pinned = Document::new("/work/src/main.rs".into());
+        pinned.update(text.into(), "cksum:1:1".into());
+        pinned.cursor = 10;
+        pinned.scroll = 0;
+        tab.documents.push(pinned);
+        tab.active_file = Some(0);
+        tab.focus = Focus::Body;
+        let mut grown = ROOT_ENTRIES.to_vec();
+        grown.push(("new.txt", DirectoryEntryKind::File));
+
+        let (id, _) = tick(&mut state, 6).remove(0);
+        answer(&mut state, &id, Ok(dir_listing("/work", &ROOT_ENTRIES)));
+        assert_eq!(state.investigation().unwrap().documents[0].scroll, 0);
+        let (id, _) = tick(&mut state, 12).remove(0);
+        answer(&mut state, &id, Ok(dir_listing("/work/src", &SRC_ENTRIES)));
+        let (id, _) = tick(&mut state, 18).remove(0);
+        answer(&mut state, &id, Ok(dir_listing("/work", &grown)));
+        assert_eq!(state.investigation().unwrap().documents[0].scroll, 0);
+
+        // The unpinned preview keeps its selection through the same answers.
+        let mut state = refreshable_state();
+        let tab = state.investigation_mut().unwrap();
+        let preview = tab.preview.as_mut().unwrap();
+        preview.update(text.into(), "cksum:1:2".into());
+        preview.anchor = Some(0);
+        preview.cursor = 4;
+        let (id, _) = tick(&mut state, 6).remove(0);
+        answer(&mut state, &id, Ok(dir_listing("/work", &ROOT_ENTRIES)));
+        assert_eq!(
+            state
+                .investigation()
+                .unwrap()
+                .preview
+                .as_ref()
+                .unwrap()
+                .anchor,
+            Some(0)
+        );
+        let (id, _) = tick(&mut state, 12).remove(0);
+        let more = [
+            ("main.rs", DirectoryEntryKind::File),
+            ("lib.rs", DirectoryEntryKind::File),
+        ];
+        answer(&mut state, &id, Ok(dir_listing("/work/src", &more)));
+        assert_eq!(
+            state
+                .investigation()
+                .unwrap()
+                .preview
+                .as_ref()
+                .unwrap()
+                .anchor,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_successful_root_refresh_clears_only_its_own_failure_notice() {
+        let is_root = |m: &Method| list_path(m) == Some("/work");
+        let mut state = refreshable_state();
+        let id = request_until(&mut state, 6, is_root);
+        answer(&mut state, &id, refresh_error("permission_denied"));
+        assert!(state.investigation().unwrap().browser.notice.is_some());
+        let id = request_until(&mut state, 12, is_root);
+
+        let (repaint, _) =
+            state.handle_endpoint_result("boot-1", &id, Ok(dir_listing("/work", &ROOT_ENTRIES)));
+
+        assert!(repaint);
+        assert_eq!(state.investigation().unwrap().browser.notice, None);
+
+        let id = request_until(&mut state, 18, is_root);
+        answer(&mut state, &id, refresh_error("permission_denied"));
+        state.investigation_mut().unwrap().browser.notice = Some("copied".into());
+        let id = request_until(&mut state, 24, is_root);
+        answer(&mut state, &id, Ok(dir_listing("/work", &ROOT_ENTRIES)));
+        assert_eq!(
+            state.investigation().unwrap().browser.notice.as_deref(),
+            Some("copied")
+        );
+    }
+
+    #[test]
+    fn collapsing_a_folder_stops_polling_the_folders_expanded_beneath_it() {
+        let mut state = refreshable_state();
+        let browser = &mut state.investigation_mut().unwrap().browser;
+        browser.directories.insert(
+            "/work/src/deep".into(),
+            loaded_listing("/work/src/deep", &[]),
+        );
+        browser.expanded.insert("/work/src/deep".into());
+        assert_eq!(
+            browser.refresh_targets(),
+            ["/work", "/work/src", "/work/src/deep"]
+        );
+
+        browser.expanded.remove("/work/src");
+
+        assert_eq!(browser.refresh_targets(), ["/work"]);
+        assert!(browser.expanded.contains("/work/src/deep"), "not pruned");
+    }
+
+    #[test]
+    fn f5_leaves_the_content_search_results_alone() {
+        let mut state = refreshable_state();
+        let tab = state.investigation_mut().unwrap();
+        tab.content_search = true;
+        tab.search_ready = true;
+        tab.omitted.insert(1);
+
+        state.refresh_investigation_files();
+
+        let tab = state.investigation().unwrap();
+        assert!(tab.search_ready);
+        assert!(tab.search_due.is_none());
+        assert!(tab.omitted.contains(&1));
+    }
 }

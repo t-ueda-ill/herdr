@@ -47,6 +47,10 @@ impl ClientShellState {
             tab.dialog = Some(Dialog::Menu { selected: 0 });
             return;
         }
+        if code == KeyCode::F(5) {
+            self.investigation_menu_action(23, outcome);
+            return;
+        }
         if code == KeyCode::F(2) {
             self.investigation_menu_action(9, outcome);
             return;
@@ -770,6 +774,7 @@ impl ClientShellState {
             ("rename", KeyCode::F(2), M::empty()),
             ("delete", KeyCode::Delete, M::empty()),
             ("actions", KeyCode::F(10), M::empty()),
+            ("refresh", KeyCode::F(5), M::empty()),
         ];
         let actual = crate::config::normalize_key_combo((key.code, key.modifiers));
         let mut disabled = false;

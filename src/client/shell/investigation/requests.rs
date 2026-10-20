@@ -4,6 +4,10 @@ use std::time::{Duration, Instant};
 
 const HOST_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const OFFHOST_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// Least time between two index refreshes started by polling. Why not on every
+/// change: a busy tree would re-run the server's `git ls-files` back to back.
+const HOST_INDEX_INTERVAL: Duration = Duration::from_secs(10);
+const OFFHOST_INDEX_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Back-dates a tab's last poll so the next tick refreshes it whatever its interval.
 pub(super) fn due_poll_time() -> Instant {
@@ -128,15 +132,35 @@ impl ClientShellState {
     ) -> bool {
         let generation = match &request {
             FileViewerRequest::List { generation, .. }
+            | FileViewerRequest::Refresh { generation, .. }
+            | FileViewerRequest::IndexRefresh { generation }
             | FileViewerRequest::Index { generation } => Some(*generation),
             _ => None,
         };
         let index = self.workbench.tabs.iter().position(|t| {
             t.endpoint == self.active_endpoint_id && generation == Some(t.browser.generation)
         });
+        let background = matches!(
+            request,
+            FileViewerRequest::Refresh { .. } | FileViewerRequest::IndexRefresh { .. }
+        );
+        let selected_path = |state: &Self| {
+            index
+                .and_then(|i| state.workbench.tabs.get(i))
+                .and_then(|tab| tab.browser.selected_entry())
+                .map(|entry| entry.path.clone())
+        };
+        let before = selected_path(self);
         self.workbench.dispatch = index;
         let repaint = self.handle_file_viewer_endpoint_result_inner(request, result, outcome);
         self.workbench.dispatch = None;
+        // Why not for every answer: a background refresh would otherwise snap
+        // a scrolled document back to its cursor, drop a text selection and
+        // rewrite the preferences on each poll. Only a moved selection needs
+        // the preview to follow.
+        if background && selected_path(self) == before {
+            return repaint;
+        }
         if self.investigation_active() {
             self.request_investigation_preview(false, false, outcome);
             self.persist_chrome_preferences(outcome);
@@ -525,8 +549,18 @@ impl ClientShellState {
                 outcome.repaint = true;
             }
         }
+        let document_sent = self.poll_investigation_document(now, outcome);
+        self.poll_investigation_listing(now, document_sent, outcome);
+    }
+    /// Returns whether a read went out, so the listing poll does not start a
+    /// second request in the same tick.
+    fn poll_investigation_document(
+        &mut self,
+        now: Instant,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
         let Some(tab) = self.investigation_mut() else {
-            return;
+            return false;
         };
         // Off-host reads cross ssh or docker, so they are rarer; and one is
         // never started behind another request, which the endpoint would
@@ -538,13 +572,13 @@ impl ClientShellState {
             HOST_POLL_INTERVAL
         };
         if now.duration_since(tab.last_poll) < interval {
-            return;
+            return false;
         }
         if offhost && !self.pending_requests.is_empty() {
-            return;
+            return false;
         }
         let Some(tab) = self.investigation_mut() else {
-            return;
+            return false;
         };
         tab.last_poll = now;
         let (workspace, location, preferred) = (
@@ -552,9 +586,12 @@ impl ClientShellState {
             tab.browser.location.clone(),
             tab.browser.location_pane.clone(),
         );
-        if let Some(document) = tab
+        let Some(document) = tab
             .document()
             .filter(|d| !tab.pending_reads.contains(&d.path))
+        else {
+            return false;
+        };
         {
             let path = document.path.clone();
             let revision = document.loaded.then(|| {
@@ -583,7 +620,7 @@ impl ClientShellState {
                     if let Some(tab) = self.investigation_mut() {
                         tab.notice = notice;
                     }
-                    return;
+                    return false;
                 }
             };
             if let Some(tab) = self.investigation_mut() {
@@ -605,7 +642,126 @@ impl ClientShellState {
             } else if let Some(tab) = self.investigation_mut() {
                 tab.pending_reads.clear();
             }
+            sent
         }
+    }
+    /// Re-lists the root and the shown expanded directories in sweeps: when
+    /// the interval is due a sweep queues them all, and each is asked for as
+    /// soon as the previous one is answered. Why not concurrently, even on the
+    /// host: the server refuses reads beyond its slot pool as busy, and a deep
+    /// tree would ask for all of them at once. Off-host it is also the
+    /// endpoint's one-request rule. Why not one folder per interval: a tree of
+    /// n folders would then take n intervals to catch up.
+    fn poll_investigation_listing(
+        &mut self,
+        now: Instant,
+        document_sent: bool,
+        outcome: &mut ClientShellInput,
+    ) {
+        if document_sent {
+            return;
+        }
+        let Some(tab) = self.investigation() else {
+            return;
+        };
+        let offhost = tab.browser.location.is_some();
+        let (interval, index_interval) = if offhost {
+            (OFFHOST_POLL_INTERVAL, OFFHOST_INDEX_INTERVAL)
+        } else {
+            (HOST_POLL_INTERVAL, HOST_INDEX_INTERVAL)
+        };
+        let (queue_empty, index_due, busy) = (
+            tab.browser.refresh.queue.is_empty(),
+            tab.browser.refresh.index_due,
+            tab.browser.refresh.busy(),
+        );
+        let timer_due = now.duration_since(tab.last_list_poll) >= interval;
+        if !timer_due && queue_empty && !index_due {
+            return;
+        }
+        if offhost && !self.pending_requests.is_empty() {
+            return;
+        }
+        if busy {
+            // A reconnect drops the pending requests without answering them.
+            if self.pending_requests.values().any(|pending| {
+                matches!(
+                    pending.kind,
+                    PendingEndpointKind::FileViewer(
+                        FileViewerRequest::Refresh { .. } | FileViewerRequest::IndexRefresh { .. }
+                    )
+                )
+            }) {
+                return;
+            }
+            if let Some(tab) = self.investigation_mut() {
+                tab.browser.refresh.in_flight.clear();
+                tab.browser.refresh.index_in_flight = false;
+            }
+        }
+        if timer_due && queue_empty {
+            if let Some(tab) = self.investigation_mut() {
+                tab.last_list_poll = now;
+                tab.browser.refresh.queue = tab.browser.refresh_targets().into();
+            }
+        }
+        while let Some(path) = self
+            .investigation_mut()
+            .and_then(|tab| tab.browser.refresh.queue.pop_front())
+        {
+            let shown = self
+                .investigation()
+                .is_some_and(|tab| tab.browser.refresh_targets().contains(&path));
+            if shown {
+                if !self.request_file_viewer_refresh(path, outcome) {
+                    if let Some(tab) = self.investigation_mut() {
+                        tab.browser.refresh.queue.clear();
+                    }
+                }
+                return;
+            }
+        }
+        let Some(tab) = self.investigation_mut() else {
+            return;
+        };
+        let refresh = &mut tab.browser.refresh;
+        if !refresh.index_due {
+            return;
+        }
+        let allowed = refresh.index_forced
+            || refresh
+                .last_index_refresh
+                .is_none_or(|last| now.duration_since(last) >= index_interval);
+        if !allowed {
+            return;
+        }
+        refresh.index_due = false;
+        refresh.index_forced = false;
+        // Dropped, not kept due, while the index is loading or absent: the
+        // first answer is as new as a refresh would be.
+        if matches!(
+            tab.browser.index,
+            crate::client::shell::file_viewer::model::FileIndex::Ready { .. }
+                | crate::client::shell::file_viewer::model::FileIndex::Unavailable { .. }
+        ) {
+            tab.browser.refresh.last_index_refresh = Some(now);
+            self.request_file_viewer_index_refresh(outcome);
+        }
+    }
+    /// Starts a sweep now, asks for the index whatever its rate limit, and
+    /// reads the open document at once. Why not `schedule_search`: it would
+    /// discard the search results and replacement plan; `refresh content
+    /// search` in the menu does that on purpose.
+    pub(in crate::client::shell) fn refresh_investigation_files(&mut self) {
+        let Some(tab) = self.investigation_mut() else {
+            return;
+        };
+        let targets = tab.browser.refresh_targets();
+        tab.browser.refresh.queue = targets.into();
+        tab.browser.refresh.index_due = true;
+        tab.browser.refresh.index_forced = true;
+        tab.last_list_poll = Instant::now();
+        tab.last_poll = due_poll_time();
     }
     /// Resumes a tab that stopped for lack of a pane in its location, once one
     /// is running again: the stopped listings are requested again, one per tick.
