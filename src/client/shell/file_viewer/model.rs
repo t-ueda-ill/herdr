@@ -5,7 +5,10 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::api::schema::{DirectoryEntry, DirectoryEntryKind};
+use crate::protocol::ClientShellPane;
 
 use super::super::TextEditor;
 use super::fuzzy::{rank, FuzzyQuery};
@@ -23,6 +26,52 @@ pub(in crate::client::shell) const PANE_NOT_FOCUSED: &str = "listed pane is not 
 pub(in crate::client::shell) const EDIT_FILES_ONLY: &str = "edit opens files only";
 pub(in crate::client::shell) const CONTROL_CHARACTERS_IN_PATH: &str =
     "path contains control characters; copy instead";
+
+/// Where an off-host viewer's files live: the environment a pane's shell runs in.
+/// Why not a pane id: panes come and go, the environment is what the tab browses.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(in crate::client::shell) enum FileLocation {
+    Ssh {
+        host: String,
+    },
+    Container {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ssh_host: Option<String>,
+    },
+}
+
+impl FileLocation {
+    /// `None` for a pane running a host shell.
+    pub(in crate::client::shell) fn of_pane(pane: &ClientShellPane) -> Option<Self> {
+        match (&pane.container, &pane.ssh_host) {
+            (Some(name), ssh_host) => Some(Self::Container {
+                name: name.clone(),
+                ssh_host: ssh_host.clone(),
+            }),
+            (None, Some(host)) => Some(Self::Ssh { host: host.clone() }),
+            (None, None) => None,
+        }
+    }
+
+    /// `devbox`, `app`, or `app@devbox` (a container behind an ssh host).
+    pub(in crate::client::shell) fn label(&self) -> String {
+        match self {
+            Self::Ssh { host } => host.clone(),
+            Self::Container {
+                name,
+                ssh_host: Some(host),
+            } => format!("{name}@{host}"),
+            Self::Container { name, .. } => name.clone(),
+        }
+    }
+}
+
+/// Label of `location` as notices name it; `None` is the host itself.
+pub(in crate::client::shell) fn location_label(location: Option<&FileLocation>) -> String {
+    location.map_or_else(|| "host".to_owned(), FileLocation::label)
+}
 
 #[derive(Debug, Clone)]
 pub(in crate::client::shell) struct DirectoryListing {
@@ -123,11 +172,19 @@ pub(in crate::client::shell) struct ClientFileViewerOverlay {
     pub(in crate::client::shell) workspace_id: Option<String>,
     /// Unknown until the first listing names it.
     pub(in crate::client::shell) root: Option<String>,
-    /// The listed pane runs in a container or over ssh, so the root is the host's.
-    pub(in crate::client::shell) off_host: bool,
+    /// `None` browses the host's filesystem. Decided from the snapshot when the
+    /// viewer opens, so no answer has to name it.
+    pub(in crate::client::shell) location: Option<FileLocation>,
+    /// An old server without `pane.directory.*` listed the host's directory
+    /// for an off-host pane; the title says so.
+    pub(in crate::client::shell) host_fallback: bool,
     /// Live pane whose directory the first listing showed; paths go there.
     /// `None` until that listing arrives, or when the server found no live pane.
     pub(in crate::client::shell) pane_id: Option<String>,
+    /// Pane of `location` the last request went through. Why remembered:
+    /// Compose replicas share one location, and following the focus would
+    /// move this tab into a replica it was not browsing.
+    pub(in crate::client::shell) location_pane: Option<String>,
     pub(in crate::client::shell) directories: HashMap<String, DirectoryState>,
     pub(in crate::client::shell) expanded: HashSet<String>,
     pub(in crate::client::shell) show_hidden: bool,
@@ -135,6 +192,13 @@ pub(in crate::client::shell) struct ClientFileViewerOverlay {
     pub(in crate::client::shell) query: TextEditor,
     pub(in crate::client::shell) search_focused: bool,
     pub(in crate::client::shell) index: FileIndex,
+    /// The index failed because its pane was gone; ask again once a pane of
+    /// the location runs. Why not retry every unavailable index: outside a
+    /// repository it stays unavailable by design.
+    pub(in crate::client::shell) index_retry: bool,
+    /// Directories whose listing failed for lack of a pane, to ask again once
+    /// one runs. Why not every failed directory: a permission error stays one.
+    pub(in crate::client::shell) listing_retry: HashSet<String>,
     pub(in crate::client::shell) rows: Vec<FileViewerRow>,
     /// Selectable rows while searching, counted once per rebuild.
     pub(in crate::client::shell) match_count: usize,
@@ -155,6 +219,7 @@ pub(in crate::client::shell) struct FileViewerOptions {
     pub(in crate::client::shell) show_hidden: bool,
     pub(in crate::client::shell) show_ignored: bool,
     pub(in crate::client::shell) index_supported: bool,
+    pub(in crate::client::shell) location: Option<FileLocation>,
 }
 
 impl ClientFileViewerOverlay {
@@ -164,8 +229,10 @@ impl ClientFileViewerOverlay {
             generation: options.generation,
             workspace_id: options.workspace_id,
             root: None,
-            off_host: false,
+            location: options.location,
+            host_fallback: false,
             pane_id: None,
+            location_pane: None,
             directories: HashMap::new(),
             expanded: HashSet::new(),
             show_hidden: options.show_hidden,
@@ -177,6 +244,8 @@ impl ClientFileViewerOverlay {
             } else {
                 FileIndex::Unsupported
             },
+            index_retry: false,
+            listing_retry: HashSet::new(),
             rows: Vec::new(),
             match_count: 0,
             selected: 0,
@@ -203,14 +272,41 @@ impl ClientFileViewerOverlay {
         self.searching() && matches!(self.index, FileIndex::Ready { .. })
     }
 
+    /// `devbox:` before a path of that environment, `host:` for the fallback.
+    pub(in crate::client::shell) fn location_prefix(&self) -> String {
+        match &self.location {
+            Some(location) => format!("{}:", location.label()),
+            None if self.host_fallback => "host:".to_owned(),
+            None => String::new(),
+        }
+    }
+
     pub(in crate::client::shell) fn title(&self) -> String {
+        let prefix = self.location_prefix();
         if self.index_search_active() {
             if let FileIndex::Ready { repo_root, .. } = &self.index {
-                return format!("files · {repo_root} (search)");
+                return format!("files · {prefix}{repo_root} (search)");
             }
         }
-        let host = if self.off_host { "host:" } else { "" };
-        format!("files · {host}{}", self.root.as_deref().unwrap_or("…"))
+        format!("files · {prefix}{}", self.root.as_deref().unwrap_or("…"))
+    }
+
+    /// Parent of `path` in this viewer's path syntax.
+    pub(in crate::client::shell) fn parent_path<'a>(&self, path: &'a str) -> Option<&'a str> {
+        (self.parent_fn())(path)
+    }
+
+    fn parent_fn(&self) -> fn(&str) -> Option<&str> {
+        if self.location.is_some() {
+            parent_posix_path
+        } else {
+            parent_host_path
+        }
+    }
+
+    /// Directories from `root` down to `path`, in this viewer's path syntax.
+    pub(in crate::client::shell) fn path_chain(&self, root: &str, path: &str) -> Vec<String> {
+        path_chain_with(root, path, self.parent_fn())
     }
 
     pub(in crate::client::shell) fn selected_entry(&self) -> Option<&FileViewerEntry> {
@@ -463,7 +559,7 @@ impl ClientFileViewerOverlay {
         let Some(root) = self.root.as_deref() else {
             return false;
         };
-        let mut ancestor = parent_host_path(directory);
+        let mut ancestor = self.parent_path(directory);
         while let Some(current) = ancestor {
             if let Some(DirectoryState::Loaded(listing)) = self.directories.get(current) {
                 if host_path_contains(canonical, &listing.canonical) {
@@ -473,7 +569,7 @@ impl ClientFileViewerOverlay {
             if current == root {
                 break;
             }
-            ancestor = parent_host_path(current);
+            ancestor = self.parent_path(current);
         }
         false
     }
@@ -495,14 +591,24 @@ fn entry_label(entry: &DirectoryEntry) -> String {
 
 /// Short inline text for a Git failure the server reported.
 pub(in crate::client::shell) fn git_error_notice(error: &str) -> String {
-    if error.contains("dubious ownership") || error.contains("safe.directory") {
+    if error == "untrusted repository"
+        || error.contains("dubious ownership")
+        || error.contains("safe.directory")
+    {
         "untrusted repository".to_owned()
     } else if error == "git timed out" {
         "git timed out".to_owned()
     } else if error.contains("not installed") {
         "git not installed".to_owned()
     } else {
-        format!("git: {}", error.lines().next().unwrap_or(error))
+        let line = error.lines().next().unwrap_or(error);
+        // Off-host servers word some failures themselves ("git check-ignore
+        // exited with status 2"); a second prefix would only repeat "git".
+        if line.starts_with("git ") {
+            line.to_owned()
+        } else {
+            format!("git: {line}")
+        }
     }
 }
 
@@ -542,6 +648,20 @@ pub(in crate::client::shell) fn join_host_path(directory: &str, name: &str) -> S
     }
 }
 
+/// Parent in a POSIX environment's paths. Why not `parent_host_path`: it
+/// understands drive letters and UNC prefixes, which an off-host path never has.
+pub(in crate::client::shell) fn parent_posix_path(path: &str) -> Option<&str> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.rsplit_once('/') {
+        Some(("", _)) => Some("/"),
+        Some((parent, _)) => Some(parent),
+        None => None,
+    }
+}
+
 pub(in crate::client::shell) fn parent_host_path(path: &str) -> Option<&str> {
     let trimmed = path.trim_end_matches('/');
     if trimmed.len() == 2 && trimmed.as_bytes()[1] == b':' {
@@ -577,7 +697,12 @@ fn relative_host_path<'a>(root: &str, path: &'a str) -> Option<&'a str> {
 }
 
 /// Directories from `root` down to `path`, both included.
+#[cfg(test)]
 pub(in crate::client::shell) fn host_path_chain(root: &str, path: &str) -> Vec<String> {
+    path_chain_with(root, path, parent_host_path)
+}
+
+fn path_chain_with(root: &str, path: &str, parent: fn(&str) -> Option<&str>) -> Vec<String> {
     let mut chain = Vec::new();
     let mut current = Some(path);
     while let Some(directory) = current {
@@ -588,7 +713,7 @@ pub(in crate::client::shell) fn host_path_chain(root: &str, path: &str) -> Vec<S
         if directory == root.trim_end_matches('/') || directory == root {
             break;
         }
-        current = parent_host_path(directory);
+        current = parent(directory);
     }
     chain.reverse();
     chain
@@ -665,6 +790,36 @@ mod tests {
     }
 
     #[test]
+    fn posix_paths_treat_drive_and_unc_looking_names_as_plain_directories() {
+        assert_eq!(parent_posix_path("/c:"), Some("/"));
+        assert_eq!(parent_posix_path("/srv/c:/x"), Some("/srv/c:"));
+        assert_eq!(parent_posix_path("//host/share"), Some("//host"));
+        assert_eq!(parent_posix_path("/work/src"), Some("/work"));
+        assert_eq!(parent_posix_path("/"), None);
+        // The host helper stops at these; that is why off-host paths do not use it.
+        assert_eq!(parent_host_path("//host/share"), None);
+    }
+
+    #[test]
+    fn locations_label_themselves_for_titles_and_notices() {
+        let ssh = FileLocation::Ssh {
+            host: "devbox".into(),
+        };
+        let local = FileLocation::Container {
+            name: "app".into(),
+            ssh_host: None,
+        };
+        let remote = FileLocation::Container {
+            name: "app".into(),
+            ssh_host: Some("devbox".into()),
+        };
+        assert_eq!(ssh.label(), "devbox");
+        assert_eq!(local.label(), "app");
+        assert_eq!(remote.label(), "app@devbox");
+        assert_eq!(location_label(None), "host");
+    }
+
+    #[test]
     fn indexed_paths_add_each_parent_directory_once() {
         let paths = indexed_paths(vec![
             "src/client/shell.rs".into(),
@@ -678,6 +833,20 @@ mod tests {
             .collect();
         assert_eq!(directories, ["src", "src/client"]);
         assert_eq!(paths.iter().filter(|path| !path.is_dir).count(), 3);
+    }
+
+    #[test]
+    fn off_host_git_errors_read_like_the_host_notices_without_a_double_prefix() {
+        assert_eq!(
+            git_error_notice("untrusted repository"),
+            "untrusted repository"
+        );
+        assert_eq!(git_error_notice("git not installed"), "git not installed");
+        assert_eq!(
+            git_error_notice("git check-ignore exited with status 2"),
+            "git check-ignore exited with status 2"
+        );
+        assert_eq!(git_error_notice("fatal: bad"), "git: fatal: bad");
     }
 
     #[test]

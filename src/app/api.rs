@@ -9,6 +9,7 @@ mod env;
 mod integrations;
 mod layouts;
 mod open_editor;
+mod pane_directory;
 mod panes;
 pub(crate) mod plugins;
 pub(super) mod responses;
@@ -60,6 +61,7 @@ impl App {
                 self.handle_container_list_finished(*result);
                 false
             }
+            AppEvent::PaneEditorProbed(result) => self.handle_pane_editor_probed(*result),
             AppEvent::SshOpenFinished(result) => {
                 self.handle_ssh_open_finished(*result);
                 true
@@ -226,6 +228,11 @@ impl App {
 
         if let AppEvent::ContainerListFinished(result) = ev {
             self.handle_container_list_finished(*result);
+            return Vec::new();
+        }
+
+        if let AppEvent::PaneEditorProbed(result) = ev {
+            self.handle_pane_editor_probed(*result);
             return Vec::new();
         }
 
@@ -1160,7 +1167,11 @@ impl App {
             | Method::FilesReplace(_)
             | Method::FilesOperate(_)
             | Method::DirectoryList(_)
-            | Method::DirectoryIndex(_) => {
+            | Method::DirectoryIndex(_)
+            | Method::PaneDirectoryList(_)
+            | Method::PaneDirectoryIndex(_)
+            | Method::PaneDirectoryOpenEditor(_)
+            | Method::PaneFileRead(_) => {
                 return responses::encode_error(
                     request.id,
                     "invalid_request",

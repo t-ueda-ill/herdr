@@ -100,7 +100,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | コンテナ | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH ホスト | `ssh.open`, `ssh.hosts` |
-| ファイル | `directory.list`、`directory.index`、`pane.open_editor` |
+| ファイル | `directory.list`、`directory.index`、`pane.open_editor`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.file.read` |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
@@ -448,6 +448,10 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 1 つのリクエスト内の Git の呼び出しは、合わせて 5 秒のデッドラインを共有します。Git がない、リポジトリを拒否した、または時間切れになった場合も、リクエストは `git_error` 付きで成功し、Git を使わない結果に戻ります。つまり `ignored` が省略されるか、索引が空になり、時間切れなら `truncated` も設定されます。`trust_repository` を `true` にすると、worktree のメソッドと同じく、見つかったリポジトリに `safe.directory` を渡します。
 
 `pane.open_editor` は必須の絶対パス `path` でファイルを受け取り、ペインのシェル環境の `${EDITOR:-vi}` を対象ペインの上のズームしたオーバーレイペインで起動します。結果はエディタペインの `pane_info` です。エディタが終了するとオーバーレイが閉じ、元のフォーカスとズームに戻ります。存在しないファイルは、エディタが保存したときにだけ作られます。
+
+`pane.directory.list`、`pane.directory.index`、`pane.file.read`、`pane.directory.open_editor` は、ペインのシェルが SSH 越しやコンテナ内（SSH 先のコンテナを含む）で動いているときに、そのシェルから見えるファイルシステムに対して同じ操作を行います。上のメソッドは「このホストのファイルシステム」を意味し、形状も固定されているため、別のメソッドとして用意しています。`pane_id` は必須で、生きている off-host のペインを指さなければなりません。ホストのペインには `invalid_params` を返します。`path` はペインの環境内の POSIX 絶対パスで、`..` は含められません。サーバーはそこで固定の POSIX `sh` スクリプト（BusyBox で足ります）を、対話なしの接続（`BatchMode`）で実行します。`ssh_unavailable` はプロンプトなしでホストに接続できないこと、`container_unavailable` と `container_not_found` は docker がコンテナを扱えないこと、`offhost_shell_unavailable` はその環境に `sh` がないことを表します。
+
+どの結果にも `location`（`{ "kind": "ssh" | "container", "ssh_host"?, "container"? }`）が付きます。`ssh_host` はエイリアス、`container` は正規名です。`pane.directory.list` は `directory_list` から `pane_id` を除いた形の `pane_directory_list` を返します。`root` は、`path` を指定したときもペインの作業ディレクトリです（シェルが OSC 7 で報告した cwd、なければコンテナの作業ディレクトリ、なければ SSH のログインディレクトリ、なければ `/`）。`size` と `mtime` は省略し、`.git` は返さず、git がリポジトリを拒否したときの `git_error` は `untrusted repository` です。`pane.directory.index` は `pane_directory_index` を返し、`repo_root` 以下の追跡中・未追跡のファイルを並べます。`repo_root` は常にあり、git がなければ検索したディレクトリです（最大 50,000 件、無視されるファイルも含みます）。`pane.file.read` は `file.read` と同じ `document` を持つ `pane_file_document` を返します。`revision` は `cksum` のダイジェストで、ファイルのものと同じ `revision` を渡すと内容なしの `unchanged` を返します。`poll: true` はバックグラウンドの更新を表し、通常の期限（ローカルのコンテナは 5 秒、SSH 経由は 20 秒）の代わりに 5 秒の期限になります。`pane.directory.open_editor` は、`pane.open_editor` と同様に、ペインと同じシェルとログインモードでエディタをズームしたオーバーレイとして起動し、エディタペインの `pane_info` を返します。対象はアクティブなワークスペースのフォーカス中のペインでなければなりません。
 
 エラー:
 

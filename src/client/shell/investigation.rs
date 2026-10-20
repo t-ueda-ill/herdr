@@ -84,24 +84,20 @@ impl ClientShellState {
             .snapshot
             .as_ref()
             .and_then(|s| s.focused_workspace_id.as_ref());
+        // The tab whose location is the focused pane's: a host shell and an
+        // ssh shell of one workspace each have their own tab.
+        let location = self.workspace_file_location(workspace.map(String::as_str));
+        let wanted = |t: &Investigation| {
+            t.endpoint == self.active_endpoint_id
+                && t.browser.workspace_id.as_ref() == workspace
+                && t.browser.location == location
+        };
         let recent = self
             .workbench
             .active
-            .filter(|i| {
-                self.workbench.tabs.get(*i).is_some_and(|t| {
-                    t.endpoint == self.active_endpoint_id
-                        && t.browser.workspace_id.as_ref() == workspace
-                })
-            })
-            .or_else(|| {
-                self.workbench.tabs.iter().rposition(|t| {
-                    t.endpoint == self.active_endpoint_id
-                        && t.browser.workspace_id.as_ref() == workspace
-                })
-            });
+            .filter(|i| self.workbench.tabs.get(*i).is_some_and(wanted))
+            .or_else(|| self.workbench.tabs.iter().rposition(wanted));
         if let Some(index) = recent {
-            let pane = self.focused_pane_id();
-            self.workbench.tabs[index].browser.pane_id = pane;
             self.mode = ClientShellMode::Terminal;
             self.workbench.active = Some(index);
             self.workbench.visible = true;
@@ -177,7 +173,6 @@ impl ClientShellState {
                 outcome,
             );
         } else if let Some(&index) = investigations.get(index.saturating_sub(terminals.len())) {
-            self.workbench.tabs[index].browser.pane_id = self.focused_pane_id();
             self.workbench.active = Some(index);
             self.workbench.visible = true;
         }

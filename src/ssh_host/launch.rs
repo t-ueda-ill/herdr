@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Fully resolved ssh pane target, kept so respawns never re-read the config.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +90,67 @@ pub(crate) fn ssh_command_argv(launch: &SshLaunch, command: OsString) -> Vec<OsS
     );
     argv.push(command);
     argv
+}
+
+/// `ssh [-S <control> -o ControlMaster=auto -o ControlPersist=600] <batch options> <host> <command>`.
+///
+/// Why `ControlMaster=auto` and not `no` like the clipboard side channel: a
+/// listing may be the first contact with the host, and the master it creates
+/// is the one a pane opened afterwards joins through the same `ControlPath`.
+/// Why `BatchMode`: nothing here can answer a password or host key prompt, so
+/// an unauthenticated host must fail fast and send the user to an ssh pane.
+/// Why not `-F`: the user's own config must resolve `host` exactly as it does
+/// for ssh panes, or `%C` in the control path would name another socket.
+/// The remaining options match the clipboard side channel: no tty (stdin may
+/// carry raw bytes), no `RemoteCommand` (ssh refuses a second command), and
+/// no forwardings or local commands.
+/// `command` is one string the remote login shell parses; the caller quotes it.
+pub(crate) fn ssh_batch_argv(
+    host: &str,
+    control_path: Option<&Path>,
+    command: &str,
+) -> Vec<OsString> {
+    let mut argv: Vec<OsString> = Vec::new();
+    if let Some(control_path) = control_path {
+        argv.extend([
+            "-S".into(),
+            control_path.as_os_str().to_owned(),
+            "-o".into(),
+            "ControlMaster=auto".into(),
+            "-o".into(),
+            "ControlPersist=600".into(),
+        ]);
+    }
+    for option in [
+        "BatchMode=yes",
+        "ConnectTimeout=5",
+        "RequestTTY=no",
+        "RemoteCommand=none",
+        "ClearAllForwardings=yes",
+        "PermitLocalCommand=no",
+        "ForwardX11=no",
+        "ForwardAgent=no",
+    ] {
+        argv.push("-o".into());
+        argv.push(option.into());
+    }
+    argv.push(host.into());
+    argv.push(command.into());
+    argv
+}
+
+/// Exit status 255 is ssh's own failure; these are the ones a prompt-free
+/// run cannot get past but an interactive ssh pane can.
+pub(crate) fn is_ssh_login_failure(stderr: &str) -> bool {
+    [
+        "Permission denied",
+        "Host key verification failed",
+        "REMOTE HOST IDENTIFICATION HAS CHANGED",
+        "Could not resolve",
+        "Too many authentication failures",
+    ]
+    .iter()
+    .any(|marker| stderr.contains(marker))
 }
 
 /// POSIX single quoting: the remote shell reads `text` back unchanged,

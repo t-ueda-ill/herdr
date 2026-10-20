@@ -9,6 +9,7 @@ pub mod events;
 pub mod files;
 pub mod integrations;
 pub(crate) mod operations;
+pub mod pane_directory;
 pub mod panes;
 pub mod plugins;
 pub mod response;
@@ -27,6 +28,7 @@ pub use directory::*;
 pub use events::*;
 pub use files::*;
 pub use integrations::*;
+pub use pane_directory::*;
 pub use panes::*;
 pub use plugins::*;
 pub use response::*;
@@ -163,6 +165,10 @@ operations::define_operations! {
     DirectoryIndex(DirectoryIndexParams) => "directory.index", false, true;
     PaneOpenEditor(PaneOpenEditorParams) => "pane.open_editor", true, true;
     FileRead(FileReadParams) => "file.read", false, true;
+    PaneDirectoryList(PaneDirectoryListParams) => "pane.directory.list", false, true;
+    PaneDirectoryIndex(PaneDirectoryIndexParams) => "pane.directory.index", false, true;
+    PaneDirectoryOpenEditor(PaneDirectoryOpenEditorParams) => "pane.directory.open_editor", false, true;
+    PaneFileRead(PaneFileReadParams) => "pane.file.read", false, true;
     FilesCancel(FilesCancelParams) => "files.cancel", false, true;
     FilesSearch(FilesSearchParams) => "files.search", false, true;
     FilesReplace(FilesReplaceParams) => "files.replace", false, true;
@@ -182,6 +188,9 @@ impl Method {
                 | Self::DirectoryList(_)
                 | Self::DirectoryIndex(_)
                 | Self::FileRead(_)
+                | Self::PaneDirectoryList(_)
+                | Self::PaneDirectoryIndex(_)
+                | Self::PaneFileRead(_)
                 | Self::FilesSearch(_)
                 | Self::FilesPlan(_)
                 | Self::FilesReplace(_)

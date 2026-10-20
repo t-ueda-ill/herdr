@@ -1621,8 +1621,15 @@ impl AppState {
             // foreground client; they never touch AppState. Kept for AppEvent exhaustiveness.
             AppEvent::TerminalBell { .. } => Vec::new(),
             AppEvent::ClipboardWrite { .. } => Vec::new(),
-            AppEvent::TerminalCwdReported { pane_id, cwd } => {
-                if !cwd.is_absolute() || !cwd.is_dir() {
+            AppEvent::TerminalCwdReported {
+                pane_id,
+                cwd,
+                off_host,
+            } => {
+                // Why not store it: `terminal.cwd` is a host directory that new
+                // panes and restore start in, and the far side's path would
+                // exist here only by coincidence.
+                if off_host || !cwd.is_absolute() || !cwd.is_dir() {
                     return Vec::new();
                 }
                 let Some(terminal_id) = self.workspaces.iter().find_map(|ws| {
@@ -1668,6 +1675,7 @@ impl AppState {
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::WorktreeReadFinished(_) => Vec::new(),
             AppEvent::ContainerOpenFinished(_) => Vec::new(),
+            AppEvent::PaneEditorProbed(_) => Vec::new(),
             AppEvent::ContainerListFinished(_) => Vec::new(),
             // Client-owned result; the headless server pastes it before the
             // app ever sees it.
@@ -4148,12 +4156,39 @@ mod tests {
         let updates = state.handle_app_event(AppEvent::TerminalCwdReported {
             pane_id,
             cwd: cwd.clone(),
+            off_host: false,
         });
 
         assert!(updates.is_empty());
         assert_eq!(state.terminals.get(&terminal_id).unwrap().cwd, cwd);
         assert!(state.session_dirty);
         let _ = std::fs::remove_dir_all(cwd);
+    }
+
+    #[test]
+    fn terminal_cwd_report_from_an_off_host_pane_leaves_the_host_cwd_alone() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let terminal_id = state.workspaces[0]
+            .pane_state(pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        // A directory that exists on this host and means something else inside the pane.
+        let host_dir = std::env::temp_dir();
+        let before = state.terminals.get(&terminal_id).unwrap().cwd.clone();
+        assert_ne!(before, host_dir);
+        state.session_dirty = false;
+
+        let updates = state.handle_app_event(AppEvent::TerminalCwdReported {
+            pane_id,
+            cwd: host_dir,
+            off_host: true,
+        });
+
+        assert!(updates.is_empty());
+        assert_eq!(state.terminals.get(&terminal_id).unwrap().cwd, before);
+        assert!(!state.session_dirty);
     }
 
     #[test]

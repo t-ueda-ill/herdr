@@ -105,12 +105,18 @@ fn shell_state_with(
     projection: ClientShellSnapshot,
 ) -> ClientShellState {
     let mut state = ClientShellState::new(config);
-    // Characterize the legacy path picker against servers without file.read.
+    // Characterize the legacy path picker against servers without file.read
+    // and without pane.directory.* (which always come with file.read).
     state.set_endpoint_methods(Some(
         crate::api::schema::Method::OPERATIONS
             .iter()
             .map(|op| op.name)
-            .filter(|name| !name.starts_with("file.") && !name.starts_with("files."))
+            .filter(|name| {
+                !name.starts_with("file.")
+                    && !name.starts_with("files.")
+                    && !name.starts_with("pane.directory.")
+                    && !name.starts_with("pane.file.")
+            })
             .map(str::to_owned)
             .collect(),
     ));

@@ -337,10 +337,10 @@ fn parse_default_color_set_events(body: &[u8]) -> Vec<DefaultColorEvent> {
         .collect()
 }
 
-pub(super) fn parse_reported_cwd(value: &[u8]) -> Option<PathBuf> {
+pub(super) fn parse_reported_cwd(value: &[u8], shell_off_host: bool) -> Option<PathBuf> {
     let value = std::str::from_utf8(value).ok()?.trim();
     if value.starts_with("file://") {
-        return parse_file_uri_cwd(value);
+        return parse_file_uri_cwd(value, shell_off_host);
     }
     let path = value.trim_matches('"');
     (!path.is_empty()).then(|| PathBuf::from(path))
@@ -662,13 +662,16 @@ fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
     sanitized
 }
 
-fn parse_file_uri_cwd(uri: &str) -> Option<PathBuf> {
+/// Why a host check at all: OSC 7 from a local shell naming another machine
+/// means a nested `ssh` or `su` session whose paths do not exist here. Why it
+/// is skipped off-host: the shell there names its own host, which is never ours.
+fn parse_file_uri_cwd(uri: &str, shell_off_host: bool) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let path = if rest.starts_with('/') {
         rest
     } else if let Some(slash) = rest.find('/') {
         let host = &rest[..slash];
-        if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+        if !(shell_off_host || host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
             return None;
         }
         &rest[slash..]
@@ -985,24 +988,51 @@ mod tests {
     #[test]
     fn reported_cwd_parses_file_uri_and_bare_paths() {
         assert_eq!(
-            parse_reported_cwd(b"file:///tmp/herdr%20repo"),
+            parse_reported_cwd(b"file:///tmp/herdr%20repo", false),
             Some(std::path::PathBuf::from("/tmp/herdr repo"))
         );
         assert_eq!(
-            parse_reported_cwd(b"C:\\Users\\herdr\\src\\herdr"),
+            parse_reported_cwd(b"C:\\Users\\herdr\\src\\herdr", false),
             Some(std::path::PathBuf::from("C:\\Users\\herdr\\src\\herdr"))
         );
         assert_eq!(
-            parse_reported_cwd(b"\"C:\\my proj\""),
+            parse_reported_cwd(b"\"C:\\my proj\"", false),
             Some(std::path::PathBuf::from("C:\\my proj"))
         );
     }
 
     #[test]
     fn reported_cwd_rejects_invalid_or_empty_values() {
-        assert_eq!(parse_reported_cwd(b""), None);
-        assert_eq!(parse_reported_cwd(b"\xff"), None);
-        assert_eq!(parse_reported_cwd(b"file://remote/tmp"), None);
+        assert_eq!(parse_reported_cwd(b"", false), None);
+        assert_eq!(parse_reported_cwd(b"\xff", false), None);
+        assert_eq!(parse_reported_cwd(b"file://remote/tmp", false), None);
+    }
+
+    #[test]
+    fn reported_cwd_accepts_any_host_name_when_the_shell_runs_off_host() {
+        // The other side's own host name is what its shell puts in OSC 7.
+        assert_eq!(
+            parse_reported_cwd(b"file://devbox.internal/home/u/my%20proj", true),
+            Some(std::path::PathBuf::from("/home/u/my proj"))
+        );
+        assert_eq!(
+            parse_reported_cwd(b"file://a1b2c3d4e5f6/work", true),
+            Some(std::path::PathBuf::from("/work"))
+        );
+    }
+
+    #[test]
+    fn reported_cwd_keeps_the_local_forms_valid_off_host() {
+        for off_host in [false, true] {
+            assert_eq!(
+                parse_reported_cwd(b"file:///tmp/x", off_host),
+                Some(std::path::PathBuf::from("/tmp/x"))
+            );
+            assert_eq!(
+                parse_reported_cwd(b"file://localhost/tmp/x", off_host),
+                Some(std::path::PathBuf::from("/tmp/x"))
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -23,7 +23,7 @@ pub(crate) fn plan_launch(info: &ContainerInfo, host_cwd: Option<&Path>) -> Cont
     }
 }
 
-const BASH_OR_SH_PROBE: &str =
+pub(crate) const BASH_OR_SH_PROBE: &str =
     "if command -v bash >/dev/null 2>&1; then exec bash \"$@\"; else exec sh \"$@\"; fi";
 
 /// `-it` is required: `-i` wires the pane PTY to stdin and `-t` gives the

@@ -37,14 +37,20 @@ impl ClientShellState {
             .map(|(i, t)| {
                 (
                     i,
-                    t.browser
-                        .root
-                        .as_deref()
-                        .unwrap_or("loading…")
-                        .rsplit('/')
-                        .find(|s| !s.is_empty())
-                        .unwrap_or("/")
-                        .to_owned(),
+                    format!(
+                        "{}{}",
+                        t.browser
+                            .location
+                            .as_ref()
+                            .map_or_else(String::new, |location| format!("{}:", location.label())),
+                        t.browser
+                            .root
+                            .as_deref()
+                            .unwrap_or("loading…")
+                            .rsplit('/')
+                            .find(|s| !s.is_empty())
+                            .unwrap_or("/")
+                    ),
                 )
             })
             .collect();
@@ -122,7 +128,7 @@ impl ClientShellState {
         let tab = &mut self.workbench.tabs[index];
         let title = format!(
             " {}{} · {} · F10 actions",
-            if tab.browser.off_host { "host: " } else { "" },
+            tab.browser.location_prefix(),
             tab.browser.root.as_deref().unwrap_or("loading…"),
             if tab.content_search && !tab.search_ready {
                 "content search (updating / stale)"

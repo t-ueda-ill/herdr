@@ -2,6 +2,16 @@ use super::*;
 use crate::api::schema::*;
 use std::time::{Duration, Instant};
 
+const HOST_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const OFFHOST_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Back-dates a tab's last poll so the next tick refreshes it whatever its interval.
+pub(super) fn due_poll_time() -> Instant {
+    Instant::now()
+        .checked_sub(Duration::from_secs(10))
+        .unwrap_or_else(Instant::now)
+}
+
 impl ClientShellState {
     pub(in crate::client::shell) fn request_investigation_preview(
         &mut self,
@@ -61,23 +71,48 @@ impl ClientShellState {
             return;
         }
         let (id, generation) = (tab.id, tab.preview_generation);
+        let (workspace, location, preferred) = (
+            tab.browser.workspace_id.clone(),
+            tab.browser.location.clone(),
+            tab.browser.location_pane.clone(),
+        );
         if let Some(d) = tab.document_mut() {
             d.request_generation = generation;
         }
         tab.pending_reads.insert(path.clone());
-        let sent = self.push_endpoint_method_with_kind(
-            Method::FileRead(FileReadParams {
-                path: path.clone(),
-                revision: None,
-            }),
-            PendingEndpointKind::Investigation(FileRequest::Read {
-                id,
-                path,
-                generation,
-                prepare: false,
-            }),
-            outcome,
+        let method = self.file_read_method(
+            &workspace,
+            &location,
+            path.clone(),
+            None,
+            false,
+            preferred.as_deref(),
         );
+        let sent = match method {
+            Ok(method) => {
+                let pane = Self::method_location_pane(&method);
+                let sent = self.push_endpoint_method_with_kind(
+                    method,
+                    PendingEndpointKind::Investigation(FileRequest::Read {
+                        id,
+                        path,
+                        generation,
+                        prepare: false,
+                    }),
+                    outcome,
+                );
+                if sent {
+                    self.remember_location_pane(pane);
+                }
+                sent
+            }
+            Err(notice) => {
+                if let Some(tab) = self.investigation_mut() {
+                    tab.notice = notice;
+                }
+                false
+            }
+        };
         if !sent {
             if let Some(tab) = self.investigation_mut() {
                 tab.pending_reads.clear();
@@ -114,13 +149,14 @@ impl ClientShellState {
         result: Result<ResponseResult, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
     ) {
+        let result = result.map(super::super::file_viewer::offhost_result_as_host);
         let id = match &request {
             FileRequest::Read { id, .. }
             | FileRequest::Search { id, .. }
             | FileRequest::Replace { id, .. }
             | FileRequest::Plan { id, .. }
             | FileRequest::Operate { id }
-            | FileRequest::Editor { id }
+            | FileRequest::Editor { id, .. }
             | FileRequest::EditorCheck { id, .. } => *id,
         };
         let Some(index) = self
@@ -290,7 +326,7 @@ impl ClientShellState {
                         tab.plan.clear();
                         tab.prepare_queue.clear();
                         tab.dialog = None;
-                        tab.last_poll = Instant::now() - Duration::from_secs(2);
+                        tab.last_poll = due_poll_time();
                     }
                     Err(error) => tab.notice = error.message,
                     _ => tab.notice = "unexpected replacement response".into(),
@@ -382,7 +418,7 @@ impl ClientShellState {
                         self.workbench.editor = None;
                         self.workbench.active = Some(index);
                         self.workbench.visible = true;
-                        tab.last_poll = Instant::now() - Duration::from_secs(2);
+                        tab.last_poll = due_poll_time();
                     }
                     _ => {
                         if let Some(editor) = self.workbench.editor.as_mut() {
@@ -447,6 +483,7 @@ impl ClientShellState {
             }
         }
         self.restore_investigations(outcome);
+        self.resume_stalled_investigation(outcome);
         if self.workbench.terminal_requested {
             return;
         }
@@ -491,10 +528,30 @@ impl ClientShellState {
         let Some(tab) = self.investigation_mut() else {
             return;
         };
-        if now.duration_since(tab.last_poll) < Duration::from_secs(1) {
+        // Off-host reads cross ssh or docker, so they are rarer; and one is
+        // never started behind another request, which the endpoint would
+        // refuse as busy and starve the user's own actions.
+        let offhost = tab.browser.location.is_some();
+        let interval = if offhost {
+            OFFHOST_POLL_INTERVAL
+        } else {
+            HOST_POLL_INTERVAL
+        };
+        if now.duration_since(tab.last_poll) < interval {
             return;
         }
+        if offhost && !self.pending_requests.is_empty() {
+            return;
+        }
+        let Some(tab) = self.investigation_mut() else {
+            return;
+        };
         tab.last_poll = now;
+        let (workspace, location, preferred) = (
+            tab.browser.workspace_id.clone(),
+            tab.browser.location.clone(),
+            tab.browser.location_pane.clone(),
+        );
         if let Some(document) = tab
             .document()
             .filter(|d| !tab.pending_reads.contains(&d.path))
@@ -512,12 +569,29 @@ impl ClientShellState {
             if let Some(d) = tab.document_mut() {
                 d.request_generation = generation;
             }
-            tab.pending_reads.insert(path.clone());
+            let method = self.file_read_method(
+                &workspace,
+                &location,
+                path.clone(),
+                revision,
+                true,
+                preferred.as_deref(),
+            );
+            let method = match method {
+                Ok(method) => method,
+                Err(notice) => {
+                    if let Some(tab) = self.investigation_mut() {
+                        tab.notice = notice;
+                    }
+                    return;
+                }
+            };
+            if let Some(tab) = self.investigation_mut() {
+                tab.pending_reads.insert(path.clone());
+            }
+            let pane = Self::method_location_pane(&method);
             let sent = self.push_endpoint_method_with_kind(
-                Method::FileRead(FileReadParams {
-                    path: path.clone(),
-                    revision,
-                }),
+                method,
                 PendingEndpointKind::Investigation(FileRequest::Read {
                     id,
                     path,
@@ -526,11 +600,57 @@ impl ClientShellState {
                 }),
                 outcome,
             );
-            if !sent {
-                if let Some(tab) = self.investigation_mut() {
-                    tab.pending_reads.clear();
-                }
+            if sent {
+                self.remember_location_pane(pane);
+            } else if let Some(tab) = self.investigation_mut() {
+                tab.pending_reads.clear();
             }
+        }
+    }
+    /// Resumes a tab that stopped for lack of a pane in its location, once one
+    /// is running again: the stopped listings are requested again, one per tick.
+    fn resume_stalled_investigation(&mut self, outcome: &mut ClientShellInput) {
+        let Some(tab) = self.investigation() else {
+            return;
+        };
+        let Some(location) = tab.browser.location.clone() else {
+            return;
+        };
+        if self
+            .file_location_pane(
+                tab.browser.workspace_id.as_deref(),
+                &location,
+                tab.browser.location_pane.as_deref(),
+            )
+            .is_none()
+        {
+            return;
+        }
+        let stalled_notice = Self::no_pane_notice(&location);
+        // Sorted so one directory is asked per tick in a stable order.
+        let stalled = tab
+            .browser
+            .listing_retry
+            .iter()
+            .filter(|path| {
+                matches!(
+                    tab.browser.directories.get(*path),
+                    Some(crate::client::shell::file_viewer::model::DirectoryState::Failed(_))
+                )
+            })
+            .min()
+            .cloned();
+        if tab.notice == stalled_notice {
+            if let Some(tab) = self.investigation_mut() {
+                tab.notice.clear();
+            }
+        }
+        if !self.pending_requests.is_empty() {
+            return;
+        }
+        match stalled {
+            Some(path) => self.request_file_viewer_listing(path, outcome),
+            None => self.retry_file_viewer_index(outcome),
         }
     }
     fn restore_investigations(&mut self, outcome: &mut ClientShellInput) {
@@ -551,12 +671,19 @@ impl ClientShellState {
             .snapshot
             .as_ref()
             .and_then(|s| s.focused_workspace_id.clone());
-        let Some(position) = self
-            .workbench
-            .saved
-            .iter()
-            .position(|s| s.endpoint == endpoint && s.workspace == workspace)
-        else {
+        // An off-host entry waits for a pane of its location; it must not
+        // hold back the host entries saved after it.
+        let pane_directory = self.supports_pane_directory();
+        let Some(position) = self.workbench.saved.iter().position(|s| {
+            s.endpoint == endpoint
+                && s.workspace == workspace
+                && s.location.as_ref().is_none_or(|location| {
+                    pane_directory
+                        && self
+                            .file_location_pane(workspace.as_deref(), location, None)
+                            .is_some()
+                })
+        }) else {
             return;
         };
         // Why not retry blindly: opening an endpoint without directory.list
@@ -569,9 +696,11 @@ impl ClientShellState {
         })) {
             return;
         }
+        let location = self.workbench.saved[position].location.clone();
         let previous = (self.workbench.active, self.workbench.visible);
         let tabs_before = self.workbench.tabs.len();
-        self.open_file_viewer_for(workspace, outcome);
+        let saved_root = self.workbench.saved[position].root.clone();
+        self.open_file_viewer_in(workspace, Some(location), Some(saved_root), outcome);
         // Consumed only once a tab exists; a failed open keeps the entry for the next tick.
         if self.workbench.tabs.len() == tabs_before {
             return;
@@ -580,12 +709,8 @@ impl ClientShellState {
         let Some(tab) = self.workbench.tabs.last_mut() else {
             return;
         };
-        tab.browser.root = Some(saved.root.clone());
-        tab.browser.directories.clear();
-        tab.browser.expanded.clear();
-        tab.browser.expanded.insert(saved.root.clone());
         tab.horizontal = saved.horizontal;
-        tab.content_search = saved.content_search;
+        tab.content_search = saved.content_search && tab.browser.location.is_none();
         tab.query = saved.query.as_str().into();
         tab.include = saved.include.as_str().into();
         tab.exclude = saved.exclude.as_str().into();
@@ -607,9 +732,6 @@ impl ClientShellState {
             .collect();
         tab.active_file = saved.active_file.filter(|i| *i < tab.documents.len());
         tab.schedule_search();
-        // Bump the root request generation, so the initial cwd response cannot
-        // replace the saved root when responses arrive in either order.
-        self.change_file_viewer_root(saved.root, None, outcome);
         self.workbench.active = previous.0;
         self.workbench.visible = previous.1;
     }
@@ -635,20 +757,33 @@ impl ClientShellState {
             tab.prepare_pending += 1;
             requests.push((tab.id, tab.prepare_generation, path));
         }
+        let (workspace, location, preferred) = (
+            tab.browser.workspace_id.clone(),
+            tab.browser.location.clone(),
+            tab.browser.location_pane.clone(),
+        );
         for (id, generation, path) in requests {
-            if !self.push_endpoint_method_with_kind(
-                Method::FileRead(FileReadParams {
-                    path: path.clone(),
-                    revision: None,
-                }),
-                PendingEndpointKind::Investigation(FileRequest::Read {
-                    id,
-                    path,
-                    generation,
-                    prepare: true,
-                }),
-                outcome,
-            ) {
+            let method = self.file_read_method(
+                &workspace,
+                &location,
+                path.clone(),
+                None,
+                false,
+                preferred.as_deref(),
+            );
+            let sent = method.is_ok_and(|method| {
+                self.push_endpoint_method_with_kind(
+                    method,
+                    PendingEndpointKind::Investigation(FileRequest::Read {
+                        id,
+                        path,
+                        generation,
+                        prepare: true,
+                    }),
+                    outcome,
+                )
+            });
+            if !sent {
                 if let Some(tab) = self.investigation_mut() {
                     tab.prepare_pending = tab.prepare_pending.saturating_sub(1);
                     tab.prepare_queue.clear();
@@ -691,7 +826,7 @@ impl ClientShellState {
             for document in tab.documents.iter_mut().chain(tab.preview.iter_mut()) {
                 document.revision.clear();
             }
-            tab.last_poll = Instant::now() - Duration::from_secs(2);
+            tab.last_poll = due_poll_time();
             tab.notice = "server reconnected; file state reloading".into();
             outcome.repaint = true;
         }

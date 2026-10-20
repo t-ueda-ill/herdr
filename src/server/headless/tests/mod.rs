@@ -8613,3 +8613,79 @@ async fn directory_list_is_answered_by_its_worker_without_a_render() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn pane_directory_requests_are_routed_to_the_deferred_handler_without_a_render() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("directory")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    let pane = server.app.state.workspaces[0].tabs[0].root_pane;
+    let public_id = server.app.public_pane_id(0, pane).unwrap();
+    server.app.state.insert_test_runtime(
+        pane,
+        crate::terminal::TerminalRuntime::test_with_scrollback_bytes(20, 5, 1000, b""),
+    );
+    let methods = [
+        api::schema::Method::PaneDirectoryList(api::schema::PaneDirectoryListParams {
+            pane_id: public_id.clone(),
+            path: None,
+            trust_repository: false,
+        }),
+        api::schema::Method::PaneDirectoryIndex(api::schema::PaneDirectoryIndexParams {
+            pane_id: public_id.clone(),
+            path: None,
+            trust_repository: false,
+        }),
+        api::schema::Method::PaneFileRead(api::schema::PaneFileReadParams {
+            pane_id: public_id.clone(),
+            path: "/etc/hosts".into(),
+            revision: None,
+            poll: true,
+        }),
+        api::schema::Method::PaneDirectoryOpenEditor(api::schema::PaneDirectoryOpenEditorParams {
+            pane_id: public_id,
+            path: "/etc/hosts".into(),
+        }),
+    ];
+
+    for method in methods {
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+        let changed = server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+            request: api::schema::Request {
+                id: "pane-files".into(),
+                method,
+            },
+            respond_to,
+            response_write_complete: None,
+        });
+
+        assert!(!changed, "an off-host read must not request a render");
+        let response: api::schema::ErrorResponse = serde_json::from_str(
+            &response_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("pane directory response"),
+        )
+        .unwrap();
+        // The pane runs on this host, which only the deferred handler decides.
+        assert_eq!(response.error.code, "invalid_params");
+    }
+}
+
+#[test]
+fn the_deferred_editor_request_claims_geometry_and_reconciles_like_the_host_editor() {
+    let host = api::schema::Method::PaneOpenEditor(api::schema::PaneOpenEditorParams::default());
+    let off_host =
+        api::schema::Method::PaneDirectoryOpenEditor(api::schema::PaneDirectoryOpenEditorParams {
+            pane_id: "w1:p1".into(),
+            path: "/f".into(),
+        });
+
+    for method in [&host, &off_host] {
+        assert!(HeadlessServer::shell_locations_may_need_reconcile(method));
+        assert!(HeadlessServer::shell_endpoint_claims_geometry(method));
+        assert!(HeadlessServer::public_request_may_change_geometry(method));
+    }
+}

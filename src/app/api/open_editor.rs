@@ -69,12 +69,27 @@ impl App {
             }
             Err(err) => return encode_error(id, "editor_failed", err.to_string()),
         };
-        let (env, _) = self.custom_command_env();
-        let (ws_idx, new_pane) = match self.spawn_overlay_argv_command(&argv, None, env, Vec::new())
-        {
-            Ok(spawned) => spawned,
-            Err(err) => return encode_error(id, "editor_failed", err.to_string()),
+        let pane = match self.spawn_editor_overlay(&argv, None) {
+            Ok(pane) => pane,
+            Err((code, message)) => return encode_error(id, code, message),
         };
+        encode_success(id, ResponseResult::PaneInfo { pane })
+    }
+
+    /// Opens `argv` as a zoomed overlay pane over the focused pane and
+    /// announces it. Shared by the host editor and the off-host editor, which
+    /// differ in the argv and in where the host process starts: `None` takes
+    /// the focused pane's directory, which for an off-host pane is a path on the
+    /// other side.
+    pub(super) fn spawn_editor_overlay(
+        &mut self,
+        argv: &[String],
+        host_cwd: Option<std::path::PathBuf>,
+    ) -> Result<crate::api::schema::PaneInfo, (&'static str, String)> {
+        let (env, _) = self.custom_command_env();
+        let (ws_idx, new_pane) = self
+            .spawn_overlay_argv_command(argv, host_cwd, env, Vec::new())
+            .map_err(|err| ("editor_failed", err.to_string()))?;
         let new_pane_id = new_pane.pane_id;
         let terminal_id = new_pane.terminal.id.clone();
         self.terminal_runtimes
@@ -83,7 +98,7 @@ impl App {
         self.state.terminals.insert(terminal_id, new_pane.terminal);
 
         let Some(pane) = self.pane_info(ws_idx, new_pane_id) else {
-            return encode_error(id, "editor_failed", "editor pane disappeared");
+            return Err(("editor_failed", "editor pane disappeared".to_owned()));
         };
         self.emit_event(crate::api::schema::EventEnvelope {
             event: crate::api::schema::EventKind::PaneCreated,
@@ -96,7 +111,7 @@ impl App {
         {
             self.emit_layout_updated_event(ws_idx, tab_idx);
         }
-        encode_success(id, ResponseResult::PaneInfo { pane })
+        Ok(pane)
     }
 }
 

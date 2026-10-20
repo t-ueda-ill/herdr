@@ -40,10 +40,15 @@ pub(crate) fn read(path: &Path) -> Result<String> {
     file.take(MAX_TEXT_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(failure)?;
+    validate_text(bytes)
+}
+pub(crate) const TOO_LARGE_MESSAGE: &str =
+    "file exceeds the 8 MiB text limit; open in external editor";
+/// The text checks shared by the host and off-host readers, so a file is
+/// accepted or refused with the same words wherever it lives.
+pub(crate) fn validate_text(bytes: Vec<u8>) -> Result<String> {
     if bytes.len() as u64 > MAX_TEXT_BYTES {
-        return Err(failure(
-            "file exceeds the 8 MiB text limit; open in external editor",
-        ));
+        return Err(failure(TOO_LARGE_MESSAGE));
     }
     if bytes.contains(&0) {
         return Err(failure("binary file; open in external editor"));

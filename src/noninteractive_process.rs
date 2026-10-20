@@ -27,6 +27,15 @@ pub(crate) struct ProcessOutput {
     pub(crate) stderr: String,
 }
 
+/// Like [`ProcessOutput`] without the lossy text conversion, for callers that
+/// must see raw bytes (UTF-8 validation, NUL-separated records).
+#[derive(Debug)]
+pub(crate) struct RawProcessOutput {
+    pub(crate) status: Option<i32>,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+}
+
 #[derive(Debug)]
 pub(crate) enum RunError {
     NotFound,
@@ -47,6 +56,20 @@ pub(crate) fn run_with_deadline<S: AsRef<OsStr>>(
     stdin: Option<Vec<u8>>,
     deadline: Instant,
 ) -> Result<ProcessOutput, RunError> {
+    run_with_deadline_raw(program, args, stdin, deadline).map(|output| ProcessOutput {
+        status: output.status,
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+/// [`run_with_deadline`] returning stdout and stderr as bytes.
+pub(crate) fn run_with_deadline_raw<S: AsRef<OsStr>>(
+    program: &Path,
+    args: &[S],
+    stdin: Option<Vec<u8>>,
+    deadline: Instant,
+) -> Result<RawProcessOutput, RunError> {
     let mut child = command(program)
         .args(args)
         .stdin(if stdin.is_some() {
@@ -116,10 +139,10 @@ pub(crate) fn run_with_deadline<S: AsRef<OsStr>>(
         }
         None => None,
     };
-    let output = ProcessOutput {
+    let output = RawProcessOutput {
         status: status.code(),
-        stdout: String::from_utf8_lossy(&stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        stdout,
+        stderr,
     };
     match input_error {
         // A successful exit after a short write means the child consumed a
@@ -297,6 +320,20 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn raw_run_keeps_non_utf8_and_nul_bytes_intact() {
+        let output = run_with_deadline_raw(
+            Path::new("/bin/sh"),
+            &["-c", r"printf 'a\377\000b'; printf '\376' >&2"],
+            None,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .expect("run should succeed");
+
+        assert_eq!(output.stdout, b"a\xff\0b");
+        assert_eq!(output.stderr, b"\xfe");
     }
 
     #[test]
