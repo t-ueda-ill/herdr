@@ -3,10 +3,10 @@
 # Upstream's release.yml/preview.yml were removed from this fork: they were
 # gated on github.repository == 'herdrdev/herdr', required repository-admin
 # actors, and required a published preview tag. This workflow builds the same
-# five assets from a v* tag, publishes a GitHub Release, and opens a PR that
-# updates distribution/latest.json on master so `herdr update` can find the
-# release once that PR is merged (master is protected, so the workflow token
-# cannot push to it directly).
+# five assets from a v* tag, publishes a GitHub Release, and opens and merges a
+# PR that updates distribution/latest.json on master so `herdr update` and the
+# installers can find the release (master is protected, so the workflow token
+# cannot push to it directly, but the ruleset needs no approvals or checks).
 name: Release (fork)
 
 on:
@@ -282,7 +282,7 @@ jobs:
             --announcement "$ANNOUNCEMENT_PATH" \
             --protocol "$RELEASE_PROTOCOL" \
             --endpoint-generation "$RELEASE_ENDPOINT_GENERATION"
-      - name: Open PR for distribution manifest
+      - name: Open and merge PR for distribution manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -298,10 +298,12 @@ jobs:
           git push --force origin "HEAD:refs/heads/$BRANCH"
           if [ -n "$(gh pr list --head "$BRANCH" --base master --state open --json number --jq '.[].number')" ]; then
             echo "PR for $BRANCH already exists"
-            exit 0
+          else
+            gh pr create \
+              --base master \
+              --head "$BRANCH" \
+              --title "release: synchronize distribution manifest for v$VERSION" \
+              --body "Automated update of \`distribution/latest.json\` for $RELEASE_TAG. This workflow merges it so the release becomes visible to \`herdr update\` and the installers."
           fi
-          gh pr create \
-            --base master \
-            --head "$BRANCH" \
-            --title "release: synchronize distribution manifest for v$VERSION" \
-            --body "Automated update of \`distribution/latest.json\` for $RELEASE_TAG. Merge this PR to make the release visible to \`herdr update\`."
+          # Merge right away: the master ruleset requires a PR but no approvals or status checks.
+          gh pr merge "$BRANCH" --squash --delete-branch
