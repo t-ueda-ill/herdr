@@ -11,7 +11,7 @@ use crate::api::schema::{
 };
 pub(crate) use crate::cli::projection::parse_choice;
 use crate::cli::projection::{choices, choices_where, Choice};
-use crate::cli::ssh::bindings::{into_method, with_launch_options};
+use crate::cli::ssh::bindings::{into_method, with_inherit_options, with_launch_options};
 
 pub(crate) const DIRECTIONS: &[Choice<PaneDirection>] = &[
     Choice::new("left", PaneDirection::Left),
@@ -619,7 +619,9 @@ pub(super) const LEAVES: &[Leaf] = &[
         about: "Split a pane",
         id: "cli:pane:split",
         output: Output::Json,
-        arguments: || with_launch_options(PaneSplitProjection::arguments()),
+        arguments: || {
+            with_inherit_options(with_launch_options(PaneSplitProjection::arguments()), false)
+        },
         method: |matches| {
             let mut params = PaneSplitProjection::from_matches(matches)?;
             params.target_pane_id = super::caller_target(
@@ -629,6 +631,9 @@ pub(super) const LEAVES: &[Leaf] = &[
                 true,
                 true,
             )?;
+            if matches.get_flag("inherit") {
+                return Ok(Method::PaneSplitInherit(params));
+            }
             into_method(
                 matches,
                 params,

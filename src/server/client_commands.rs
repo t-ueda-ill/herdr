@@ -325,6 +325,14 @@ mod tests {
             actual.remove("ssh.open").as_deref(),
             Some("248ed6ee395f6691f6ae8027ccd97a39c7fa935937de8931930133ab42800eac")
         );
+        assert_eq!(
+            actual.remove("tab.create_inherit").as_deref(),
+            Some("2615865e0cb00ce106c05659ca51d20732523a4b5993eec353ea1e05078e4f01")
+        );
+        assert_eq!(
+            actual.remove("pane.split_inherit").as_deref(),
+            Some("c6e80d06334735f7d7fcfcb21bff1228b9b23c856a71ca6e3c40eedb8c09c374")
+        );
         let file_viewer: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/endpoint-method-shapes-file-viewer.json"

@@ -631,6 +631,38 @@ mod tests {
     }
 
     #[test]
+    fn pane_split_inherit_sends_the_split_params_to_pane_split_inherit() {
+        let json = serde_json::to_value(
+            request("split", &["w1:p1", "--direction", "down", "--inherit"]).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(json["method"], "pane.split_inherit");
+        assert_eq!(
+            json["params"],
+            serde_json::json!({
+                "target_pane_id": "w1:p1", "direction": "down",
+                "focus": false, "right_click": "herdr"
+            })
+        );
+    }
+
+    #[test]
+    fn pane_split_inherit_conflicts_with_an_explicit_location() {
+        for location in [["--ssh", "prod"], ["--container", "app/web"]] {
+            let mut values = vec!["w1:p1", "--direction", "right", "--inherit"];
+            values.extend(location);
+            assert!(
+                matches!(
+                    request("split", &values),
+                    Err(ParseError::Clap(error)) if error.exit_code() == 2
+                ),
+                "{values:?}"
+            );
+        }
+    }
+
+    #[test]
     fn pane_split_rejects_container_without_value() {
         assert!(matches!(
             request("split", &["w1:p1", "--direction", "right", "--container"]),

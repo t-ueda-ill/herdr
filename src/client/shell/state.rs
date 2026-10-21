@@ -325,6 +325,8 @@ pub(super) enum ClientRenameTarget {
     NewTab {
         workspace_id: String,
         default_name: String,
+        /// Opens a host shell even when the focused pane runs off host.
+        host: bool,
     },
     Tab {
         tab_id: String,
@@ -805,6 +807,7 @@ pub(super) enum ClientContextMenuAction {
     ToggleGroup,
     BrowseFiles,
     NewTab,
+    NewHostTab,
     RenamePane,
     ClearPaneName,
     SwapWithFocusedPane,
@@ -828,6 +831,8 @@ pub(super) enum ClientContextMenuTarget {
     Tab {
         tab_id: String,
         workspace_id: String,
+        /// The focused pane runs off host, so a plain host tab is a choice.
+        offers_host_tab: bool,
     },
     Pane {
         pane_id: String,

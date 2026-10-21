@@ -1849,3 +1849,57 @@ fn read_choices_cover_every_api_value() {
     crate::cli::projection::assert_choices_cover_api_enum(READ_SOURCES);
     crate::cli::projection::assert_choices_cover_api_enum(READ_FORMATS);
 }
+
+#[test]
+fn tab_create_inherit_request_flattens_create_params_beside_the_source_pane() {
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "inherit",
+        "method": "tab.create_inherit",
+        "params": { "workspace_id": "w1", "label": "db", "source_pane_id": "w1:p2" }
+    }))
+    .unwrap();
+
+    let Method::TabCreateInherit(params) = &request.method else {
+        panic!("expected tab.create_inherit");
+    };
+    assert_eq!(params.create.workspace_id.as_deref(), Some("w1"));
+    assert_eq!(params.create.label.as_deref(), Some("db"));
+    assert_eq!(params.source_pane_id.as_deref(), Some("w1:p2"));
+    assert_eq!(
+        serde_json::to_value(&request).unwrap()["params"],
+        serde_json::json!({
+            "workspace_id": "w1", "focus": false, "label": "db", "source_pane_id": "w1:p2"
+        })
+    );
+}
+
+#[test]
+fn tab_create_inherit_request_defaults_to_the_focused_pane_of_the_workspace() {
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "inherit",
+        "method": "tab.create_inherit",
+        "params": {}
+    }))
+    .unwrap();
+
+    let Method::TabCreateInherit(params) = request.method else {
+        panic!("expected tab.create_inherit");
+    };
+    assert_eq!(params.source_pane_id, None);
+}
+
+#[test]
+fn pane_split_inherit_request_takes_the_pane_split_params() {
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "inherit",
+        "method": "pane.split_inherit",
+        "params": { "target_pane_id": "w1:p2", "direction": "down" }
+    }))
+    .unwrap();
+
+    let Method::PaneSplitInherit(params) = request.method else {
+        panic!("expected pane.split_inherit");
+    };
+    assert_eq!(params.target_pane_id.as_deref(), Some("w1:p2"));
+    assert_eq!(params.direction, SplitDirection::Down);
+}

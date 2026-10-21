@@ -3,10 +3,14 @@ use clap::Command;
 use crate::api::schema::tabs::{
     tab_id, TabCreateProjection, TabListProjection, TabRenameProjection,
 };
-use crate::api::schema::{ContainerOpenTarget, Method, Request, SshOpenTarget, TabTarget};
+use crate::api::schema::{
+    ContainerOpenTarget, Method, Request, SshOpenTarget, TabCreateInheritParams, TabTarget,
+};
 
 use super::super::projection::{self, cli_projection, Field, Leaf, ParseError};
-use super::super::ssh::bindings::{into_method, with_launch_options};
+use super::super::ssh::bindings::{
+    into_method, read_from_pane, with_inherit_options, with_launch_options,
+};
 
 cli_projection! {
     pub(crate) TabTargetProjection for TabTarget {
@@ -26,11 +30,20 @@ const LEAVES: [Leaf; 6] = [
         name: "create",
         about: "Create a tab",
         id: "cli:tab:create",
-        arguments: || with_launch_options(TabCreateProjection::arguments()),
+        arguments: || {
+            with_inherit_options(with_launch_options(TabCreateProjection::arguments()), true)
+        },
         method: |matches| {
+            let params = TabCreateProjection::from_matches(matches)?;
+            if matches.get_flag("inherit") {
+                return Ok(Method::TabCreateInherit(TabCreateInheritParams {
+                    create: params,
+                    source_pane_id: read_from_pane(matches),
+                }));
+            }
             into_method(
                 matches,
-                TabCreateProjection::from_matches(matches)?,
+                params,
                 Method::TabCreate,
                 ContainerOpenTarget::Tab,
                 SshOpenTarget::Tab,
@@ -182,6 +195,59 @@ mod tests {
                 "params": {"container": "worker", "target": {"tab": {"focus": false}}}
             })
         );
+    }
+
+    #[test]
+    fn tab_create_inherit_sends_the_create_params_with_the_source_pane() {
+        assert_eq!(
+            serde_json::to_value(
+                parse(&[
+                    "create",
+                    "--workspace",
+                    "w1",
+                    "--inherit",
+                    "--from-pane",
+                    "w1:p2"
+                ])
+                .unwrap()
+            )
+            .unwrap(),
+            serde_json::json!({
+                "id": "cli:tab:create", "method": "tab.create_inherit",
+                "params": {"workspace_id": "w1", "focus": false, "source_pane_id": "w1:p2"}
+            })
+        );
+    }
+
+    #[test]
+    fn tab_create_inherit_defaults_to_the_focused_pane() {
+        assert_eq!(
+            serde_json::to_value(parse(&["create", "--inherit"]).unwrap()).unwrap(),
+            serde_json::json!({
+                "id": "cli:tab:create", "method": "tab.create_inherit",
+                "params": {"focus": false}
+            })
+        );
+    }
+
+    #[test]
+    fn tab_create_inherit_conflicts_with_an_explicit_location() {
+        for location in [["--ssh", "prod"], ["--container", "worker"]] {
+            let mut values = vec!["create", "--inherit"];
+            values.extend(location);
+            assert!(
+                matches!(parse(&values), Err(ParseError::Clap(error)) if error.exit_code() == 2),
+                "{values:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_create_from_pane_needs_inherit() {
+        assert!(matches!(
+            parse(&["create", "--from-pane", "w1:p2"]),
+            Err(ParseError::Clap(error)) if error.exit_code() == 2
+        ));
     }
 
     #[test]

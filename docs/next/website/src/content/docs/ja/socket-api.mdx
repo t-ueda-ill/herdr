@@ -101,8 +101,8 @@ herdr pane read w1:p2 --source recent --lines 50
 | コンテナ | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH ホスト | `ssh.open`, `ssh.hosts` |
 | ファイル | `directory.list`、`directory.index`、`pane.open_editor`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.file.read`、`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel` |
-| タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
-| ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
+| タブ | `tab.create`、`tab.create_inherit`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
+| ペイン | `pane.split`、`pane.split_inherit`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
@@ -396,9 +396,27 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 
 作成・分割パラメーターは変更されず、SSH ホストは `ssh.open` でのみ渡されます。
 
+## ペインの実行場所で開く
+
+`tab.create` と `pane.split` は常にサーバーのホスト上でシェルを起動します。`tab.create_inherit` と `pane.split_inherit` は、既存のペインのシェルがいま動いている場所で起動します。同じコンテナ、同じ ssh ログイン、同じリモート Docker ホストのいずれかです。ペインが off-host として扱われるのは、コンテナまたは ssh のシェルが実行中の間だけです。セッションから復元されたペインは通常のホストシェルを実行しているため、そこから作ったタブや分割はホストのものになります。
+
+`tab.create_inherit` は `tab.create` のパラメーターに加えて、省略可能な `source_pane_id` を取ります。省略すると、対象ワークスペース（`workspace_id`、なければアクティブなワークスペース）のフォーカス中のペインが元になります。`pane.split_inherit` は `pane.split` のパラメーターを取り、分割するペインが元になります。結果は通常のメソッドと同じ形です。
+
+```json
+{
+  "id": "req_1",
+  "method": "tab.create_inherit",
+  "params": { "workspace_id": "w1", "source_pane_id": "w1:p2", "label": "logs" }
+}
+```
+
+元がホストで動いている場合、どちらのメソッドも通常のメソッドとまったく同じ動作です。それ以外では、新しいシェルは元の保存済みの起動情報を使い、Docker や ssh へ問い合わせ直しません。起動ディレクトリは元の最初のディレクトリで、コンテナなら起動時の作業ディレクトリ、ssh ならログインディレクトリです。明示した `cwd` は `container.open` と同じくホスト側のパスです。このホスト上のコンテナでは、Herdr がコンテナを調べ直し、そのパスをバインドマウントで対応づけて作業ディレクトリを決めます。そのため調べ直しが `container_not_found` や `container_unavailable` エラーで失敗することがあります。ssh とリモート Docker が元の場合は、ローカルの `ssh` プロセスのディレクトリを決めるだけで、リモートのシェルは動きません。リモートの起動に失敗した場合は、ホストシェルに戻らず、通常の `tab_create_failed` または `pane_split_failed` エラーを返します。
+
+クライアントは先にエンドポイントが公開するメソッドを確認します。この 2 つのメソッドを持たないサーバーでは、TUI は `tab.create` と `pane.split` にフォールバックし、ホストシェルを開きます。
+
 ## ファイル
 
-`directory.list`、`directory.index`、`pane.open_editor` は TUI のファイルビューアを支えるメソッドです。サーバー側のファイルシステムを読むため、リモートのクライアントにも同じファイルが見えます。3 つとも `workspace_id` と `pane_id` は省略できます。`pane_id` を指定するとそれが優先され、指定しないときは `workspace_id` のワークスペース、またはフォーカス中のワークスペースのフォーカス中のペインが対象になります。ルートは、そのペインから新しいタブを開くときと同じディレクトリです。ssh やコンテナのペインではホスト上の起動ディレクトリになります。生きているペインがないときは、ワークスペースの新しいターミナル用のディレクトリがルートになります。生の `path` は絶対パスでなければなりません。
+`directory.list`、`directory.index`、`pane.open_editor` は TUI のファイルビューアを支えるメソッドです。サーバー側のファイルシステムを読むため、リモートのクライアントにも同じファイルが見えます。3 つとも `workspace_id` と `pane_id` は省略できます。`pane_id` を指定するとそれが優先され、指定しないときは `workspace_id` のワークスペース、またはフォーカス中のワークスペースのフォーカス中のペインが対象になります。ルートは、そのペインから `tab.create` で新しいタブを開くときと同じホスト側のディレクトリです。ssh やコンテナのペインではホスト上の起動ディレクトリになります。生きているペインがないときは、ワークスペースの新しいターミナル用のディレクトリがルートになります。生の `path` は絶対パスでなければなりません。
 
 `directory.list` は 1 つのディレクトリ（`path`、省略時はルート）を一覧します。ディレクトリとディレクトリへのリンクが先で、その後は大文字と小文字を区別しない名前順です。`.git` は返しません。ドットファイルと無視されるエントリもフラグ付きで返し、何を表示するかはクライアントが決めます。2,000 件の上限にはこれらも数えます。
 

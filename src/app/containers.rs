@@ -62,6 +62,17 @@ impl App {
         respond_to: Sender<String>,
         client_local: bool,
     ) -> bool {
+        if let Some((reference, target)) = self.container_reopen_for_inherit(&request.method) {
+            self.start_resolved_container_open(
+                request.id,
+                reference,
+                None,
+                target,
+                respond_to,
+                client_local,
+            );
+            return true;
+        }
         match request.method {
             Method::ContainerOpen(params) => {
                 self.start_container_open(
@@ -107,7 +118,7 @@ impl App {
         id: String,
         container: String,
         ssh_host: Option<String>,
-        mut target: ContainerOpenTarget,
+        target: ContainerOpenTarget,
         respond_to: Sender<String>,
         client_local: bool,
     ) {
@@ -118,6 +129,25 @@ impl App {
                 return;
             }
         };
+        self.start_resolved_container_open(
+            id,
+            reference,
+            ssh_host,
+            target,
+            respond_to,
+            client_local,
+        );
+    }
+
+    fn start_resolved_container_open(
+        &mut self,
+        id: String,
+        reference: ContainerRef,
+        ssh_host: Option<String>,
+        mut target: ContainerOpenTarget,
+        respond_to: Sender<String>,
+        client_local: bool,
+    ) {
         if let Some(host) = &ssh_host {
             if let Err((code, message)) = validate_ssh_host(host) {
                 let _ = respond_to.send(encode_error(id, &code, message));

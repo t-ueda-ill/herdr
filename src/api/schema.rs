@@ -90,6 +90,7 @@ operations::define_operations! {
     SshContainerOpen(SshContainerOpenParams) => "ssh.container.open", true, true;
     SshContainerList(SshContainerListParams) => "ssh.container.list", false, true;
     TabCreate(TabCreateParams) => "tab.create", true, true;
+    TabCreateInherit(TabCreateInheritParams) => "tab.create_inherit", true, true;
     TabList(TabListParams) => "tab.list", false, false;
     TabGet(TabTarget) => "tab.get", false, false;
     TabFocus(TabTarget) => "tab.focus", true, true;
@@ -109,6 +110,7 @@ operations::define_operations! {
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;
+    PaneSplitInherit(PaneSplitParams) => "pane.split_inherit", true, true;
     PaneSwap(PaneSwapParams) => "pane.swap", true, true;
     PaneMove(PaneMoveParams) => "pane.move", true, false;
     PaneZoom(PaneZoomParams) => "pane.zoom", true, true;

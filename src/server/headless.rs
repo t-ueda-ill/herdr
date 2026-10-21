@@ -3315,6 +3315,20 @@ impl HeadlessServer {
             );
             return changed | (deferred_changed && !read_only);
         }
+        // An inherited tab or split whose container workdir needs a docker
+        // lookup runs as a `container.open`.
+        if self
+            .app
+            .container_reopen_for_inherit(&msg.request.method)
+            .is_some()
+        {
+            let deferred_changed = self.app.handle_deferred_container_api_request(
+                msg.request,
+                msg.respond_to,
+                client_local,
+            );
+            return changed | deferred_changed;
+        }
         if matches!(
             &msg.request.method,
             api::schema::Method::ContainerOpen(_)

@@ -234,8 +234,10 @@ impl HeadlessServer {
                 | Method::PaneDirectoryOpenEditor(_)
                 | Method::PaneMove(_)
                 | Method::PaneSplit(_)
+                | Method::PaneSplitInherit(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateInherit(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
                 | Method::WorktreeCreate(_)
@@ -271,10 +273,12 @@ impl HeadlessServer {
                 | Method::PaneScroll(_)
                 | Method::PaneClear(_)
                 | Method::PaneSplit(_)
+                | Method::PaneSplitInherit(_)
                 | Method::PaneSwap(_)
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateInherit(_)
                 | Method::TabFocus(_)
                 | Method::TabMove(_)
                 | Method::TabRename(_)
@@ -309,10 +313,12 @@ impl HeadlessServer {
                 | Method::PaneFocusDirection(_)
                 | Method::PaneResize(_)
                 | Method::PaneSplit(_)
+                | Method::PaneSplitInherit(_)
                 | Method::PaneSwap(_)
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateInherit(_)
                 | Method::TabFocus(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
@@ -870,6 +876,7 @@ impl HeadlessServer {
         let create_focus_requested = match &msg.request.method {
             api::schema::Method::WorkspaceCreate(params) => params.focus,
             api::schema::Method::TabCreate(params) => params.focus,
+            api::schema::Method::TabCreateInherit(params) => params.create.focus,
             _ => false,
         };
         let inspect_pane_move = matches!(
