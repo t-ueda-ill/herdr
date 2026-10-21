@@ -21,6 +21,36 @@ pub(crate) fn with_launch_options(arguments: Vec<Arg>) -> Vec<Arg> {
     arguments
 }
 
+/// Adds `--inherit`, and `--from-pane PANE` when `from_pane` is set, to a command that
+/// creates a shell next to an existing pane.
+pub(crate) fn with_inherit_options(mut arguments: Vec<Arg>, from_pane: bool) -> Vec<Arg> {
+    arguments.push(
+        Arg::new("inherit")
+            .long("inherit")
+            .action(ArgAction::SetTrue)
+            // Why a conflict: `--ssh` and `--container` already name where the shell runs.
+            .conflicts_with_all(["ssh", "container"])
+            .help("Start the shell where the source pane runs: its container or ssh host, or the host"),
+    );
+    if from_pane {
+        arguments.push(
+            Arg::new("from-pane")
+                .long("from-pane")
+                .value_name("PANE")
+                .requires("inherit")
+                .help("Pane whose location --inherit copies; defaults to the focused pane of the workspace"),
+        );
+    }
+    arguments
+}
+
+/// The pane named by `--from-pane`, for commands that offer it.
+pub(crate) fn read_from_pane(matches: &ArgMatches) -> Option<String> {
+    matches
+        .get_one::<String>("from-pane")
+        .map(|pane| crate::cli::normalize_pane_id(pane))
+}
+
 /// Sends fully parsed create/split params as-is, nested in `container.open` for
 /// `--container REF` (as `ssh.container.open` when `--ssh HOST` names where its docker runs),
 /// or nested in `ssh.open` for `--ssh HOST` alone.

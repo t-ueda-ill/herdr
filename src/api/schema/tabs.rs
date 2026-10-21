@@ -39,6 +39,18 @@ cli_params! {
     }
 }
 
+/// `tab.create` params plus the pane whose shell location the new tab copies.
+// Why not a field on `TabCreateParams`: an older server would ignore it and
+// report success after starting a host shell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabCreateInheritParams {
+    #[serde(flatten)]
+    pub create: TabCreateParams,
+    /// Defaults to the focused pane of the target workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_pane_id: Option<String>,
+}
+
 cli_params! {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
     pub struct TabListParams => TabListProjection {

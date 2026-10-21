@@ -2140,13 +2140,17 @@ fn assert_deferred_open_moves_source_client_after_render(
         "projecting the created workspace advances the source projection revision"
     );
 
-    let response = serde_json::json!({
-        "id": api_request_id,
-        "result": {
-            "type": result_type,
-            "tab": { "tab_id": created_tab_id }
-        }
-    });
+    let created = if result_type == "pane_info" {
+        serde_json::json!({ "pane": { "tab_id": created_tab_id } })
+    } else {
+        serde_json::json!({ "tab": { "tab_id": created_tab_id } })
+    };
+    let mut result = serde_json::json!({ "type": result_type });
+    result
+        .as_object_mut()
+        .unwrap()
+        .extend(created.as_object().unwrap().clone());
+    let response = serde_json::json!({ "id": api_request_id, "result": result });
     assert!(
         server.handle_server_event(ServerEvent::ClientShellEndpointResponseChunkReady {
             client_id: 51,
@@ -2196,6 +2200,40 @@ async fn deferred_ssh_container_open_moves_source_client_after_render() {
             target: api::schema::ContainerOpenTarget::Workspace(focused_workspace_target()),
         }),
         "workspace_created",
+    );
+}
+
+#[tokio::test]
+async fn deferred_inherited_tab_create_moves_source_client_after_render() {
+    assert_deferred_open_moves_source_client_after_render(
+        api::schema::Method::TabCreateInherit(api::schema::TabCreateInheritParams {
+            create: api::schema::TabCreateParams {
+                workspace_id: None,
+                cwd: Some("/tmp/project".into()),
+                focus: true,
+                label: None,
+                env: Default::default(),
+            },
+            source_pane_id: None,
+        }),
+        "tab_created",
+    );
+}
+
+#[tokio::test]
+async fn deferred_inherited_pane_split_moves_source_client_after_render() {
+    assert_deferred_open_moves_source_client_after_render(
+        api::schema::Method::PaneSplitInherit(api::schema::PaneSplitParams {
+            workspace_id: None,
+            target_pane_id: None,
+            direction: api::schema::SplitDirection::Right,
+            ratio: None,
+            cwd: Some("/tmp/project".into()),
+            focus: true,
+            right_click: Default::default(),
+            env: Default::default(),
+        }),
+        "pane_info",
     );
 }
 

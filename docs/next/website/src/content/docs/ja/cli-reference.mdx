@@ -187,7 +187,7 @@ Git はデフォルトで、別のユーザーが所有するリポジトリを�
 
 ```bash
 herdr tab list [--workspace <workspace_id>]
-herdr tab create [--workspace <workspace_id>] [--container REF] [--ssh HOST] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr tab create [--workspace <workspace_id>] [--container REF] [--ssh HOST] [--inherit [--from-pane PANE]] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
@@ -197,6 +197,8 @@ herdr tab close <tab_id>
 タブはワークスペース内の別のターミナルレイアウトです。`--workspace` を省略すると、`tab create` はアクティブなワークスペースを使い、存在しなければ失敗します。JSON レスポンスの `.result.tab.tab_id` と `.result.root_pane.pane_id` から ID を取得できます。ワークスペースの最後のタブを閉じると、そのワークスペースも閉じられます。`ui.confirm_close` が有効で、親ワークツリーの最後のタブを閉じるとワークツリーグループ全体が閉じられる場合、`tab close` は `confirmation_required` エラーを返します。
 
 `ui.confirm_close` が有効な場合、キーバインドやタブ／ペインメニューからワークスペースの最後のタブ、または唯一のペインを閉じる前に、TUI が確認を求めます。通常のペイン終了や CLI/API による終了は引き続き即座に実行されます。
+
+`tab create` と `pane split` はホストシェルを開きます。`--inherit` を付けると、新しいシェルは元のペインがいま動いている場所、つまり同じコンテナ、同じ ssh ホスト、同じリモート Docker ホストで始まります。`--from-pane PANE` は `tab create --inherit` の元を指定します。省略すると、対象ワークスペースのフォーカス中のペインが元です。`pane split --inherit` では分割するペインが元になります。元がホストで動いている場合は、フラグなしと同じくホストシェルになります。新しいシェルは、元がその後に移動したディレクトリではなく、元の最初のディレクトリで始まります。`--cwd` はホスト側のディレクトリです。このホスト上のコンテナではバインドマウントで対応づけて作業ディレクトリを決め（`--container` と同じ）、ssh とリモート Docker が元の場合はローカルの `ssh` プロセスのディレクトリを決めるだけです。`--inherit` は `--ssh` や `--container` と併用できず、`--from-pane` には `--inherit` が必要です。ソケット API の [ペインの実行場所で開く](/ja/docs/socket-api/#ペインの実行場所で開く) も参照してください。
 
 ワークスペースとタブの作成、およびペインの分割は、デフォルトではフォーカスを変えません。`--focus` は新しいレイアウトを選択し、`--no-focus` はデフォルトを明示します。`--cwd` がない場合、新しいターミナルは `terminal.new_cwd` の設定に従い、デフォルトでは元のペインまたはワークスペースを引き継ぎます。各 `--env KEY=VALUE` は新しいルートシェルの環境変数を追加または置換します。
 
@@ -214,7 +216,7 @@ herdr pane focus --direction left|right|up|down [--pane ID|--current]
 herdr pane resize --direction left|right|up|down [--amount FLOAT] [--pane ID|--current]
 herdr pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]
 herdr pane rename <pane_id> <label>|--clear
-herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--ssh HOST] [--cwd PATH] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--container REF] [--ssh HOST] [--inherit] [--cwd PATH] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr pane swap --direction left|right|up|down [--pane ID|--current]
 herdr pane swap --source-pane ID --target-pane ID
 herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]
@@ -320,7 +322,7 @@ herdr directory index [--workspace ID] [--pane ID] [--path PATH] [--trust-reposi
 herdr pane open-editor [--workspace ID] [--pane ID] --path PATH
 ```
 
-これらのコマンドはサーバー側のファイルシステムを読みます。`--pane` と `--workspace` を省略すると、フォーカス中のワークスペースのフォーカス中のペインを起点にします。起点のディレクトリは、そのペインから新しいタブを開くときと同じです。ssh やコンテナのペインではホスト上の起動ディレクトリになります。
+これらのコマンドはサーバー側のファイルシステムを読みます。`--pane` と `--workspace` を省略すると、フォーカス中のワークスペースのフォーカス中のペインを起点にします。起点のディレクトリは、そのペインから通常の `tab create` で新しいタブを開くときと同じホスト側のディレクトリです。ssh やコンテナのペインではホスト上の起動ディレクトリになります。
 
 `directory list` は 1 つのディレクトリ（既定では起点のディレクトリ）を一覧し、ディレクトリの後ろに `/`、シンボリックリンクの後ろに `@` を付けます。ディレクトリが先で、その後は大文字と小文字を区別しない名前順です。`.git` と UTF-8 として正しくない名前は表示せず、返すのは最大 2,000 件です。`directory index` は、そのディレクトリを含む Git リポジトリの追跡中・未追跡のファイル（無視されるものを除く）を、リポジトリルートからの相対パスで最大 50,000 件表示します。リポジトリの外では何も表示しません。切り詰めや Git の失敗についての注記は標準エラーに出ます。`--json` を付けると生のレスポンスを表示します。ソケット API の[ファイル](/ja/docs/socket-api/#ファイル)を参照してください。
 

@@ -498,6 +498,73 @@ impl ClientShellState {
             .is_none_or(|methods| methods.contains(crate::api::api_method_name(method)))
     }
 
+    /// Why not `supports_endpoint_method`: it treats an unknown method list as
+    /// supported, and an older server answers an unknown method with an error
+    /// instead of the host tab this client falls back to.
+    fn endpoint_advertises_method(&self, method: &str) -> bool {
+        self.endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .and_then(|endpoint| endpoint.methods.as_ref())
+            .is_some_and(|methods| methods.contains(method))
+    }
+
+    /// A new tab opens where the focused pane runs, when the server can do so.
+    pub(super) fn new_tab_method(
+        &self,
+        params: crate::api::schema::TabCreateParams,
+    ) -> crate::api::schema::Method {
+        if self.endpoint_advertises_method("tab.create_inherit") {
+            crate::api::schema::Method::TabCreateInherit(
+                crate::api::schema::TabCreateInheritParams {
+                    create: params,
+                    source_pane_id: None,
+                },
+            )
+        } else {
+            crate::api::schema::Method::TabCreate(params)
+        }
+    }
+
+    /// A split opens where the split pane runs, when the server can do so.
+    pub(super) fn split_pane_method(
+        &self,
+        params: crate::api::schema::PaneSplitParams,
+    ) -> crate::api::schema::Method {
+        if self.endpoint_advertises_method("pane.split_inherit") {
+            crate::api::schema::Method::PaneSplitInherit(params)
+        } else {
+            crate::api::schema::Method::PaneSplit(params)
+        }
+    }
+
+    /// Whether the shell a new tab in `tab_id` would inherit runs in a
+    /// container or over ssh now. `ClientShellPane` carries the live location,
+    /// unlike `PaneInfo`.
+    ///
+    /// Why not the globally focused pane: choosing a menu item focuses the
+    /// right-clicked tab first, so the server inherits from that tab's focused
+    /// pane. The snapshot names only the global focus, so an inactive tab
+    /// counts as off host when any of its panes is: a host tab stays
+    /// reachable, and an off-host one is never hidden.
+    pub(super) fn tab_runs_off_host(&self, tab_id: &str) -> bool {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return false;
+        };
+        let only_focused = snapshot.focused_tab_id.as_deref() == Some(tab_id);
+        snapshot.panes.iter().any(|pane| {
+            pane.tab_id == tab_id
+                && (pane.focused || !only_focused)
+                && (pane.container.is_some() || pane.ssh_host.is_some())
+        })
+    }
+
+    /// Why not just `tab_runs_off_host`: without the method, "New tab" opens
+    /// the same host shell, so a second item would only mislead.
+    pub(super) fn offers_host_tab(&self, tab_id: &str) -> bool {
+        self.endpoint_advertises_method("tab.create_inherit") && self.tab_runs_off_host(tab_id)
+    }
+
     pub(super) fn focused_tab_count(&self) -> usize {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return 0;

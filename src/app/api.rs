@@ -4,6 +4,7 @@ mod agent_view;
 mod agents;
 mod directory;
 mod files;
+mod inherit;
 pub(crate) use files::FileService;
 mod env;
 mod integrations;
@@ -1215,6 +1216,9 @@ impl App {
                     crate::pane::PaneLaunchTarget::Host,
                 );
             }
+            Method::TabCreateInherit(params) => {
+                return self.handle_tab_create_inherit(request.id, params);
+            }
             Method::TabFocus(target) => return self.handle_tab_focus(request.id, target),
             Method::TabRename(params) => return self.handle_tab_rename(request.id, params),
             Method::TabMove(params) => return self.handle_tab_move(request.id, params),
@@ -1253,6 +1257,9 @@ impl App {
                     params,
                     crate::pane::PaneLaunchTarget::Host,
                 );
+            }
+            Method::PaneSplitInherit(params) => {
+                return self.handle_pane_split_inherit(request.id, params);
             }
             Method::PaneSwap(params) => return self.handle_pane_swap(request.id, params),
             Method::PaneMove(params) => return self.handle_pane_move(request.id, params),

@@ -4997,6 +4997,47 @@
             }
           ]
         },
+        "TabCreateInheritParams": {
+          "description": "`tab.create` params plus the pane whose shell location the new tab copies.",
+          "properties": {
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_pane_id": {
+              "description": "Defaults to the focused pane of the target workspace.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "TabCreateParams": {
           "properties": {
             "cwd": {
@@ -5971,6 +6012,22 @@
         {
           "properties": {
             "method": {
+              "const": "tab.create_inherit",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabCreateInheritParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "tab.list",
               "type": "string"
             },
@@ -6260,6 +6317,22 @@
           "properties": {
             "method": {
               "const": "pane.split",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneSplitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.split_inherit",
               "type": "string"
             },
             "params": {

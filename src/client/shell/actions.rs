@@ -383,7 +383,9 @@ impl ClientShellState {
             | crate::api::schema::Method::PaneFocusDirection(_) => true,
             crate::api::schema::Method::WorkspaceCreate(params) => params.focus,
             crate::api::schema::Method::TabCreate(params) => params.focus,
+            crate::api::schema::Method::TabCreateInherit(params) => params.create.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
+            crate::api::schema::Method::PaneSplitInherit(params) => params.focus,
             crate::api::schema::Method::SshOpen(params) => params.target.focus(),
             crate::api::schema::Method::ContainerOpen(params) => params.target.focus(),
             crate::api::schema::Method::SshContainerOpen(params) => params.target.focus(),
@@ -1081,7 +1083,7 @@ impl ClientShellState {
                 }))
             }
             KeybindAction::NewTab if !self.config.prompt_new_tab_name => {
-                Some(Method::TabCreate(TabCreateParams {
+                Some(self.new_tab_method(TabCreateParams {
                     workspace_id: Some(focused_workspace),
                     cwd: None,
                     focus: true,
@@ -1108,7 +1110,7 @@ impl ClientShellState {
                 target_pane_id: None,
             })),
             KeybindAction::SplitVertical | KeybindAction::SplitHorizontal => {
-                Some(Method::PaneSplit(PaneSplitParams {
+                Some(self.split_pane_method(PaneSplitParams {
                     workspace_id: Some(focused_workspace),
                     target_pane_id: focused_pane,
                     direction: if action == KeybindAction::SplitVertical {

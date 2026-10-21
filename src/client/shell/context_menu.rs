@@ -50,11 +50,16 @@ impl ClientContextMenuOverlay {
                 ),
                 item("Browse files...", Action::BrowseFiles),
             ],
-            ClientContextMenuTarget::Tab { .. } => vec![
-                item("New tab", Action::NewTab),
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-            ],
+            ClientContextMenuTarget::Tab {
+                offers_host_tab, ..
+            } => {
+                let mut items = vec![item("New tab", Action::NewTab)];
+                if *offers_host_tab {
+                    items.push(item("New host tab", Action::NewHostTab));
+                }
+                items.extend([item("Rename", Action::Rename), item("Close", Action::Close)]);
+                items
+            }
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -129,6 +134,7 @@ impl ClientShellState {
     }
 
     pub(super) fn open_tab_context_menu(&mut self, tab_id: String, x: u16, y: u16) {
+        let offers_host_tab = self.offers_host_tab(&tab_id);
         let Some(tab) = self
             .snapshot
             .as_deref()
@@ -140,6 +146,7 @@ impl ClientShellState {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id: tab.workspace_id.clone(),
+                offers_host_tab,
             },
             x,
             y,
@@ -205,6 +212,7 @@ impl ClientShellState {
             ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id,
+                ..
             } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
             ClientContextMenuTarget::Pane {
                 pane_id,
@@ -303,7 +311,8 @@ impl ClientShellState {
             outcome,
         );
         match action {
-            ClientContextMenuAction::NewTab => {
+            ClientContextMenuAction::NewTab | ClientContextMenuAction::NewHostTab => {
+                let host = action == ClientContextMenuAction::NewHostTab;
                 if self.config.prompt_new_tab_name {
                     let default_name = (self
                         .snapshot
@@ -324,19 +333,23 @@ impl ClientShellState {
                         target: ClientRenameTarget::NewTab {
                             workspace_id,
                             default_name,
+                            host,
                         },
                     }));
                 } else {
-                    self.push_endpoint_method(
-                        Method::TabCreate(crate::api::schema::TabCreateParams {
-                            workspace_id: Some(workspace_id),
-                            cwd: None,
-                            focus: true,
-                            label: None,
-                            env: Default::default(),
-                        }),
-                        outcome,
-                    );
+                    let params = crate::api::schema::TabCreateParams {
+                        workspace_id: Some(workspace_id),
+                        cwd: None,
+                        focus: true,
+                        label: None,
+                        env: Default::default(),
+                    };
+                    let method = if host {
+                        Method::TabCreate(params)
+                    } else {
+                        self.new_tab_method(params)
+                    };
+                    self.push_endpoint_method(method, outcome);
                 }
             }
             ClientContextMenuAction::Rename => {
@@ -419,23 +432,21 @@ impl ClientShellState {
                 }
             }
             ClientContextMenuAction::SplitRight | ClientContextMenuAction::SplitDown => {
-                self.push_endpoint_method(
-                    Method::PaneSplit(PaneSplitParams {
-                        workspace_id: Some(workspace_id),
-                        target_pane_id: Some(pane_id),
-                        direction: if action == ClientContextMenuAction::SplitRight {
-                            SplitDirection::Right
-                        } else {
-                            SplitDirection::Down
-                        },
-                        ratio: None,
-                        cwd: None,
-                        focus: true,
-                        right_click: Default::default(),
-                        env: Default::default(),
-                    }),
-                    outcome,
-                );
+                let method = self.split_pane_method(PaneSplitParams {
+                    workspace_id: Some(workspace_id),
+                    target_pane_id: Some(pane_id),
+                    direction: if action == ClientContextMenuAction::SplitRight {
+                        SplitDirection::Right
+                    } else {
+                        SplitDirection::Down
+                    },
+                    ratio: None,
+                    cwd: None,
+                    focus: true,
+                    right_click: Default::default(),
+                    env: Default::default(),
+                });
+                self.push_endpoint_method(method, outcome);
             }
             ClientContextMenuAction::Zoom => self.push_endpoint_method(
                 Method::PaneZoom(PaneZoomParams {

@@ -234,8 +234,10 @@ impl HeadlessServer {
                 | Method::PaneDirectoryOpenEditor(_)
                 | Method::PaneMove(_)
                 | Method::PaneSplit(_)
+                | Method::PaneSplitInherit(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateInherit(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
                 | Method::WorktreeCreate(_)
@@ -271,10 +273,12 @@ impl HeadlessServer {
                 | Method::PaneScroll(_)
                 | Method::PaneClear(_)
                 | Method::PaneSplit(_)
+                | Method::PaneSplitInherit(_)
                 | Method::PaneSwap(_)
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateInherit(_)
                 | Method::TabFocus(_)
                 | Method::TabMove(_)
                 | Method::TabRename(_)
@@ -309,10 +313,12 @@ impl HeadlessServer {
                 | Method::PaneFocusDirection(_)
                 | Method::PaneResize(_)
                 | Method::PaneSplit(_)
+                | Method::PaneSplitInherit(_)
                 | Method::PaneSwap(_)
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateInherit(_)
                 | Method::TabFocus(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
@@ -328,7 +334,7 @@ impl HeadlessServer {
 
     pub(super) fn deferred_endpoint_navigation_tab_id(response: &[u8]) -> Option<String> {
         let response = serde_json::from_slice::<serde_json::Value>(response).ok()?;
-        // Only deferred navigating requests buffer their response, so the
+        // Only navigating requests buffer their response, so the plain
         // synchronous create methods that share these result types never reach here.
         let tab_id_pointer = match response.pointer("/result/type")?.as_str()? {
             "worktree_created" | "worktree_opened" | "workspace_created" | "tab_created" => {
@@ -870,6 +876,7 @@ impl HeadlessServer {
         let create_focus_requested = match &msg.request.method {
             api::schema::Method::WorkspaceCreate(params) => params.focus,
             api::schema::Method::TabCreate(params) => params.focus,
+            api::schema::Method::TabCreateInherit(params) => params.create.focus,
             _ => false,
         };
         let inspect_pane_move = matches!(

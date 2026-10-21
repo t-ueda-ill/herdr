@@ -397,6 +397,7 @@ impl ClientShellState {
             target: ClientRenameTarget::NewTab {
                 workspace_id,
                 default_name,
+                host: false,
             },
         }));
     }
@@ -976,16 +977,22 @@ impl ClientShellState {
             ClientRenameTarget::NewTab {
                 workspace_id,
                 default_name,
-            } => Some(crate::api::schema::Method::TabCreate(
-                crate::api::schema::TabCreateParams {
+                host,
+            } => {
+                let params = crate::api::schema::TabCreateParams {
                     workspace_id: Some(workspace_id),
                     cwd: None,
                     focus: true,
                     label: (!trimmed.is_empty() && trimmed != default_name)
                         .then(|| trimmed.to_owned()),
                     env: Default::default(),
-                },
-            )),
+                };
+                Some(if host {
+                    crate::api::schema::Method::TabCreate(params)
+                } else {
+                    self.new_tab_method(params)
+                })
+            }
             ClientRenameTarget::Tab {
                 tab_id,
                 auto_name,
