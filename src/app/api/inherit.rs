@@ -77,6 +77,8 @@ impl App {
     /// planned again through the container's bind mounts, like `container.open`.
     /// Why not do it inline: that needs `docker inspect`, which must stay off
     /// the app thread, so the caller runs the returned open request instead.
+    /// Why not `launch.reference`: a Compose reference resolves to the first
+    /// replica by name, so reopening could leave the source's container.
     /// Why not a remote container: its bind mounts are another machine's
     /// paths, so the stored workdir stays.
     pub(crate) fn container_reopen_for_inherit(
@@ -101,7 +103,7 @@ impl App {
         };
         match self.inherited_launch(ws_idx, pane_id)? {
             InheritedLaunch::Container(launch) if launch.ssh.is_none() => {
-                Some((launch.reference, target))
+                Some((ContainerRef::Name(launch.id), target))
             }
             _ => None,
         }
@@ -145,13 +147,16 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
+    use crate::api::schema::{ContainerOpenTarget, Method};
     use crate::api::schema::{
-        ContainerOpenTarget, Method, PaneSplitParams, ResponseResult, SplitDirection,
-        SuccessResponse, TabCreateInheritParams, TabCreateParams,
+        PaneSplitParams, ResponseResult, SplitDirection, SuccessResponse, TabCreateInheritParams,
+        TabCreateParams,
     };
     use crate::app::api::test_support::shutdown_test_runtimes;
     use crate::app::App;
     use crate::config::Config;
+    #[cfg(not(windows))]
     use crate::container::{ContainerLaunch, ContainerRef, ContainerShell};
     use crate::ssh_host::SshLaunch;
     use crate::terminal::{TerminalId, TerminalRuntime};
@@ -161,6 +166,7 @@ mod tests {
     enum Shell {
         Host,
         Ssh(SshLaunch),
+        #[cfg(not(windows))]
         Container(ContainerLaunch),
         /// Launch metadata kept by a cold restore while the shell runs on the host.
         ColdRestoredSsh(SshLaunch),
@@ -170,6 +176,7 @@ mod tests {
         SshLaunch::new("deploy@prod".into(), None).expect("valid destination")
     }
 
+    #[cfg(not(windows))]
     fn container_launch(ssh: Option<SshLaunch>) -> ContainerLaunch {
         ContainerLaunch {
             reference: ContainerRef::Name("db".into()),
@@ -211,6 +218,7 @@ mod tests {
                 runtime.test_set_in_ssh(true);
             }
             Shell::ColdRestoredSsh(launch) => terminal.ssh = Some(launch),
+            #[cfg(not(windows))]
             Shell::Container(launch) => {
                 terminal.container = Some(launch);
                 runtime.test_set_in_container(true);
@@ -309,6 +317,7 @@ mod tests {
         shutdown_test_runtimes(&mut app);
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn new_tab_from_a_live_container_pane_launches_the_same_container() {
         let launch = container_launch(None);
@@ -324,6 +333,7 @@ mod tests {
         shutdown_test_runtimes(&mut app);
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn new_tab_from_a_remote_docker_container_pane_keeps_its_ssh_host() {
         let launch = container_launch(Some(ssh_launch()));
@@ -389,6 +399,7 @@ mod tests {
         shutdown_test_runtimes(&mut app);
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn explicit_cwd_on_a_local_container_source_is_replanned_through_container_open() {
         let (app, pane) = app_with_focused_shell(Shell::Container(container_launch(None)));
@@ -398,7 +409,7 @@ mod tests {
         let (reference, target) = app
             .container_reopen_for_inherit(&Method::TabCreateInherit(params))
             .expect("container reopen");
-        assert_eq!(reference, ContainerRef::Name("db".into()));
+        assert_eq!(reference, ContainerRef::Name("cid".into()));
         assert!(matches!(target, ContainerOpenTarget::Tab(_)));
 
         let mut split = split_params(Some(pane));
@@ -409,6 +420,27 @@ mod tests {
         assert!(matches!(target, ContainerOpenTarget::Split(_)));
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn container_reopen_keeps_the_exact_container_of_a_compose_source() {
+        let mut launch = container_launch(None);
+        launch.reference = ContainerRef::Compose {
+            project: "shop".into(),
+            service: "db".into(),
+        };
+        launch.id = "shop-db-2-id".into();
+        let (app, _) = app_with_focused_shell(Shell::Container(launch));
+        let mut params = tab_params(None);
+        params.create.cwd = Some("/home/me/proj/sub".into());
+
+        let (reference, _) = app
+            .container_reopen_for_inherit(&Method::TabCreateInherit(params))
+            .expect("container reopen");
+
+        assert_eq!(reference, ContainerRef::Name("shop-db-2-id".into()));
+    }
+
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn container_reopen_is_limited_to_a_local_container_source_with_a_cwd() {
         let with_cwd = |mut params: TabCreateInheritParams| {
@@ -457,6 +489,7 @@ mod tests {
         shutdown_test_runtimes(&mut app);
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn split_of_a_live_container_pane_launches_the_same_container() {
         let launch = container_launch(Some(ssh_launch()));

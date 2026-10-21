@@ -334,7 +334,7 @@ impl HeadlessServer {
 
     pub(super) fn deferred_endpoint_navigation_tab_id(response: &[u8]) -> Option<String> {
         let response = serde_json::from_slice::<serde_json::Value>(response).ok()?;
-        // Only deferred navigating requests buffer their response, so the
+        // Only navigating requests buffer their response, so the plain
         // synchronous create methods that share these result types never reach here.
         let tab_id_pointer = match response.pointer("/result/type")?.as_str()? {
             "worktree_created" | "worktree_opened" | "workspace_created" | "tab_created" => {

@@ -509,6 +509,8 @@ impl ClientConnection {
                 | Method::SshContainerList(_)
                 | Method::SshOpen(_)
                 | Method::SshHosts(_)
+                | Method::TabCreateInherit(_)
+                | Method::PaneSplitInherit(_)
         );
         let deferred_navigation = match method {
             Method::WorktreeCreate(params) => params.focus,
@@ -516,6 +518,11 @@ impl ClientConnection {
             Method::ContainerOpen(params) => params.target.focus(),
             Method::SshContainerOpen(params) => params.target.focus(),
             Method::SshOpen(params) => params.target.focus(),
+            // Why not only when deferred: whether a container reopen defers is
+            // decided later from app state; a synchronous response focuses the
+            // same tab, so buffering it is harmless.
+            Method::TabCreateInherit(params) => params.create.focus,
+            Method::PaneSplitInherit(params) => params.focus,
             _ => false,
         };
         self.shell_deferred_navigation_request_id =
