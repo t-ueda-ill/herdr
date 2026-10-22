@@ -5,43 +5,64 @@
 //! prefix. It is presentation, so it is derived from the snapshot here.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use crate::protocol::{ClientShellPane, ClientShellSnapshot, ClientShellWorkspace};
 
-/// Label the spaces rows show for `workspace`: the stored label for host
-/// workspaces, a `[c]`/`[s]` form for container and ssh ones.
+/// Representative pane per (workspace, tab), built in one pass over the
+/// snapshot. Why not scan `snapshot.panes` per workspace: spaces rows are
+/// measured and drawn every render, which made that O(workspaces x panes).
+pub(super) struct SpaceLabels<'a> {
+    // (first pane, first focused pane) of each tab.
+    tabs: HashMap<(&'a str, &'a str), (&'a ClientShellPane, Option<&'a ClientShellPane>)>,
+}
+
+impl<'a> SpaceLabels<'a> {
+    pub(super) fn new(snapshot: &'a ClientShellSnapshot) -> Self {
+        let mut tabs: HashMap<_, (&ClientShellPane, Option<&ClientShellPane>)> = HashMap::new();
+        for pane in &snapshot.panes {
+            let entry = tabs
+                .entry((pane.workspace_id.as_str(), pane.tab_id.as_str()))
+                .or_insert((pane, None));
+            if entry.1.is_none() && pane.focused {
+                entry.1 = Some(pane);
+            }
+        }
+        Self { tabs }
+    }
+
+    /// Label the spaces rows show for `workspace`: the stored label for host
+    /// workspaces, a `[c]`/`[s]` form for container and ssh ones.
+    pub(super) fn display_label<'w>(&self, workspace: &'w ClientShellWorkspace) -> Cow<'w, str> {
+        self.off_host_label(workspace)
+            .map_or(Cow::Borrowed(&workspace.label), Cow::Owned)
+    }
+
+    /// `Some` only for off-host workspaces. Why not infer it from the `Cow`
+    /// variant of `display_label`: callers branch on "is off-host" and that
+    /// must not silently depend on which variant the helper happens to return.
+    pub(super) fn off_host_label(&self, workspace: &ClientShellWorkspace) -> Option<String> {
+        off_host_label(workspace, self.representative_pane(workspace)?)
+    }
+
+    /// Pane that stands for the workspace: the focused one of its active tab,
+    /// else the tab's first. Why not `pane.focused` alone: it is the global
+    /// focus, so other workspaces fall back to their active tab's first pane.
+    fn representative_pane(&self, workspace: &ClientShellWorkspace) -> Option<&'a ClientShellPane> {
+        let (first, focused) = self.tabs.get(&(
+            workspace.workspace_id.as_str(),
+            workspace.active_tab_id.as_str(),
+        ))?;
+        Some(focused.unwrap_or(first))
+    }
+}
+
+/// One-off form for callers that label a single workspace.
 pub(super) fn space_display_label<'a>(
-    snapshot: &'a ClientShellSnapshot,
+    snapshot: &ClientShellSnapshot,
     workspace: &'a ClientShellWorkspace,
 ) -> Cow<'a, str> {
-    off_host_space_label(snapshot, workspace).map_or(Cow::Borrowed(&workspace.label), Cow::Owned)
-}
-
-/// `Some` only for off-host workspaces. Why not infer it from the `Cow`
-/// variant of `space_display_label`: callers branch on "is off-host" and that
-/// must not silently depend on which variant the helper happens to return.
-pub(super) fn off_host_space_label(
-    snapshot: &ClientShellSnapshot,
-    workspace: &ClientShellWorkspace,
-) -> Option<String> {
-    off_host_label(workspace, representative_pane(snapshot, workspace)?)
-}
-
-/// Pane that stands for the workspace: the focused one of its active tab, else
-/// the tab's first. Why not `pane.focused` alone: it is the global focus, so
-/// other workspaces fall back to their active tab's first pane.
-fn representative_pane<'a>(
-    snapshot: &'a ClientShellSnapshot,
-    workspace: &ClientShellWorkspace,
-) -> Option<&'a ClientShellPane> {
-    let mut panes = snapshot.panes.iter().filter(|pane| {
-        pane.workspace_id == workspace.workspace_id && pane.tab_id == workspace.active_tab_id
-    });
-    let first = panes.next()?;
-    if first.focused {
-        return Some(first);
-    }
-    panes.clone().find(|pane| pane.focused).or(Some(first))
+    SpaceLabels::new(snapshot).display_label(workspace)
 }
 
 fn off_host_label(workspace: &ClientShellWorkspace, pane: &ClientShellPane) -> Option<String> {
@@ -251,7 +272,7 @@ mod tests {
             format!(
                 "{:?}",
                 crate::client::shell::sidebar::workspace_rows(
-                    s,
+                    &SpaceLabels::new(s),
                     &ws,
                     AgentStatus::Idle,
                     true,
@@ -271,7 +292,7 @@ mod tests {
     fn sidebar_rows_carry_the_prefixed_label() {
         let s = with_pane("dev_host", true, None, Some("dev_host"), Some("/home/u"));
         let rows = crate::client::shell::sidebar::workspace_rows(
-            &s,
+            &SpaceLabels::new(&s),
             &s.workspaces[0],
             AgentStatus::Idle,
             false,
@@ -279,5 +300,50 @@ mod tests {
         );
         let text = format!("{rows:?}");
         assert!(text.contains("[s] dev_host:/home/u"), "{text}");
+    }
+
+    #[test]
+    fn many_workspaces_each_resolve_their_own_active_tab_pane() {
+        let mut s = with_pane("repo", false, None, None, None);
+        let template_ws = s.workspaces[0].clone();
+        let template_pane = s.panes[0].clone();
+        s.workspaces.clear();
+        s.panes.clear();
+        for i in 0..40 {
+            let mut ws = template_ws.clone();
+            ws.workspace_id = format!("w{i}");
+            ws.active_tab_id = format!("t{i}");
+            ws.label = format!("ws{i}");
+            ws.custom_label = true;
+            // Unfocused first pane on host, focused second pane off-host for
+            // odd workspaces; another tab holds a decoy ssh pane.
+            let mut first = template_pane.clone();
+            first.workspace_id = ws.workspace_id.clone();
+            first.tab_id = ws.active_tab_id.clone();
+            first.focused = false;
+            first.container = None;
+            first.ssh_host = None;
+            let mut decoy = first.clone();
+            decoy.tab_id = format!("other{i}");
+            decoy.ssh_host = Some("decoy".into());
+            s.panes.push(decoy);
+            s.panes.push(first.clone());
+            if i % 2 == 1 {
+                let mut second = first;
+                second.focused = true;
+                second.ssh_host = Some(format!("h{i}"));
+                s.panes.push(second);
+            }
+            s.workspaces.push(ws);
+        }
+        let labels = SpaceLabels::new(&s);
+        for (i, ws) in s.workspaces.iter().enumerate() {
+            let expected = if i % 2 == 1 {
+                format!("[s] ws{i}")
+            } else {
+                format!("ws{i}")
+            };
+            assert_eq!(labels.display_label(ws), expected, "workspace {i}");
+        }
     }
 }

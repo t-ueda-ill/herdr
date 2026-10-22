@@ -757,6 +757,7 @@ fn mobile_items(
         palette,
     ));
     for endpoint in super::aggregate_navigation::cached_endpoint_snapshots(endpoints) {
+        let labels = super::space_label::SpaceLabels::new(endpoint.snapshot);
         for entry in super::render::workspace_entries(endpoint.snapshot, &HashSet::new()) {
             let Some(workspace) = endpoint.snapshot.workspaces.get(entry.index) else {
                 continue;
@@ -790,7 +791,7 @@ fn mobile_items(
             } else {
                 ""
             };
-            let off_host = super::space_label::off_host_space_label(endpoint.snapshot, workspace);
+            let off_host = labels.off_host_label(workspace);
             let name = if entry.indented && !workspace.custom_label && off_host.is_none() {
                 workspace
                     .branch
