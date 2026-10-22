@@ -10,6 +10,7 @@ pub mod files;
 pub mod integrations;
 pub(crate) mod operations;
 pub mod pane_directory;
+pub mod pane_download;
 pub mod pane_upload;
 pub mod panes;
 pub mod plugins;
@@ -30,6 +31,7 @@ pub use events::*;
 pub use files::*;
 pub use integrations::*;
 pub use pane_directory::*;
+pub use pane_download::*;
 pub use pane_upload::*;
 pub use panes::*;
 pub use plugins::*;
@@ -182,6 +184,11 @@ operations::define_operations! {
     PaneUploadCancel(PaneUploadCancelParams) => "pane.upload.cancel", false, true;
     PaneUploadFinish(PaneUploadFinishParams) => "pane.upload.finish", false, true;
     PaneUploadWrite(PaneUploadWriteParams) => "pane.upload.write", false, true;
+    // Why `client_shell = false`: the methods are advertised in the stage that
+    // wires the worker, so no server offers a method it cannot answer.
+    PaneDownloadBegin(PaneDownloadBeginParams) => "pane.download.begin", false, false;
+    PaneDownloadCancel(PaneDownloadCancelParams) => "pane.download.cancel", false, false;
+    PaneDownloadRead(PaneDownloadReadParams) => "pane.download.read", false, false;
 }
 
 #[cfg(test)]
@@ -208,6 +215,9 @@ impl Method {
                 | Self::PaneUploadCancel(_)
                 | Self::PaneUploadFinish(_)
                 | Self::PaneUploadWrite(_)
+                | Self::PaneDownloadBegin(_)
+                | Self::PaneDownloadCancel(_)
+                | Self::PaneDownloadRead(_)
         )
     }
 }

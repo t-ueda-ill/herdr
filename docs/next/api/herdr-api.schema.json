@@ -2940,6 +2940,67 @@
           ],
           "type": "object"
         },
+        "PaneDownloadBeginParams": {
+          "description": "Without `pane_id` the source is the server's own filesystem.",
+          "properties": {
+            "max_bytes": {
+              "description": "Decoded data bytes one read answer may carry, for the whole session.\nDefaults to the server's `chunk_bytes`; a larger value is clamped and 0 is\nrefused.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "Workspace pane whose environment holds the paths.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "paths": {
+              "description": "1 to 1,024 absolute paths inside that environment, each at most 4,096 bytes\nand 256 KiB together. Their last components become the top-level names and\nmust be unique and valid names. A symlink named here is followed; symlinks\ninside folders are sent as links.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "type": "object"
+        },
+        "PaneDownloadCancelParams": {
+          "properties": {
+            "download_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "download_id"
+          ],
+          "type": "object"
+        },
+        "PaneDownloadReadParams": {
+          "properties": {
+            "download_id": {
+              "type": "string"
+            },
+            "seq": {
+              "description": "0, 1, 2, ...: each read takes the next part of the stream.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "download_id",
+            "seq"
+          ],
+          "type": "object"
+        },
         "PaneEdgesParams": {
           "properties": {
             "pane_id": {
@@ -7480,6 +7541,54 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.download.begin",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneDownloadBeginParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.download.cancel",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneDownloadCancelParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.download.read",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneDownloadReadParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -9280,6 +9389,143 @@
           ],
           "type": "object"
         },
+        "PaneDownloadChunk": {
+          "description": "Body of a `pane.download.read` result.",
+          "properties": {
+            "done": {
+              "default": false,
+              "description": "The stream ended cleanly. The session is gone after this answer.",
+              "type": "boolean"
+            },
+            "records": {
+              "default": [],
+              "description": "May be empty: a heartbeat while the source is slow. Always empty with `done`.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/PaneDownloadRecord"
+              },
+              "type": "array"
+            },
+            "sent_bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sent_entries": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "warnings": {
+              "default": [],
+              "description": "With `done`: skipped entries and other non-fatal problems, at most 32 KiB\nin total, control characters escaped.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "seq",
+            "sent_entries",
+            "sent_bytes"
+          ],
+          "type": "object"
+        },
+        "PaneDownloadRecord": {
+          "description": "One step of the stream. Same meaning as a `pane.upload.write`.",
+          "properties": {
+            "data": {
+              "description": "Standard padded base64.",
+              "type": "string"
+            },
+            "entry": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/PaneUploadEntryHeader"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On the first record of an entry (offset 0) only."
+            },
+            "last": {
+              "default": false,
+              "description": "The entry's final record. Always true for directories and symlinks.",
+              "type": "boolean"
+            },
+            "offset": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "path": {
+              "description": "`/`-separated path whose first component is one of the begin names.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "PaneDownloadStarted": {
+          "description": "Body of a `pane.download.begin` result.",
+          "properties": {
+            "bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "chunk_bytes": {
+              "description": "Largest decoded data one read answer carries: `max_bytes` after clamping.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "download_id": {
+              "type": "string"
+            },
+            "entries": {
+              "description": "Estimates from the walk at begin. The stream may differ when the tree changes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "location": {
+              "$ref": "#/schemas/success_response/$defs/PaneLocation"
+            },
+            "names": {
+              "description": "Top-level names, in the order of `paths`.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "window": {
+              "description": "Reads that may be in flight at once on one ordered stream.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "download_id",
+            "location",
+            "names",
+            "entries",
+            "bytes",
+            "chunk_bytes",
+            "window"
+          ],
+          "type": "object"
+        },
         "PaneEdgesResult": {
           "properties": {
             "down": {
@@ -9693,7 +9939,7 @@
             },
             {
               "const": "host",
-              "description": "The server's own filesystem. `pane.directory.*` rejects host panes with\n`invalid_params`; `pane.upload.*` reports it for uploads to this host.",
+              "description": "The server's own filesystem. `pane.directory.*` rejects host panes with\n`invalid_params`; `pane.upload.*` reports it for uploads to this host and\n`pane.download.*` when the source is this host.",
               "type": "string"
             },
             {
@@ -10092,6 +10338,69 @@
             "end"
           ],
           "type": "object"
+        },
+        "PaneUploadEntryHeader": {
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/PaneUploadEntryKind"
+            },
+            "link_target": {
+              "description": "Required for symlinks: 1 to 4,096 bytes without control characters.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mode": {
+              "description": "Permission bits, at most 0o777.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mtime": {
+              "description": "Modification time in UNIX seconds.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "size": {
+              "description": "Required for files.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "mode"
+          ],
+          "type": "object"
+        },
+        "PaneUploadEntryKind": {
+          "oneOf": [
+            {
+              "enum": [
+                "file",
+                "directory"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "symlink",
+              "description": "Sent as the link itself; its target is never followed.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind a newer client sends. Rejected with `invalid_params`.",
+              "type": "string"
+            }
+          ]
         },
         "PaneUploadFinished": {
           "description": "Body of a `pane.upload.finish` result.",
@@ -12380,6 +12689,32 @@
               "properties": {
                 "type": {
                   "const": "pane_upload_finished",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/success_response/$defs/PaneDownloadStarted",
+              "properties": {
+                "type": {
+                  "const": "pane_download_started",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/success_response/$defs/PaneDownloadChunk",
+              "properties": {
+                "type": {
+                  "const": "pane_download_chunk",
                   "type": "string"
                 }
               },

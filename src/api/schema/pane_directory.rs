@@ -10,7 +10,8 @@ use super::files::FileDocument;
 #[serde(rename_all = "snake_case")]
 pub enum PaneLocationKind {
     /// The server's own filesystem. `pane.directory.*` rejects host panes with
-    /// `invalid_params`; `pane.upload.*` reports it for uploads to this host.
+    /// `invalid_params`; `pane.upload.*` reports it for uploads to this host and
+    /// `pane.download.*` when the source is this host.
     Host,
     Ssh,
     Container,
