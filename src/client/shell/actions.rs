@@ -60,6 +60,13 @@ impl ClientShellState {
                     return;
                 }
                 if action == crate::input::KeybindAction::Help {
+                    // Why not reopen: with the files view up, Help stays open
+                    // under the prefix, so the binding has to close it.
+                    if matches!(self.overlay, Some(ClientShellOverlay::Help(_))) {
+                        self.overlay = None;
+                        outcome.repaint = true;
+                        return;
+                    }
                     self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
                         query: TextEditor::default(),
                         search_focused: false,

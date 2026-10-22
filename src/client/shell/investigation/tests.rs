@@ -1079,7 +1079,7 @@ mod offhost {
 
         let tab = state.investigation().unwrap();
         assert_eq!(tab.browser.root.as_deref(), Some("/work"));
-        assert_eq!(tab.browser.rows.len(), 2);
+        assert_eq!(tab.browser.rows.len(), 3);
         assert_eq!(tab.notice, "");
     }
 
@@ -1195,19 +1195,120 @@ mod offhost {
         };
         state.workbench.tabs.push(host);
         state.workbench.visible = false;
+        let mut outcome = ClientShellInput::default();
 
         set_panes(&mut state, &[("pane_1", Some("app"), Some("devbox"))]);
-        assert!(state.toggle_investigation());
+        assert!(state.toggle_investigation(&mut outcome));
         assert_eq!(state.workbench.active, Some(0));
 
         state.workbench.visible = false;
         set_panes(&mut state, &[("pane_9", None, None)]);
-        assert!(state.toggle_investigation());
+        assert!(state.toggle_investigation(&mut outcome));
         assert_eq!(state.workbench.active, Some(1));
 
         state.workbench.visible = false;
         set_panes(&mut state, &[("pane_5", None, Some("other"))]);
-        assert!(!state.toggle_investigation(), "no tab of that location yet");
+        assert!(
+            !state.toggle_investigation(&mut outcome),
+            "no tab of that location yet"
+        );
+    }
+
+    fn with_pane_dirs(state: &mut ClientShellState, cwd: Option<&str>, foreground: Option<&str>) {
+        let mut snapshot = state.snapshot.as_deref().cloned().unwrap();
+        for pane in &mut snapshot.panes {
+            pane.cwd = cwd.map(str::to_owned);
+            pane.foreground_cwd = foreground.map(str::to_owned);
+        }
+        state_set_snapshot(state, snapshot);
+        state.workbench.visible = false;
+    }
+
+    fn host_state() -> ClientShellState {
+        let mut state = state();
+        set_panes(&mut state, &[("pane_1", None, None)]);
+        state
+    }
+
+    #[test]
+    fn reshowing_after_cd_roots_the_tab_at_the_panes_directory() {
+        let mut state = host_state();
+        with_pane_dirs(&mut state, Some("/repo"), Some("/repo/sub"));
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.toggle_investigation(&mut outcome));
+
+        assert_eq!(
+            state.workbench.tabs[0].browser.root.as_deref(),
+            Some("/repo/sub")
+        );
+        assert!(matches!(
+            &requests(&outcome)[..],
+            [(_, Method::DirectoryList(list)), ..] if list.path.as_deref() == Some("/repo/sub")
+        ));
+    }
+
+    #[test]
+    fn reshowing_in_the_same_directory_requests_nothing() {
+        let mut state = host_state();
+        with_pane_dirs(&mut state, Some("/repo"), None);
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.toggle_investigation(&mut outcome));
+
+        assert!(requests(&outcome).is_empty());
+        assert_eq!(
+            state.workbench.tabs[0].browser.root.as_deref(),
+            Some("/repo")
+        );
+    }
+
+    #[test]
+    fn reshowing_keeps_the_root_when_the_directory_is_unknown() {
+        let mut state = host_state();
+        with_pane_dirs(&mut state, None, None);
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.toggle_investigation(&mut outcome));
+
+        assert!(requests(&outcome).is_empty());
+        assert_eq!(
+            state.workbench.tabs[0].browser.root.as_deref(),
+            Some("/repo")
+        );
+    }
+
+    #[test]
+    fn reshowing_off_host_ignores_the_host_fallback_directory() {
+        let mut state = offhost_state();
+        with_pane_dirs(&mut state, Some("/home/host/elsewhere"), None);
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.toggle_investigation(&mut outcome));
+
+        assert!(requests(&outcome).is_empty());
+        assert_eq!(
+            state.workbench.tabs[0].browser.root.as_deref(),
+            Some("/work")
+        );
+    }
+
+    #[test]
+    fn reshowing_off_host_follows_the_reported_directory() {
+        let mut state = offhost_state();
+        with_pane_dirs(&mut state, Some("/home/host/elsewhere"), Some("/work/src"));
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.toggle_investigation(&mut outcome));
+
+        assert_eq!(
+            state.workbench.tabs[0].browser.root.as_deref(),
+            Some("/work/src")
+        );
+        assert!(matches!(
+            &requests(&outcome)[..],
+            [(_, Method::PaneDirectoryList(list)), ..] if list.path.as_deref() == Some("/work/src")
+        ));
     }
 
     #[test]
@@ -1226,8 +1327,32 @@ mod offhost {
         set_panes(&mut state, &[("pane_1", Some("app"), None)]);
         state.workbench.visible = false;
 
-        assert!(state.toggle_investigation());
+        assert!(state.toggle_investigation(&mut ClientShellInput::default()));
         assert_eq!(state.workbench.active, Some(0));
+    }
+
+    #[test]
+    fn reshowing_a_host_tab_from_an_ssh_pane_keeps_its_root_on_an_old_server() {
+        let mut state = state();
+        state.set_endpoint_methods(Some(
+            Method::OPERATIONS
+                .iter()
+                .map(|op| op.name)
+                .filter(|name| {
+                    !name.starts_with("pane.directory.") && !name.starts_with("pane.file.")
+                })
+                .map(str::to_owned)
+                .collect(),
+        ));
+        set_panes(&mut state, &[("pane_1", None, Some("devbox"))]);
+        with_pane_dirs(&mut state, Some("/work"), Some("/work"));
+        let root = state.workbench.tabs[0].browser.root.clone();
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.toggle_investigation(&mut outcome));
+
+        assert_eq!(state.workbench.tabs[0].browser.root, root);
+        assert!(outcome.requests.is_empty());
     }
 
     fn state_tab_host(state: &ClientShellState) -> Investigation {
@@ -2780,5 +2905,522 @@ mod drops {
             state.investigation().unwrap().notice,
             "upload failed: disk full"
         );
+    }
+}
+
+mod parent_row {
+    use super::*;
+    use crate::api::schema::{DirectoryEntry, DirectoryEntryKind};
+    use crate::client::shell::file_viewer::model::DirectoryState;
+    use crossterm::event::{KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind};
+
+    /// `/repo` holding `src/` and `a.txt`, selection on the first entry.
+    fn tree_state() -> ClientShellState {
+        let mut state = state();
+        let tab = state.investigation_mut().unwrap();
+        if let Some(DirectoryState::Loaded(listing)) = tab.browser.directories.get_mut("/repo") {
+            listing.entries.insert(
+                0,
+                DirectoryEntry {
+                    name: "src".into(),
+                    kind: DirectoryEntryKind::Dir,
+                    target_kind: None,
+                    size: None,
+                    mtime: None,
+                    hidden: false,
+                    ignored: Some(false),
+                },
+            );
+        }
+        tab.browser.rebuild(false);
+        state
+    }
+
+    fn labels(state: &ClientShellState) -> Vec<String> {
+        let tab = state.investigation().unwrap();
+        tab.browser.rows.iter().map(|r| r.label.clone()).collect()
+    }
+
+    fn click(state: &mut ClientShellState, index: usize) {
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        state.compose(120, 32).expect("composed investigation");
+        let rect = state
+            .investigation_hits
+            .rows
+            .iter()
+            .find(|(_, i)| *i == index)
+            .map(|(r, _)| *r)
+            .expect("row is drawn");
+        state.handle_investigation_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: rect.x + 1,
+                row: rect.y,
+                modifiers: M::empty(),
+            },
+            &mut ClientShellInput::default(),
+        );
+    }
+
+    fn rooted_at_parent(state: &ClientShellState) -> bool {
+        let tab = state.investigation().unwrap();
+        tab.browser.root.as_deref() == Some("/")
+            && tab.browser.pending_select.as_deref() == Some("/repo")
+    }
+
+    #[test]
+    fn a_dotdot_row_tops_the_tree_while_the_root_has_a_parent() {
+        let state = tree_state();
+
+        assert_eq!(labels(&state)[0], "..");
+        let tab = state.investigation().unwrap();
+        assert_eq!(
+            tab.browser.selected, 1,
+            "selection starts on the first entry"
+        );
+        assert_eq!(tab.browser.selected_entry().unwrap().path, "/repo/src");
+    }
+
+    #[test]
+    fn no_dotdot_row_at_the_filesystem_root_or_while_searching() {
+        let mut state = tree_state();
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.query = crate::client::shell::text_editor::TextEditor::new("a", false);
+        tab.browser.rebuild(false);
+        assert!(!labels(&state).contains(&"..".to_owned()));
+
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.query = Default::default();
+        tab.browser.root = Some("/".into());
+        tab.browser.rebuild(false);
+        assert!(!labels(&state).contains(&"..".to_owned()));
+    }
+
+    #[test]
+    fn arrow_keys_reach_the_dotdot_row_without_selecting_any_path() {
+        let mut state = tree_state();
+
+        press(&mut state, KeyCode::Up, M::empty());
+
+        let tab = state.investigation().unwrap();
+        assert_eq!(tab.browser.selected, 0);
+        assert!(tab.browser.selected_entry().is_none());
+        assert!(tab.paths().is_empty());
+    }
+
+    #[test]
+    fn enter_on_dotdot_raises_the_root_and_selects_the_old_root() {
+        let mut state = tree_state();
+        press(&mut state, KeyCode::Up, M::empty());
+
+        press(&mut state, KeyCode::Enter, M::empty());
+
+        assert!(rooted_at_parent(&state));
+    }
+
+    #[test]
+    fn a_double_click_on_dotdot_raises_the_root_but_a_single_click_only_selects() {
+        let mut state = tree_state();
+
+        click(&mut state, 0);
+        assert_eq!(state.investigation().unwrap().browser.selected, 0);
+        assert_eq!(
+            state.investigation().unwrap().browser.root.as_deref(),
+            Some("/repo")
+        );
+
+        click(&mut state, 0);
+        assert!(rooted_at_parent(&state));
+    }
+
+    #[test]
+    fn dotdot_is_left_out_of_marking_and_file_operations() {
+        let mut state = tree_state();
+        press(&mut state, KeyCode::Up, M::empty());
+
+        press(&mut state, KeyCode::Insert, M::empty());
+        assert!(state.investigation().unwrap().selected_files.is_empty());
+
+        press(&mut state, KeyCode::Char('a'), M::CONTROL);
+        let marked = &state.investigation().unwrap().selected_files;
+        assert!(!marked.is_empty() && marked.iter().all(|p| p.starts_with("/repo/")));
+        state.investigation_mut().unwrap().selected_files.clear();
+
+        for index in [3, 6, 7, 9, 12, 13] {
+            let mut outcome = ClientShellInput::default();
+            state.investigation_menu_action(index, &mut outcome);
+            let tab = state.investigation().unwrap();
+            assert!(tab.dialog.is_none(), "menu {index}");
+            assert!(outcome.actions.is_empty(), "menu {index}");
+        }
+        assert!(state.workbench.clipboard.is_none());
+    }
+
+    #[test]
+    fn open_as_root_is_the_last_menu_entry() {
+        assert_eq!(MENU[24], "open as root");
+        assert_eq!(MENU.len(), 25);
+    }
+
+    #[test]
+    fn open_as_root_makes_the_selected_directory_the_root() {
+        let mut state = tree_state();
+
+        state.investigation_menu_action(24, &mut ClientShellInput::default());
+
+        let tab = state.investigation().unwrap();
+        assert_eq!(tab.browser.root.as_deref(), Some("/repo/src"));
+        assert_eq!(tab.browser.pending_select, None);
+    }
+
+    #[test]
+    fn open_as_root_makes_the_folder_of_a_selected_file_the_root() {
+        let mut state = tree_state();
+        let tab = state.investigation_mut().unwrap();
+        let mut nested = match tab.browser.directories.get("/repo") {
+            Some(DirectoryState::Loaded(listing)) => listing.clone(),
+            _ => unreachable!("the tree state lists /repo"),
+        };
+        nested.entries.retain(|entry| entry.name == "a.txt");
+        tab.browser
+            .directories
+            .insert("/repo/src".into(), DirectoryState::Loaded(nested));
+        tab.browser.expanded.insert("/repo/src".into());
+        tab.browser.pending_select = Some("/repo/src/a.txt".into());
+        tab.browser.rebuild(true);
+        assert_eq!(
+            tab.browser.selected_entry().unwrap().path,
+            "/repo/src/a.txt"
+        );
+
+        state.investigation_menu_action(24, &mut ClientShellInput::default());
+
+        let tab = state.investigation().unwrap();
+        assert_eq!(tab.browser.root.as_deref(), Some("/repo/src"));
+    }
+
+    #[test]
+    fn open_as_root_on_dotdot_only_says_what_to_select() {
+        let mut state = tree_state();
+        press(&mut state, KeyCode::Up, M::empty());
+
+        state.investigation_menu_action(24, &mut ClientShellInput::default());
+
+        let tab = state.investigation().unwrap();
+        assert_eq!(tab.browser.root.as_deref(), Some("/repo"));
+        assert_eq!(tab.notice, "select a file or folder to open as root");
+    }
+}
+
+mod hover {
+    use super::*;
+    use crate::api::schema::{DirectoryEntry, DirectoryEntryKind};
+    use crate::client::shell::file_viewer::model::DirectoryState;
+    use crossterm::event::{KeyModifiers as M, MouseEvent, MouseEventKind};
+
+    /// `/repo` holding `src/` and `a.txt`, composed so row hits exist.
+    fn composed() -> ClientShellState {
+        let mut state = state();
+        let tab = state.investigation_mut().unwrap();
+        if let Some(DirectoryState::Loaded(listing)) = tab.browser.directories.get_mut("/repo") {
+            listing.entries.insert(
+                0,
+                DirectoryEntry {
+                    name: "src".into(),
+                    kind: DirectoryEntryKind::Dir,
+                    target_kind: None,
+                    size: None,
+                    mtime: None,
+                    hidden: false,
+                    ignored: Some(false),
+                },
+            );
+        }
+        tab.browser.rebuild(false);
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        state.compose(120, 32).expect("composed investigation");
+        state
+    }
+
+    fn move_to(state: &mut ClientShellState, column: u16, row: u16) -> ClientShellInput {
+        let mut outcome = ClientShellInput::default();
+        state.handle_investigation_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column,
+                row,
+                modifiers: M::empty(),
+            },
+            &mut outcome,
+        );
+        outcome
+    }
+
+    fn row_rect(state: &ClientShellState, index: usize) -> Rect {
+        state
+            .investigation_hits
+            .rows
+            .iter()
+            .find(|(_, i)| *i == index)
+            .map(|(r, _)| *r)
+            .expect("row is drawn")
+    }
+
+    #[test]
+    fn moving_over_a_row_hovers_it_without_moving_the_selection_or_asking_the_server() {
+        let mut state = composed();
+        let selected = state.investigation().unwrap().browser.selected;
+        let target = if selected == 2 { 1 } else { 2 };
+        let rect = row_rect(&state, target);
+
+        let outcome = move_to(&mut state, rect.x + 1, rect.y);
+
+        let tab = state.investigation().unwrap();
+        assert_eq!(tab.hovered, Some(target));
+        assert_eq!(tab.browser.selected, selected);
+        assert!(outcome.repaint);
+        assert!(outcome.actions.is_empty());
+    }
+
+    #[test]
+    fn moving_within_the_same_row_does_not_repaint() {
+        let mut state = composed();
+        let rect = row_rect(&state, 2);
+        move_to(&mut state, rect.x + 1, rect.y);
+
+        let outcome = move_to(&mut state, rect.x + 3, rect.y);
+
+        assert!(!outcome.repaint);
+        assert_eq!(state.investigation().unwrap().hovered, Some(2));
+    }
+
+    #[test]
+    fn leaving_the_list_clears_the_hover() {
+        let mut state = composed();
+        let rect = row_rect(&state, 2);
+        move_to(&mut state, rect.x + 1, rect.y);
+
+        let outcome = move_to(&mut state, 0, 0);
+
+        assert_eq!(state.investigation().unwrap().hovered, None);
+        assert!(outcome.repaint);
+    }
+
+    #[test]
+    fn scrolling_clears_the_hover() {
+        let mut state = composed();
+        let rect = row_rect(&state, 2);
+        move_to(&mut state, rect.x + 1, rect.y);
+
+        state.handle_investigation_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: rect.x + 1,
+                row: rect.y,
+                modifiers: M::empty(),
+            },
+            &mut ClientShellInput::default(),
+        );
+
+        assert_eq!(state.investigation().unwrap().hovered, None);
+    }
+
+    #[test]
+    fn moving_the_selection_by_key_clears_the_hover() {
+        let mut state = composed();
+        let rect = row_rect(&state, 2);
+        move_to(&mut state, rect.x + 1, rect.y);
+
+        press(&mut state, KeyCode::Down, M::empty());
+
+        assert_eq!(state.investigation().unwrap().hovered, None);
+    }
+
+    #[test]
+    fn switching_between_tree_and_content_search_clears_the_hover() {
+        let mut state = composed();
+        let rect = row_rect(&state, 2);
+        move_to(&mut state, rect.x + 1, rect.y);
+
+        press(&mut state, KeyCode::Char('f'), M::CONTROL | M::SHIFT);
+
+        assert_eq!(state.investigation().unwrap().hovered, None);
+    }
+
+    #[test]
+    fn a_hovered_row_is_drawn_apart_from_plain_and_selected_rows() {
+        let mut state = composed();
+        let selected = state.investigation().unwrap().browser.selected;
+        let target = if selected == 2 { 1 } else { 2 };
+        let rect = row_rect(&state, target);
+        let style_at = |state: &mut ClientShellState, rect: Rect| {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 32));
+            let layout = state.layout(120, 32);
+            state.render_investigation(&mut buffer, layout);
+            buffer[(rect.x + rect.width - 1, rect.y)].style()
+        };
+        let before = style_at(&mut state, rect);
+        move_to(&mut state, rect.x + 1, rect.y);
+
+        let hovered = style_at(&mut state, rect);
+        let selected_rect = row_rect(&state, selected);
+        let selected_style = style_at(&mut state, selected_rect);
+
+        assert_ne!(before.bg, hovered.bg);
+        assert_ne!(hovered.bg, selected_style.bg);
+    }
+
+    #[test]
+    fn moving_over_a_workbench_menu_row_highlights_it() {
+        let mut state = composed();
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu { selected: 0 });
+        state.compose(120, 32).expect("composed menu");
+        let rect = state
+            .investigation_hits
+            .menu
+            .iter()
+            .find(|(_, i)| *i == 2)
+            .map(|(r, _)| *r)
+            .expect("menu row is drawn");
+
+        let outcome = move_to(&mut state, rect.x + 1, rect.y);
+
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Menu { selected: 2 })
+        ));
+        assert!(outcome.repaint);
+    }
+}
+
+mod help_open {
+    use super::*;
+    use crate::client::shell::state::ClientHelpOverlay;
+    use crate::client::shell::text_editor::TextEditor;
+    use crossterm::event::{KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind};
+
+    fn with_help(search_focused: bool) -> ClientShellState {
+        let mut state = state();
+        state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
+            query: TextEditor::default(),
+            search_focused,
+            scroll: 0,
+        }));
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        state.compose(120, 32).expect("composed with help");
+        state
+    }
+
+    fn help_open(state: &ClientShellState) -> bool {
+        matches!(state.overlay, Some(ClientShellOverlay::Help(_)))
+    }
+
+    fn help_scroll(state: &ClientShellState) -> usize {
+        match state.overlay {
+            Some(ClientShellOverlay::Help(ref help)) => help.scroll,
+            _ => panic!("help is closed"),
+        }
+    }
+
+    #[test]
+    fn arrow_keys_move_the_files_selection_and_help_stays_open() {
+        let mut state = with_help(false);
+        let before = state.investigation().unwrap().browser.selected;
+        press(&mut state, KeyCode::Up, M::empty());
+        assert_ne!(state.investigation().unwrap().browser.selected, before);
+        assert!(help_open(&state));
+        assert_eq!(help_scroll(&state), 0);
+    }
+
+    #[test]
+    fn escape_closes_help_and_leaves_the_files_selection() {
+        let mut state = with_help(false);
+        let before = state.investigation().unwrap().browser.selected;
+        press(&mut state, KeyCode::Esc, M::empty());
+        assert!(state.overlay.is_none());
+        assert_eq!(state.investigation().unwrap().browser.selected, before);
+    }
+
+    #[test]
+    fn question_mark_closes_help() {
+        let mut state = with_help(false);
+        press(&mut state, KeyCode::Char('?'), M::SHIFT);
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn the_help_binding_after_the_prefix_closes_help() {
+        let mut state = with_help(false);
+        let (code, modifiers) = state.config.keybinds.prefix[0];
+        press(&mut state, code, modifiers);
+        assert_eq!(state.mode, ClientShellMode::Prefix);
+        press(&mut state, KeyCode::Char('?'), M::SHIFT);
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn typing_goes_to_the_help_search_while_it_is_focused() {
+        let mut state = with_help(true);
+        let before = state.investigation().unwrap().browser.selected;
+        press(&mut state, KeyCode::Down, M::empty());
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Text(
+            crate::input::TextCommit::new("ab"),
+        )]);
+        match state.overlay {
+            Some(ClientShellOverlay::Help(ref help)) => assert_eq!(help.query.as_str(), "ab"),
+            _ => panic!("help closed"),
+        }
+        assert_eq!(state.investigation().unwrap().browser.selected, before);
+    }
+
+    #[test]
+    fn a_click_on_a_row_outside_the_popup_selects_it_and_help_stays_open() {
+        let mut state = with_help(false);
+        let popup = state.hits.help_popup;
+        let (rect, index) = state
+            .investigation_hits
+            .rows
+            .iter()
+            .copied()
+            .find(|(r, i)| {
+                *i != state.investigation().unwrap().browser.selected
+                    && !crate::client::shell::contains(popup, (r.x + 1, r.y))
+            })
+            .expect("a row clear of the popup");
+        state.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: rect.x + 1,
+                row: rect.y,
+                modifiers: M::empty(),
+            },
+            &mut ClientShellInput::default(),
+        );
+        assert!(help_open(&state));
+        assert_eq!(state.investigation().unwrap().browser.selected, index);
+    }
+
+    #[test]
+    fn the_wheel_inside_the_popup_scrolls_help() {
+        let mut state = with_help(false);
+        let popup = state.hits.help_popup;
+        state.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: popup.x + 2,
+                row: popup.y + 2,
+                modifiers: M::empty(),
+            },
+            &mut ClientShellInput::default(),
+        );
+        assert!(help_scroll(&state) > 0);
+    }
+
+    #[test]
+    fn without_the_workbench_arrows_still_scroll_help() {
+        let mut state = with_help(false);
+        state.workbench.visible = false;
+        press(&mut state, KeyCode::Down, M::empty());
+        assert_eq!(help_scroll(&state), 1);
     }
 }

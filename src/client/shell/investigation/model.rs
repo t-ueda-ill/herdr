@@ -205,6 +205,9 @@ pub(in crate::client::shell) struct Investigation {
     pub ignored: bool,
     pub matches: Vec<FileMatch>,
     pub selected_match: usize,
+    /// Row under the pointer. Why separate from `browser.selected`: selection
+    /// drives previews, hovering must stay a pure highlight.
+    pub hovered: Option<usize>,
     pub omitted: BTreeSet<usize>,
     pub selected_files: BTreeSet<String>,
     pub search_generation: u64,
@@ -311,7 +314,13 @@ impl UploadDialog {
     }
 }
 impl Investigation {
-    pub fn new(browser: ClientFileViewerOverlay, endpoint: ClientEndpointId, boot: String) -> Self {
+    pub fn new(
+        mut browser: ClientFileViewerOverlay,
+        endpoint: ClientEndpointId,
+        boot: String,
+    ) -> Self {
+        browser.parent_row = true;
+        browser.rebuild(true);
         Self {
             id: browser.instance,
             endpoint,
@@ -335,6 +344,7 @@ impl Investigation {
             ignored: false,
             matches: Vec::new(),
             selected_match: 0,
+            hovered: None,
             omitted: BTreeSet::new(),
             selected_files: BTreeSet::new(),
             search_generation: 0,
@@ -383,6 +393,18 @@ impl Investigation {
                 .filter(|e| !e.is_dir)
                 .map(|e| (e.path.clone(), 0))
         }
+    }
+    /// The directory "open as root" makes the root: the selected directory, or
+    /// the folder of the selected file or match. `None` on ".." and notices.
+    pub fn root_candidate(&self) -> Option<String> {
+        if self.focus != Focus::Body && !self.content_search {
+            let entry = self.browser.selected_entry()?;
+            if entry.is_dir {
+                return Some(entry.path.clone());
+            }
+        }
+        let (path, _) = self.target()?;
+        self.browser.parent_path(&path).map(str::to_owned)
     }
     pub fn paths(&self) -> Vec<String> {
         if self.focus == Focus::Body || self.content_search {
@@ -605,6 +627,7 @@ pub(in crate::client::shell) const MENU: &[&str] = &[
     "toggle matches in current file",
     "refresh content search",
     "refresh files",
+    "open as root",
 ];
 pub(in crate::client::shell) fn operation_params(
     operation: FileOperation,

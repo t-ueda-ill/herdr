@@ -155,6 +155,10 @@ pub(in crate::client::shell) struct FileViewerRow {
     pub(in crate::client::shell) label: String,
     /// `None` for an inline notice row, which cannot be selected.
     pub(in crate::client::shell) entry: Option<FileViewerEntry>,
+    /// The ".." row. Why `entry` stays `None`: every file operation reads the
+    /// selection through `selected_entry`, so none of them can reach a path
+    /// from this row, while movement and clicks still land on it.
+    pub(in crate::client::shell) parent_link: bool,
 }
 
 impl FileViewerRow {
@@ -163,7 +167,21 @@ impl FileViewerRow {
             depth,
             label: text.into(),
             entry: None,
+            parent_link: false,
         }
+    }
+
+    fn parent_link() -> Self {
+        Self {
+            depth: 0,
+            label: "..".to_owned(),
+            entry: None,
+            parent_link: true,
+        }
+    }
+
+    fn selectable(&self) -> bool {
+        self.entry.is_some() || self.parent_link
     }
 }
 
@@ -266,6 +284,9 @@ pub(in crate::client::shell) struct ClientFileViewerOverlay {
     /// Directory a search result asked to show, while its ancestors are listed.
     pub(in crate::client::shell) revealing: Option<String>,
     pub(in crate::client::shell) last_click: Option<(usize, std::time::Instant)>,
+    /// Shows a ".." row above the tree. Why not always: the modal fallback
+    /// has no row action for it.
+    pub(in crate::client::shell) parent_row: bool,
 }
 
 pub(in crate::client::shell) struct FileViewerOptions {
@@ -310,6 +331,7 @@ impl ClientFileViewerOverlay {
             pending_select: None,
             revealing: None,
             last_click: None,
+            parent_row: false,
         };
         viewer.rebuild(true);
         viewer
@@ -484,7 +506,7 @@ impl ClientFileViewerOverlay {
             .rows
             .iter()
             .enumerate()
-            .filter_map(|(index, row)| row.entry.is_some().then_some(index))
+            .filter_map(|(index, row)| row.selectable().then_some(index))
             .collect();
         let Some(current) = selectable
             .iter()
@@ -509,6 +531,12 @@ impl ClientFileViewerOverlay {
         let previous = keep_selection
             .then(|| self.selected_entry().map(|entry| entry.path.clone()))
             .flatten();
+        let on_parent_link = keep_selection
+            && self.pending_select.is_none()
+            && self
+                .rows
+                .get(self.selected)
+                .is_some_and(|row| row.parent_link);
         self.rows = if self.searching() {
             self.search_rows()
         } else {
@@ -533,19 +561,53 @@ impl ClientFileViewerOverlay {
             }
             None => self.selected = 0,
         }
+        if on_parent_link && self.rows.first().is_some_and(|row| row.parent_link) {
+            self.selected = 0;
+            return;
+        }
         if self
             .rows
             .get(self.selected)
             .is_none_or(|row| row.entry.is_none())
         {
-            self.move_selection(0);
+            self.select_nearest_entry();
         }
+    }
+
+    /// Only the user moves onto ".."; a rebuild never lands there on its own,
+    /// or the row inserted above the tree would take the selection from the
+    /// first entry.
+    fn select_nearest_entry(&mut self) {
+        let entries: Vec<usize> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| row.entry.is_some().then_some(index))
+            .collect();
+        let nearest = entries
+            .iter()
+            .copied()
+            .find(|index| *index >= self.selected)
+            .or_else(|| entries.last().copied());
+        self.selected = match nearest {
+            Some(index) => index,
+            None => self
+                .rows
+                .iter()
+                .position(|row| !row.parent_link)
+                .unwrap_or(0),
+        };
     }
 
     fn tree_rows(&self) -> Vec<FileViewerRow> {
         let mut rows = Vec::new();
         match &self.root {
-            Some(root) => self.push_directory_rows(root, 0, false, &mut rows),
+            Some(root) => {
+                if self.parent_row && self.parent_path(root).is_some() {
+                    rows.push(FileViewerRow::parent_link());
+                }
+                self.push_directory_rows(root, 0, false, &mut rows);
+            }
             None => rows.push(FileViewerRow::notice(0, LOADING)),
         }
         rows
@@ -597,6 +659,7 @@ impl ClientFileViewerOverlay {
                     is_dir,
                     expanded,
                 }),
+                parent_link: false,
             });
             if expanded {
                 self.push_directory_rows(&path, depth.saturating_add(1), git_failed, rows);
@@ -654,6 +717,7 @@ impl ClientFileViewerOverlay {
                                 is_dir: path.is_dir,
                                 expanded: false,
                             }),
+                            parent_link: false,
                         }
                     })
                     .collect();
@@ -711,6 +775,7 @@ impl ClientFileViewerOverlay {
                         expanded: false,
                         ..entry
                     }),
+                    parent_link: false,
                 })
             })
             .collect()

@@ -676,6 +676,18 @@ impl ClientShellState {
         }
     }
 
+    /// Whether a pointer event outside the keybinds popup belongs to the
+    /// workbench behind it. Events inside the popup, and a scrollbar drag
+    /// that began there, stay with Help.
+    fn help_mouse_passes_to_workbench(&self, mouse: MouseEvent) -> bool {
+        self.help_passes_input_to_workbench()
+            && !matches!(
+                self.chrome_drag,
+                Some(ClientChromeDrag::HelpScrollbar { .. })
+            )
+            && !super::contains(self.hits.help_popup, (mouse.column, mouse.row))
+    }
+
     /// Routes mouse input through overlays, shell controls, and pane interactions.
     ///
     /// Hit-test order determines which overlapping control receives the event;
@@ -689,7 +701,9 @@ impl ClientShellState {
         {
             return;
         }
-        if self.overlay.is_none() && self.handle_investigation_mouse(mouse, outcome) {
+        if (self.overlay.is_none() || self.help_mouse_passes_to_workbench(mouse))
+            && self.handle_investigation_mouse(mouse, outcome)
+        {
             return;
         }
         self.update_link_hover(mouse, outcome);

@@ -77,7 +77,7 @@ impl ClientShellState {
             _ => {}
         }
     }
-    pub(super) fn toggle_investigation(&mut self) -> bool {
+    pub(super) fn toggle_investigation(&mut self, outcome: &mut ClientShellInput) -> bool {
         if self.investigation_active() {
             self.workbench.visible = false;
             return true;
@@ -85,13 +85,13 @@ impl ClientShellState {
         let workspace = self
             .snapshot
             .as_ref()
-            .and_then(|s| s.focused_workspace_id.as_ref());
+            .and_then(|s| s.focused_workspace_id.clone());
         // The tab whose location is the focused pane's: a host shell and an
         // ssh shell of one workspace each have their own tab.
-        let location = self.workspace_file_location(workspace.map(String::as_str));
+        let location = self.workspace_file_location(workspace.as_deref());
         let wanted = |t: &Investigation| {
             t.endpoint == self.active_endpoint_id
-                && t.browser.workspace_id.as_ref() == workspace
+                && t.browser.workspace_id == workspace
                 && t.browser.location == location
         };
         let recent = self
@@ -103,6 +103,7 @@ impl ClientShellState {
             self.mode = ClientShellMode::Terminal;
             self.workbench.active = Some(index);
             self.workbench.visible = true;
+            self.reroot_file_viewer_to_pane(workspace.as_deref(), outcome);
             return true;
         }
         false

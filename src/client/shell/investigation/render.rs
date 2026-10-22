@@ -356,6 +356,8 @@ impl ClientShellState {
                 } else {
                     base.bg(p.surface0)
                 }
+            } else if tab.hovered == Some(row) {
+                base.bg(p.surface1)
             } else {
                 base
             };
