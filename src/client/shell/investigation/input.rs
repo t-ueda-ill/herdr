@@ -44,7 +44,10 @@ impl ClientShellState {
             return;
         }
         if code == KeyCode::F(10) || code == KeyCode::Char('m') && modifiers == M::ALT {
-            tab.dialog = Some(Dialog::Menu { selected: 0 });
+            tab.dialog = Some(Dialog::Menu {
+                selected: 0,
+                scroll: 0,
+            });
             return;
         }
         if code == KeyCode::F(5) {
@@ -394,6 +397,7 @@ impl ClientShellState {
         key: &crate::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
+        let menu_rows = self.investigation_hits.menu.len();
         let Some(tab) = self.investigation_mut() else {
             return;
         };
@@ -405,9 +409,15 @@ impl ClientShellState {
             return;
         };
         match dialog {
-            Dialog::Menu { selected } => match code {
-                KeyCode::Up => *selected = selected.saturating_sub(1),
-                KeyCode::Down => *selected = (*selected + 1).min(MENU.len() - 1),
+            Dialog::Menu { selected, scroll } => match code {
+                KeyCode::Up | KeyCode::Down => {
+                    *selected = if code == KeyCode::Up {
+                        selected.saturating_sub(1)
+                    } else {
+                        (*selected + 1).min(MENU.len() - 1)
+                    };
+                    *scroll = menu_scroll_to_show(*selected, *scroll, menu_rows);
+                }
                 KeyCode::Enter => {
                     let index = *selected;
                     self.investigation_menu_action(index, outcome);
@@ -606,7 +616,8 @@ impl ClientShellState {
         if tab.dialog.is_some() {
             tab.hovered = None;
             if mouse.kind == MouseEventKind::Moved {
-                if let (Some(index), Some(Dialog::Menu { selected })) = (menu, tab.dialog.as_mut())
+                if let (Some(index), Some(Dialog::Menu { selected, .. })) =
+                    (menu, tab.dialog.as_mut())
                 {
                     if *selected != index {
                         *selected = index;
@@ -669,7 +680,10 @@ impl ClientShellState {
             button.filter(|_| matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)))
         {
             if index == usize::MAX {
-                tab.dialog = Some(Dialog::Menu { selected: 0 });
+                tab.dialog = Some(Dialog::Menu {
+                    selected: 0,
+                    scroll: 0,
+                });
             } else {
                 self.investigation_menu_action(index, outcome);
             }
@@ -736,7 +750,10 @@ impl ClientShellState {
                     }
                 }
                 MouseEventKind::Down(MouseButton::Right) => {
-                    tab.dialog = Some(Dialog::Menu { selected: 0 })
+                    tab.dialog = Some(Dialog::Menu {
+                        selected: 0,
+                        scroll: 0,
+                    })
                 }
                 _ => {}
             }
@@ -801,7 +818,10 @@ impl ClientShellState {
                     }
                 }
                 MouseEventKind::Down(MouseButton::Right) => {
-                    tab.dialog = Some(Dialog::Menu { selected: 0 })
+                    tab.dialog = Some(Dialog::Menu {
+                        selected: 0,
+                        scroll: 0,
+                    })
                 }
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                     let delta = if mouse.kind == MouseEventKind::ScrollUp {

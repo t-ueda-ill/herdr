@@ -137,6 +137,7 @@ pub(super) struct ShellHitMap {
     pub(super) overlay_favorite: Rect,
     pub(super) open_picker_favorites: Vec<(Rect, usize)>,
     pub(super) help_popup: Rect,
+    pub(super) help_filter: Rect,
     pub(super) help_scrollbar: Rect,
     pub(super) help_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) help_max_scroll: usize,

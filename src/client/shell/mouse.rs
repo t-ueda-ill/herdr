@@ -1704,6 +1704,13 @@ impl ClientShellState {
                                 }
                             }
                         }
+                    } else if super::contains(self.hits.help_filter, point) {
+                        // Why a click: with the workbench behind it `/` belongs
+                        // to the workbench, so the filter needs a pointer path.
+                        if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
+                            help.search_focused = true;
+                        }
+                        outcome.repaint = true;
                     } else if super::contains(self.hits.overlay_cancel, point) {
                         let search_focused = matches!(
                             self.overlay,

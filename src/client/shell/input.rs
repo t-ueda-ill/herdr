@@ -209,6 +209,17 @@ impl ClientShellState {
         ) && self.investigation_active()
     }
 
+    /// Why not leave Help open: it is composed after the workbench, so a
+    /// dialog that input passed through to opened beneath it, out of sight.
+    fn close_help_over_workbench_dialog(&mut self, outcome: &mut ClientShellInput) {
+        if self.help_passes_input_to_workbench()
+            && self.investigation().is_some_and(|tab| tab.dialog.is_some())
+        {
+            self.overlay = None;
+            outcome.repaint = true;
+        }
+    }
+
     fn workbench_takes_text(&self) -> bool {
         (self.overlay.is_none() || self.help_passes_input_to_workbench())
             && self.investigation_active()
@@ -406,6 +417,7 @@ impl ClientShellState {
                 | RawInputEvent::HostCellSizeReport { .. }
                 | RawInputEvent::Unsupported => {}
             }
+            self.close_help_over_workbench_dialog(&mut outcome);
             self.reconcile_input_source();
         }
         outcome.repaint |= self.resume_mobile_switcher_if_ready();

@@ -1355,6 +1355,79 @@ mod offhost {
         assert!(outcome.requests.is_empty());
     }
 
+    #[test]
+    fn reshowing_matches_a_windows_pane_directory_against_the_listed_root() {
+        let mut state = host_state();
+        with_pane_dirs(&mut state, Some(r"C:\Users\dev\project"), None);
+        state.workbench.tabs[0].browser.root = Some("C:/Users/dev/project".into());
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.toggle_investigation(&mut outcome));
+
+        assert!(requests(&outcome).is_empty());
+    }
+
+    #[test]
+    fn reshowing_roots_at_the_listing_format_of_each_windows_path_style() {
+        for (reported, listed) in [
+            (r"C:\Users\dev\src", "C:/Users/dev/src"),
+            (r"\\?\C:\Users\dev\src", "C:/Users/dev/src"),
+            (r"\\?\UNC\host\share\src", "//host/share/src"),
+            (r"\\host\share\src", "//host/share/src"),
+            ("C:/Users/dev/src", "C:/Users/dev/src"),
+        ] {
+            let mut state = host_state();
+            with_pane_dirs(&mut state, Some(reported), None);
+            let mut outcome = ClientShellInput::default();
+
+            assert!(state.toggle_investigation(&mut outcome));
+
+            assert_eq!(
+                state.workbench.tabs[0].browser.root.as_deref(),
+                Some(listed),
+                "{reported}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_posix_directory_with_a_backslash_is_left_alone() {
+        let mut state = host_state();
+        with_pane_dirs(&mut state, Some(r"/srv/odd\name"), None);
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.toggle_investigation(&mut outcome));
+
+        assert_eq!(
+            state.workbench.tabs[0].browser.root.as_deref(),
+            Some(r"/srv/odd\name")
+        );
+    }
+
+    #[test]
+    fn reshowing_roots_a_replica_tab_in_its_own_replicas_directory() {
+        let mut state = offhost_state();
+        let mut snapshot = state.snapshot.as_deref().cloned().unwrap();
+        snapshot.panes[0].foreground_cwd = Some("/work/a".into());
+        snapshot.panes[1].foreground_cwd = Some("/work/b".into());
+        state_set_snapshot(&mut state, snapshot);
+        state.investigation_mut().unwrap().browser.location_pane = Some("pane_2".into());
+        state.workbench.visible = false;
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.toggle_investigation(&mut outcome));
+
+        assert_eq!(
+            state.workbench.tabs[0].browser.root.as_deref(),
+            Some("/work/b")
+        );
+        assert!(matches!(
+            &requests(&outcome)[..],
+            [(_, Method::PaneDirectoryList(list)), ..]
+                if list.pane_id == "pane_2" && list.path.as_deref() == Some("/work/b")
+        ));
+    }
+
     fn state_tab_host(state: &ClientShellState) -> Investigation {
         use crate::client::shell::file_viewer::model::FileViewerOptions;
         let mut browser = ClientFileViewerOverlay::new(FileViewerOptions {
@@ -2710,7 +2783,10 @@ mod drops {
         assert!(state.workbench_drop_target().is_none(), "a text field");
 
         let mut state = tree_with_selected(None);
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu { selected: 0 });
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
+            selected: 0,
+            scroll: 0,
+        });
         assert!(state.workbench_drop_target().is_none(), "an open dialog");
 
         let mut state = tree_with_selected(None);
@@ -2842,7 +2918,10 @@ mod drops {
     fn a_tab_with_another_dialog_open_refuses_the_question() {
         let mut state = tree_with_selected(None);
         let tab = tab_id(&state);
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu { selected: 0 });
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
+            selected: 0,
+            scroll: 0,
+        });
 
         assert!(!state.open_workbench_upload_dialog(tab, question(4, &[])));
         assert!(state.take_upload_decisions().is_empty());
@@ -3270,10 +3349,92 @@ mod hover {
         assert_ne!(hovered.bg, selected_style.bg);
     }
 
+    fn menu_rect(state: &ClientShellState, index: usize) -> Rect {
+        state
+            .investigation_hits
+            .menu
+            .iter()
+            .find(|(_, i)| *i == index)
+            .map(|(r, _)| *r)
+            .expect("menu row is drawn")
+    }
+
+    #[test]
+    fn hovering_a_scrolled_menu_keeps_the_viewport_so_a_click_hits_the_hovered_item() {
+        let mut state = composed();
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
+            selected: 0,
+            scroll: 0,
+        });
+        state.compose(120, 22).expect("composed menu");
+        let rows = state.investigation_hits.menu.len();
+        let scroll = MENU.len() - rows;
+        assert!(scroll > 1, "the menu must not fit in {rows} rows");
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
+            selected: 24,
+            scroll,
+        });
+        state.compose(120, 22).expect("composed scrolled menu");
+        let hovered = scroll + 1;
+        let second = menu_rect(&state, hovered);
+
+        move_to(&mut state, second.x + 1, second.y);
+        state.compose(120, 22).expect("recomposed menu");
+
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Menu { selected, scroll: kept }) if selected == hovered && kept == scroll
+        ));
+        assert_eq!(menu_rect(&state, hovered), second);
+        let mut outcome = ClientShellInput::default();
+        state.handle_investigation_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: second.x + 1,
+                row: second.y,
+                modifiers: M::empty(),
+            },
+            &mut outcome,
+        );
+
+        assert!(state.investigation().unwrap().dialog.is_none());
+    }
+
+    #[test]
+    fn keyboard_navigation_scrolls_the_menu_to_keep_the_selection_visible() {
+        let mut state = composed();
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
+            selected: 0,
+            scroll: 0,
+        });
+        state.compose(120, 22).expect("composed menu");
+        let rows = state.investigation_hits.menu.len();
+        for _ in 0..24 {
+            press(&mut state, KeyCode::Down, M::empty());
+        }
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Menu { selected: 24, scroll }) if scroll == 25 - rows
+        ));
+        for _ in 0..24 {
+            press(&mut state, KeyCode::Up, M::empty());
+        }
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Menu {
+                selected: 0,
+                scroll: 0
+            })
+        ));
+    }
+
     #[test]
     fn moving_over_a_workbench_menu_row_highlights_it() {
         let mut state = composed();
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu { selected: 0 });
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
+            selected: 0,
+            scroll: 0,
+        });
         state.compose(120, 32).expect("composed menu");
         let rect = state
             .investigation_hits
@@ -3287,7 +3448,7 @@ mod hover {
 
         assert!(matches!(
             state.investigation().unwrap().dialog,
-            Some(Dialog::Menu { selected: 2 })
+            Some(Dialog::Menu { selected: 2, .. })
         ));
         assert!(outcome.repaint);
     }
@@ -3414,6 +3575,43 @@ mod help_open {
             &mut ClientShellInput::default(),
         );
         assert!(help_scroll(&state) > 0);
+    }
+
+    #[test]
+    fn a_workbench_dialog_opened_through_help_closes_help() {
+        let mut state = with_help(false);
+        press(&mut state, KeyCode::F(10), M::empty());
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Menu { .. })
+        ));
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn clicking_the_help_filter_focuses_it_and_typing_fills_the_query() {
+        let mut state = with_help(false);
+        let filter = state.hits.help_filter;
+        assert!(filter.width > 0);
+        state.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: filter.x + 2,
+                row: filter.y,
+                modifiers: M::empty(),
+            },
+            &mut ClientShellInput::default(),
+        );
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Text(
+            crate::input::TextCommit::new("ab"),
+        )]);
+        match state.overlay {
+            Some(ClientShellOverlay::Help(ref help)) => {
+                assert!(help.search_focused);
+                assert_eq!(help.query.as_str(), "ab");
+            }
+            _ => panic!("help closed"),
+        }
     }
 
     #[test]

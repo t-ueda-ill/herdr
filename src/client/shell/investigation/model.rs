@@ -244,6 +244,9 @@ pub(in crate::client::shell) struct Replacement {
 pub(in crate::client::shell) enum Dialog {
     Menu {
         selected: usize,
+        /// First visible row. Why stored: derived from `selected` it moved
+        /// under the pointer while hovering, so a click hit another item.
+        scroll: usize,
     },
     Input {
         title: String,
@@ -602,6 +605,18 @@ pub(in crate::client::shell) struct Hits {
     pub dialog_keys: Vec<(Rect, KeyCode, crossterm::event::KeyModifiers)>,
     pub terminal_tabs: Vec<(Rect, String)>,
 }
+/// The first menu row to show so that `selected` stays within `rows`, moving
+/// `scroll` as little as possible.
+pub(in crate::client::shell) fn menu_scroll_to_show(
+    selected: usize,
+    scroll: usize,
+    rows: usize,
+) -> usize {
+    let rows = rows.max(1);
+    let scroll = scroll.min(selected);
+    scroll.max((selected + 1).saturating_sub(rows))
+}
+
 pub(in crate::client::shell) const MENU: &[&str] = &[
     "new investigation",
     "change root",

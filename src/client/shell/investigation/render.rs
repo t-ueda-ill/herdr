@@ -542,10 +542,10 @@ fn render_dialog(
     }
     let mut values = Vec::new();
     match dialog {
-        Dialog::Menu { selected } => {
-            let scroll = selected
-                .saturating_add(1)
-                .saturating_sub(popup.height as usize);
+        Dialog::Menu { selected, scroll } => {
+            // Why clamped, not corrected: render only reads, and a resize
+            // can leave the stored offset past the last page.
+            let scroll = (*scroll).min(MENU.len().saturating_sub(popup.height as usize));
             for (i, label) in MENU
                 .iter()
                 .enumerate()
