@@ -120,7 +120,10 @@ fn render_header_status(
         area.x.saturating_add(3),
         area.y,
         name_width.saturating_sub(3),
-        &crate::ui::truncate_end(&workspace.label, usize::from(name_width.saturating_sub(4))),
+        &crate::ui::truncate_end(
+            &super::space_label::space_display_label(snapshot, workspace),
+            usize::from(name_width.saturating_sub(4)),
+        ),
         Style::default()
             .fg(palette.text)
             .bg(palette.panel_bg)
@@ -787,14 +790,15 @@ fn mobile_items(
             } else {
                 ""
             };
-            let name = if entry.indented && !workspace.custom_label {
+            let off_host = super::space_label::off_host_space_label(endpoint.snapshot, workspace);
+            let name = if entry.indented && !workspace.custom_label && off_host.is_none() {
                 workspace
                     .branch
                     .as_deref()
                     .and_then(|branch| branch.strip_prefix("worktree/").or(Some(branch)))
                     .unwrap_or(&workspace.label)
             } else {
-                &workspace.label
+                off_host.as_deref().unwrap_or(&workspace.label)
             };
             let branch = workspace.branch.as_deref().unwrap_or("shell");
             let detail_prefix = if entry.indented {
