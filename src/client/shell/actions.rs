@@ -891,12 +891,14 @@ impl ClientShellState {
             PendingEndpointKind::Investigation(request) => {
                 let mut outcome = ClientShellInput::default();
                 self.handle_investigation_result(request, result, &mut outcome);
+                self.close_help_over_workbench_dialog(&mut outcome);
                 return (true, outcome.actions);
             }
             PendingEndpointKind::FileViewer(request) => {
                 let mut outcome = ClientShellInput::default();
                 let repaint =
                     self.handle_file_viewer_endpoint_result(request, result, &mut outcome);
+                self.close_help_over_workbench_dialog(&mut outcome);
                 return (repaint || outcome.repaint, outcome.actions);
             }
             kind @ (PendingEndpointKind::PrepareOpenPicker(_)

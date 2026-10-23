@@ -17,6 +17,19 @@ fn line(area: Rect, offset: u16) -> Rect {
 }
 
 impl ClientShellState {
+    /// Stores the window the last frame drew for the actions menu.
+    ///
+    /// Why not in render: it only reads. A shrinking terminal leaves the
+    /// stored offset hiding the selection, and Enter would run it unseen.
+    pub(in crate::client::shell) fn reconcile_menu_scroll(&mut self) {
+        let first = self.investigation_hits.menu.first().map(|(_, i)| *i);
+        if let (Some(first), Some(Dialog::Menu { scroll, .. })) = (
+            first,
+            self.investigation_mut().and_then(|t| t.dialog.as_mut()),
+        ) {
+            *scroll = first;
+        }
+    }
     pub(in crate::client::shell) fn render_investigation(
         &mut self,
         b: &mut Buffer,
@@ -543,9 +556,15 @@ fn render_dialog(
     let mut values = Vec::new();
     match dialog {
         Dialog::Menu { selected, scroll } => {
-            // Why clamped, not corrected: render only reads, and a resize
-            // can leave the stored offset past the last page.
-            let scroll = (*scroll).min(MENU.len().saturating_sub(popup.height as usize));
+            // Why not written back: render only reads. A resize can leave the
+            // stored offset past the last page or the selection off it, so
+            // draw the corrected window and let compose persist it.
+            let rows = popup.height as usize;
+            let scroll = menu_scroll_to_show(
+                *selected,
+                (*scroll).min(MENU.len().saturating_sub(rows)),
+                rows,
+            );
             for (i, label) in MENU
                 .iter()
                 .enumerate()

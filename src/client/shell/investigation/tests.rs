@@ -3401,6 +3401,26 @@ mod hover {
     }
 
     #[test]
+    fn shrinking_the_terminal_keeps_the_selected_menu_item_visible() {
+        let mut state = composed();
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
+            selected: 24,
+            scroll: 0,
+        });
+        state.compose(120, 40).expect("composed menu");
+        state.compose(120, 14).expect("composed smaller menu");
+        assert!(state
+            .investigation_hits
+            .menu
+            .iter()
+            .any(|(_, index)| *index == 24));
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Menu { selected: 24, scroll }) if scroll > 0
+        ));
+    }
+
+    #[test]
     fn keyboard_navigation_scrolls_the_menu_to_keep_the_selection_visible() {
         let mut state = composed();
         state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
@@ -3586,6 +3606,60 @@ mod help_open {
             Some(Dialog::Menu { .. })
         ));
         assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn a_plan_response_over_help_closes_help_and_the_next_input_reaches_the_dialog() {
+        use crate::api::schema::ResponseResult;
+        let mut state = with_help(false);
+        state.investigation_mut().unwrap().focus = Focus::Results;
+        let outcome = press(&mut state, KeyCode::Delete, M::empty());
+        assert!(help_open(&state));
+        assert!(state.investigation().unwrap().dialog.is_none());
+        let id = outcome
+            .actions
+            .iter()
+            .find_map(|action| match action {
+                crate::client::shell::ClientShellAction::Endpoint { request, .. } => {
+                    Some(request.id.clone())
+                }
+                _ => None,
+            })
+            .expect("plan request sent");
+        let (repaint, _) = state.handle_endpoint_result(
+            "boot-1",
+            &id,
+            Ok(ResponseResult::FilesPlanned {
+                outcomes: Vec::new(),
+            }),
+        );
+        assert!(repaint);
+        assert!(!help_open(&state));
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Confirm { .. })
+        ));
+        let outcome = press(&mut state, KeyCode::Enter, M::empty());
+        assert!(outcome.actions.iter().any(|action| matches!(
+            action,
+            crate::client::shell::ClientShellAction::Endpoint { .. }
+        )));
+    }
+
+    #[test]
+    fn a_key_pressed_while_help_hides_a_dialog_only_reveals_it() {
+        let mut state = with_help(false);
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
+            selected: 0,
+            scroll: 0,
+        });
+        let outcome = press(&mut state, KeyCode::Enter, M::empty());
+        assert!(!help_open(&state));
+        assert!(outcome.actions.is_empty());
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Menu { selected: 0, .. })
+        ));
     }
 
     #[test]

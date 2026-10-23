@@ -823,6 +823,7 @@ impl ClientShellState {
         let frame = self.compose_unavailable(cols, rows);
         let mut buffer = frame.to_ratatui_buffer()?;
         let cursor = self.render_investigation(&mut buffer, layout);
+        self.reconcile_menu_scroll();
         if let Some(progress) = self.upload_progress.as_ref() {
             // Toasts are not drawn over the workbench, yet a tree upload must
             // stay cancellable from its card (spec Q5).

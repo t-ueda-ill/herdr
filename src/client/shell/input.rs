@@ -211,13 +211,22 @@ impl ClientShellState {
 
     /// Why not leave Help open: it is composed after the workbench, so a
     /// dialog that input passed through to opened beneath it, out of sight.
-    fn close_help_over_workbench_dialog(&mut self, outcome: &mut ClientShellInput) {
+    ///
+    /// Also run before each input event and after endpoint results: a plan
+    /// response opens its confirmation with no input at all, and the next
+    /// key must never reach a dialog the reader cannot see.
+    pub(super) fn close_help_over_workbench_dialog(
+        &mut self,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
         if self.help_passes_input_to_workbench()
             && self.investigation().is_some_and(|tab| tab.dialog.is_some())
         {
             self.overlay = None;
             outcome.repaint = true;
+            return true;
         }
+        false
     }
 
     fn workbench_takes_text(&self) -> bool {
@@ -265,6 +274,19 @@ impl ClientShellState {
             outcome.repaint = true;
         }
         for event in events {
+            // Why not route it: the reader pressed it while Help still covered
+            // the dialog, so it only reveals the dialog.
+            if self.close_help_over_workbench_dialog(&mut outcome)
+                && matches!(
+                    event,
+                    RawInputEvent::Key(_)
+                        | RawInputEvent::Text(_)
+                        | RawInputEvent::Paste(_)
+                        | RawInputEvent::Mouse(_)
+                )
+            {
+                continue;
+            }
             let event = match event {
                 RawInputEvent::Key(key) => match self.host_text_commit(&key) {
                     Some(text) => RawInputEvent::Text(crate::input::TextCommit::new(text)),
