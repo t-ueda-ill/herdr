@@ -79,6 +79,8 @@ pub(super) struct ClientState {
     pub(super) deferred_local_activation: Option<endpoint::EndpointActivationIntent>,
     /// Dropped-file uploads: the pending check, the worker, and the transfer.
     pub(super) uploads: upload::runtime::UploadRuntime,
+    /// Downloads from the file workbench: the transfer and its writer thread.
+    pub(super) downloads: download::runtime::DownloadRuntime,
     pub(super) draw_host_cursor: bool,
     pub(super) detached_process_children: Vec<std::process::Child>,
     pub(super) shell: Option<shell::ClientShellState>,
@@ -145,6 +147,7 @@ impl ClientState {
             uploads: upload::runtime::UploadRuntime::new(upload::UploadSettings::from_config(
                 &crate::config::Config::default(),
             )),
+            downloads: download::runtime::DownloadRuntime::default(),
             shell: Some(shell::ClientShellState::new(
                 shell::ClientShellConfig::from_config(&crate::config::Config::default()),
             )),

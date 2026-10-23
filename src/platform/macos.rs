@@ -1267,8 +1267,6 @@ pub(crate) fn copy_symbolic_link(
 }
 
 /// Where this client saves downloads unless the user types another folder.
-// Why: wired in S5b; remove there.
-#[allow(dead_code)]
 pub(crate) fn default_download_dir() -> Option<PathBuf> {
     super::home_downloads_dir(|key| std::env::var_os(key))
 }

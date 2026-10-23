@@ -94,6 +94,7 @@ impl Harness {
                 generation: 1,
                 chunk_cap: crate::upload::UPLOAD_CHUNK_BYTES,
                 can_confirm: true,
+                download_busy: false,
             },
             move || replay,
             move |event| emit.send(event).is_ok(),
@@ -395,6 +396,7 @@ fn a_tree_drop_asks_after_begin_then_uploads_with_the_choice_and_lists_the_folde
             endpoint_id: ClientEndpointId::Local,
             generation: 1,
             chunk_cap: crate::upload::UPLOAD_CHUNK_BYTES,
+            download_busy: false,
         },
         move |event| emit.send(event).is_ok(),
     );
@@ -531,4 +533,88 @@ fn a_tree_question_with_no_tab_to_show_it_cancels_the_session() {
         )]
     );
     assert!(!harness.state.uploads.uploads.busy());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_drop_of_existing_files_while_a_download_runs_is_refused_as_busy() {
+    let dir = crate::upload::test_support::TempDir::new("runtime-drop-while-download");
+    let file = dir.join("a.txt");
+    std::fs::write(&file, b"hello").unwrap();
+    let mut harness = Harness::new();
+    let emit = harness.emit.clone();
+    let replay = plain_event("x");
+
+    let offered = harness.state.uploads.offer_drop(
+        DropCandidate {
+            text: file.display().to_string(),
+            target: UploadTarget::Pane("p1".into()),
+            endpoint_id: ClientEndpointId::Local,
+            generation: 1,
+            chunk_cap: crate::upload::UPLOAD_CHUNK_BYTES,
+            can_confirm: true,
+            download_busy: true,
+        },
+        move || replay,
+        move |event| emit.send(event).is_ok(),
+        Instant::now(),
+    );
+
+    assert_eq!(offered, DropStart::Busy);
+    assert!(!harness.state.uploads.busy());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_paste_that_names_no_file_is_not_swallowed_while_a_download_runs() {
+    let mut harness = Harness::new();
+    let emit = harness.emit.clone();
+    let replay = plain_event("x");
+
+    let offered = harness.state.uploads.offer_drop(
+        DropCandidate {
+            text: "/definitely/not/a/file".into(),
+            target: UploadTarget::Pane("p1".into()),
+            endpoint_id: ClientEndpointId::Local,
+            generation: 1,
+            chunk_cap: crate::upload::UPLOAD_CHUNK_BYTES,
+            can_confirm: true,
+            download_busy: true,
+        },
+        move || replay,
+        move |event| emit.send(event).is_ok(),
+        Instant::now(),
+    );
+
+    assert_eq!(offered, DropStart::NotADrop);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tree_drop_while_a_download_runs_is_refused_as_busy() {
+    let dir = crate::upload::test_support::TempDir::new("runtime-tree-while-download");
+    let file = dir.join("a.txt");
+    std::fs::write(&file, b"hello").unwrap();
+    let mut harness = Harness::new();
+    let emit = harness.emit.clone();
+
+    let started = harness.state.uploads.offer_workbench_drop(
+        WorkbenchDrop {
+            paths: vec![file],
+            target: WorkbenchTarget {
+                tab: 1,
+                destination: "/srv".into(),
+                pane_id: None,
+                location: location(),
+            },
+            endpoint_id: ClientEndpointId::Local,
+            generation: 1,
+            chunk_cap: crate::upload::UPLOAD_CHUNK_BYTES,
+            download_busy: true,
+        },
+        move |event| emit.send(event).is_ok(),
+    );
+
+    assert_eq!(started, DropStart::Busy);
+    assert!(!harness.state.uploads.busy());
 }

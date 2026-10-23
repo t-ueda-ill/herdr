@@ -3617,8 +3617,6 @@ pub(crate) fn copy_symbolic_link(
 }
 
 /// Where this client saves downloads unless the user types another folder.
-// Why: wired in S5b; remove there.
-#[allow(dead_code)]
 pub(crate) fn default_download_dir() -> Option<std::path::PathBuf> {
     // Why the profile fallback: the Known Folder call fails on a profile that
     // has no shell state, such as a service account.

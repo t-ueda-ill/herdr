@@ -2,9 +2,11 @@
 //!
 //! Pure decisions live in `destination` and the gate below; transfers run on a
 //! worker thread and the client loop only executes the effects they return.
-#![allow(dead_code)] // Why: wired in S5b; remove there.
 
 pub(super) mod destination;
+pub(super) mod runtime;
+pub(super) mod transfer;
+pub(super) mod worker;
 
 /// Methods a server must advertise for downloads.
 pub(crate) const DOWNLOAD_METHODS: [&str; 3] = [

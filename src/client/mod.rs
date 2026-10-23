@@ -500,6 +500,7 @@ async fn run_client_loop(
         draw_host_cursor,
         detached_process_children: Vec::new(),
         uploads: upload::runtime::UploadRuntime::new(config.upload_settings),
+        downloads: download::runtime::DownloadRuntime::default(),
         shell: config.shell_config.take().map(shell::ClientShellState::new),
     };
     let attach_terminal_id = config.attach_terminal_id.take();
@@ -507,6 +508,11 @@ async fn run_client_loop(
     if let Some(shell) = state.shell.as_mut() {
         shell.set_host_reports_key_releases(config.host_escape_disambiguation_active);
         shell.set_host_erase_byte(crate::platform::terminal_erase_byte());
+        shell.set_download_dir(
+            crate::platform::default_download_dir()
+                .map(|dir| crate::platform::file_path_display(&dir))
+                .unwrap_or_default(),
+        );
         shell.set_graphics_cell_size(initial_cell_width_px, initial_cell_height_px);
         shell.set_endpoint_catalog(&endpoint_catalog.ssh);
         shell.set_endpoint_methods_for(
@@ -810,12 +816,42 @@ async fn run_client_loop(
             .as_mut()
             .map(shell::ClientShellState::take_upload_decisions)
             .unwrap_or_default();
-        if !decisions.is_empty() {
-            let effects = decisions
-                .into_iter()
-                .flat_map(|decision| state.uploads.decision(decision, now))
-                .collect();
+        for decision in decisions {
+            // Why by which transfer runs: one card serves both, and only one
+            // runs at a time (design §4.6).
+            if let shell::ClientUploadDecision::Cancel(job) = decision {
+                if state.downloads.busy() {
+                    let effects = state.downloads.cancel(job);
+                    if download::runtime::apply_download_effects(
+                        &mut state,
+                        &mut write_stream,
+                        effects,
+                        now,
+                    ) {
+                        present_shell_repaint(&mut state);
+                    }
+                    continue;
+                }
+            }
+            let effects = state.uploads.decision(decision, now);
             if upload::runtime::apply_upload_effects(&mut state, &mut write_stream, effects, now) {
+                present_shell_repaint(&mut state);
+            }
+        }
+        let download_requests = state
+            .shell
+            .as_mut()
+            .map(shell::ClientShellState::take_download_requests)
+            .unwrap_or_default();
+        for request in download_requests {
+            if start_download(
+                &mut state,
+                &mut write_stream,
+                &event_tx,
+                request,
+                is_remote_client,
+                now,
+            ) {
                 present_shell_repaint(&mut state);
             }
         }
@@ -842,12 +878,15 @@ async fn run_client_loop(
             .map_or(Duration::from_millis(100), |shell| {
                 shell.timer_delay(std::time::Instant::now())
             });
-        let timer_delay = state
-            .uploads
-            .next_deadline()
-            .map_or(timer_delay, |deadline| {
-                timer_delay.min(deadline.saturating_duration_since(std::time::Instant::now()))
-            });
+        let timer_delay = [
+            state.uploads.next_deadline(),
+            state.downloads.next_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(timer_delay, |delay, deadline| {
+            delay.min(deadline.saturating_duration_since(std::time::Instant::now()))
+        });
         let timer_deadline = client_timer.deadline(std::time::Instant::now(), timer_delay);
         let immediate_event = scheduled_activation
             .take()
@@ -905,6 +944,17 @@ async fn run_client_loop(
             ClientLoopEvent::Upload(event) => {
                 let effects = state.uploads.worker_event(event, now);
                 if upload::runtime::apply_upload_effects(
+                    &mut state,
+                    &mut write_stream,
+                    effects,
+                    now,
+                ) {
+                    present_shell_repaint(&mut state);
+                }
+            }
+            ClientLoopEvent::Download(event) => {
+                let effects = state.downloads.worker_event(event, now);
+                if download::runtime::apply_download_effects(
                     &mut state,
                     &mut write_stream,
                     effects,
@@ -2403,6 +2453,19 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            Ok(endpoint::EndpointControlMessage::DownloadResponse(data)) => {
+                                let effects =
+                                    state.downloads.response(&endpoint_id, generation, data);
+                                if download::runtime::apply_download_effects(
+                                    &mut state,
+                                    &mut write_stream,
+                                    effects,
+                                    now,
+                                ) {
+                                    present_shell_repaint(&mut state);
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::UploadReady(ready)) => {
                                 // A zero chunk or window could never send a byte.
                                 if state.shell.is_none()
@@ -2558,6 +2621,15 @@ async fn run_client_loop(
                 ) {
                     present_shell_repaint(&mut state);
                 }
+                let effects = state.downloads.tick(now);
+                if download::runtime::apply_download_effects(
+                    &mut state,
+                    &mut write_stream,
+                    effects,
+                    now,
+                ) {
+                    present_shell_repaint(&mut state);
+                }
                 #[cfg(unix)]
                 if let Ok(mut matcher) = state.direct_graphics_response.lock() {
                     matcher.expire();
@@ -2581,6 +2653,15 @@ async fn run_client_loop(
                         .uploads
                         .endpoint_lost(&failure.endpoint_id, failure.generation);
                     upload::runtime::apply_upload_effects(
+                        &mut state,
+                        &mut write_stream,
+                        effects,
+                        now,
+                    );
+                    let effects = state
+                        .downloads
+                        .endpoint_lost(&failure.endpoint_id, failure.generation);
+                    download::runtime::apply_download_effects(
                         &mut state,
                         &mut write_stream,
                         effects,
@@ -2758,6 +2839,7 @@ fn offer_upload_drop(
             generation,
             chunk_cap,
             can_confirm: state.shell.is_some(),
+            download_busy: state.downloads.busy(),
         },
         plain,
         move |event| events.blocking_send(ClientLoopEvent::Upload(event)).is_ok(),
@@ -2770,7 +2852,12 @@ fn offer_upload_drop(
             let notice = vec![upload::transfer::UploadEffect::Notice {
                 failed: true,
                 title: "Upload not started".into(),
-                body: "Another upload is still running".into(),
+                body: if state.downloads.busy() {
+                    "Another download is still running"
+                } else {
+                    "Another upload is still running"
+                }
+                .into(),
             }];
             if upload::runtime::apply_upload_effects(state, endpoints, notice, now) {
                 present_shell_repaint(state);
@@ -2847,15 +2934,99 @@ fn offer_workbench_drop(
             endpoint_id,
             generation,
             chunk_cap,
+            download_busy: state.downloads.busy(),
         },
         move |event| events.blocking_send(ClientLoopEvent::Upload(event)).is_ok(),
     );
     let text = match started {
         upload::runtime::DropStart::Pending => "preparing upload…",
+        upload::runtime::DropStart::Busy if state.downloads.busy() => {
+            "another download is still running"
+        }
         upload::runtime::DropStart::Busy => "another upload is still running",
         upload::runtime::DropStart::NotADrop => "the upload could not be started",
     };
     notice(state, text.into())
+}
+
+/// Starts a download the workbench asked for (design §5.3). Returns whether
+/// the shell needs a repaint.
+fn start_download(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    request: shell::ClientDownloadRequest,
+    is_remote_client: bool,
+    now: std::time::Instant,
+) -> bool {
+    let tab = request.tab;
+    let notice = |state: &mut ClientState, text: &str| {
+        state
+            .shell
+            .as_mut()
+            .is_some_and(|shell| shell.set_workbench_notice(tab, text.to_owned()))
+    };
+    let pane_id = match request.place {
+        shell::WorkbenchDropPlace::Host => None,
+        shell::WorkbenchDropPlace::Pane(pane_id) => Some(pane_id),
+        shell::WorkbenchDropPlace::NoPane(text) => return notice(state, &text),
+    };
+    if state.uploads.busy() || state.downloads.busy() {
+        return notice(state, "another transfer is still running");
+    }
+    let Some(connection) = endpoints.connection(&request.endpoint_id) else {
+        return notice(state, "the connection to this server is closed");
+    };
+    let generation = connection.generation;
+    if !download::negotiation_supports_download(
+        |method| connection.negotiation.supports_method(method),
+        |capability| connection.negotiation.supports_capability(capability),
+    ) {
+        return notice(state, "this server cannot send files; update Herdr there");
+    }
+    // Why again here: the dialog checks too, but the loop is what sends it.
+    if let Err(message) = crate::download::local::check_selection(&request.paths) {
+        return notice(state, &message);
+    }
+    // Why not the server's 512 KiB everywhere: the stream to this client also
+    // carries drawing, and two 700 KB answers ahead of a frame would delay it
+    // over a slow link (design §2.5).
+    let max_bytes = if request.endpoint_id.is_local() && !is_remote_client {
+        crate::download::DOWNLOAD_CHUNK_BYTES
+    } else {
+        upload::transfer::REMOTE_CHUNK_BYTES
+    };
+    let destination = download::worker::Destination {
+        input: request.destination,
+        default_dir: state
+            .shell
+            .as_ref()
+            .map(|shell| shell.download_dir().to_owned())
+            .unwrap_or_default(),
+        home: crate::platform::home_dir_from_env(cfg!(windows), |name| std::env::var_os(name))
+            .ok()
+            .filter(|home| home.is_absolute()),
+        syntax: download::destination::PathSyntax::current(),
+    };
+    let events = event_tx.clone();
+    let effects = state.downloads.start(
+        download::transfer::DownloadRequest {
+            endpoint_id: request.endpoint_id,
+            generation,
+            tab,
+            pane_id,
+            location: request.location,
+            paths: request.paths,
+            max_bytes,
+        },
+        destination,
+        move |event| {
+            events
+                .blocking_send(ClientLoopEvent::Download(event))
+                .is_ok()
+        },
+    );
+    download::runtime::apply_download_effects(state, endpoints, effects, now)
 }
 
 #[cfg(test)]

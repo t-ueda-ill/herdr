@@ -46,6 +46,9 @@ pub(crate) struct WorkbenchDrop {
     pub(crate) endpoint_id: ClientEndpointId,
     pub(crate) generation: u64,
     pub(crate) chunk_cap: usize,
+    /// A download runs. Why a flag and not a check here: the two share one
+    /// progress card, and this runtime does not know about the other.
+    pub(crate) download_busy: bool,
 }
 
 /// Paths that might be a drop, with how the paste should be treated.
@@ -56,6 +59,8 @@ pub(crate) struct DropCandidate {
     pub(crate) generation: u64,
     pub(crate) chunk_cap: usize,
     pub(crate) can_confirm: bool,
+    /// A download runs; see `WorkbenchDrop::download_busy`.
+    pub(crate) download_busy: bool,
 }
 
 pub(crate) struct UploadRuntime {
@@ -80,6 +85,10 @@ impl UploadRuntime {
             direct_ready: None,
             progress_painted: None,
         }
+    }
+
+    pub(crate) fn busy(&self) -> bool {
+        self.uploads.busy()
     }
 
     #[cfg(all(test, unix))]
@@ -171,7 +180,7 @@ impl UploadRuntime {
         let Some(paths) = resolve_drop_paths(&tokens.tokens, crate::platform::dropped_path) else {
             return DropStart::NotADrop;
         };
-        if self.uploads.busy() {
+        if self.uploads.busy() || candidate.download_busy {
             // Why check existence here, unlike a first drop: there is no
             // worker free to check it, and refusing text that names no local
             // file would swallow an ordinary paste. Rare, so a stat on the
@@ -218,7 +227,7 @@ impl UploadRuntime {
         drop: WorkbenchDrop,
         emit: impl Fn(WorkerEvent) -> bool + Send + 'static,
     ) -> DropStart {
-        if self.uploads.busy() {
+        if self.uploads.busy() || drop.download_busy {
             return DropStart::Busy;
         }
         let job = self.uploads.start(DropRequest {
@@ -567,6 +576,10 @@ pub(crate) fn apply_upload_effects(
 
 /// Copies the card's view into the shell, throttled. Returns whether it changed.
 pub(crate) fn refresh_upload_progress(state: &mut ClientState, now: Instant, force: bool) -> bool {
+    // Why not while a download runs: the card is shared, and this would clear it.
+    if state.downloads.busy() {
+        return false;
+    }
     let Some(shell) = state.shell.as_mut() else {
         return false;
     };

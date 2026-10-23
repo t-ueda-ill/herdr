@@ -1278,6 +1278,9 @@ pub(crate) struct ClientShellState {
     pub(super) visible_endpoint_notice: Option<ClientVisibleEndpointNotice>,
     pub(super) upload_progress: Option<super::super::upload::transfer::UploadProgressView>,
     pub(super) upload_decisions: Vec<ClientUploadDecision>,
+    pub(super) download_requests: Vec<ClientDownloadRequest>,
+    /// The download dialog's starting folder; empty when it is unknown.
+    pub(super) download_dir: String,
     /// The job whose confirm dialog was opened and not yet answered.
     pub(super) confirming_upload: Option<super::super::upload::transfer::JobId>,
     pub(super) outer_focused: Option<bool>,
@@ -1458,6 +1461,8 @@ impl ClientShellState {
             visible_endpoint_notice: None,
             upload_progress: None,
             upload_decisions: Vec::new(),
+            download_requests: Vec::new(),
+            download_dir: String::new(),
             confirming_upload: None,
             outer_focused: None,
             ascii_input_source_active: false,

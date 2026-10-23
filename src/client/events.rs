@@ -33,6 +33,7 @@ pub(super) enum ClientLoopEvent {
     EndpointCatalog(Result<Vec<endpoint::SavedSshEndpoint>, String>),
     HostPower(crate::platform::HostPowerEvent),
     Upload(upload::worker::WorkerEvent),
+    Download(download::worker::WorkerEvent),
     ActivateEndpoint {
         endpoint_id: endpoint::ClientEndpointId,
         target: Option<shell::ClientEndpointFocusTarget>,
