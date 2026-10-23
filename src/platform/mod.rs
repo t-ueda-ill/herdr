@@ -524,6 +524,12 @@ pub(crate) use unix_common::{
     local_stream_peer_description, spawn_server_signal_monitor, ChildPipe, RemoteBridgeWake,
 };
 
+mod download_dir;
+pub(crate) use download_dir::home_dir_from_env;
+#[cfg(not(any(target_os = "linux", windows)))]
+pub(crate) use download_dir::home_downloads_dir;
+#[cfg(target_os = "linux")]
+pub(crate) use download_dir::xdg_download_dir;
 mod drop_paths;
 pub(crate) use drop_paths::{starts_with_windows_path, DropPathSyntax};
 mod client_state;

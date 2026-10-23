@@ -19,6 +19,7 @@ mod clipboard_images;
 mod config_reload;
 #[cfg(unix)]
 mod direct_graphics;
+mod download;
 pub(crate) mod endpoint;
 mod endpoint_commands;
 mod errors;
@@ -2733,7 +2734,9 @@ fn offer_upload_drop(
     let server_supports = if direct {
         state.uploads.direct_ready(&endpoint_id, generation)
     } else {
-        upload::gate::negotiation_supports_upload(
+        upload::gate::negotiation_supports_transfer(
+            &upload::gate::UPLOAD_METHODS,
+            crate::protocol::endpoint::PANE_UPLOAD_CONTROL_CAPABILITY,
             |method| connection.negotiation.supports_method(method),
             |capability| connection.negotiation.supports_capability(capability),
         )
@@ -2795,7 +2798,9 @@ fn offer_workbench_drop(
     let endpoint_id = endpoints.active_id().clone();
     let connection = endpoints.connection(&endpoint_id)?;
     let generation = connection.generation;
-    let server_supports = upload::gate::negotiation_supports_upload(
+    let server_supports = upload::gate::negotiation_supports_transfer(
+        &upload::gate::UPLOAD_METHODS,
+        crate::protocol::endpoint::PANE_UPLOAD_CONTROL_CAPABILITY,
         |method| connection.negotiation.supports_method(method),
         |capability| connection.negotiation.supports_capability(capability),
     );

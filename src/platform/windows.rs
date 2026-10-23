@@ -3616,6 +3616,36 @@ pub(crate) fn copy_symbolic_link(
     }
 }
 
+/// Where this client saves downloads unless the user types another folder.
+// Why: wired in S5b; remove there.
+#[allow(dead_code)]
+pub(crate) fn default_download_dir() -> Option<std::path::PathBuf> {
+    // Why the profile fallback: the Known Folder call fails on a profile that
+    // has no shell state, such as a service account.
+    known_downloads_folder().or_else(|| {
+        super::home_dir_from_env(true, |key| std::env::var_os(key))
+            .ok()
+            .map(|home| home.join("Downloads"))
+    })
+}
+
+/// The user's Downloads folder as the shell resolves it, which follows a
+/// folder the user moved. Why not `%USERPROFILE%\Downloads` first: that name
+/// is wrong once the folder is redirected.
+fn known_downloads_folder() -> Option<std::path::PathBuf> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+
+    // SAFETY: the returned buffer is copied before it is freed once with
+    // `CoTaskMemFree`, as the API requires on success.
+    unsafe {
+        let buffer = SHGetKnownFolderPath(&FOLDERID_Downloads, KF_FLAG_DEFAULT, None).ok()?;
+        let path = buffer.to_string().ok().map(std::path::PathBuf::from);
+        CoTaskMemFree(Some(buffer.0 as *const _));
+        path.filter(|path| !path.as_os_str().is_empty())
+    }
+}
+
 /// Drop text syntax on this host (see [`super::DropPathSyntax`]).
 pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
     super::DropPathSyntax::Windows
@@ -3709,6 +3739,12 @@ mod tests {
             super::drop_path_syntax(),
             super::super::DropPathSyntax::Windows
         );
+    }
+
+    #[test]
+    fn the_default_download_folder_is_an_absolute_path() {
+        let dir = super::default_download_dir().expect("a Downloads folder");
+        assert!(dir.is_absolute(), "{dir:?}");
     }
 
     #[test]

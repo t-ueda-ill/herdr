@@ -30,15 +30,19 @@ impl DropGate {
     }
 }
 
-/// Shell mode: every upload method plus the control capability. Why both:
-/// methods alone could come from a server that answers them only through the
-/// command lane, which a long upload must not occupy.
-pub(crate) fn negotiation_supports_upload(
+/// Shell mode: every method of a transfer plus its control capability. Why
+/// both: methods alone could come from a server that answers them only
+/// through the command lane, which a long transfer must not occupy.
+pub(crate) fn negotiation_supports_transfer(
+    required_methods: &[&str],
+    capability: &str,
     supports_method: impl Fn(&str) -> bool,
     supports_capability: impl Fn(&str) -> bool,
 ) -> bool {
-    UPLOAD_METHODS.iter().all(|method| supports_method(method))
-        && supports_capability(crate::protocol::endpoint::PANE_UPLOAD_CONTROL_CAPABILITY)
+    required_methods
+        .iter()
+        .all(|method| supports_method(method))
+        && supports_capability(capability)
 }
 
 #[cfg(test)]
@@ -97,11 +101,17 @@ mod tests {
             capability == crate::protocol::endpoint::PANE_UPLOAD_CONTROL_CAPABILITY
         };
 
-        assert!(negotiation_supports_upload(methods(None), capability));
-        assert!(!negotiation_supports_upload(
-            methods(Some("pane.upload.write")),
-            capability
-        ));
-        assert!(!negotiation_supports_upload(methods(None), |_: &str| false));
+        fn supports(methods: impl Fn(&str) -> bool, capability: impl Fn(&str) -> bool) -> bool {
+            negotiation_supports_transfer(
+                &UPLOAD_METHODS,
+                crate::protocol::endpoint::PANE_UPLOAD_CONTROL_CAPABILITY,
+                methods,
+                capability,
+            )
+        }
+
+        assert!(supports(methods(None), capability));
+        assert!(!supports(methods(Some("pane.upload.write")), capability));
+        assert!(!supports(methods(None), |_: &str| false));
     }
 }

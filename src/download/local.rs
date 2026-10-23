@@ -423,4 +423,65 @@ mod windows_tests {
         assert_eq!(failure.0, "download_failed");
         assert!(failure.1.contains("none of the selected names"));
     }
+
+    /// Why this exists: the sink resolves the destination with
+    /// `fs::canonicalize`, which gives `\\?\` paths on Windows, and the design
+    /// expects that to lift the 260-character limit. Nobody had run it.
+    #[test]
+    fn a_path_longer_than_260_characters_is_published() {
+        use crate::api::schema::{PaneUploadEntryHeader, PaneUploadEntryKind};
+
+        let dest = scratch("long-path");
+        let (mut writer, _) = LocalWriter::open(dest.0.clone(), &["t".to_owned()]).unwrap();
+        let header = |kind, size| PaneUploadEntryHeader {
+            kind,
+            mode: 0o644,
+            mtime: None,
+            size,
+            link_target: None,
+        };
+        let mut rel = "t".to_owned();
+        let mut records = vec![PaneDownloadRecord {
+            path: rel.clone(),
+            entry: Some(header(PaneUploadEntryKind::Directory, None)),
+            offset: 0,
+            data: String::new(),
+            last: true,
+        }];
+        for level in 0..3 {
+            rel = format!("{rel}/{}{level}", "d".repeat(99));
+            records.push(PaneDownloadRecord {
+                path: rel.clone(),
+                entry: Some(header(PaneUploadEntryKind::Directory, None)),
+                offset: 0,
+                data: String::new(),
+                last: true,
+            });
+        }
+        rel = format!("{rel}/{}.txt", "f".repeat(60));
+        records.push(PaneDownloadRecord {
+            path: rel.clone(),
+            entry: Some(header(PaneUploadEntryKind::File, Some(2))),
+            offset: 0,
+            data: base64::engine::general_purpose::STANDARD.encode(b"hi"),
+            last: true,
+        });
+        for record in &records {
+            writer.apply(record).unwrap();
+        }
+
+        let committed = writer.publish(PaneUploadCollision::Rename).unwrap();
+
+        let Committed::Published { paths, .. } = committed else {
+            panic!("{committed:?}");
+        };
+        let root = std::path::PathBuf::from(&paths[0].1);
+        let file = rel
+            .split('/')
+            .fold(root.parent().unwrap().to_path_buf(), |dir, part| {
+                dir.join(part)
+            });
+        assert!(file.as_os_str().len() > 300);
+        assert_eq!(std::fs::read(&file).unwrap(), b"hi");
+    }
 }

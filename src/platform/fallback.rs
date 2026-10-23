@@ -351,6 +351,13 @@ pub(crate) fn set_path_modified(
     std::fs::File::open(path)?.set_modified(modified)
 }
 
+/// Where this client saves downloads unless the user types another folder.
+// Why: wired in S5b; remove there.
+#[allow(dead_code)]
+pub(crate) fn default_download_dir() -> Option<std::path::PathBuf> {
+    super::home_downloads_dir(|key| std::env::var_os(key))
+}
+
 /// Drop text syntax on this host (see [`super::DropPathSyntax`]).
 pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
     super::DropPathSyntax::Posix
