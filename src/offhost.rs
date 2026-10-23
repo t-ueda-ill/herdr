@@ -4,6 +4,7 @@
 
 pub(crate) mod editor;
 pub(crate) mod exec;
+pub(crate) mod launcher;
 pub(crate) mod ops;
 pub(crate) mod parse;
 pub(crate) mod scripts;

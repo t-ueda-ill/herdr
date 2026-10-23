@@ -140,6 +140,12 @@ pub(crate) fn frame_queue(
 }
 
 impl FrameFeed {
+    /// Restarts the stall clock from now, for a source that was idle by design
+    /// (waiting to be told to go) until this moment.
+    pub(crate) fn touch(&self) {
+        self.progress.touch();
+    }
+
     /// The source has been waiting on its own I/O for longer than `stall`.
     /// Never true while the producer waits for room in a full queue.
     pub(crate) fn stalled(&self) -> bool {

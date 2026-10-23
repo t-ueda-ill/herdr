@@ -10,17 +10,19 @@ use crate::api::schema::{
     Method, PaneLocation, PaneLocationKind, PaneUploadBeginParams, Request, ResponseResult,
 };
 use crate::app::App;
+use crate::offhost::launcher::{EnvironmentLauncher, Transfer};
 use crate::offhost::{ops, PaneEnvironment, PaneTarget};
 use crate::server::client_shell::{
     running_off_host_shell, running_pane_off_host_shell, RunningOffHostShell,
 };
 use crate::terminal::TerminalId;
 use crate::upload::path::Failure;
+use crate::upload::receiver_script::RECEIVER_SCRIPT;
 use crate::upload::registry::{UploadEnvironment, UploadHandle, UploadOwner, UploadTargetKey};
 use crate::upload::session::{Declared, Session};
 use crate::upload::sink::UploadSink;
 use crate::upload::sink_host::HostSink;
-use crate::upload::sink_remote::{EnvironmentLauncher, RemoteSink, RemoteTimeouts};
+use crate::upload::sink_remote::{RemoteSink, RemoteTimeouts};
 use crate::upload::worker::{Control, Reply, Timeouts, UploadJob, Worker, WriteJob};
 use crate::upload::UPLOAD_WINDOW;
 
@@ -255,7 +257,11 @@ impl App {
                 (UploadEnvironment::OffHost(env), Destination::Remote(destination)) => (
                     env.location(),
                     Box::new(RemoteSink::new(
-                        Box::new(EnvironmentLauncher::system(PaneEnvironment::clone(env))),
+                        Box::new(EnvironmentLauncher::system(
+                            PaneEnvironment::clone(env),
+                            RECEIVER_SCRIPT,
+                            Transfer::UPLOAD,
+                        )),
                         destination,
                         token,
                         control.clone(),

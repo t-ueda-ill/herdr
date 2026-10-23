@@ -582,11 +582,16 @@ fn a_file_replaced_by_another_of_the_same_size_and_time_is_caught_by_its_identit
     let (dir, file) = parked_tree("host-identity", b"same");
     let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
     let mut source = parked(&dir, fast());
+    // Why keep the old file open: a filesystem may hand a freed inode number to
+    // the very next file created, which would make the replacement look like
+    // the original.
+    let old = std::fs::File::open(&file).unwrap();
     std::fs::remove_file(&file).unwrap();
     std::fs::write(&file, b"diff").unwrap();
     crate::platform::set_file_modified_for_test(&file, mtime).unwrap();
 
     assert_eq!(drain(&mut source).unwrap_err().0, "download_source_changed");
+    drop(old);
 }
 
 #[test]
