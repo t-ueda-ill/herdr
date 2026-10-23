@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Why: wired in S3; remove there.
-
 //! Streams files out of the environment a pane's shell sees (this host, a
 //! container, or an ssh host) to a client that pulls the stream with ordered
 //! reads. Everything that touches a filesystem or a process runs on a worker
@@ -10,6 +8,12 @@ pub(crate) mod sender_script;
 pub(crate) mod source;
 pub(crate) mod source_host;
 pub(crate) mod source_remote;
+pub(crate) mod worker;
+
+use crate::transfer::registry::{TransferHandle, TransferRegistry};
+
+pub(crate) type DownloadRegistry = TransferRegistry<worker::DownloadJob>;
+pub(crate) type DownloadHandle = TransferHandle<worker::DownloadJob>;
 
 /// Largest decoded data one read answer may carry. Why 512 KiB: base64 makes it
 /// 699,052 bytes, which leaves room for names and records under one frame.

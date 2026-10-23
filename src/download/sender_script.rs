@@ -299,6 +299,7 @@ impl Default for SenderParser {
 
 impl SenderParser {
     /// `true` once `end` was read.
+    #[cfg(test)]
     pub(crate) fn ended(&self) -> bool {
         matches!(self.stage, Stage::Ended)
     }

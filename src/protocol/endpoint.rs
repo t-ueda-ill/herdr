@@ -38,16 +38,10 @@ pub const UPLOAD_REQUEST_KIND: &str = "endpoint.upload.request.v1";
 /// Server to client: the JSON response, with the request's id.
 pub const UPLOAD_RESPONSE_KIND: &str = "endpoint.upload.response.v1";
 /// The server accepts `pane.download.*` requests as endpoint controls.
-///
-/// Not yet in the welcome: advertising it before the control lane routes
-/// `DOWNLOAD_REQUEST_KIND` would make clients wait for answers that never come.
-#[allow(dead_code)] // Why: wired in S3, with the welcome and the control lane.
 pub const PANE_DOWNLOAD_CONTROL_CAPABILITY: &str = "pane_download_control";
 /// Client to server: one `pane.download.*` API request as JSON.
-#[allow(dead_code)] // Why: wired in S3.
 pub const DOWNLOAD_REQUEST_KIND: &str = "endpoint.download.request.v1";
 /// Server to client: the JSON response, with the request's id.
-#[allow(dead_code)] // Why: wired in S3.
 pub const DOWNLOAD_RESPONSE_KIND: &str = "endpoint.download.response.v1";
 /// Client to server, empty: asks whether uploads work on this connection.
 /// Direct attach clients have no welcome capabilities, so they probe.
@@ -205,6 +199,7 @@ impl EndpointServerWelcome {
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
                 PANE_UPLOAD_CONTROL_CAPABILITY.into(),
+                PANE_DOWNLOAD_CONTROL_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -505,6 +500,7 @@ mod tests {
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
                 PANE_UPLOAD_CONTROL_CAPABILITY.to_string(),
+                PANE_DOWNLOAD_CONTROL_CAPABILITY.to_string(),
             ]
         );
     }

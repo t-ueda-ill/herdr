@@ -11,6 +11,7 @@ mod integrations;
 mod layouts;
 mod open_editor;
 mod pane_directory;
+pub(crate) mod pane_download;
 pub(crate) mod pane_upload;
 mod panes;
 pub(crate) mod plugins;
@@ -260,6 +261,7 @@ impl App {
         let mut worktree_restore_updates = Vec::new();
         if let AppEvent::PaneDied { pane_id, .. } = &ev {
             self.upload_sessions.abort_pane(*pane_id);
+            self.download_sessions.abort_pane(*pane_id);
             if self
                 .state
                 .popup_pane

@@ -43,6 +43,7 @@ pub(crate) struct HostOptions {
     /// How long `begin` waits for the walk.
     pub(crate) walk: Duration,
     pub(crate) queue: usize,
+    pub(crate) thread_name: String,
     /// Runs before every file read, so a test can change a file between reads
     /// or hold the thread as a stalled filesystem would.
     #[cfg(test)]
@@ -58,6 +59,7 @@ impl Default for HostOptions {
             tick: Duration::from_millis(100),
             walk: Duration::from_secs(120),
             queue: FRAME_QUEUE,
+            thread_name: "herdr-download-host".into(),
             #[cfg(test)]
             before_read: None,
         }
@@ -391,7 +393,7 @@ impl DownloadSource for HostSource {
         let paths = self.paths.clone();
         let options = self.options.clone();
         let spawned = std::thread::Builder::new()
-            .name("herdr-download-host".into())
+            .name(self.options.thread_name.clone())
             .spawn(move || {
                 let scan = match prepare(&paths, &options) {
                     Ok(scan) => scan,

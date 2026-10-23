@@ -1987,7 +1987,7 @@ fn download_begin_leaves_pane_and_max_bytes_optional() {
 }
 
 #[test]
-fn download_methods_are_surface_independent_and_not_advertised_to_client_shells() {
+fn download_methods_are_surface_independent_and_advertised_to_client_shells() {
     let methods = [
         Method::PaneDownloadBegin(PaneDownloadBeginParams {
             pane_id: None,
@@ -2006,7 +2006,11 @@ fn download_methods_are_surface_independent_and_not_advertised_to_client_shells(
         assert!(method.independent_of_surface());
     }
     let advertised = operations::client_shell_method_names();
-    assert!(!advertised
-        .iter()
-        .any(|name| name.starts_with("pane.download.")));
+    for name in [
+        "pane.download.begin",
+        "pane.download.cancel",
+        "pane.download.read",
+    ] {
+        assert!(advertised.contains(&name), "{name} is not advertised");
+    }
 }

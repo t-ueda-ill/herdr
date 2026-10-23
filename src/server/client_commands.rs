@@ -379,6 +379,24 @@ mod tests {
         }
         assert_eq!(upload_actual, upload, "upload method shapes");
 
+        let download: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-method-shapes-download.json"
+        )))
+        .expect("download endpoint method shape fixture");
+        let mut download_actual = BTreeMap::new();
+        for method in [
+            "pane.download.begin",
+            "pane.download.cancel",
+            "pane.download.read",
+        ] {
+            download_actual.insert(
+                method.to_owned(),
+                actual.remove(method).expect("download method"),
+            );
+        }
+        assert_eq!(download_actual, download, "download method shapes");
+
         let mut added = BTreeMap::new();
         for method in [
             "file.read",

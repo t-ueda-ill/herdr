@@ -184,11 +184,9 @@ operations::define_operations! {
     PaneUploadCancel(PaneUploadCancelParams) => "pane.upload.cancel", false, true;
     PaneUploadFinish(PaneUploadFinishParams) => "pane.upload.finish", false, true;
     PaneUploadWrite(PaneUploadWriteParams) => "pane.upload.write", false, true;
-    // Why `client_shell = false`: the methods are advertised in the stage that
-    // wires the worker, so no server offers a method it cannot answer.
-    PaneDownloadBegin(PaneDownloadBeginParams) => "pane.download.begin", false, false;
-    PaneDownloadCancel(PaneDownloadCancelParams) => "pane.download.cancel", false, false;
-    PaneDownloadRead(PaneDownloadReadParams) => "pane.download.read", false, false;
+    PaneDownloadBegin(PaneDownloadBeginParams) => "pane.download.begin", false, true;
+    PaneDownloadCancel(PaneDownloadCancelParams) => "pane.download.cancel", false, true;
+    PaneDownloadRead(PaneDownloadReadParams) => "pane.download.read", false, true;
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@ pub(crate) mod agent_view;
 mod agents;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
+pub(crate) use api::pane_download::DownloadOrigin;
 pub(crate) use api::pane_upload::{UploadOrigin, UploadResponder};
 #[cfg(test)]
 pub(crate) use api::test_support::exiting_test_command;
@@ -135,6 +136,7 @@ pub struct App {
     pub(crate) file_service: std::sync::Arc<api::FileService>,
     pub(crate) directory_read_slots: std::sync::Arc<tokio::sync::Semaphore>,
     pub(crate) upload_sessions: crate::upload::registry::UploadRegistry,
+    pub(crate) download_sessions: crate::download::DownloadRegistry,
     pub(crate) pending_api_worktree_removes: HashMap<String, u64>,
     pub(crate) pending_api_worktree_remove_paths: HashMap<std::path::PathBuf, u64>,
     pub(crate) pending_worktree_remove_runtime_exits: HashMap<crate::layout::PaneId, usize>,
@@ -649,6 +651,7 @@ impl App {
                 api::DIRECTORY_READ_SLOTS,
             )),
             upload_sessions: crate::upload::registry::UploadRegistry::default(),
+            download_sessions: crate::download::DownloadRegistry::default(),
             pending_api_worktree_removes: HashMap::new(),
             pending_api_worktree_remove_paths: HashMap::new(),
             pending_worktree_remove_runtime_exits: HashMap::new(),

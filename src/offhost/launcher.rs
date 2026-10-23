@@ -38,7 +38,6 @@ impl Transfer {
         cannot: "upload to",
         then: "drop again",
     };
-    #[allow(dead_code)] // Why: wired in S3; remove there.
     pub(crate) const DOWNLOAD: Self = Self {
         cannot: "download from",
         then: "try again",

@@ -25,7 +25,7 @@ fn has_control(value: &str) -> bool {
 }
 
 /// One path component: what a filesystem accepts as a single name.
-fn validate_component(component: &str, what: &str) -> Result<(), Failure> {
+pub(crate) fn validate_component(component: &str, what: &str) -> Result<(), Failure> {
     if component.is_empty() {
         return Err(invalid(format!("{what} has an empty component")));
     }
