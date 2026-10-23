@@ -1458,7 +1458,7 @@ fn a_download_while_an_upload_runs_only_says_so() {
 
     assert!(!run.started);
     assert!(run.begin.is_none());
-    assert_eq!(run.notice, "another transfer is still running");
+    assert_eq!(run.notice, "another upload is still running");
 }
 
 #[cfg(unix)]

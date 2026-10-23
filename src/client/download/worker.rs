@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant};
 
 use crate::api::schema::{PaneDownloadChunk, PaneUploadCollision, ResponseResult};
 use crate::client::upload::transfer::JobId;
@@ -64,12 +65,37 @@ pub(crate) enum WorkerEvent {
 /// Dropping the handle stops the worker at its next wait and removes the stage.
 pub(crate) struct WorkerHandle {
     pub(crate) job: JobId,
-    commands: Sender<WorkerCommand>,
+    commands: Option<Sender<WorkerCommand>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
+
+/// How long dropping a handle waits for the stage to be removed. Why bounded:
+/// the client loop is waiting, and a huge partial stage can take long to delete.
+const STOP_WAIT: Duration = Duration::from_secs(2);
 
 impl WorkerHandle {
     pub(crate) fn send(&self, command: WorkerCommand) {
-        let _ = self.commands.send(command);
+        if let Some(commands) = &self.commands {
+            let _ = commands.send(command);
+        }
+    }
+}
+
+impl Drop for WorkerHandle {
+    /// Why wait: a client that quits right after the drop would end the
+    /// thread before it removed the stage, and nothing sweeps it up later.
+    fn drop(&mut self) {
+        self.commands = None;
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        let deadline = Instant::now() + STOP_WAIT;
+        while !thread.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if thread.is_finished() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -79,10 +105,14 @@ pub(crate) fn spawn(
     emit: impl Fn(WorkerEvent) -> bool + Send + 'static,
 ) -> std::io::Result<WorkerHandle> {
     let (commands, receiver) = std::sync::mpsc::channel();
-    crate::thread_spawn::spawn_named("herdr-download-write", move || {
+    let thread = crate::thread_spawn::spawn_named("herdr-download-write", move || {
         run(job, &destination, &emit, &receiver);
     })?;
-    Ok(WorkerHandle { job, commands })
+    Ok(WorkerHandle {
+        job,
+        commands: Some(commands),
+        thread: Some(thread),
+    })
 }
 
 /// The folder the download goes into, created if it is the default one.

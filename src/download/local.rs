@@ -121,6 +121,23 @@ impl LocalWriter {
         destination: PathBuf,
         names: &[String],
     ) -> Result<(Self, Vec<String>), Failure> {
+        Self::open_with(destination, names, false)
+    }
+
+    /// As `open`, but replaced originals are gone when `publish` returns, for
+    /// a process that exits right after.
+    pub(crate) fn open_blocking(
+        destination: PathBuf,
+        names: &[String],
+    ) -> Result<(Self, Vec<String>), Failure> {
+        Self::open_with(destination, names, true)
+    }
+
+    fn open_with(
+        destination: PathBuf,
+        names: &[String],
+        inline_cleanup: bool,
+    ) -> Result<(Self, Vec<String>), Failure> {
         let session = Session::new(Declared {
             names: names.to_vec(),
             entries: MAX_DOWNLOAD_ENTRIES,
@@ -147,6 +164,9 @@ impl LocalWriter {
             ));
         }
         let mut sink = HostSink::new(destination, crate::upload::stage_token());
+        if inline_cleanup {
+            sink = sink.with_inline_cleanup();
+        }
         sink.begin(&kept).map_err(sink_failure)?;
         Ok((
             Self {

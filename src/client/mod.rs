@@ -817,8 +817,8 @@ async fn run_client_loop(
             .map(shell::ClientShellState::take_upload_decisions)
             .unwrap_or_default();
         for decision in decisions {
-            // Why by which transfer runs: one card serves both, and only one
-            // runs at a time (design §4.6).
+            // Why route the card's cancel by which transfer runs: one card serves
+            // both, and only one runs at a time (design §4.6).
             if let shell::ClientUploadDecision::Cancel(job) = decision {
                 if state.downloads.busy() {
                     let effects = state.downloads.cancel(job);
@@ -2972,7 +2972,12 @@ fn start_download(
         shell::WorkbenchDropPlace::NoPane(text) => return notice(state, &text),
     };
     if state.uploads.busy() || state.downloads.busy() {
-        return notice(state, "another transfer is still running");
+        let running = if state.uploads.busy() {
+            "upload"
+        } else {
+            "download"
+        };
+        return notice(state, &format!("another {running} is still running"));
     }
     let Some(connection) = endpoints.connection(&request.endpoint_id) else {
         return notice(state, "the connection to this server is closed");

@@ -310,6 +310,20 @@ fn a_collision_fails_a_publish_that_must_not_rename_and_replace_overwrites() {
 }
 
 #[test]
+fn a_blocking_writer_has_removed_the_replaced_originals_when_publish_returns() {
+    let dest = TempDir::new("local-blocking");
+    std::fs::write(dest.join("f"), b"old").unwrap();
+    let (mut writer, _) =
+        LocalWriter::open_blocking(dest.path().to_path_buf(), &names(&["f"])).unwrap();
+    apply_all(&mut writer, &file("f", b"new", 0o644, 9));
+
+    writer.publish(PaneUploadCollision::Replace).unwrap();
+
+    assert_eq!(std::fs::read(dest.join("f")).unwrap(), b"new");
+    assert!(stages(dest.path()).is_empty());
+}
+
+#[test]
 fn a_name_that_was_never_sent_fails_the_publish() {
     let dest = TempDir::new("local-missing");
     let (writer, _) = LocalWriter::open(dest.path().to_path_buf(), &names(&["a", "b"])).unwrap();

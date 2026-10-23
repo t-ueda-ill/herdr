@@ -85,6 +85,7 @@ meta() {
 }
 parent=$1; shift
 for f do
+  [ -z "$stop" ] || [ -d "$stop" ] || exit 0
   rel=${f#"$parent"/}
   deref=
   case $rel in */*) ;; *) deref=L ;; esac
@@ -131,6 +132,19 @@ exit 0
 /// read.
 /// Why `[ -x ]` for a folder: `find` cannot enter one with read but no search
 /// permission.
+/// Why a watchdog after `G`: a container runtime does not pass the client's
+/// death on to the process and keeps draining its output, and over ssh with no
+/// terminal nothing sends SIGHUP, so the stream would run to the end with
+/// nobody listening. It reads stdin to its end, which is what a cancel closes,
+/// then removes the `stop` folder and ends this shell; each batch of
+/// [`EMIT_SCRIPT`] leaves when the folder is gone. Why a folder and not a
+/// signal: the helper has no process group of its own to signal safely. A
+/// `cat` already blocked on a path that turned into a FIFO is not reached.
+/// Why the watchdog's output goes to `/dev/null`: a copy of the pipe held
+/// open would keep the reader waiting after `end`.
+/// Why `5<&0`: a background command reads `/dev/null` for stdin unless it
+/// names the descriptor.
+/// Why no watchdog without `mktemp`: the stream then ends the old way.
 pub(crate) const SENDER_SCRIPT: &str = r##"unset BLOCK_SIZE LS_BLOCK_SIZE TIME_STYLE CLICOLOR_FORCE; LC_ALL=C; export LC_ALL
 printf 'HERDR-OFFHOST-1\0'
 emit=$1 me=$2 mb=$3; shift 3
@@ -156,6 +170,14 @@ esac
 printf 'est\0%s\0%s\0' "${est% *}" "${est#* }"
 IFS= read -r go || exit 0
 [ "$go" = G ] || exit 0
+stop=$(mktemp -d 2>/dev/null) || stop=
+export stop
+if [ -n "$stop" ]; then
+  trap 'rm -rf "$stop"' EXIT
+  main=$$
+  exec 5<&0
+  ( cat <&5; rm -rf "$stop"; kill "$main" ) >/dev/null 2>&1 &
+fi
 for p do
   parent=${p%/*}
   find -H "$p" -exec sh -c "$emit" sh "$parent" {} + 2>/dev/null || printf 'w\0%s\0' "${p##*/}"

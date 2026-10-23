@@ -216,8 +216,9 @@ impl HeadlessServer {
     }
 
     /// Server stop and live handoff: sessions are never carried over, so give
-    /// upload workers a moment to remove their stages. Downloads leave nothing
-    /// on the server, so they are only told to stop.
+    /// upload workers a moment to remove their stages. Downloads leave no
+    /// files on the server, so they are only told to stop; a helper process
+    /// ends itself when its stdin closes (see `SENDER_SCRIPT`).
     pub(super) fn abort_transfers(&mut self, wait: Duration) {
         let controls = self.app.upload_sessions.abort_all();
         if !controls.is_empty() && !wait.is_zero() {

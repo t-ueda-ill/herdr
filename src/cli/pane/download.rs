@@ -28,8 +28,8 @@ pub(crate) fn command() -> Command {
         .about("Copy files out of the environment a pane's shell sees to this machine")
         .long_about(
             "Copy files and folders out of the environment a pane's shell runs in (this host, a \
-             container, or an ssh host) into a local folder. Everything is staged next to the \
-             destination and published at once, so a failed or interrupted download leaves \
+             container, or an ssh host) into a local folder. Everything is staged in a hidden folder \
+             inside the destination and published at once, so a failed or interrupted download leaves \
              nothing behind. A symlink named on the command line is followed; symlinks inside \
              folders are copied as links. FIFOs, sockets, and devices are skipped.",
         )
@@ -185,13 +185,14 @@ pub(crate) fn download(
     };
     // Why before the first read: a destination that cannot take a stage should
     // end the download before the server reads anything.
-    let (mut writer, _kept) = match LocalWriter::open(args.destination.clone(), &started.names) {
-        Ok(opened) => opened,
-        Err(failure) => {
-            cancel(server);
-            return Ok(failed(failure));
-        }
-    };
+    let (mut writer, _kept) =
+        match LocalWriter::open_blocking(args.destination.clone(), &started.names) {
+            Ok(opened) => opened,
+            Err(failure) => {
+                cancel(server);
+                return Ok(failed(failure));
+            }
+        };
     let mut seq = 0;
     loop {
         if interrupted.load(Ordering::Acquire) {

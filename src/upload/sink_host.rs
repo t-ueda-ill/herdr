@@ -160,6 +160,18 @@ impl HostSink {
         }
     }
 
+    /// Removes a stage holding originals before publishing returns. Why: a
+    /// process that exits right after reporting, as the CLI does, would kill
+    /// the detached thread and leave the replaced files behind.
+    pub(crate) fn with_inline_cleanup(mut self) -> Self {
+        self.cleanup = Box::new(|stage| {
+            if let Err(error) = remove_stage(&stage) {
+                tracing::warn!(stage = %stage.display(), %error, "could not remove a stage");
+            }
+        });
+        self
+    }
+
     /// Replaces how a stage holding originals is removed after publishing.
     #[cfg(all(test, unix))]
     pub(crate) fn with_cleanup(mut self, cleanup: StageCleanup) -> Self {

@@ -17,6 +17,9 @@ struct Script {
     begin_failure: Mutex<Option<Failure>>,
     /// How long stopping takes, as a helper process that needs its grace does.
     abort_delay: Mutex<Duration>,
+    /// How long each frame takes to arrive, as a helper that starts
+    /// processes per entry does.
+    frame_delay: Mutex<Duration>,
 }
 
 struct FakeSource(Arc<Script>);
@@ -37,6 +40,7 @@ impl DownloadSource for FakeSource {
             return Err(cancelled());
         }
         if let Some(item) = self.0.frames.lock().unwrap().pop_front() {
+            std::thread::sleep(*self.0.frame_delay.lock().unwrap());
             return item.map(Some);
         }
         std::thread::sleep(wait.min(Duration::from_millis(5)));
@@ -231,6 +235,28 @@ fn a_silent_source_is_answered_with_a_heartbeat() {
 
     assert!(chunk.records.is_empty() && !chunk.done);
     assert!(asked.elapsed() >= Duration::from_millis(50));
+    harness.control.cancel();
+    harness.join();
+}
+
+#[test]
+fn a_steady_trickle_of_frames_still_ends_the_answer_at_the_heartbeat() {
+    let script = Arc::new(Script::default());
+    *script.frame_delay.lock().unwrap() = Duration::from_millis(10);
+    script
+        .frames
+        .lock()
+        .unwrap()
+        .extend(std::iter::once(Ok(dir("a"))).chain((0..200).map(|i| Ok(dir(&format!("a/d{i}"))))));
+    let harness = start_with(script, Limits::new(1 << 20), fast(), true);
+    harness.answer().unwrap();
+    let asked = Instant::now();
+
+    harness.read(0);
+    let chunk = harness.chunk();
+
+    assert!(!chunk.records.is_empty() && !chunk.done);
+    assert!(asked.elapsed() < Duration::from_millis(500));
     harness.control.cancel();
     harness.join();
 }

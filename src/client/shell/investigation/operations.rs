@@ -286,14 +286,15 @@ impl ClientShellState {
         outcome.repaint = true;
     }
     /// Asks where on this machine to save the selected entries (D1). The
-    /// checks are the ones `start_download` repeats, so a refusal reads the
-    /// same wherever it comes from.
+    /// checks are the ones `start_download` repeats (the capability aside), so
+    /// a refusal reads the same wherever it comes from.
     pub(in crate::client::shell) fn investigation_download_prompt(
         &mut self,
         outcome: &mut ClientShellInput,
     ) {
         outcome.repaint = true;
         let folder = self.download_dir.clone();
+        let may_send = self.endpoint_may_send_files();
         let Some(tab) = self.investigation_mut() else {
             return;
         };
@@ -301,17 +302,18 @@ impl ClientShellState {
         if paths.is_empty() {
             return;
         }
+        if !may_send {
+            tab.notice = "this server cannot send files; update Herdr there".into();
+            return;
+        }
         if let Err(refusal) = crate::download::local::check_selection(&paths) {
             tab.notice = refusal;
             return;
         }
-        tab.notice = if folder.is_empty() {
-            "enter a folder on this machine".into()
-        } else {
-            String::new()
-        };
+        tab.notice = String::new();
+        let noun = if paths.len() == 1 { "item" } else { "items" };
         tab.dialog = Some(Dialog::Input {
-            title: format!("download {} item(s) to (this machine):", paths.len()),
+            title: format!("download {} {noun} to", paths.len()),
             input: TextEditor::new(&folder, true),
             purpose: InputPurpose::Download,
             sources: paths,

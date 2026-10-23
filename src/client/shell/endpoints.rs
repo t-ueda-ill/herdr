@@ -498,6 +498,21 @@ impl ClientShellState {
             .is_none_or(|methods| methods.contains(crate::api::api_method_name(method)))
     }
 
+    /// Whether the active server advertises every download method. An
+    /// unknown list counts as supported: `start_download` checks the
+    /// negotiation again, capability included.
+    pub(super) fn endpoint_may_send_files(&self) -> bool {
+        self.endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .and_then(|endpoint| endpoint.methods.as_ref())
+            .is_none_or(|methods| {
+                crate::client::download::DOWNLOAD_METHODS
+                    .iter()
+                    .all(|method| methods.contains(*method))
+            })
+    }
+
     /// Why not `supports_endpoint_method`: it treats an unknown method list as
     /// supported, and an older server answers an unknown method with an error
     /// instead of the host tab this client falls back to.

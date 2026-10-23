@@ -2652,6 +2652,7 @@ mod offhost {
             .unwrap()
             .selected_files
             .insert("/etc/hosts".into());
+        state.set_download_dir("/home/me/Downloads".into());
         let index = MENU.iter().position(|i| *i == DOWNLOAD_ITEM).unwrap();
         let mut outcome = ClientShellInput::default();
 
@@ -2776,6 +2777,7 @@ mod download {
     fn the_menu_ends_with_the_download_item_and_leaves_the_host_only_range_alone() {
         let index = download_index();
 
+        assert_eq!(index, MENU.len() - 1);
         assert!(!matches!(index, 6..=15 | 22));
         assert_eq!(MENU[23], "refresh files");
     }
@@ -2798,24 +2800,62 @@ mod download {
                 assert_eq!(*purpose, InputPurpose::Download);
                 assert_eq!(input.to_string(), "/home/me/Downloads");
                 assert_eq!(sources, &["/repo/a.txt", "/repo/src"]);
-                assert_eq!(title, "download 2 item(s) to (this machine):");
+                assert_eq!(title, "download 2 items to");
             }
             other => panic!("expected the download input, got {other:?}"),
         }
     }
 
     #[test]
-    fn without_a_known_download_folder_the_input_is_empty_and_asks_for_one() {
+    fn without_a_known_download_folder_the_input_is_empty() {
         let mut state = state();
         select_files(&mut state, &["/repo/a.txt"]);
 
         open(&mut state);
 
         assert_eq!(dialog_text(&state).as_deref(), Some(""));
+        assert!(state.investigation().unwrap().notice.is_empty());
+    }
+
+    #[test]
+    fn a_server_without_download_methods_is_refused_before_the_dialog() {
+        let mut state = state();
+        select_files(&mut state, &["/repo/a.txt"]);
+        state.set_endpoint_methods(Some(vec!["pane.close".into()]));
+
+        open(&mut state);
+
+        let tab = state.investigation().unwrap();
+        assert!(tab.dialog.is_none());
+        assert_eq!(
+            tab.notice,
+            "this server cannot send files; update Herdr there"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_is_not_absolute_keeps_the_dialog_open_with_the_reason() {
+        let mut state = state();
+        state.set_download_dir("/home/me/Downloads".into());
+        select_files(&mut state, &["/repo/a.txt"]);
+        open(&mut state);
+        let tab = state.investigation_mut().unwrap();
+        if let Some(Dialog::Input { input, .. }) = &mut tab.dialog {
+            *input = TextEditor::new("Downloads", true);
+        }
+
+        press(
+            &mut state,
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+
+        assert_eq!(dialog_text(&state).as_deref(), Some("Downloads"));
         assert_eq!(
             state.investigation().unwrap().notice,
-            "enter a folder on this machine"
+            "enter an absolute folder"
         );
+        assert!(requests(&mut state).is_empty());
     }
 
     #[test]

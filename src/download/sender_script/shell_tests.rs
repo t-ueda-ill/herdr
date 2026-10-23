@@ -676,6 +676,37 @@ fn closing_stdin_before_go_ends_the_helper_without_streaming() {
 }
 
 #[test]
+fn closing_stdin_after_go_stops_the_stream_even_when_the_reader_keeps_draining() {
+    each_local_shell(|shell| {
+        let dir = tree("stop-after-go");
+        const FILES: usize = 1500;
+        for index in 0..FILES {
+            std::fs::write(dir.join(&format!("f{index:04}")), b"x").unwrap();
+        }
+        let mut spawned = spawn(shell, BIG, &[dir.path()]);
+        spawned.child.stdin.write_all(b"G\n").unwrap();
+        spawned.child.stdin.flush().unwrap();
+        // The client has gone, but a container runtime keeps reading stdout.
+        drop(std::mem::replace(
+            &mut spawned.child.stdin,
+            std::process::Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+                .stdin
+                .take()
+                .unwrap(),
+        ));
+        let mut outcome = Outcome::default();
+
+        spawned.read_to_end(&mut outcome);
+
+        assert!(outcome.rels().len() < FILES, "{}", outcome.rels().len());
+    });
+}
+
+#[test]
 fn go_without_its_newline_does_not_start_the_stream() {
     each_shell(|shell| {
         let dir = tree("no-newline");

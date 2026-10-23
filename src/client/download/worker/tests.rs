@@ -1,5 +1,5 @@
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::Engine as _;
 
@@ -324,9 +324,6 @@ fn dropping_the_handle_removes_the_stage() {
 
     drop(handle);
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !stages(dir.path()).is_empty() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // Why no wait: a client that quits right after must not leave it behind.
     assert!(stages(dir.path()).is_empty());
 }

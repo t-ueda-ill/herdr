@@ -382,12 +382,15 @@ impl Worker {
                     return Err(cancelled());
                 }
                 let now = Instant::now();
-                let wait = if content {
-                    PACK_WAIT
-                } else {
-                    deadline.saturating_duration_since(now)
+                // Why the heartbeat also bounds a filling answer: a source
+                // that trickles one frame per few milliseconds would
+                // otherwise fill a whole batch, and the client's read would
+                // time out waiting for it.
+                if content && now >= deadline {
+                    return Ok(None);
                 }
-                .min(timeouts.tick);
+                let left = deadline.saturating_duration_since(now);
+                let wait = if content { PACK_WAIT.min(left) } else { left }.min(timeouts.tick);
                 match source.next(wait, control)? {
                     Some(frame) => {
                         content |=

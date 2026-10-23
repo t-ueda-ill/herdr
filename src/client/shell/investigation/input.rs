@@ -434,6 +434,19 @@ impl ClientShellState {
                     let value = input.to_string();
                     let purpose = purpose.clone();
                     let sources = sources.clone();
+                    // Why a placeholder home: the real one is looked up where
+                    // the files are written, but every other rule is known
+                    // here, and a typo should leave the dialog open.
+                    if purpose == InputPurpose::Download {
+                        if let Err(refusal) = crate::client::download::destination::resolve(
+                            &value,
+                            std::path::Path::new("/"),
+                            crate::client::download::destination::PathSyntax::current(),
+                        ) {
+                            tab.notice = refusal;
+                            return;
+                        }
+                    }
                     tab.dialog = None;
                     match purpose {
                         InputPurpose::Root => {
