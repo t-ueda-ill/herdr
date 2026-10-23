@@ -221,13 +221,22 @@ impl ChildExitReason {
     }
 }
 
+/// Names a file independent of its path (volume and file index), so a path
+/// that was swapped for another file can be told from the original.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct FileIdentity {
+    pub(crate) volume: u64,
+    pub(crate) index: u64,
+}
+
 #[cfg(unix)]
 pub(crate) use unix_common::{
     classify_child_exit, poll_fd_readable, read_fd, shared_ssh_control_path,
 };
 #[cfg(unix)]
 pub(crate) use unix_common::{
-    create_symlink, permission_bits, set_path_modified, set_permission_bits, stores_file_name,
+    create_symlink, metadata_identity, open_regular_nofollow, permission_bits, set_path_modified,
+    set_permission_bits, stores_file_name,
 };
 
 #[cfg(not(any(unix, windows)))]

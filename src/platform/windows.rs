@@ -3520,6 +3520,44 @@ pub(crate) fn create_symlink(target: &str, link: &std::path::Path) -> std::io::R
     std::os::windows::fs::symlink_file(target, link)
 }
 
+/// The standard library does not expose a file index in stable metadata, so a
+/// path's identity is only known once it is open.
+pub(crate) fn metadata_identity(_metadata: &std::fs::Metadata) -> Option<super::FileIdentity> {
+    None
+}
+
+/// Opens `path` for reading only if it is a regular file and not a reparse
+/// point (symlink or junction). Why not `File::open`: it follows reparse
+/// points, so a path swapped for a link after a scan would be read through it.
+pub(crate) fn open_regular_nofollow(
+    path: &std::path::Path,
+) -> std::io::Result<(std::fs::File, super::FileIdentity)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let identity = super::FileIdentity {
+        volume: u64::from(info.dwVolumeSerialNumber),
+        index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    };
+    Ok((file, identity))
+}
+
 /// Windows has no rwx bits; uploads send what a Unix receiver expects.
 pub(crate) fn permission_bits(metadata: &std::fs::Metadata) -> u32 {
     if metadata.is_dir() {

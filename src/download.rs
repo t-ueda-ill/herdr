@@ -6,6 +6,8 @@
 //! thread, never on the app thread or in render/layout loops.
 
 pub(crate) mod frame;
+pub(crate) mod source;
+pub(crate) mod source_host;
 
 /// Largest decoded data one read answer may carry. Why 512 KiB: base64 makes it
 /// 699,052 bytes, which leaves room for names and records under one frame.

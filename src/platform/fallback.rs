@@ -360,3 +360,18 @@ pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
 pub(crate) fn dropped_path(token: &str) -> Option<std::path::PathBuf> {
     super::drop_paths::posix_drop_path(token)
 }
+
+#[cfg(not(unix))]
+pub(crate) fn metadata_identity(_metadata: &std::fs::Metadata) -> Option<super::FileIdentity> {
+    None
+}
+
+#[cfg(not(unix))]
+pub(crate) fn open_regular_nofollow(
+    _path: &std::path::Path,
+) -> std::io::Result<(std::fs::File, super::FileIdentity)> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening without following links is unavailable",
+    ))
+}

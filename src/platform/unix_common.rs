@@ -618,6 +618,45 @@ pub(crate) fn create_symlink(target: &str, link: &std::path::Path) -> std::io::R
     std::os::unix::fs::symlink(target, link)
 }
 
+/// Names a file by device and inode, so a path swapped for another file shows.
+pub(crate) fn metadata_identity(metadata: &std::fs::Metadata) -> Option<super::FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    Some(super::FileIdentity {
+        volume: metadata.dev(),
+        index: metadata.ino(),
+    })
+}
+
+/// Opens `path` for reading only if its last component is a regular file.
+/// Why not `File::open` and then check: a path swapped for a FIFO would block
+/// the open, and one swapped for a symlink would be followed. `O_NONBLOCK`
+/// lets a FIFO open at once so it can be refused, and is cleared afterwards.
+pub(crate) fn open_regular_nofollow(
+    path: &std::path::Path,
+) -> std::io::Result<(std::fs::File, super::FileIdentity)> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let fd = file.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let identity = metadata_identity(&metadata)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Unsupported, "no file identity"))?;
+    Ok((file, identity))
+}
+
 /// The rwx bits of `metadata`, without setuid, setgid, or sticky.
 pub(crate) fn permission_bits(metadata: &std::fs::Metadata) -> u32 {
     use std::os::unix::fs::PermissionsExt;
@@ -933,5 +972,74 @@ mod shared_ssh_tests {
             std::io::ErrorKind::PermissionDenied
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod open_regular_nofollow_tests {
+    use super::*;
+
+    fn dir(label: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("herdr-nofollow-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_regular_file_opens_with_the_identity_its_metadata_reports() {
+        let dir = dir("regular");
+        let file = dir.join("f");
+        std::fs::write(&file, b"abc").unwrap();
+
+        let (_, identity) = open_regular_nofollow(&file).unwrap();
+
+        let metadata = std::fs::symlink_metadata(&file).unwrap();
+        assert_eq!(Some(identity), metadata_identity(&metadata));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_symlink_is_refused_even_when_it_points_at_a_regular_file() {
+        let dir = dir("link");
+        std::fs::write(dir.join("f"), b"abc").unwrap();
+        std::os::unix::fs::symlink(dir.join("f"), dir.join("l")).unwrap();
+
+        assert!(open_regular_nofollow(&dir.join("l")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fifo_is_refused_without_blocking_for_a_writer() {
+        let dir = dir("fifo");
+        let fifo = std::ffi::CString::new(dir.join("p").to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+        let error = open_regular_nofollow(&dir.join("p")).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_is_refused() {
+        let dir = dir("dir");
+        assert!(open_regular_nofollow(&dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_opened_file_blocks_instead_of_returning_would_block() {
+        use std::io::Read as _;
+        let dir = dir("blocking");
+        std::fs::write(dir.join("f"), b"abc").unwrap();
+        let (mut file, _) = open_regular_nofollow(&dir.join("f")).unwrap();
+        let mut text = String::new();
+        file.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "abc");
+        let flags = unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), libc::F_GETFL) };
+        assert_eq!(flags & libc::O_NONBLOCK, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
