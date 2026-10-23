@@ -774,6 +774,7 @@ impl ClientShellState {
                 self.hits.overlay_favorite = rendered.favorite;
                 self.hits.open_picker_favorites = rendered.favorite_marks;
                 self.hits.help_popup = rendered.help_popup;
+                self.hits.help_filter = rendered.help_filter;
                 self.hits.help_scrollbar = rendered.help_scrollbar;
                 self.hits.help_scroll_metrics = rendered.help_scroll_metrics;
                 self.hits.help_max_scroll = rendered.help_max_scroll;
@@ -822,6 +823,7 @@ impl ClientShellState {
         let frame = self.compose_unavailable(cols, rows);
         let mut buffer = frame.to_ratatui_buffer()?;
         let cursor = self.render_investigation(&mut buffer, layout);
+        self.reconcile_menu_scroll();
         if let Some(progress) = self.upload_progress.as_ref() {
             // Toasts are not drawn over the workbench, yet a tree upload must
             // stay cancellable from its card (spec Q5).

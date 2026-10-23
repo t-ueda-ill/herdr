@@ -107,6 +107,8 @@ impl ClientShellState {
         }));
         investigation.notice.clear();
         self.workbench.asking_uploads.push(question.job);
+        // The upload runtime repaints on `true`, so the outcome is not needed.
+        self.close_help_over_workbench_dialog(&mut ClientShellInput::default());
         true
     }
 

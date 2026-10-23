@@ -44,7 +44,10 @@ impl ClientShellState {
             return;
         }
         if code == KeyCode::F(10) || code == KeyCode::Char('m') && modifiers == M::ALT {
-            tab.dialog = Some(Dialog::Menu { selected: 0 });
+            tab.dialog = Some(Dialog::Menu {
+                selected: 0,
+                scroll: 0,
+            });
             return;
         }
         if code == KeyCode::F(5) {
@@ -67,6 +70,7 @@ impl ClientShellState {
                 }
                 KeyCode::Char('p') => {
                     tab.content_search = false;
+                    tab.hovered = None;
                     tab.focus = Focus::Paths;
                     return;
                 }
@@ -80,12 +84,14 @@ impl ClientShellState {
                 }
                 KeyCode::Char('f') if shift => {
                     tab.content_search = true;
+                    tab.hovered = None;
                     tab.focus = Focus::Query;
                     tab.schedule_search();
                     return;
                 }
                 KeyCode::Char('h') => {
                     tab.content_search = true;
+                    tab.hovered = None;
                     tab.focus = Focus::Replacement;
                     return;
                 }
@@ -299,9 +305,20 @@ impl ClientShellState {
             KeyCode::Char('/') => {
                 tab.focus = Focus::Paths;
                 tab.content_search = false;
+                tab.hovered = None;
             }
             KeyCode::Esc => {
                 tab.selected_files.clear();
+            }
+            KeyCode::Enter
+                if !tab.content_search
+                    && tab
+                        .browser
+                        .rows
+                        .get(tab.browser.selected)
+                        .is_some_and(|r| r.parent_link) =>
+            {
+                self.raise_file_viewer_root(outcome);
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if !tab.content_search && tab.browser.selected_entry().is_some_and(|e| e.is_dir) {
@@ -320,6 +337,8 @@ impl ClientShellState {
                     KeyCode::PageUp => -10,
                     _ => 10,
                 };
+                // Why not keep it: scrolling shifts rows under a resting pointer.
+                tab.hovered = None;
                 if tab.content_search {
                     tab.selected_match = (tab.selected_match as isize + delta)
                         .max(0)
@@ -378,6 +397,7 @@ impl ClientShellState {
         key: &crate::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
+        let menu_rows = self.investigation_hits.menu.len();
         let Some(tab) = self.investigation_mut() else {
             return;
         };
@@ -389,9 +409,15 @@ impl ClientShellState {
             return;
         };
         match dialog {
-            Dialog::Menu { selected } => match code {
-                KeyCode::Up => *selected = selected.saturating_sub(1),
-                KeyCode::Down => *selected = (*selected + 1).min(MENU.len() - 1),
+            Dialog::Menu { selected, scroll } => match code {
+                KeyCode::Up | KeyCode::Down => {
+                    *selected = if code == KeyCode::Up {
+                        selected.saturating_sub(1)
+                    } else {
+                        (*selected + 1).min(MENU.len() - 1)
+                    };
+                    *scroll = menu_scroll_to_show(*selected, *scroll, menu_rows);
+                }
                 KeyCode::Enter => {
                     let index = *selected;
                     self.investigation_menu_action(index, outcome);
@@ -518,6 +544,9 @@ impl ClientShellState {
                 let index = *index;
                 self.workbench.active = Some(index);
                 self.workbench.visible = true;
+                if let Some(tab) = self.investigation_mut() {
+                    tab.hovered = None;
+                }
                 outcome.repaint = true;
                 return true;
             }
@@ -585,6 +614,18 @@ impl ClientShellState {
             return false;
         };
         if tab.dialog.is_some() {
+            tab.hovered = None;
+            if mouse.kind == MouseEventKind::Moved {
+                if let (Some(index), Some(Dialog::Menu { selected, .. })) =
+                    (menu, tab.dialog.as_mut())
+                {
+                    if *selected != index {
+                        *selected = index;
+                        outcome.repaint = true;
+                    }
+                }
+                return true;
+            }
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
                 if let Some((code, modifiers)) = dialog_key {
                     self.route_investigation_dialog(
@@ -603,6 +644,22 @@ impl ClientShellState {
                 self.investigation_menu_action(index, outcome);
             }
             return true;
+        }
+        if mouse.kind == MouseEventKind::Moved {
+            // Why not fall through: the shared tail repaints on every event in
+            // the list, which would redraw on each cell of pointer travel.
+            let target = row.filter(|_| contains(list, point));
+            if tab.hovered != target {
+                tab.hovered = target;
+                outcome.repaint = true;
+            }
+            return contains(area, point) || contains(list, point);
+        }
+        if matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            tab.hovered = None;
         }
         if let Some(index) =
             close.filter(|_| matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)))
@@ -623,7 +680,10 @@ impl ClientShellState {
             button.filter(|_| matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)))
         {
             if index == usize::MAX {
-                tab.dialog = Some(Dialog::Menu { selected: 0 });
+                tab.dialog = Some(Dialog::Menu {
+                    selected: 0,
+                    scroll: 0,
+                });
             } else {
                 self.investigation_menu_action(index, outcome);
             }
@@ -690,7 +750,10 @@ impl ClientShellState {
                     }
                 }
                 MouseEventKind::Down(MouseButton::Right) => {
-                    tab.dialog = Some(Dialog::Menu { selected: 0 })
+                    tab.dialog = Some(Dialog::Menu {
+                        selected: 0,
+                        scroll: 0,
+                    })
                 }
                 _ => {}
             }
@@ -737,6 +800,12 @@ impl ClientShellState {
                             tab.selected_files.clear();
                         }
                         if !tab.content_search
+                            && tab.browser.rows.get(index).is_some_and(|r| r.parent_link)
+                        {
+                            if double {
+                                self.raise_file_viewer_root(outcome);
+                            }
+                        } else if !tab.content_search
                             && tab.browser.selected_entry().is_some_and(|e| e.is_dir)
                         {
                             if let Some(entry) = tab.browser.selected_entry() {
@@ -749,7 +818,10 @@ impl ClientShellState {
                     }
                 }
                 MouseEventKind::Down(MouseButton::Right) => {
-                    tab.dialog = Some(Dialog::Menu { selected: 0 })
+                    tab.dialog = Some(Dialog::Menu {
+                        selected: 0,
+                        scroll: 0,
+                    })
                 }
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                     let delta = if mouse.kind == MouseEventKind::ScrollUp {

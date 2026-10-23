@@ -25,6 +25,23 @@ use crate::api::schema::{
 const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(350);
 const WHEEL_ROWS: isize = 3;
 
+/// A server-reported directory in the form `platform::file_path_display`
+/// lists it. Why not `cfg!(windows)`: the server's OS decides the style, not
+/// the client's, so the shape of the string is inspected instead.
+fn normalize_server_path(path: &str) -> String {
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        return format!("//{}", unc.replace('\\', "/"));
+    }
+    let bare = path.strip_prefix(r"\\?\").unwrap_or(path);
+    let bytes = bare.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if drive || bare.starts_with(r"\\") {
+        bare.replace('\\', "/")
+    } else {
+        path.to_owned()
+    }
+}
+
 /// What an endpoint request of the file viewer was for.
 #[derive(Debug)]
 pub(super) enum FileViewerRequest {
@@ -73,7 +90,7 @@ enum FileViewerAction {
 impl ClientShellState {
     pub(super) fn open_file_viewer(&mut self, outcome: &mut ClientShellInput) {
         let workspace_id = self.workspace_action_id();
-        if !self.toggle_investigation() {
+        if !self.toggle_investigation(outcome) {
             self.open_file_viewer_for(workspace_id, outcome);
         }
         outcome.repaint = true;
@@ -214,6 +231,15 @@ impl ClientShellState {
         if !self.supports_pane_directory() {
             return None;
         }
+        FileLocation::of_pane(self.workspace_representative_pane(workspace_id)?)
+    }
+
+    /// The pane `workspace_id`'s file location and directory are read from:
+    /// its active tab's focused pane, else the first one.
+    pub(super) fn workspace_representative_pane(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Option<&crate::protocol::ClientShellPane> {
         let snapshot = self.snapshot.as_deref()?;
         let workspace_id = workspace_id.or(snapshot.focused_workspace_id.as_deref())?;
         let active_tab = snapshot
@@ -224,8 +250,87 @@ impl ClientShellState {
         let mut panes = snapshot.panes.iter().filter(|pane| {
             pane.workspace_id == workspace_id && active_tab.is_none_or(|tab| pane.tab_id == tab)
         });
-        let first = panes.clone().find(|pane| pane.focused).or(panes.next())?;
-        FileLocation::of_pane(first)
+        panes.clone().find(|pane| pane.focused).or(panes.next())
+    }
+
+    /// Where the representative pane is now, when that is known.
+    pub(super) fn workspace_pane_directory(&self, workspace_id: Option<&str>) -> Option<String> {
+        Self::pane_directory(self.workspace_representative_pane(workspace_id)?)
+    }
+
+    /// Where `pane` is now, in the file viewer's path format. Why not
+    /// `pane.cwd` off-host: it falls back to a host path that means nothing
+    /// inside the container or ssh login.
+    fn pane_directory(pane: &crate::protocol::ClientShellPane) -> Option<String> {
+        let directory = if pane.container.is_some() || pane.ssh_host.is_some() {
+            pane.foreground_cwd.clone()
+        } else {
+            pane.foreground_cwd.clone().or_else(|| pane.cwd.clone())
+        };
+        directory
+            .filter(|cwd| !cwd.is_empty())
+            .map(|cwd| normalize_server_path(&cwd))
+    }
+
+    /// Moves the active viewer's root to the pane's directory when that is
+    /// known and differs. Why not follow every tick: the root would jump
+    /// under the user while browsing; only (re)opening asks for the pane's
+    /// place.
+    pub(super) fn reroot_file_viewer_to_pane(
+        &mut self,
+        workspace_id: Option<&str>,
+        outcome: &mut ClientShellInput,
+    ) {
+        // Why not trust the pane alone: a host tab reshown from an ssh pane on
+        // a server without `pane.directory.*` would take a remote path as a
+        // host root.
+        let pane_location = self
+            .workspace_representative_pane(workspace_id)
+            .and_then(FileLocation::of_pane);
+        let same_place = self
+            .file_viewer()
+            .is_some_and(|viewer| !viewer.host_fallback && viewer.location == pane_location);
+        if !same_place {
+            return;
+        }
+        let Some(cwd) = self.serving_pane_directory(workspace_id, pane_location.as_ref()) else {
+            return;
+        };
+        let differs = self
+            .file_viewer()
+            .is_some_and(|viewer| viewer.root.as_deref() != Some(cwd.as_str()));
+        if differs {
+            self.change_file_viewer_root(cwd, None, outcome);
+        }
+    }
+
+    /// The directory of the pane that will answer the viewer's next request.
+    /// Why not the representative pane: Compose replicas share a location but
+    /// not a filesystem, and the request goes to the viewer's own replica.
+    fn serving_pane_directory(
+        &mut self,
+        workspace_id: Option<&str>,
+        location: Option<&FileLocation>,
+    ) -> Option<String> {
+        let Some(location) = location else {
+            return self.workspace_pane_directory(workspace_id);
+        };
+        let preferred = self.location_pane_hint();
+        let viewer_workspace = self
+            .file_viewer()
+            .and_then(|viewer| viewer.workspace_id.clone());
+        let pane_id = self.file_location_pane(
+            viewer_workspace.as_deref().or(workspace_id),
+            location,
+            preferred.as_deref(),
+        )?;
+        let pane = self
+            .snapshot
+            .as_deref()?
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)?;
+        Self::pane_directory(pane)
     }
 
     /// A live pane of `workspace_id` running in `location`. `preferred` (the pane

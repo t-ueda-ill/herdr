@@ -676,6 +676,18 @@ impl ClientShellState {
         }
     }
 
+    /// Whether a pointer event outside the keybinds popup belongs to the
+    /// workbench behind it. Events inside the popup, and a scrollbar drag
+    /// that began there, stay with Help.
+    fn help_mouse_passes_to_workbench(&self, mouse: MouseEvent) -> bool {
+        self.help_passes_input_to_workbench()
+            && !matches!(
+                self.chrome_drag,
+                Some(ClientChromeDrag::HelpScrollbar { .. })
+            )
+            && !super::contains(self.hits.help_popup, (mouse.column, mouse.row))
+    }
+
     /// Routes mouse input through overlays, shell controls, and pane interactions.
     ///
     /// Hit-test order determines which overlapping control receives the event;
@@ -689,8 +701,20 @@ impl ClientShellState {
         {
             return;
         }
-        if self.overlay.is_none() && self.handle_investigation_mouse(mouse, outcome) {
-            return;
+        // Why before the handler: hiding the workbench makes Help stop passing
+        // input through, so the decision cannot be read again afterwards.
+        let help_passthrough = self.overlay.is_some() && self.help_mouse_passes_to_workbench(mouse);
+        if self.overlay.is_none() || help_passthrough {
+            let workbench_was_visible = self.workbench.visible;
+            if self.handle_investigation_mouse(mouse, outcome) {
+                return;
+            }
+            // Why not leave Help to its outside-click branch: that branch
+            // returns early, so a terminal tab press would never be recorded
+            // and its release would send no TabFocus.
+            if help_passthrough && workbench_was_visible && !self.workbench.visible {
+                self.overlay = None;
+            }
         }
         self.update_link_hover(mouse, outcome);
         let point = (mouse.column, mouse.row);
@@ -1690,6 +1714,13 @@ impl ClientShellState {
                                 }
                             }
                         }
+                    } else if super::contains(self.hits.help_filter, point) {
+                        // Why a click: with the workbench behind it `/` belongs
+                        // to the workbench, so the filter needs a pointer path.
+                        if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
+                            help.search_focused = true;
+                        }
+                        outcome.repaint = true;
                     } else if super::contains(self.hits.overlay_cancel, point) {
                         let search_focused = matches!(
                             self.overlay,

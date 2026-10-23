@@ -194,8 +194,48 @@ impl ClientShellState {
         )
     }
 
+    /// Whether the keybinds overlay leaves input to the workbench behind it.
+    ///
+    /// Why not always: the overlay is modal elsewhere. With the files view up
+    /// the reader is looking at the keys while moving through the tree, so
+    /// only the search field, which needs the typed text, keeps the overlay.
+    pub(super) fn help_passes_input_to_workbench(&self) -> bool {
+        matches!(
+            self.overlay,
+            Some(ClientShellOverlay::Help(ClientHelpOverlay {
+                search_focused: false,
+                ..
+            }))
+        ) && self.investigation_active()
+    }
+
+    /// Why not leave Help open: it is composed after the workbench, so a
+    /// dialog that input passed through to opened beneath it, out of sight.
+    ///
+    /// Also run before each input event and after endpoint results: a plan
+    /// response opens its confirmation with no input at all, and the next
+    /// key must never reach a dialog the reader cannot see.
+    pub(super) fn close_help_over_workbench_dialog(
+        &mut self,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        if self.help_passes_input_to_workbench()
+            && self.investigation().is_some_and(|tab| tab.dialog.is_some())
+        {
+            self.overlay = None;
+            outcome.repaint = true;
+            return true;
+        }
+        false
+    }
+
+    fn workbench_takes_text(&self) -> bool {
+        (self.overlay.is_none() || self.help_passes_input_to_workbench())
+            && self.investigation_active()
+    }
+
     fn prepare_committed_text(&mut self, text: &str, outcome: &mut ClientShellInput) -> bool {
-        if self.overlay.is_none() && self.investigation_active() {
+        if self.workbench_takes_text() {
             self.insert_investigation_text(text);
             outcome.repaint = true;
             return true;
@@ -234,6 +274,19 @@ impl ClientShellState {
             outcome.repaint = true;
         }
         for event in events {
+            // Why not route it: the reader pressed it while Help still covered
+            // the dialog, so it only reveals the dialog.
+            if self.close_help_over_workbench_dialog(&mut outcome)
+                && matches!(
+                    event,
+                    RawInputEvent::Key(_)
+                        | RawInputEvent::Text(_)
+                        | RawInputEvent::Paste(_)
+                        | RawInputEvent::Mouse(_)
+                )
+            {
+                continue;
+            }
             let event = match event {
                 RawInputEvent::Key(key) => match self.host_text_commit(&key) {
                     Some(text) => RawInputEvent::Text(crate::input::TextCommit::new(text)),
@@ -269,7 +322,7 @@ impl ClientShellState {
                         self.reconcile_input_source();
                         continue;
                     }
-                    if self.overlay.is_none() && self.investigation_active() {
+                    if self.workbench_takes_text() {
                         self.insert_investigation_text(&text);
                         outcome.repaint = true;
                         continue;
@@ -307,7 +360,7 @@ impl ClientShellState {
                         self.reconcile_input_source();
                         continue;
                     }
-                    if self.overlay.is_none() && self.investigation_active() {
+                    if self.workbench_takes_text() {
                         self.insert_investigation_text(&text);
                         outcome.repaint = true;
                         continue;
@@ -386,6 +439,7 @@ impl ClientShellState {
                 | RawInputEvent::HostCellSizeReport { .. }
                 | RawInputEvent::Unsupported => {}
             }
+            self.close_help_over_workbench_dialog(&mut outcome);
             self.reconcile_input_source();
         }
         outcome.repaint |= self.resume_mobile_switcher_if_ready();
@@ -665,7 +719,24 @@ impl ClientShellState {
         if self.popup_pending {
             return None;
         }
-        if self.overlay.is_some() {
+        if self.help_passes_input_to_workbench() && self.mode != ClientShellMode::Prefix {
+            let closes = !matches!(key.code, KeyCode::Modifier(_))
+                && (crate::config::normalize_key_combo((key.code, key.modifiers)).0
+                    == KeyCode::Esc
+                    || crate::input::keybind_help_text_char(key) == Some('?')
+                    || matches!(
+                        crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key),
+                        Some(crate::input::KeybindMatch::Action(
+                            crate::input::KeybindAction::Help
+                        ))
+                    ));
+            if closes {
+                self.overlay = None;
+                outcome.repaint = true;
+                return None;
+            }
+        }
+        if self.overlay.is_some() && !self.help_passes_input_to_workbench() {
             self.route_overlay_key(key, outcome);
             return None;
         }

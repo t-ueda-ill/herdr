@@ -60,6 +60,13 @@ impl ClientShellState {
                     return;
                 }
                 if action == crate::input::KeybindAction::Help {
+                    // Why not reopen: with the files view up, Help stays open
+                    // under the prefix, so the binding has to close it.
+                    if matches!(self.overlay, Some(ClientShellOverlay::Help(_))) {
+                        self.overlay = None;
+                        outcome.repaint = true;
+                        return;
+                    }
                     self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
                         query: TextEditor::default(),
                         search_focused: false,
@@ -884,12 +891,14 @@ impl ClientShellState {
             PendingEndpointKind::Investigation(request) => {
                 let mut outcome = ClientShellInput::default();
                 self.handle_investigation_result(request, result, &mut outcome);
+                self.close_help_over_workbench_dialog(&mut outcome);
                 return (true, outcome.actions);
             }
             PendingEndpointKind::FileViewer(request) => {
                 let mut outcome = ClientShellInput::default();
                 let repaint =
                     self.handle_file_viewer_endpoint_result(request, result, &mut outcome);
+                self.close_help_over_workbench_dialog(&mut outcome);
                 return (repaint || outcome.repaint, outcome.actions);
             }
             kind @ (PendingEndpointKind::PrepareOpenPicker(_)

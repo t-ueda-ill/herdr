@@ -156,6 +156,9 @@ impl ClientShellState {
                 }
             }
             5 => self.investigation_open_editor(outcome),
+            6 | 7 if tab.paths().is_empty() => {
+                tab.notice = "select a file or folder first".into();
+            }
             6 | 7 => {
                 self.workbench.clipboard = Some(FileClipboard {
                     endpoint: tab.endpoint.clone(),
@@ -241,8 +244,6 @@ impl ClientShellState {
                     self.workbench.visible = false;
                 }
             }
-            22 => tab.schedule_search(),
-            23 => self.refresh_investigation_files(),
             21 => {
                 if let Some(found) = tab.matches.get(tab.selected_match) {
                     let indexes: Vec<_> = tab
@@ -262,6 +263,14 @@ impl ClientShellState {
                     }
                 }
             }
+            22 => tab.schedule_search(),
+            23 => self.refresh_investigation_files(),
+            24 => match tab.root_candidate() {
+                Some(root) => {
+                    self.change_file_viewer_root(root, None, outcome);
+                }
+                None => tab.notice = "select a file or folder to open as root".into(),
+            },
             _ => {}
         }
         self.persist_chrome_preferences(outcome);
