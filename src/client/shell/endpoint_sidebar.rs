@@ -274,9 +274,18 @@ pub(super) fn render_expanded(
         },
     }
     let mut rows = Vec::new();
+    // Indexed by endpoint; built once so row measuring and drawing do not
+    // rescan the panes per workspace.
+    let mut labels: Vec<Option<super::space_label::SpaceLabels<'_>>> =
+        Vec::with_capacity(state.endpoints.len());
     for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
         rows.push(Row::Endpoint(endpoint_index));
-        if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
+        let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
+        labels.push(match endpoint.snapshot.as_deref() {
+            Some(snapshot) if !collapsed => Some(super::space_label::SpaceLabels::new(snapshot)),
+            _ => None,
+        });
+        if collapsed {
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
@@ -306,7 +315,8 @@ pub(super) fn render_expanded(
         .map(|row| match row {
             Row::Endpoint(_) => 1,
             Row::Workspace { endpoint, entry } => {
-                let endpoint = &state.endpoints[*endpoint];
+                let endpoint_position = *endpoint;
+                let endpoint = &state.endpoints[endpoint_position];
                 let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
                     .unwrap_or(&empty_collapsed_groups);
                 endpoint
@@ -316,6 +326,7 @@ pub(super) fn render_expanded(
                         let workspace = snapshot.workspaces.get(entry.index)?;
                         Some(
                             super::sidebar::workspace_rows(
+                                labels.get(endpoint_position)?.as_ref()?,
                                 workspace,
                                 super::sidebar::displayed_workspace_status(
                                     snapshot,
@@ -433,6 +444,7 @@ pub(super) fn render_expanded(
                     .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
             }
             Row::Workspace { endpoint, entry } => {
+                let endpoint_position = endpoint;
                 let endpoint = &state.endpoints[*endpoint];
                 let Some(snapshot) = endpoint.snapshot.as_deref() else {
                     continue;
@@ -447,7 +459,11 @@ pub(super) fn render_expanded(
                     workspace,
                     collapsed_groups,
                 );
+                let Some(Some(row_labels)) = labels.get(*endpoint_position) else {
+                    continue;
+                };
                 let tokens = super::sidebar::workspace_rows(
+                    row_labels,
                     workspace,
                     status,
                     entry.indented,

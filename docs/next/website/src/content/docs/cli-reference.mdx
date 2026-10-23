@@ -384,7 +384,7 @@ herdr workspace create --container REF --ssh HOST [--label TEXT]
 
 Add `--ssh HOST` to `--container` or `container list` to use the Docker on a remote host instead of the local one. `HOST` is a `Host` alias from `~/.ssh/config`. Herdr runs the `docker` CLI over ssh through the same shared connection that [ssh panes](#ssh-hosts) use, so a key-based login or an already-shared connection is required: open an ssh pane to the host first otherwise. Listed containers carry the host and never a `workspace_id`. The working directory is the `herdr.workdir` label, otherwise the container's `WorkingDir`; no bind-mount mapping applies.
 
-In the TUI, choose `open container` from the global menu, or bind `keys.open_container_workspace` (unset by default), to pick a running container. The picker first asks where Docker runs (this machine or an ssh host from `~/.ssh/config`), skipping that step on a server without `ssh.hosts`; Esc steps back from the container list to the host list. Typing filters, Enter opens a shell in the container in a new focused workspace named after the container, and Esc closes the picker. A server too old to list containers shows an `Action unavailable` notice instead.
+In the TUI, choose `open container` from the global menu, or bind `keys.open_container_workspace` (unset by default), to pick a running container. The picker first asks where Docker runs (this machine or an ssh host from `~/.ssh/config`), skipping that step on a server without `ssh.hosts`; Esc steps back from the container list to the host list. Typing filters, Enter opens a shell in the container in a new focused workspace named after the container, and Esc closes the picker. The spaces sidebar shows such a workspace as `[c] host@container:pwd` (`local` for this machine's Docker), where `pwd` is the directory the shell reports through OSC 7 and is left out until it reports one. A workspace you rename keeps your name behind the `[c] ` prefix. A server too old to list containers shows an `Action unavailable` notice instead.
 
 ```bash
 herdr container list
@@ -415,7 +415,7 @@ herdr tab create --ssh deploy@prod --label prod
 
 Only aliases present in `~/.ssh/config` can be opened; an unknown name is rejected before any pane is created. Pane info from `pane get` and `pane list` carries `ssh_host`, the alias without any `user@` prefix. Session restore keeps the SSH host, but after a server restart the pane starts a plain local shell and keeps `ssh_host`; Herdr does not reconnect automatically. Windows hosts return `platform_unsupported`.
 
-In the TUI, choose `open ssh host` from the global menu, or bind `keys.open_ssh_workspace` (unset by default), to pick an alias from the same list. `/` filters, Enter opens the host in a new focused workspace named after the alias, and Esc closes the picker. A server too old to list SSH hosts shows an `Action unavailable` notice instead.
+In the TUI, choose `open ssh host` from the global menu, or bind `keys.open_ssh_workspace` (unset by default), to pick an alias from the same list. `/` filters, Enter opens the host in a new focused workspace named after the alias, and Esc closes the picker. The spaces sidebar shows it as `[s] alias:pwd`, with the same OSC 7 rule and the same treatment of renamed workspaces. A server too old to list SSH hosts shows an `Action unavailable` notice instead.
 
 Clipboard images pasted into an SSH pane are copied over the pane's own SSH connection, so they require SSH connection sharing (ControlMaster); without it, the paste is rejected with a notice.
 

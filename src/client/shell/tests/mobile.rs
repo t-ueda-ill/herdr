@@ -673,3 +673,34 @@ fn mobile_switcher_scroll_close_and_width_transition_clear_mobile_hits() {
     assert!(state.hits.mobile_close.is_empty());
     assert!(state.hits.mobile_targets.is_empty());
 }
+
+#[test]
+fn mobile_header_and_spaces_list_show_the_off_host_prefix() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut endpoint_snapshot = snapshot();
+    endpoint_snapshot.workspaces[0].label = "dev_host".into();
+    endpoint_snapshot.workspaces[0].custom_label = true;
+    endpoint_snapshot.panes[0].ssh_host = Some("dev_host".into());
+    endpoint_snapshot.panes[0].foreground_cwd = Some("/home/u".into());
+    state.set_snapshot(Box::new(endpoint_snapshot));
+    state.set_pane_surface(surface());
+
+    let text = |frame: &FrameData| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect::<String>()
+    };
+    let header = state.compose(44, 20).expect("mobile header");
+    assert!(text(&header).contains("[s] dev_host:/home/u"));
+    let switch = state.hits.mobile_switch;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: switch.x,
+        row: switch.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let switcher = state.compose(44, 24).expect("mobile switcher");
+    assert!(text(&switcher).contains("[s] dev_host:/home/u"));
+}

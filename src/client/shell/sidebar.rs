@@ -227,6 +227,7 @@ pub(crate) fn render_sidebar(
     );
 
     let entries = workspace_entries(snapshot, state.collapsed_groups);
+    let labels = super::space_label::SpaceLabels::new(snapshot);
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -244,6 +245,7 @@ pub(crate) fn render_sidebar(
                 .get(entry.index)
                 .map(|workspace| {
                     workspace_rows(
+                        &labels,
                         workspace,
                         displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
                         entry.indented,
@@ -304,7 +306,7 @@ pub(crate) fn render_sidebar(
             continue;
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
+        let rows = workspace_rows(&labels, workspace, status, entry.indented, &config.spaces);
         let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
@@ -661,19 +663,23 @@ pub(in crate::client::shell) fn displayed_workspace_status(
 }
 
 pub(in crate::client::shell) fn workspace_rows(
+    labels: &super::space_label::SpaceLabels<'_>,
     workspace: &ClientShellWorkspace,
     status: crate::api::schema::AgentStatus,
     indented: bool,
     config: &SpacesSidebarConfig,
 ) -> Vec<Vec<crate::ui::ResolvedToken>> {
-    let label = if indented && !workspace.custom_label {
+    let off_host = labels.off_host_label(workspace);
+    // An off-host label already names the environment, so it wins over the
+    // worktree branch an indented row would otherwise show.
+    let label = if indented && !workspace.custom_label && off_host.is_none() {
         workspace
             .branch
             .as_deref()
             .and_then(|branch| branch.strip_prefix("worktree/").or(Some(branch)))
             .unwrap_or(&workspace.label)
     } else {
-        &workspace.label
+        off_host.as_deref().unwrap_or(&workspace.label)
     };
     let token_values = workspace.tokens.iter().cloned().collect::<HashMap<_, _>>();
     crate::ui::sidebar_space_rows(

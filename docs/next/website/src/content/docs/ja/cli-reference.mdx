@@ -363,7 +363,7 @@ herdr workspace create --container REF --ssh HOST [--label TEXT]
 
 `--container` または `container list` に `--ssh HOST` を付けると、ローカルではなくリモートホストの Docker を使います。`HOST` は `~/.ssh/config` の `Host` エイリアスです。Herdr は ssh ペインと同じ共有接続を通して `docker` CLI を ssh 経由で実行するため、鍵認証か共有済みの接続が必要です。そうでない場合は、先にそのホストへの ssh ペインを開いてください。一覧のコンテナにはホストが付き、`workspace_id` は付きません。作業ディレクトリは `herdr.workdir` ラベル、なければコンテナの `WorkingDir` で、bind mount による変換は行いません。
 
-TUI では、グローバルメニューの `open container`、または `keys.open_container_workspace`（既定では未設定）に割り当てたキーから、実行中のコンテナを選べます。先に Docker の場所（このマシン、または `~/.ssh/config` の ssh ホスト）を選びます（`ssh.hosts` のない古いサーバーではこの手順を省略します）。コンテナ一覧で Esc を押すとホスト一覧に戻ります。入力で絞り込み、Enter でコンテナ名の新しいワークスペースを開いてコンテナ内のシェルにフォーカスし、Esc でピッカーを閉じます。コンテナを一覧できない古いサーバーでは、代わりに `Action unavailable` の通知が出ます。
+TUI では、グローバルメニューの `open container`、または `keys.open_container_workspace`（既定では未設定）に割り当てたキーから、実行中のコンテナを選べます。先に Docker の場所（このマシン、または `~/.ssh/config` の ssh ホスト）を選びます（`ssh.hosts` のない古いサーバーではこの手順を省略します）。コンテナ一覧で Esc を押すとホスト一覧に戻ります。入力で絞り込み、Enter でコンテナ名の新しいワークスペースを開いてコンテナ内のシェルにフォーカスし、Esc でピッカーを閉じます。spaces サイドバーでは、このワークスペースを `[c] ホスト@コンテナ:pwd` と表示します（このマシンの Docker は `local`）。`pwd` はシェルが OSC 7 で報告したディレクトリで、報告があるまでは省略します。名前を変更したワークスペースは、`[c] ` の後ろに変更後の名前を表示します。コンテナを一覧できない古いサーバーでは、代わりに `Action unavailable` の通知が出ます。
 
 ```bash
 herdr container list
@@ -394,7 +394,7 @@ herdr tab create --ssh deploy@prod --label prod
 
 開けるのは `~/.ssh/config` にあるエイリアスだけで、未知の名前はペインを作る前に拒否されます。`pane get` と `pane list` のペイン情報には、`user@` を除いたエイリアスを持つ `ssh_host` が含まれます。セッション復元では SSH ホストは保持されますが、サーバーの再起動後はプレーンなローカルシェルで起動し、`ssh_host` だけが残ります。自動再接続はしません。Windows ホストでは `platform_unsupported` を返します。
 
-TUI では、グローバルメニューの `open ssh host`、または `keys.open_ssh_workspace`（既定では未設定）に割り当てたキーから、同じ一覧のエイリアスを選べます。`/` で絞り込み、Enter でエイリアス名の新しいワークスペースを開いてフォーカスし、Esc でピッカーを閉じます。SSH ホストを一覧できない古いサーバーでは、代わりに `Action unavailable` の通知が出ます。
+TUI では、グローバルメニューの `open ssh host`、または `keys.open_ssh_workspace`（既定では未設定）に割り当てたキーから、同じ一覧のエイリアスを選べます。`/` で絞り込み、Enter でエイリアス名の新しいワークスペースを開いてフォーカスし、Esc でピッカーを閉じます。spaces サイドバーでは `[s] エイリアス:pwd` と表示し、OSC 7 の扱いと名前を変更した場合の表示はコンテナと同じです。SSH ホストを一覧できない古いサーバーでは、代わりに `Action unavailable` の通知が出ます。
 
 SSH ペインに貼り付けたクリップボード画像は、ペイン自身の SSH 接続を通じてコピーします。そのため SSH 接続の共有（ControlMaster）が必要で、使えない場合は通知とともに貼り付けを拒否します。
 
