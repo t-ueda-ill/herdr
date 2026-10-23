@@ -701,10 +701,20 @@ impl ClientShellState {
         {
             return;
         }
-        if (self.overlay.is_none() || self.help_mouse_passes_to_workbench(mouse))
-            && self.handle_investigation_mouse(mouse, outcome)
-        {
-            return;
+        // Why before the handler: hiding the workbench makes Help stop passing
+        // input through, so the decision cannot be read again afterwards.
+        let help_passthrough = self.overlay.is_some() && self.help_mouse_passes_to_workbench(mouse);
+        if self.overlay.is_none() || help_passthrough {
+            let workbench_was_visible = self.workbench.visible;
+            if self.handle_investigation_mouse(mouse, outcome) {
+                return;
+            }
+            // Why not leave Help to its outside-click branch: that branch
+            // returns early, so a terminal tab press would never be recorded
+            // and its release would send no TabFocus.
+            if help_passthrough && workbench_was_visible && !self.workbench.visible {
+                self.overlay = None;
+            }
         }
         self.update_link_hover(mouse, outcome);
         let point = (mouse.column, mouse.row);

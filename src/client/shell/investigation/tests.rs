@@ -3582,6 +3582,44 @@ mod help_open {
     }
 
     #[test]
+    fn a_click_on_a_terminal_tab_outside_the_popup_closes_help_and_focuses_the_tab() {
+        let mut state = with_help(false);
+        let popup = state.hits.help_popup;
+        let (rect, tab_id) = state
+            .hits
+            .tabs
+            .iter()
+            .find(|(r, _)| !crate::client::shell::contains(popup, (r.x, r.y)))
+            .cloned()
+            .expect("a terminal tab clear of the popup");
+        let mut click = |kind| {
+            let mut outcome = ClientShellInput::default();
+            state.handle_mouse(
+                MouseEvent {
+                    kind,
+                    column: rect.x,
+                    row: rect.y,
+                    modifiers: M::empty(),
+                },
+                &mut outcome,
+            );
+            outcome
+        };
+        click(MouseEventKind::Down(MouseButton::Left));
+        let released = click(MouseEventKind::Up(MouseButton::Left));
+        assert!(!help_open(&state));
+        assert!(!state.workbench.visible);
+        assert!(released.actions.iter().any(|action| matches!(
+            action,
+            crate::client::shell::ClientShellAction::Endpoint { request, .. }
+                if matches!(
+                    &request.method,
+                    crate::api::schema::Method::TabFocus(target) if target.tab_id == tab_id
+                )
+        )));
+    }
+
+    #[test]
     fn the_wheel_inside_the_popup_scrolls_help() {
         let mut state = with_help(false);
         let popup = state.hits.help_popup;
