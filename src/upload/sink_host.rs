@@ -60,7 +60,7 @@ pub(crate) struct HostSink {
 }
 
 /// Refuses a name that would not stay one entry of its directory here.
-fn storable(rel: &str, component: &str) -> Result<(), Failure> {
+pub(crate) fn storable(rel: &str, component: &str) -> Result<(), Failure> {
     let mut parts = Path::new(component).components();
     let single = matches!(
         (parts.next(), parts.next()),
@@ -191,6 +191,13 @@ impl HostSink {
             ));
         }
         Ok(path)
+    }
+
+    /// Whether `rel` already names something in the stage. Why not a plain
+    /// `exists` on the caller's side: the stage path is private, and a name this
+    /// host cannot store has no staged path at all.
+    pub(crate) fn staged_exists(&self, rel: &str) -> bool {
+        self.staged(rel).is_ok_and(|path| exists(&path))
     }
 
     fn apply_attrs(&mut self, path: &Path, shown: &str, mode: u32, mtime: Option<i64>) {

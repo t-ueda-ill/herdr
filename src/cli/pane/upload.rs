@@ -102,7 +102,7 @@ pub(crate) trait Server {
     fn request(&mut self, request: &Request, first: bool) -> std::io::Result<serde_json::Value>;
 }
 
-struct SocketServer;
+pub(super) struct SocketServer;
 
 impl Server for SocketServer {
     fn request(&mut self, request: &Request, first: bool) -> std::io::Result<serde_json::Value> {

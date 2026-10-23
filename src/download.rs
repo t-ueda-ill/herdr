@@ -4,6 +4,7 @@
 //! thread, never on the app thread or in render/layout loops.
 
 pub(crate) mod frame;
+pub(crate) mod local;
 pub(crate) mod sender_script;
 pub(crate) mod source;
 pub(crate) mod source_host;
@@ -77,6 +78,11 @@ const _: () = assert!(
     "an answer plus the control message around it must fit one frame"
 );
 const _: () = assert!(MAX_WARNING_LINE_BYTES < MAX_WARNING_BYTES);
+// Why: the client's upload `Session` refuses what exceeds the upload limits, and
+// the download writer declares the download limits to it.
+const _: () = assert!(DOWNLOAD_CHUNK_BYTES <= crate::upload::UPLOAD_CHUNK_BYTES);
+const _: () = assert!(MAX_DOWNLOAD_ENTRIES <= crate::upload::MAX_UPLOAD_ENTRIES);
+const _: () = assert!(MAX_DOWNLOAD_BYTES <= crate::upload::MAX_UPLOAD_BYTES);
 
 /// `text` with control characters shown as `\u{1b}`, safe to put in a message
 /// a terminal will print. Why not `escape_debug`: it also escapes quotes and
