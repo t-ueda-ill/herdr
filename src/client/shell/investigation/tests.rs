@@ -2646,13 +2646,12 @@ mod offhost {
     fn download_opens_in_an_off_host_tab_and_reads_through_the_locations_pane() {
         let mut state = offhost_state();
         state.investigation_mut().unwrap().browser.location_pane = Some("pane_2".into());
-        state.set_download_dir("/d".into());
         state
             .investigation_mut()
             .unwrap()
             .selected_files
             .insert("/etc/hosts".into());
-        state.set_download_dir("/home/me/Downloads".into());
+        state.set_download_dir("~/Downloads".into());
         let index = MENU.iter().position(|i| *i == DOWNLOAD_ITEM).unwrap();
         let mut outcome = ClientShellInput::default();
 
@@ -2686,7 +2685,7 @@ mod offhost {
     fn download_without_a_live_pane_says_which_location_has_none() {
         let mut state = offhost_state();
         set_panes(&mut state, &[("pane_9", None, None)]);
-        state.set_download_dir("/d".into());
+        state.set_download_dir("~/d".into());
         state
             .investigation_mut()
             .unwrap()

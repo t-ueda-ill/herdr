@@ -218,6 +218,15 @@ fn a_record_sent_twice_fails_instead_of_being_skipped() {
     assert!(stages(dest.path()).is_empty());
 }
 
+fn entry_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
 fn a_name_that_collides_by_case_is_skipped_with_its_subtree_and_the_rest_is_published() {
     let dest = TempDir::new("local-fold");
@@ -234,8 +243,10 @@ fn a_name_that_collides_by_case_is_skipped_with_its_subtree_and_the_rest_is_publ
 
     assert_eq!(std::fs::read(dest.join("a/Makefile")).unwrap(), b"upper");
     assert_eq!(std::fs::read(dest.join("a/after")).unwrap(), b"ok");
-    assert!(!dest.join("a/makefile").exists());
-    assert!(!dest.join("a/Dir/inner").exists());
+    // Listed rather than probed by path: a case-insensitive filesystem would
+    // resolve `a/makefile` to the published `a/Makefile`.
+    assert_eq!(entry_names(&dest.join("a")), ["Dir", "Makefile", "after"]);
+    assert_eq!(entry_names(&dest.join("a/Dir")), Vec::<String>::new());
     assert_eq!(
         warnings
             .iter()
@@ -256,7 +267,7 @@ fn a_symlink_that_collides_with_a_later_name_is_left_out_with_a_warning() {
 
     let (_, warnings) = published(writer.publish(PaneUploadCollision::Rename).unwrap());
 
-    assert!(std::fs::symlink_metadata(dest.join("t/A")).is_err());
+    assert_eq!(entry_names(&dest.join("t")), ["a"]);
     assert_eq!(std::fs::read(dest.join("t/a/f")).unwrap(), b"1");
     assert!(
         warnings.iter().any(|line| line.contains("t/A")),

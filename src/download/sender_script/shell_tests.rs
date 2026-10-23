@@ -813,6 +813,12 @@ fn a_file_that_grows_mid_stream_still_delivers_its_declared_size_and_a_changed_t
 #[test]
 fn a_read_that_fails_halfway_is_a_changed_trailer_even_when_size_and_time_are_unchanged() {
     each_local_shell(|shell| {
+        // Why not BusyBox: its shell runs `cat` as a built-in applet and never
+        // looks at PATH, so the failing `cat` below cannot be put in front.
+        if shell.iter().any(|word| word == "busybox") {
+            eprintln!("skipping {shell:?}: it runs cat without consulting PATH");
+            return;
+        }
         let dir = tree("failing-cat");
         let root = dir.join("t");
         std::fs::create_dir(&root).unwrap();
