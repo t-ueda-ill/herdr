@@ -207,6 +207,8 @@ cleanup; printf 'aborted\0'
 "#;
 
 use crate::api::schema::PaneUploadCollision;
+pub(crate) use crate::offhost::tokens::Malformed;
+use crate::offhost::tokens::{self, Grammar, Item, Shape};
 
 /// One header line (and, for `L`, its target line) as the script reads it.
 pub(crate) fn query_line(name: &str) -> String {
@@ -281,77 +283,40 @@ pub(crate) enum Token {
     Aborted,
 }
 
-fn arity(keyword: &[u8]) -> Option<usize> {
-    Some(match keyword {
-        b"enoent" | b"notdir" | b"eacces" | b"stagefail" | b"qend" | b"conflict" | b"committed"
-        | b"aborted" | b"s" => 0,
-        b"ready" | b"c" | b"ok" | b"rbfail" => 1,
-        b"err" | b"w" | b"p" => 2,
-        _ => return None,
-    })
+pub(crate) struct ReceiverGrammar;
+
+impl Grammar for ReceiverGrammar {
+    const SCRIPT: &'static str = "receiver";
+
+    fn shape(keyword: &[u8]) -> Option<Shape> {
+        Some(Shape::fields(match keyword {
+            b"enoent" | b"notdir" | b"eacces" | b"stagefail" | b"qend" | b"conflict"
+            | b"committed" | b"aborted" | b"s" => 0,
+            b"ready" | b"c" | b"ok" | b"rbfail" => 1,
+            b"err" | b"w" | b"p" => 2,
+            _ => return None,
+        }))
+    }
 }
 
 /// Splits the receiver's stdout into tokens as bytes arrive.
 #[derive(Debug, Default)]
 pub(crate) struct TokenReader {
-    pending: Vec<u8>,
-    fields: Vec<Vec<u8>>,
-    marker_seen: bool,
-    /// Bytes buffered before the marker, bounded: a login banner is dropped.
-    preamble: usize,
+    reader: tokens::TokenReader<ReceiverGrammar>,
 }
-
-/// A login banner longer than this means the script never started.
-const MAX_PREAMBLE_BYTES: usize = 64 * 1024;
-const MAX_FIELD_BYTES: usize = 64 * 1024;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Malformed(pub(crate) String);
 
 impl TokenReader {
     pub(crate) fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Token>, Malformed> {
-        let mut tokens = Vec::new();
-        for &byte in bytes {
-            if byte != 0 {
-                self.pending.push(byte);
-                let limit = if self.marker_seen {
-                    MAX_FIELD_BYTES
-                } else {
-                    MAX_PREAMBLE_BYTES
-                };
-                if self.pending.len() > limit {
-                    return Err(Malformed("receiver output field is too long".into()));
-                }
-                continue;
-            }
-            let field = std::mem::take(&mut self.pending);
-            if !self.marker_seen {
-                // Whatever a login shell printed first ends with the marker.
-                let marker = crate::offhost::scripts::OUTPUT_MARKER.as_bytes();
-                if field.ends_with(marker) {
-                    self.marker_seen = true;
-                } else {
-                    self.preamble += field.len() + 1;
-                    if self.preamble > MAX_PREAMBLE_BYTES {
-                        return Err(Malformed("receiver did not start".into()));
-                    }
-                }
-                continue;
-            }
-            self.fields.push(field);
-            let keyword = &self.fields[0];
-            let Some(arity) = arity(keyword) else {
-                return Err(Malformed(format!(
-                    "unknown receiver token {:?}",
-                    String::from_utf8_lossy(keyword)
-                )));
-            };
-            if self.fields.len() == arity + 1 {
-                let fields = std::mem::take(&mut self.fields);
-                tokens.push(token(fields));
-            }
-        }
-        Ok(tokens)
+        Ok(self
+            .reader
+            .feed(bytes)?
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Token(fields) => Some(token(fields)),
+                // Why dropped: no receiver token carries a body.
+                Item::Body(_) => None,
+            })
+            .collect())
     }
 }
 

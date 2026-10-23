@@ -1,23 +1,18 @@
-//! The app thread's table of live upload sessions. Every operation here is a
-//! map lookup or an atomic store: no I/O, no joins, no waiting.
-
-use std::collections::{HashMap, VecDeque};
-use std::sync::mpsc::{SyncSender, TrySendError};
-use std::sync::Arc;
+//! The app thread's table of live upload sessions: the shared transfer table
+//! with the upload vocabulary.
 
 use crate::layout::PaneId;
 use crate::offhost::PaneEnvironment;
 use crate::terminal::TerminalId;
 
 use super::path::Failure;
-use super::worker::{Control, UploadJob, PHASE_COMMITTING, PHASE_DONE};
+use super::worker::UploadJob;
+use crate::transfer::registry::{TransferHandle, TransferJob, TransferRegistry, Vocabulary};
 
 /// Server-wide and per-owner session caps. Why not share the directory read
 /// slots: a session lives for minutes and would starve listings.
 pub(crate) const MAX_SESSIONS: usize = 4;
 pub(crate) const MAX_SESSIONS_PER_OWNER: usize = 2;
-/// Cancelled ids remembered so late requests get `upload_cancelled`.
-const REMEMBERED_CANCELS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UploadOwner {
@@ -42,177 +37,33 @@ pub(crate) enum UploadEnvironment {
     OffHost(Box<PaneEnvironment>),
 }
 
-pub(crate) struct UploadHandle {
-    pub(crate) owner: UploadOwner,
-    pub(crate) target: UploadTargetKey,
-    pub(crate) environment: UploadEnvironment,
-    pub(crate) jobs: SyncSender<UploadJob>,
-    pub(crate) control: Arc<Control>,
-}
+pub(crate) type UploadHandle = TransferHandle<UploadJob>;
+pub(crate) type UploadRegistry = TransferRegistry<UploadJob>;
+pub(crate) use crate::transfer::registry::wait_for_cleanup;
 
-#[derive(Default)]
-pub(crate) struct UploadRegistry {
-    handles: HashMap<String, UploadHandle>,
-    cancelled: VecDeque<String>,
-    next: u64,
-    boot: String,
-}
+impl TransferJob for UploadJob {
+    const VOCABULARY: Vocabulary = Vocabulary {
+        noun: "upload",
+        id_prefix: "up",
+        busy_code: "upload_busy",
+        not_found_code: "upload_not_found",
+        cancelled_code: "upload_cancelled",
+        in_flight: "writes",
+        max_sessions: MAX_SESSIONS,
+        max_sessions_per_owner: MAX_SESSIONS_PER_OWNER,
+    };
 
-fn not_found(id: &str) -> Failure {
-    ("upload_not_found", format!("no upload {id}"))
-}
-
-impl UploadRegistry {
-    pub(crate) fn next_id(&mut self) -> String {
-        if self.boot.is_empty() {
-            self.boot = super::stage_token()[..8].to_owned();
-        }
-        self.next += 1;
-        format!("up-{}-{}", self.boot, self.next)
-    }
-
-    fn prune(&mut self) {
-        self.handles
-            .retain(|_, handle| handle.control.phase() != PHASE_DONE);
-    }
-
-    pub(crate) fn admit(&mut self, owner: UploadOwner) -> Result<(), Failure> {
-        self.prune();
-        let owned = self
-            .handles
-            .values()
-            .filter(|handle| handle.owner == owner)
-            .count();
-        if self.handles.len() >= MAX_SESSIONS || owned >= MAX_SESSIONS_PER_OWNER {
-            return Err((
-                "upload_busy",
-                "too many uploads are in progress; retry when one finishes".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn insert(&mut self, id: String, handle: UploadHandle) {
-        self.handles.insert(id, handle);
-    }
-
-    /// The session `id`, if `owner` started it and it is still running.
-    pub(crate) fn get(&mut self, id: &str, owner: UploadOwner) -> Result<&UploadHandle, Failure> {
-        self.prune();
-        if self.cancelled.iter().any(|cancelled| cancelled == id) {
-            return Err(super::worker::cancelled());
-        }
-        // Why the same error for another owner's id: it must not reveal that
-        // the id exists.
-        self.handles
-            .get(id)
-            .filter(|handle| handle.owner == owner)
-            .ok_or_else(|| not_found(id))
-    }
-
-    /// Queues a job without blocking, or answers it with why it cannot run.
-    /// A full queue means the client ignored the window.
-    pub(crate) fn send(&mut self, id: &str, owner: UploadOwner, job: UploadJob) {
-        let handle = match self.get(id, owner) {
-            Ok(handle) => handle,
-            Err(failure) => return job.refuse(failure),
-        };
-        match handle.jobs.try_send(job) {
-            Ok(()) => {}
-            Err(TrySendError::Full(job)) => job.refuse((
-                "upload_busy",
-                "more writes are in flight than the upload window allows".into(),
-            )),
-            Err(TrySendError::Disconnected(job)) => job.refuse(not_found(id)),
-        }
-    }
-
-    /// Cancels `id` unless it is publishing, which must run to its end.
-    pub(crate) fn cancel(&mut self, id: &str, owner: UploadOwner) -> Result<(), Failure> {
-        let phase = self.get(id, owner)?.control.phase();
-        if phase == PHASE_COMMITTING {
-            return Err((
-                "upload_busy",
-                "the upload is being published and can no longer be cancelled".into(),
-            ));
-        }
-        self.abort(id);
-        Ok(())
-    }
-
-    fn abort(&mut self, id: &str) {
-        if let Some(handle) = self.handles.remove(id) {
-            handle.control.cancel();
-            self.cancelled.push_back(id.to_owned());
-            while self.cancelled.len() > REMEMBERED_CANCELS {
-                self.cancelled.pop_front();
-            }
-        }
-    }
-
-    fn abort_where(&mut self, matches: impl Fn(&UploadHandle) -> bool) -> usize {
-        let ids: Vec<String> = self
-            .handles
-            .iter()
-            .filter(|(_, handle)| matches(handle))
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &ids {
-            self.abort(id);
-        }
-        ids.len()
-    }
-
-    /// The session target changed or went away.
-    pub(crate) fn abort_stale(&mut self, id: &str) {
-        self.abort(id);
-    }
-
-    pub(crate) fn abort_owner(&mut self, owner: UploadOwner) -> usize {
-        self.abort_where(|handle| handle.owner == owner)
-    }
-
-    pub(crate) fn abort_pane(&mut self, pane: PaneId) -> usize {
-        self.abort_where(|handle| handle.target.pane == Some(pane))
-    }
-
-    pub(crate) fn abort_terminal(&mut self, terminal: &TerminalId) -> usize {
-        self.abort_where(|handle| handle.target.terminal.as_ref() == Some(terminal))
-    }
-
-    /// Server shutdown and live handoff: sessions are never carried over.
-    /// Returns the controls so the caller may wait for cleanup to finish.
-    pub(crate) fn abort_all(&mut self) -> Vec<Arc<Control>> {
-        let controls = self
-            .handles
-            .values()
-            .map(|handle| handle.control.clone())
-            .collect();
-        self.abort_where(|_| true);
-        controls
-    }
-
-    #[cfg(test)]
-    pub(crate) fn len(&mut self) -> usize {
-        self.prune();
-        self.handles.len()
-    }
-}
-
-/// Waits up to `within` for aborted sessions to remove their stages.
-pub(crate) fn wait_for_cleanup(controls: &[Arc<Control>], within: std::time::Duration) {
-    let deadline = std::time::Instant::now() + within;
-    while controls.iter().any(|control| control.phase() != PHASE_DONE)
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    fn refuse(self, failure: Failure) {
+        UploadJob::refuse(self, failure);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
+    use std::sync::Arc;
 
+    use super::super::worker::{PHASE_COMMITTING, PHASE_DONE};
     use super::*;
 
     fn handle(owner: UploadOwner, pane: Option<u32>) -> (UploadHandle, mpsc::Receiver<UploadJob>) {
