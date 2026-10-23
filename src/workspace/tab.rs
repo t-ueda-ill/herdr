@@ -609,6 +609,7 @@ mod tests {
             canonical: "shop/db".into(),
             id: "cid".into(),
             workdir: Some("/work".into()),
+            start_dir: None,
             user: None,
             shell: crate::container::ContainerShell::BashOrSh,
             ssh: None,

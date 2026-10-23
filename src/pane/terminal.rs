@@ -647,6 +647,11 @@ impl PaneTerminal {
         self.ghostty.offhost_agent_claim_marks()
     }
 
+    #[cfg(unix)]
+    pub(super) fn offhost_active_claim(&self) -> Option<(String, String)> {
+        self.ghostty.offhost_active_claim()
+    }
+
     /// Whether the pane's agent identity is an in-band claim rather than a
     /// local process, so input paths can refuse to treat it as verified.
     pub fn claimed_agent_active(&self) -> bool {
@@ -1396,6 +1401,21 @@ impl GhosttyPaneTerminal {
             .lock()
             .ok()
             .and_then(|core| core.agent_osc_state.offhost_claim_since(seen_generation))
+    }
+
+    #[cfg(unix)]
+    pub(super) fn offhost_active_claim(&self) -> Option<(String, String)> {
+        self.core
+            .lock()
+            .ok()
+            .and_then(|core| core.agent_osc_state.offhost_active_claim())
+    }
+
+    #[cfg(unix)]
+    pub(super) fn seed_offhost_claim(&self, label: String, token: String) {
+        if let Ok(mut core) = self.core.lock() {
+            core.agent_osc_state.seed_offhost_claim(label, token);
+        }
     }
 
     pub(super) fn offhost_agent_claim_marks(&self) -> OffHostClaimMarks {

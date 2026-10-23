@@ -111,6 +111,10 @@ pub(crate) struct ContainerLaunch {
     pub(crate) canonical: String,
     pub(crate) id: String,
     pub(crate) workdir: Option<PathBuf>,
+    /// Directory the launcher changes into before the shell starts. Why not
+    /// `workdir`: `docker exec -w` exits 127 for a missing directory, while the
+    /// launcher falls back to `workdir`.
+    pub(crate) start_dir: Option<PathBuf>,
     pub(crate) user: Option<String>,
     pub(crate) shell: ContainerShell,
     /// The host whose docker CLI runs the shell; `None` for the local docker.

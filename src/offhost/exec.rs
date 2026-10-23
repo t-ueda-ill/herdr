@@ -25,7 +25,7 @@ const MAX_OUTPUT_BYTES: usize = 48 * 1024 * 1024;
 /// nothing else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PaneEnvironment {
-    Container(ContainerLaunch),
+    Container(Box<ContainerLaunch>),
     Ssh(SshLaunch),
 }
 
@@ -52,7 +52,7 @@ impl PaneEnvironment {
             return POLL_DEADLINE;
         }
         match self {
-            Self::Container(ContainerLaunch { ssh: None, .. }) => DOCKER_CLI_TIMEOUT,
+            Self::Container(launch) if launch.ssh.is_none() => DOCKER_CLI_TIMEOUT,
             _ => REMOTE_DOCKER_TIMEOUT,
         }
     }
@@ -335,15 +335,16 @@ mod tests {
     use crate::noninteractive_process::fake_program::FakeProgram;
 
     fn container(user: Option<&str>, ssh: Option<SshLaunch>) -> PaneEnvironment {
-        PaneEnvironment::Container(ContainerLaunch {
+        PaneEnvironment::Container(Box::new(ContainerLaunch {
             reference: ContainerRef::Name("scratch".into()),
             canonical: "scratch".into(),
             id: "cid".into(),
             workdir: Some("/work".into()),
+            start_dir: None,
             user: user.map(str::to_owned),
             shell: ContainerShell::BashOrSh,
             ssh,
-        })
+        }))
     }
 
     fn ssh_launch(control_path: Option<&str>) -> SshLaunch {

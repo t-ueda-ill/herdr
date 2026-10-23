@@ -849,6 +849,9 @@ pub struct AppState {
     pub kitty_graphics_enabled: bool,
     pub default_shell: String,
     pub shell_mode: crate::config::ShellModeConfig,
+    /// `[offhost] shell_integration`: whether ssh and container shells load the
+    /// cwd reporting at startup.
+    pub offhost_shell_integration: bool,
     pub new_terminal_cwd: NewTerminalCwdConfig,
     pub pane_scrollback_limit_bytes: usize,
     pub sound: SoundConfig,
@@ -910,6 +913,7 @@ impl AppState {
         crate::pane::PaneShellConfig::new(&self.default_shell, self.shell_mode)
             .with_container(terminal.and_then(|terminal| terminal.container.as_ref()))
             .with_ssh(terminal.and_then(|terminal| terminal.ssh.as_ref()))
+            .with_shell_integration(self.offhost_shell_integration)
     }
 
     /// Why not reuse `pane_shell_config_for_terminal`: cold restore starts a
@@ -1106,6 +1110,7 @@ impl AppState {
             kitty_graphics_enabled: false,
             default_shell: String::new(),
             shell_mode: crate::config::ShellModeConfig::Auto,
+            offhost_shell_integration: true,
             new_terminal_cwd: NewTerminalCwdConfig::Follow,
             pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
             sound: SoundConfig {
@@ -1367,6 +1372,7 @@ mod tests {
             canonical: "scratch".into(),
             id: "cid".into(),
             workdir: Some("/work".into()),
+            start_dir: None,
             user: None,
             shell: crate::container::ContainerShell::BashOrSh,
             ssh: None,
@@ -1398,6 +1404,25 @@ mod tests {
                 .pane_shell_config_for_terminal(&crate::terminal::TerminalId::alloc())
                 .container,
             None
+        );
+    }
+
+    #[test]
+    fn pane_shell_config_for_terminal_carries_the_offhost_shell_integration_setting() {
+        let mut state = AppState::test_new();
+        let terminal = crate::terminal::TerminalId::alloc();
+
+        assert!(
+            state
+                .pane_shell_config_for_terminal(&terminal)
+                .shell_integration
+        );
+
+        state.offhost_shell_integration = false;
+        assert!(
+            !state
+                .pane_shell_config_for_terminal(&terminal)
+                .shell_integration
         );
     }
 

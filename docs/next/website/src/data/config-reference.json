@@ -1535,6 +1535,18 @@
       ]
     },
     {
+      "id": "offhost",
+      "title": "SSH and container panes",
+      "keys": [
+        {
+          "key": "offhost.shell_integration",
+          "type": "boolean",
+          "default": "true",
+          "description": "Load a temporary script when an SSH or container pane starts its shell, so the shell reports its working directory. Set false to start the plain shell."
+        }
+      ]
+    },
+    {
       "id": "advanced",
       "title": "Advanced",
       "keys": [

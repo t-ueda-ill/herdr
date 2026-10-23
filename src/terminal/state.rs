@@ -2543,6 +2543,7 @@ mod tests {
             canonical: "scratch".into(),
             id: "cid".into(),
             workdir: Some("/work".into()),
+            start_dir: None,
             user: Some("dev".into()),
             shell: crate::container::ContainerShell::Explicit("/bin/zsh".into()),
             ssh: None,

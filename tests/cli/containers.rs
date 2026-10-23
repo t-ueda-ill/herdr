@@ -122,7 +122,9 @@ impl ContainerTest {
             &self.runtime_dir,
             &self.socket_path,
             Some(Path::new(&path_override)),
-            "onboarding = false\n",
+            // Why integration off: the shim logs one line per call, and the
+            // launcher's multi-line script would split the `exec` entry.
+            "onboarding = false\n[offhost]\nshell_integration = false\n",
             &[
                 ("HERDR_TEST_DOCKER_LOG", &self.docker.log),
                 ("HERDR_TEST_DOCKER_PS", &self.docker.ps),

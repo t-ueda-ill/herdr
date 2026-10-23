@@ -69,7 +69,7 @@ impl App {
         };
         let event_tx = self.event_tx.clone();
         let spawned = crate::thread_spawn::spawn_named_with("herdr-ssh-open", job, move |job| {
-            let result = resolve_ssh_launch(&job.params.host);
+            let result = resolve_ssh_pane_launch(&job.params.host);
             let _ = event_tx.blocking_send(AppEvent::SshOpenFinished(Box::new(SshOpenResult {
                 id: job.id,
                 params: job.params,
@@ -188,6 +188,15 @@ pub(super) fn validate_ssh_host(host: &str) -> Result<(), ApiFailure> {
 pub(super) fn resolve_ssh_launch(host: &str) -> Result<SshLaunch, ApiFailure> {
     let hosts = crate::ssh_host::hosts::list_configured_hosts().map_err(ssh_unavailable)?;
     launch_for_configured_host(host, &hosts, crate::ssh_host::control::pane_control_path)
+}
+
+/// [`resolve_ssh_launch`] plus the `RemoteCommand` check an ssh pane needs.
+/// Why not in `resolve_ssh_launch`: container panes on a remote docker always
+/// override `RemoteCommand`, so they would only pay for a second ssh process.
+pub(super) fn resolve_ssh_pane_launch(host: &str) -> Result<SshLaunch, ApiFailure> {
+    let launch = resolve_ssh_launch(host)?;
+    let has_remote_command = crate::ssh_host::remote_command::host_has_remote_command(host);
+    Ok(launch.with_remote_command(has_remote_command))
 }
 
 fn launch_for_configured_host(

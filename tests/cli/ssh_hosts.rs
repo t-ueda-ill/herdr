@@ -3,7 +3,11 @@ use std::os::unix::fs::PermissionsExt;
 
 /// Stands in for the ssh client: logs its arguments and becomes a local
 /// `/bin/sh`, so an ssh pane really runs a shell without a network.
+///
+/// `ssh -G` is herdr's `RemoteCommand` lookup, not a pane: it prints nothing
+/// and is not logged, so the log keeps one line per pane.
 const SSH_SHIM: &str = r#"#!/bin/sh
+[ "$1" = -G ] && exit 0
 printf '%s\n' "$*" >> "$HERDR_TEST_SSH_LOG"
 exec /bin/sh
 "#;
@@ -63,7 +67,9 @@ impl SshTest {
             &self.runtime_dir,
             &self.socket_path,
             Some(Path::new(path)),
-            "onboarding = false\n",
+            // Why integration off: the log has one line per ssh call, and the
+            // launcher's multi-line script would split it.
+            "onboarding = false\n[offhost]\nshell_integration = false\n",
             &[("HOME", &self.home), ("HERDR_TEST_SSH_LOG", &self.log)],
         );
         wait_for_socket(&self.socket_path, Duration::from_secs(5));
@@ -367,7 +373,9 @@ fn ssh_launch_survives_session_snapshot_and_restores_a_host_shell() {
         serde_json::from_slice(&fs::read(test.session_file()).unwrap()).unwrap();
     assert_eq!(
         pane_ssh_in_session(&session),
-        vec![serde_json::json!({"host": "prod", "control_path": control_path})]
+        vec![
+            serde_json::json!({"host": "prod", "control_path": control_path, "has_remote_command": false})
+        ]
     );
 
     let restarted = test.start_server();

@@ -158,15 +158,16 @@ mod tests {
     use crate::ssh_host::SshLaunch;
 
     fn container(shell: ContainerShell, ssh: Option<SshLaunch>) -> PaneEnvironment {
-        PaneEnvironment::Container(ContainerLaunch {
+        PaneEnvironment::Container(Box::new(ContainerLaunch {
             reference: ContainerRef::Name("scratch".into()),
             canonical: "scratch".into(),
             id: "cid".into(),
             workdir: Some("/work".into()),
+            start_dir: None,
             user: Some("dev".into()),
             shell,
             ssh,
-        })
+        }))
     }
 
     fn ssh() -> SshLaunch {

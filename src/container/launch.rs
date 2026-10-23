@@ -3,7 +3,8 @@ use std::path::Path;
 
 use super::types::{ContainerInfo, ContainerLaunch, ContainerShell};
 use super::workdir::resolve_workdir;
-use crate::ssh_host::launch::{shell_quote, ssh_command_argv};
+use crate::offhost::shell_integration::{launcher_argv, needs_launcher, LauncherShell};
+use crate::ssh_host::launch::{portable_remote_command, shell_quote, ssh_command_argv};
 
 /// `host_cwd` is `None` when docker runs on another machine, see `resolve_workdir`.
 /// The caller sets `ssh` afterwards: this only reads container facts.
@@ -14,6 +15,7 @@ pub(crate) fn plan_launch(info: &ContainerInfo, host_cwd: Option<&Path>) -> Cont
         reference,
         id: info.id.clone(),
         workdir: resolve_workdir(info, host_cwd),
+        start_dir: None,
         user: info.herdr.user.clone().or_else(|| info.user.clone()),
         shell: match &info.herdr.shell {
             Some(shell) => ContainerShell::Explicit(shell.clone()),
@@ -29,10 +31,15 @@ pub(crate) const BASH_OR_SH_PROBE: &str =
 /// `-it` is required: `-i` wires the pane PTY to stdin and `-t` gives the
 /// container side a TTY. Env goes in as `-e` because the docker CLI process
 /// environment never reaches the exec'd shell.
+///
+/// The shell runs through the launcher when it must enter `start_dir` or load
+/// the shell integration. Why not `-w` for `start_dir`: docker exits 127 for a
+/// missing `-w`, so `-w` keeps the workdir and the launcher falls back to it.
 pub(crate) fn docker_exec_argv(
     launch: &ContainerLaunch,
     login: bool,
     env: &[(String, String)],
+    shell_integration: bool,
 ) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec!["docker".into(), "exec".into(), "-it".into()];
     if let Some(workdir) = &launch.workdir {
@@ -48,6 +55,19 @@ pub(crate) fn docker_exec_argv(
         argv.push(format!("{key}={value}").into());
     }
     argv.push((&launch.id).into());
+    if needs_launcher(shell_integration, launch.start_dir.as_deref()) {
+        let shell = match &launch.shell {
+            ContainerShell::Explicit(shell) => LauncherShell::Explicit(shell),
+            ContainerShell::BashOrSh => LauncherShell::BashOrSh,
+        };
+        argv.extend(launcher_argv(
+            launch.start_dir.as_deref(),
+            shell,
+            login,
+            shell_integration,
+        ));
+        return argv;
+    }
     match &launch.shell {
         ContainerShell::Explicit(shell) => argv.push(shell.into()),
         ContainerShell::BashOrSh => {
@@ -75,8 +95,9 @@ pub(crate) fn container_shell_argv(
     launch: &ContainerLaunch,
     login: bool,
     env: &[(String, String)],
+    shell_integration: bool,
 ) -> Vec<OsString> {
-    let docker = docker_exec_argv(launch, login, env);
+    let docker = docker_exec_argv(launch, login, env, shell_integration);
     let Some(ssh) = &launch.ssh else {
         return docker;
     };
@@ -85,6 +106,13 @@ pub(crate) fn container_shell_argv(
         .map(|arg| shell_quote(&arg.to_string_lossy()))
         .collect::<Vec<_>>()
         .join(" ");
+    // The launcher script carries newlines and backslashes that a non-POSIX
+    // login shell would read differently; the plain command has neither.
+    let command = if needs_launcher(shell_integration, launch.start_dir.as_deref()) {
+        portable_remote_command(&command)
+    } else {
+        command
+    };
     ssh_command_argv(ssh, command.into())
 }
 
@@ -92,6 +120,7 @@ pub(crate) fn container_shell_argv(
 mod tests {
     use super::*;
     use crate::container::{ContainerRef, HerdrLabels};
+    use crate::offhost::shell_integration::LAUNCHER;
 
     fn launch(shell: ContainerShell) -> ContainerLaunch {
         ContainerLaunch {
@@ -99,6 +128,7 @@ mod tests {
             canonical: "scratch".into(),
             id: "cid".into(),
             workdir: Some("/work".into()),
+            start_dir: None,
             user: Some("dev".into()),
             shell,
             ssh: None,
@@ -118,6 +148,7 @@ mod tests {
             &launch(ContainerShell::BashOrSh),
             true,
             &[],
+            false,
         ));
         assert_eq!(
             argv,
@@ -130,6 +161,7 @@ mod tests {
             &launch(ContainerShell::BashOrSh),
             false,
             &[],
+            false,
         ));
         assert_eq!(argv.last().map(String::as_str), Some("sh"));
     }
@@ -137,10 +169,10 @@ mod tests {
     #[test]
     fn docker_exec_argv_uses_explicit_shell_label_without_probe() {
         let shell = ContainerShell::Explicit("/bin/zsh".into());
-        let argv = strings(docker_exec_argv(&launch(shell.clone()), false, &[]));
+        let argv = strings(docker_exec_argv(&launch(shell.clone()), false, &[], false));
         assert_eq!(argv[argv.len() - 2..], ["cid", "/bin/zsh"]);
         assert!(!argv.iter().any(|a| a == "-c"));
-        let argv = strings(docker_exec_argv(&launch(shell), true, &[]));
+        let argv = strings(docker_exec_argv(&launch(shell), true, &[], false));
         assert_eq!(argv[argv.len() - 3..], ["cid", "/bin/zsh", "-l"]);
     }
 
@@ -154,6 +186,7 @@ mod tests {
             &launch(ContainerShell::BashOrSh),
             false,
             &env,
+            false,
         ));
         let id = argv.iter().position(|a| a == "cid").unwrap();
         let before = &argv[..id];
@@ -174,8 +207,54 @@ mod tests {
         let mut bare = launch(ContainerShell::BashOrSh);
         bare.workdir = None;
         bare.user = None;
-        let argv = strings(docker_exec_argv(&bare, false, &[]));
+        let argv = strings(docker_exec_argv(&bare, false, &[], false));
         assert_eq!(&argv[..4], ["docker", "exec", "-it", "cid"]);
+    }
+
+    #[test]
+    fn docker_exec_argv_runs_the_launcher_with_integration_and_keeps_workdir_as_dash_w() {
+        let mut inherited = launch(ContainerShell::Explicit("/bin/zsh".into()));
+        inherited.start_dir = Some("/work/sub".into());
+        let argv = strings(docker_exec_argv(&inherited, true, &[], true));
+        let id = argv.iter().position(|a| a == "cid").unwrap();
+        assert_eq!(argv[3..5], ["-w", "/work"]);
+        assert_eq!(&argv[id + 1..id + 5], ["sh", "-c", LAUNCHER, "sh"]);
+        assert_eq!(argv[id + 5..id + 8], ["/work/sub", "/bin/zsh", "1"]);
+        assert!(argv[id + 8].contains("__herdr_osc7"));
+        assert!(argv[id + 9].contains("__herdr_osc7"));
+        assert_eq!(argv.len(), id + 10);
+    }
+
+    #[test]
+    fn docker_exec_argv_launches_bash_or_sh_through_the_launcher() {
+        let argv = strings(docker_exec_argv(
+            &launch(ContainerShell::BashOrSh),
+            false,
+            &[],
+            true,
+        ));
+        let id = argv.iter().position(|a| a == "cid").unwrap();
+        assert_eq!(argv[id + 5..id + 8], ["", "bash-or-sh", "0"]);
+    }
+
+    #[test]
+    fn docker_exec_argv_launches_only_for_the_start_dir_when_integration_is_off() {
+        let mut inherited = launch(ContainerShell::BashOrSh);
+        inherited.start_dir = Some("/work/sub".into());
+        let argv = strings(docker_exec_argv(&inherited, false, &[], false));
+        let id = argv.iter().position(|a| a == "cid").unwrap();
+        assert_eq!(argv[id + 5..], ["/work/sub", "bash-or-sh", "0", "", ""]);
+    }
+
+    #[test]
+    fn container_shell_argv_quotes_the_launcher_for_the_remote_login_shell() {
+        let mut inherited = remote(ContainerShell::BashOrSh);
+        inherited.start_dir = Some("/work/it's".into());
+        let argv = strings(container_shell_argv(&inherited, false, &[], true));
+        assert_eq!(argv.len(), 13, "docker travels as one ssh argument");
+        assert!(argv[12].starts_with("exec sh -c 'eval \"$(printf \""));
+        assert!(!argv[12].contains('\n'), "no raw newline for csh");
+        assert!(!LAUNCHER.is_empty() && argv[12].len() > LAUNCHER.len());
     }
 
     fn info() -> ContainerInfo {
@@ -240,8 +319,8 @@ mod tests {
     fn container_shell_argv_is_plain_docker_for_a_local_container() {
         let local = launch(ContainerShell::BashOrSh);
         assert_eq!(
-            container_shell_argv(&local, true, &[]),
-            docker_exec_argv(&local, true, &[])
+            container_shell_argv(&local, true, &[], false),
+            docker_exec_argv(&local, true, &[], false)
         );
     }
 
@@ -251,6 +330,7 @@ mod tests {
             &remote(ContainerShell::BashOrSh),
             true,
             &[("TERM".into(), "xterm-256color".into())],
+            false,
         ));
         assert_eq!(
             &argv[..12],
@@ -285,6 +365,7 @@ mod tests {
             &remote(ContainerShell::BashOrSh),
             true,
             &[],
+            false,
         ));
         let override_at = remote_argv
             .iter()
@@ -298,6 +379,7 @@ mod tests {
             &launch(ContainerShell::BashOrSh),
             true,
             &[],
+            false,
         ));
         assert!(local_argv.iter().all(|a| !a.contains("RemoteCommand")));
     }
@@ -309,6 +391,7 @@ mod tests {
             &remote(ContainerShell::Explicit("/bin/zsh".into())),
             false,
             &env,
+            false,
         ));
         let command = argv.last().unwrap();
         assert!(command.contains(r"'MSG=it'\''s $HOME; id'"), "{command}");

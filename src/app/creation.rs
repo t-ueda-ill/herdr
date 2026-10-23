@@ -146,7 +146,8 @@ impl App {
             self.state.host_terminal_theme,
             self.state.host_terminal_appearance,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode)
-                .with_launch_target(launch),
+                .with_launch_target(launch)
+                .with_shell_integration(self.state.offhost_shell_integration),
             self.event_tx.clone(),
             self.render_notify.clone(),
             self.render_dirty.clone(),
@@ -478,6 +479,7 @@ mod launch_cwd_tests {
             canonical: "review".into(),
             id: "cid".into(),
             workdir: None,
+            start_dir: None,
             user: None,
             shell: ContainerShell::BashOrSh,
             ssh: None,

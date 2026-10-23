@@ -121,6 +121,17 @@ manage_ssh_config = true
 
 When enabled, `herdr --remote` writes a private temporary SSH config that includes your user and system SSH configs first, then adds fallback `ServerAliveInterval` and `ServerAliveCountMax` values. Your own keepalive settings win. Linux and macOS clients also use a private per-attach OpenSSH control socket to reuse the first authenticated connection; Windows OpenSSH does not. Set `manage_ssh_config = false` to run remote attach through plain `ssh` without Herdr's generated config or control socket.
 
+## SSH and container panes
+
+Herdr starts the shell of an SSH or container pane through a short launcher. The launcher loads a temporary script that reports the shell's working directory, so the sidebar, the file workbench, and new tabs and splits follow `cd`. Nothing on the remote machine is edited: the script is written to a temporary directory and removed once the shell has started.
+
+```toml
+[offhost]
+shell_integration = true
+```
+
+Set `shell_integration = false` to start the plain shell. The setting applies to panes opened afterwards. A new tab or split from an SSH or container pane opens in the directory its shell last reported and falls back to the directory the pane started in when that directory no longer exists. An SSH host with a `RemoteCommand` in `~/.ssh/config` always starts as configured, without the launcher. A shell that tmux starts inside the pane does not load the script. bash, zsh, fish, and sh (dash, ash) are supported; other shells start unchanged. In sh, a login profile that sets `ENV` replaces the integration.
+
 ## Keybindings
 
 For a guided introduction to the prefix and a vetted prefix-free setup, see [Keyboard](/docs/keyboard/).

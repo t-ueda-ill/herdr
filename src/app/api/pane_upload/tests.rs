@@ -39,6 +39,7 @@ fn launch(workdir: Option<&str>) -> ContainerLaunch {
         canonical: "scratch".into(),
         id: "cid".into(),
         workdir: workdir.map(Into::into),
+        start_dir: None,
         user: None,
         shell: ContainerShell::BashOrSh,
         ssh: None,

@@ -1002,11 +1002,10 @@ fn probe_foreground_process(pid: u32, foreground_pgid: Option<u32>) -> ProcessPr
     )
 }
 
-// Why not claim support here: this loop revives panes after a live handoff
-// with `in_container` / `in_ssh` fixed to false, so it cannot tell an off-host
-// pane from a local one and would have to ignore claims anyway. Carrying the
-// claimed identity across a handoff is a separate stage that must also carry
-// those two flags; until then a handed-off pane loses its claimed identity.
+// Revives panes after a live handoff. It follows in-band agent claims only
+// when `shell_off_host` is set from the handoff state: a local pane must keep
+// ignoring them, and the claim it carries is seeded into the terminal before
+// the first poll so the watcher adopts it.
 #[cfg(unix)]
 // Handoff detection needs both the write-bracketed text revision and detection epoch.
 #[allow(clippy::too_many_arguments)]
@@ -1018,6 +1017,7 @@ fn spawn_basic_detection_task(
     detection_content_seq: Arc<AtomicU64>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     self_reported_agent_active: Arc<AtomicBool>,
+    shell_off_host: bool,
     state_events: mpsc::Sender<AppEvent>,
 ) -> (
     tokio::task::AbortHandle,
@@ -1051,6 +1051,8 @@ fn spawn_basic_detection_task(
         let mut last_codex_prompt_ready = false;
         let mut last_self_reported_shell_check = None;
         let mut agent_job = AgentJobTracker::default();
+        let mut offhost_claims = OffHostClaimWatcher::default();
+        let mut claimed_active_published = false;
 
         loop {
             let sleep_duration = if pending_idle.active() {
@@ -1061,6 +1063,15 @@ fn spawn_basic_detection_task(
             tokio::select! {
                 _ = tokio::time::sleep(sleep_duration) => {}
                 _ = detect_reset.notified() => {
+                    // Same split as the full detection task: only an explicit
+                    // release ends a claim, other resets leave the remote agent running.
+                    let graceful_release =
+                        active_pending_release(&pending_release_for_task, std::time::Instant::now())
+                            .is_some();
+                    let was_claimed = matches!(
+                        agent_presence.identity(),
+                        Some((_, AgentIdentitySource::OffHostClaim))
+                    );
                     publish_codex_prompt_observation(
                         &state_events, pane_id, Some(Agent::Codex), "", None, false,
                         &mut last_codex_prompt_ready,
@@ -1084,6 +1095,31 @@ fn spawn_basic_detection_task(
                     agent_startup_grace_until = None;
                     pending_idle.clear();
                     agent_job = AgentJobTracker::default();
+                    if shell_off_host {
+                        let marks = terminal.offhost_agent_claim_marks();
+                        if graceful_release {
+                            offhost_claims.consume(marks);
+                        } else {
+                            offhost_claims.rewind(marks);
+                        }
+                        if claimed_active_published {
+                            claimed_active_published = false;
+                            terminal.set_claimed_agent_active(false);
+                        }
+                        if was_claimed && graceful_release {
+                            publish_state_changed_event(
+                                state_events.clone(),
+                                pane_id,
+                                None,
+                                AgentState::Unknown,
+                                false,
+                                false,
+                                false,
+                                std::time::Instant::now(),
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
 
@@ -1208,6 +1244,50 @@ fn spawn_basic_detection_task(
                             agent_startup_grace_until = None;
                         }
                     }
+                }
+            }
+
+            let claim_action =
+                offhost_claims.poll(shell_off_host, agent_presence.identity(), now, |seen| {
+                    terminal.offhost_agent_claim_since(seen)
+                });
+            if let ClaimOutcome::Adopted {
+                previous,
+                agent: claimed,
+            } = apply_off_host_claim_action(
+                claim_action,
+                &mut agent_presence,
+                &mut pending_foreground_shell_clear,
+            ) {
+                agent = Some(claimed);
+                pending_idle.clear();
+                last_codex_prompt_ready = false;
+                last_screen_scan_detection_content_seq = None;
+                clear_osc_evidence_for_agent_transition(&terminal, previous);
+                agent_startup_grace_until = Some(now + AGENT_STARTUP_GRACE_WINDOW);
+                state = AgentState::Unknown;
+                last_visible_idle = false;
+                last_visible_blocker = false;
+                last_visible_working = false;
+                last_visible_signal_refresh = None;
+                publish_agent_process_detected_event(state_events.clone(), pane_id, claimed, now)
+                    .await;
+                info!(
+                    pane = pane_id.raw(),
+                    previous_agent = ?previous,
+                    agent = ?claimed,
+                    "agent claimed in-band"
+                );
+                agent_changed = true;
+            }
+            if shell_off_host {
+                let claimed_now = matches!(
+                    agent_presence.identity(),
+                    Some((_, AgentIdentitySource::OffHostClaim))
+                );
+                if claimed_now != claimed_active_published {
+                    claimed_active_published = claimed_now;
+                    terminal.set_claimed_agent_active(claimed_now);
                 }
             }
 
@@ -2098,16 +2178,27 @@ pub(crate) struct PaneShellConfig<'a> {
     pub(crate) mode: crate::config::ShellModeConfig,
     pub(crate) container: Option<&'a crate::container::ContainerLaunch>,
     pub(crate) ssh: Option<&'a crate::ssh_host::SshLaunch>,
+    /// Whether ssh and container shells load the cwd reporting through the
+    /// launcher. Decided by the app from config, so spawning does no I/O for it.
+    pub(crate) shell_integration: bool,
 }
 
 impl<'a> PaneShellConfig<'a> {
+    // Why off by default: only the app knows the `[offhost]` setting, and a
+    // caller that forgot to pass it must not change a pane's argv.
     pub(crate) fn new(default_shell: &'a str, mode: crate::config::ShellModeConfig) -> Self {
         Self {
             default_shell,
             mode,
             container: None,
             ssh: None,
+            shell_integration: false,
         }
+    }
+
+    pub(crate) fn with_shell_integration(mut self, shell_integration: bool) -> Self {
+        self.shell_integration = shell_integration;
+        self
     }
 
     pub(crate) fn with_container(
@@ -2349,12 +2440,18 @@ fn pane_shell_spawn_command_for_target(
     if let Some(launch) = shell_config.container {
         let env = container_forward_env(&cmd, launch_env);
         let login = shell_mode_uses_login_shell(shell_config.mode, target);
-        *cmd.get_argv_mut() = crate::container::launch::container_shell_argv(launch, login, &env);
+        *cmd.get_argv_mut() = crate::container::launch::container_shell_argv(
+            launch,
+            login,
+            &env,
+            shell_config.shell_integration,
+        );
     }
     // Why not forward `HERDR_*` like containers: `SendEnv` only works when the
     // server's `AcceptEnv` allows it, and ssh already sends `TERM` with the pty.
     if let Some(launch) = shell_config.ssh {
-        *cmd.get_argv_mut() = crate::ssh_host::launch::ssh_argv(launch);
+        *cmd.get_argv_mut() =
+            crate::ssh_host::launch::ssh_pane_argv(launch, shell_config.shell_integration);
     }
     Ok(cmd)
 }
@@ -2531,6 +2628,13 @@ impl PaneRuntime {
             terminal_title: self.terminal_title(),
             initial_history_ansi: None,
             agent_state: None,
+            in_container: self.in_container,
+            in_ssh: self.in_ssh,
+            reported_cwd: self.reported_cwd(),
+            offhost_claim: self
+                .terminal
+                .offhost_active_claim()
+                .map(|(kind, token)| crate::handoff_runtime::HandoffOffHostClaim { kind, token }),
         }
     }
 
@@ -2746,7 +2850,12 @@ impl PaneRuntime {
             terminal_title,
             initial_history_ansi,
             agent_state: _,
+            in_container,
+            in_ssh,
+            reported_cwd: handoff_reported_cwd,
+            offhost_claim,
         } = state;
+        let shell_off_host = in_container || in_ssh;
         let pane_id = PaneId::from_raw(pane_id);
         use std::os::fd::FromRawFd;
 
@@ -2778,10 +2887,21 @@ impl PaneRuntime {
         if let Some(ansi) = initial_history_ansi.as_deref() {
             pane_terminal.seed_history_ansi(ansi);
         }
+        // Why before the first read: the PTY actor parses OSC 7 from the
+        // first byte, and a host verdict would drop the remote host name.
+        pane_terminal.set_shell_runs_off_host(shell_off_host);
+        if shell_off_host {
+            if let Some(claim) = offhost_claim {
+                pane_terminal.seed_offhost_claim(claim.kind, claim.token);
+            }
+        }
         let terminal = Arc::new(PaneTerminal::new(pane_terminal));
         let compression = TerminalCompressionTask::spawn(pane_id, terminal.clone());
         let child_pid = Arc::new(AtomicU32::new(child_pid));
-        let reported_cwd = Arc::new(Mutex::new(None));
+        let reported_cwd =
+            Arc::new(Mutex::new(handoff_reported_cwd.filter(|cwd| {
+                usable_reported_cwd(cwd.clone(), shell_off_host).is_some()
+            })));
         let cwd_process_exited = Arc::new(AtomicBool::new(false));
         let kitty_keyboard_flags = Arc::new(AtomicU16::new(keyboard_protocol_flags));
         let content_seq = Arc::new(AtomicU64::new(0));
@@ -2833,7 +2953,7 @@ impl PaneRuntime {
                     });
                 }
                 if let Some(cwd) = result.reported_cwd.clone() {
-                    publish_reported_cwd(pane_id, cwd, &reported_cwd, false, &read_events);
+                    publish_reported_cwd(pane_id, cwd, &reported_cwd, shell_off_host, &read_events);
                 }
                 for content in result.clipboard_writes {
                     if let Err(err) = read_events.try_send(AppEvent::ClipboardWrite { content }) {
@@ -2879,6 +2999,7 @@ impl PaneRuntime {
             detection_content_seq.clone(),
             full_lifecycle_authority_active.clone(),
             self_reported_agent_active.clone(),
+            shell_off_host,
             events,
         );
 
@@ -2892,8 +3013,8 @@ impl PaneRuntime {
             persistence_cwd: Mutex::new(None),
             cwd_process_exited,
             child_wait_completed: None,
-            in_container: false,
-            in_ssh: false,
+            in_container,
+            in_ssh,
             kitty_keyboard_flags,
             content_seq,
             content_write_lock,
@@ -4315,6 +4436,7 @@ impl PaneRuntime {
             self.detection_content_seq.clone(),
             self.full_lifecycle_authority_active.clone(),
             self.self_reported_agent_active.clone(),
+            self.shell_runs_off_host(),
             events,
         );
         self.detect_handle = Some(handle);
@@ -5777,6 +5899,7 @@ mod tests {
             canonical: "shop/db".into(),
             id: "cid".into(),
             workdir: Some("/work".into()),
+            start_dir: None,
             user: None,
             shell: crate::container::ContainerShell::BashOrSh,
             ssh: None,
@@ -5935,6 +6058,58 @@ mod tests {
             cmd.get_cwd(),
             Some(&crate::platform::normalize_cwd_for_launch(&host_cwd).into_os_string()),
             "the local ssh client starts in the host cwd"
+        );
+    }
+
+    #[test]
+    fn container_shell_spawn_command_runs_the_launcher_when_shell_integration_is_on() {
+        let launch = test_container_launch();
+        let cmd = pane_shell_spawn_command_for_target(
+            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::Login)
+                .with_container(Some(&launch))
+                .with_shell_integration(true),
+            ShellLaunchTarget::OtherUnix,
+            &std::env::temp_dir(),
+            &PaneLaunchEnv::default(),
+        )
+        .unwrap();
+
+        let argv = argv_strings(&cmd);
+        let id = argv.iter().position(|arg| arg == "cid").unwrap();
+        assert_eq!(argv[id + 1..id + 3], ["sh", "-c"]);
+        assert_eq!(argv[id + 3], crate::offhost::shell_integration::LAUNCHER);
+        assert_eq!(argv[id + 6..id + 8], ["bash-or-sh", "1"]);
+        assert!(argv[id + 8].contains("__herdr_osc7"));
+    }
+
+    #[test]
+    fn ssh_shell_spawn_command_runs_the_launcher_only_without_a_remote_command() {
+        let resolved = test_ssh_launch().with_remote_command(false);
+        let spawn = |launch: &crate::ssh_host::SshLaunch, integration: bool| {
+            let cmd = pane_shell_spawn_command_for_target(
+                PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin)
+                    .with_ssh(Some(launch))
+                    .with_shell_integration(integration),
+                ShellLaunchTarget::OtherUnix,
+                &std::env::temp_dir(),
+                &PaneLaunchEnv::default(),
+            )
+            .unwrap();
+            argv_strings(&cmd)
+        };
+
+        assert!(spawn(&resolved, true)
+            .last()
+            .unwrap()
+            .starts_with("exec sh -c 'eval"));
+        assert_eq!(
+            spawn(&resolved, false).last().map(String::as_str),
+            Some("prod")
+        );
+        assert_eq!(
+            spawn(&test_ssh_launch(), true).last().map(String::as_str),
+            Some("prod"),
+            "an unchecked host keeps the plain ssh login"
         );
     }
 

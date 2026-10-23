@@ -323,6 +323,7 @@ pub struct Config {
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
+    pub offhost: OffhostConfig,
 }
 
 #[derive(Debug)]
@@ -1114,6 +1115,23 @@ impl Default for RemoteConfig {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct OffhostConfig {
+    /// Make shells in ssh and container panes report their working directory
+    /// by loading a temporary script at startup. Set false to start the plain
+    /// shell. Default: true.
+    pub shell_integration: bool,
+}
+
+impl Default for OffhostConfig {
+    fn default() -> Self {
+        Self {
+            shell_integration: true,
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ExperimentalConfig {
@@ -1484,6 +1502,16 @@ manifest_check = false
             without_update_channel.update.channel,
             default_update_channel()
         );
+    }
+
+    #[test]
+    fn offhost_shell_integration_defaults_on_and_can_be_turned_off() {
+        assert!(Config::default().offhost.shell_integration);
+        let empty: Config = toml::from_str("").unwrap();
+        assert!(empty.offhost.shell_integration);
+
+        let off: Config = toml::from_str("[offhost]\nshell_integration = false").unwrap();
+        assert!(!off.offhost.shell_integration);
     }
 
     #[test]

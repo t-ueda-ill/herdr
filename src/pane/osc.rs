@@ -667,6 +667,28 @@ impl AgentOscStateTracker {
         })
     }
 
+    /// The start claim that has not exited yet, as `(kind, token)`.
+    #[cfg(unix)]
+    pub(super) fn offhost_active_claim(&self) -> Option<(String, String)> {
+        let claim = &self.offhost_claim;
+        match (&claim.latest, &claim.active_token) {
+            (Some(OffHostAgentClaim::Started { label }), Some(token)) => {
+                Some((label.clone(), token.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Restores a claim carried across a handoff. It lands as the first
+    /// claim, so the claim watcher adopts it on its first poll, and the token
+    /// keeps the agent's later exit marker valid.
+    #[cfg(unix)]
+    pub(super) fn seed_offhost_claim(&mut self, label: String, token: String) {
+        self.offhost_claim.active_token = Some(token);
+        self.offhost_claim.latest = Some(OffHostAgentClaim::Started { label });
+        self.offhost_claim.generation += 1;
+    }
+
     #[cfg(test)]
     fn offhost_claim_generation(&self) -> u64 {
         self.offhost_claim.generation

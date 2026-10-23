@@ -234,7 +234,7 @@ impl App {
         }
         let environment = match running_pane_off_host_shell(self, ws_idx, pane) {
             Some(RunningOffHostShell::Container(launch)) => {
-                PaneEnvironment::Container(launch.clone())
+                PaneEnvironment::Container(Box::new(launch.clone()))
             }
             Some(RunningOffHostShell::Ssh(launch)) => PaneEnvironment::Ssh(launch.clone()),
             None => {
