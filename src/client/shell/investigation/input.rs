@@ -425,29 +425,33 @@ impl ClientShellState {
                 _ => {}
             },
             Dialog::Input {
-                title,
                 input,
-                operation,
+                purpose,
                 sources,
+                ..
             } => {
                 if code == KeyCode::Enter {
                     let value = input.to_string();
-                    let root_change = title == "root";
-                    let paths = if sources.is_empty() {
-                        vec![value.clone()]
-                    } else {
-                        sources.clone()
-                    };
-                    let destination = (!sources.is_empty()).then_some(value.clone());
-                    let operation = operation.clone();
+                    let purpose = purpose.clone();
+                    let sources = sources.clone();
                     tab.dialog = None;
-                    if root_change {
-                        self.change_file_viewer_root(value, None, outcome);
-                    } else {
-                        self.investigation_plan_operation(
-                            operation_params(operation, paths, destination),
-                            outcome,
-                        );
+                    match purpose {
+                        InputPurpose::Root => {
+                            self.change_file_viewer_root(value, None, outcome);
+                        }
+                        InputPurpose::Download => self.queue_download(sources, value),
+                        InputPurpose::Operation(operation) => {
+                            let destination = (!sources.is_empty()).then_some(value.clone());
+                            let paths = if sources.is_empty() {
+                                vec![value]
+                            } else {
+                                sources
+                            };
+                            self.investigation_plan_operation(
+                                operation_params(operation, paths, destination),
+                                outcome,
+                            );
+                        }
                     }
                 } else {
                     input.handle_key(key);

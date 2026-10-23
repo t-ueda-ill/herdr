@@ -2643,6 +2643,74 @@ mod offhost {
     }
 
     #[test]
+    fn download_opens_in_an_off_host_tab_and_reads_through_the_locations_pane() {
+        let mut state = offhost_state();
+        state.investigation_mut().unwrap().browser.location_pane = Some("pane_2".into());
+        state.set_download_dir("/d".into());
+        state
+            .investigation_mut()
+            .unwrap()
+            .selected_files
+            .insert("/etc/hosts".into());
+        let index = MENU.iter().position(|i| *i == DOWNLOAD_ITEM).unwrap();
+        let mut outcome = ClientShellInput::default();
+
+        state.investigation_menu_action(index, &mut outcome);
+
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Input {
+                purpose: InputPurpose::Download,
+                ..
+            })
+        ));
+        assert_eq!(state.investigation().unwrap().notice, "");
+        press(
+            &mut state,
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let queued = state.take_download_requests();
+        assert_eq!(
+            queued[0].place,
+            crate::client::shell::WorkbenchDropPlace::Pane("pane_2".into())
+        );
+        assert_ne!(
+            queued[0].location,
+            crate::client::shell::file_viewer::model::FileLocation::to_pane_location(None)
+        );
+    }
+
+    #[test]
+    fn download_without_a_live_pane_says_which_location_has_none() {
+        let mut state = offhost_state();
+        set_panes(&mut state, &[("pane_9", None, None)]);
+        state.set_download_dir("/d".into());
+        state
+            .investigation_mut()
+            .unwrap()
+            .selected_files
+            .insert("/etc/hosts".into());
+        let index = MENU.iter().position(|i| *i == DOWNLOAD_ITEM).unwrap();
+        let mut outcome = ClientShellInput::default();
+        state.investigation_menu_action(index, &mut outcome);
+
+        press(
+            &mut state,
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+
+        let queued = state.take_download_requests();
+        assert_eq!(
+            queued[0].place,
+            crate::client::shell::WorkbenchDropPlace::NoPane(
+                "no pane running in app@devbox".into()
+            )
+        );
+    }
+
+    #[test]
     fn an_off_host_tree_drop_goes_through_a_live_pane_of_its_location() {
         let mut state = offhost_state();
         state.investigation_mut().unwrap().browser.location_pane = Some("pane_2".into());
@@ -2668,6 +2736,217 @@ mod offhost {
                 "no pane running in app@devbox".into()
             )
         );
+    }
+}
+
+// ---- saving selected entries on this machine (download design §5) ----
+
+mod download {
+    use super::*;
+    use crate::client::shell::{ClientDownloadRequest, WorkbenchDropPlace};
+
+    fn download_index() -> usize {
+        MENU.iter()
+            .position(|item| *item == DOWNLOAD_ITEM)
+            .expect("the menu lists the download item")
+    }
+
+    fn select_files(state: &mut ClientShellState, paths: &[&str]) {
+        let tab = state.investigation_mut().unwrap();
+        tab.selected_files = paths.iter().map(|p| (*p).to_owned()).collect();
+    }
+
+    fn open(state: &mut ClientShellState) {
+        let mut outcome = ClientShellInput::default();
+        state.investigation_menu_action(download_index(), &mut outcome);
+    }
+
+    fn dialog_text(state: &ClientShellState) -> Option<String> {
+        match &state.investigation().unwrap().dialog {
+            Some(Dialog::Input { input, .. }) => Some(input.to_string()),
+            _ => None,
+        }
+    }
+
+    fn requests(state: &mut ClientShellState) -> Vec<ClientDownloadRequest> {
+        state.take_download_requests()
+    }
+
+    #[test]
+    fn the_menu_ends_with_the_download_item_and_leaves_the_host_only_range_alone() {
+        let index = download_index();
+
+        assert!(!matches!(index, 6..=15 | 22));
+        assert_eq!(MENU[23], "refresh files");
+    }
+
+    #[test]
+    fn the_menu_item_opens_an_input_that_starts_at_the_download_folder_for_every_selected_path() {
+        let mut state = state();
+        state.set_download_dir("/home/me/Downloads".into());
+        select_files(&mut state, &["/repo/a.txt", "/repo/src"]);
+
+        open(&mut state);
+
+        match &state.investigation().unwrap().dialog {
+            Some(Dialog::Input {
+                title,
+                input,
+                purpose,
+                sources,
+            }) => {
+                assert_eq!(*purpose, InputPurpose::Download);
+                assert_eq!(input.to_string(), "/home/me/Downloads");
+                assert_eq!(sources, &["/repo/a.txt", "/repo/src"]);
+                assert_eq!(title, "download 2 item(s) to (this machine):");
+            }
+            other => panic!("expected the download input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn without_a_known_download_folder_the_input_is_empty_and_asks_for_one() {
+        let mut state = state();
+        select_files(&mut state, &["/repo/a.txt"]);
+
+        open(&mut state);
+
+        assert_eq!(dialog_text(&state).as_deref(), Some(""));
+        assert_eq!(
+            state.investigation().unwrap().notice,
+            "enter a folder on this machine"
+        );
+    }
+
+    #[test]
+    fn nothing_selected_opens_nothing() {
+        let mut state = state();
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.rows.clear();
+        tab.preview = None;
+
+        open(&mut state);
+
+        assert!(state.investigation().unwrap().dialog.is_none());
+    }
+
+    #[test]
+    fn names_that_would_collide_on_this_machine_are_refused_before_the_dialog() {
+        for (paths, names) in [
+            (["/a/x", "/b/x"], "x, x"),
+            (["/a/Makefile", "/a/makefile"], "Makefile, makefile"),
+        ] {
+            let mut state = state();
+            select_files(&mut state, &paths);
+
+            open(&mut state);
+
+            let tab = state.investigation().unwrap();
+            assert!(tab.dialog.is_none(), "{paths:?}");
+            assert_eq!(
+                tab.notice,
+                format!("two selected items would get the same name on this machine: {names}")
+            );
+        }
+    }
+
+    #[test]
+    fn too_many_or_too_long_paths_are_refused_before_the_dialog() {
+        let long = format!("/{}", "x".repeat(4_100));
+        let many: Vec<String> = (0..1_025).map(|i| format!("/repo/f{i}")).collect();
+        for paths in [vec![long], many] {
+            let mut state = state();
+            let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+            select_files(&mut state, &paths);
+
+            open(&mut state);
+
+            let tab = state.investigation().unwrap();
+            assert!(tab.dialog.is_none());
+            assert!(!tab.notice.is_empty());
+        }
+    }
+
+    #[test]
+    fn pasting_while_the_dialog_is_open_types_into_the_input_and_never_uploads() {
+        let mut state = state();
+        state.set_download_dir("/d".into());
+        select_files(&mut state, &["/repo/a.txt"]);
+        open(&mut state);
+
+        assert!(state.workbench_drop_target().is_none());
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Paste("/more".into())]);
+
+        // The editor opens with its text selected, so a paste replaces it.
+        assert_eq!(dialog_text(&state).as_deref(), Some("/more"));
+        assert!(requests(&mut state).is_empty());
+    }
+
+    #[test]
+    fn enter_queues_one_request_for_the_host_with_the_text_as_typed() {
+        let mut state = state();
+        state.set_download_dir("~/Downloads".into());
+        select_files(&mut state, &["/repo/a.txt", "/repo/src"]);
+        open(&mut state);
+        let tab_id = state.investigation().unwrap().id;
+
+        press(
+            &mut state,
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+
+        let queued = requests(&mut state);
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].tab, tab_id);
+        assert_eq!(queued[0].place, WorkbenchDropPlace::Host);
+        assert_eq!(queued[0].paths, ["/repo/a.txt", "/repo/src"]);
+        assert_eq!(queued[0].destination, "~/Downloads");
+        assert_eq!(
+            queued[0].location,
+            crate::client::shell::file_viewer::model::FileLocation::to_pane_location(None)
+        );
+        let tab = state.investigation().unwrap();
+        assert!(tab.dialog.is_none());
+        assert_eq!(tab.notice, "preparing download…");
+    }
+
+    #[test]
+    fn escape_queues_nothing() {
+        let mut state = state();
+        select_files(&mut state, &["/repo/a.txt"]);
+        open(&mut state);
+
+        press(
+            &mut state,
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        );
+
+        assert!(requests(&mut state).is_empty());
+        assert!(state.investigation().unwrap().dialog.is_none());
+    }
+
+    #[test]
+    fn the_change_root_input_is_a_root_purpose_and_enter_closes_it_without_a_download() {
+        let mut state = state();
+        let mut outcome = ClientShellInput::default();
+        state.investigation_menu_action(1, &mut outcome);
+
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Input {
+                purpose: InputPurpose::Root,
+                ..
+            })
+        ));
+        press(
+            &mut state,
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(requests(&mut state).is_empty());
+        assert!(state.investigation().unwrap().dialog.is_none());
     }
 }
 

@@ -100,7 +100,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | コンテナ | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH ホスト | `ssh.open`, `ssh.hosts` |
-| ファイル | `directory.list`、`directory.index`、`pane.open_editor`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.file.read`、`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel` |
+| ファイル | `directory.list`、`directory.index`、`pane.open_editor`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.file.read`、`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel`、`pane.download.begin`、`pane.download.read`、`pane.download.cancel` |
 | タブ | `tab.create`、`tab.create_inherit`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | ペイン | `pane.split`、`pane.split_inherit`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
@@ -516,6 +516,36 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 | `platform_unsupported` | Windows のサーバーでコンテナか SSH を送り先にした |
 
 シェルモードの TUI クライアントは、これらの要求を endpoint control の `endpoint.upload.request.v1` で送ります。使うのは、サーバーが 4 つのメソッドと `pane_upload_control` capability をすべて advertise しているときだけです。ダイレクトアタッチは `endpoint.upload.probe.v1` で確かめます。どちらも無ければ、ドロップは従来どおりローカルのパスを貼り付けます。
+
+### ダウンロード
+
+`pane.download.begin`、`pane.download.read`、`pane.download.cancel` は、ペインのシェルから見える環境（サーバーのホスト、コンテナ、SSH ホスト）のファイルとフォルダを、クライアントへストリームで送ります。`herdr pane download` と、ファイルワークベンチの `download…` が使います。サーバーはバイト列を自分のディスクに残さず、クライアントが `read` で求めた分だけ、1 回の read につき 1 つの応答で読み出します。ツリーの組み立てと公開はクライアントが、ストリームの終わりに行います。
+
+```json
+{ "id": "d1", "method": "pane.download.begin", "params": { "pane_id": "w1:p2", "paths": ["/etc/hosts", "/var/log/app"], "max_bytes": 131072 } }
+```
+
+`begin` は省略可能な `pane_id`（ワークスペースのペイン）を取り、無いときはサーバー自身のファイルシステムが対象です。`paths` はその環境の絶対パスを 1〜1,024 個、それぞれ 4,096 バイト以下、合計 256 KiB 以下で、`..` や制御文字を含めません。最後の要素が一番上の名前になり、重複せず有効な名前（255 バイト以下で `.herdr-upload-` で始まらない）でなければなりません。一番上のシンボリックリンクは辿ってリンク先の中身を保存し、フォルダの中のリンクはリンクのままです。`max_bytes` は 1 つの応答に載せるデコード後のデータの上限です（既定と上限は 524,288、0 は拒否）。応答は `pane_download_started` で、`download_id`、`location`、`names`、返す前に行う walk の見積もり `entries` と `bytes`、`chunk_bytes`、`window`（2）を返します。
+
+`read` は `download_id` と、0 から 1 ずつ増える `seq` を取ります。read のたびにストリームの次の部分を返すので、ストリームには順序があり、応答待ちの read は `window` 個までです（要求ごとにソケットを開き直すクライアント（CLI など）は 1 つずつ送ります）。応答は `pane_download_chunk` で、`seq`、`records`、`sent_entries`、`sent_bytes`、`done`、`warnings` を持ちます。record の形は `pane.upload.write` と同じで、names のどれかで始まる `/` 区切りの `path`、その path の最初の record だけに付く `entry`、`offset`、base64 の `data`、`last` です。ディレクトリとリンクは 1 つの record です。親は子より先に来ます。取り出し元が遅いときは `records` が空になることがあります（最長 25 秒後のハートビート）。最後の応答は `done: true` で record を持たず、飛ばした項目などの致命的でない問題を `warnings` に入れます（合計 32 KiB まで、制御文字はエスケープ済み）。`seq` が違う read は `invalid_params` で断り、セッションは続きます。`done` やセッションを終えるエラーの後は、すでに出ていた read に `download_not_found` か `download_cancelled` が返るので、クライアントは捨てます。
+
+`cancel` は `download_id` を取り、`ok` を返します。ペインが閉じたとき、ペインの環境が変わったとき、クライアントが切断したとき、サーバーのハンドオフが始まったとき、最初の read まで、または read の間で 120 秒何も読まれないとき、取り出し元が 120 秒何も送ってこないときにも、ダウンロードは終わります。サーバーが同時に受けるのは 4 件（クライアントごとに 2 件）で、1 件あたり 16 GiB、100,000 項目までです。
+
+| コード | 意味 |
+| --- | --- |
+| `invalid_params` | パスか名前が不正、個数か長さが上限を超えた、`max_bytes` が 0、一番上が FIFO・ソケット・デバイス、または `seq` が違う |
+| `not_found`、`permission_denied` | begin の時点でパスが無い、または読めない |
+| `download_too_large` | walk かストリームが 16 GiB か 100,000 項目を超えた |
+| `download_busy` | ダウンロードが多すぎる、または `window` を超える read が来た |
+| `download_not_found`、`download_cancelled` | ダウンロードが終わった、期限が切れた、または別のクライアントのもの |
+| `download_source_changed` | ストリーム中にファイルが変わった、消えた、または読めなかった |
+| `download_failed` | 取り出し元が送らなくなった、出力が壊れていた、または応答がフレームに収まらなかった。メッセージに詳細が入る |
+| `stale_pane_target` | ダウンロード中にペインの環境が変わった、またはペインが終わった |
+| `container_unavailable`、`container_not_found`、`offhost_shell_unavailable` | `pane.directory.*` と同じ |
+| `ssh_unavailable` | SSH ペインの接続が共有されていない（ControlMaster）、またはホストに届かない |
+| `platform_unsupported` | Windows のサーバーでコンテナか SSH を取り出し元にした |
+
+シェルモードの TUI クライアントは、これらの要求を endpoint control の `endpoint.download.request.v1` で送り、応答は `endpoint.download.response.v1` で受けます。使うのは、サーバーが 3 つのメソッドと `pane_download_control` capability をすべて advertise しているときだけです。無ければ、`download…` は `this server cannot send files; update Herdr there` と表示します。
 
 ## エージェントビューのクエリ
 

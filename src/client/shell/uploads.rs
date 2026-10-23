@@ -22,7 +22,6 @@ pub(crate) enum ClientUploadDecision {
 /// The workbench's dialog asked to save these paths on this machine. The client
 /// loop starts the download (design §5.2, §5.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // Why: wired in S6, where the workbench dialog constructs it; remove there.
 pub(crate) struct ClientDownloadRequest {
     /// The investigation tab, which shows the outcome too.
     pub(crate) tab: u64,

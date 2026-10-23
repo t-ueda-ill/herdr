@@ -107,6 +107,15 @@ impl ClientShellState {
         index: usize,
         outcome: &mut ClientShellInput,
     ) {
+        // Why before the host-only guard below: downloading works in every
+        // location, so it must not say "not available inside ...".
+        if MENU.get(index) == Some(&DOWNLOAD_ITEM) {
+            if let Some(tab) = self.investigation_mut() {
+                tab.dialog = None;
+            }
+            self.investigation_download_prompt(outcome);
+            return;
+        }
         let Some(tab) = self.investigation_mut() else {
             return;
         };
@@ -130,7 +139,7 @@ impl ClientShellState {
                 tab.dialog = Some(Dialog::Input {
                     title: "root".into(),
                     input: TextEditor::new(&root, true),
-                    operation: FileOperation::CreateDirectory,
+                    purpose: InputPurpose::Root,
                     sources: Vec::new(),
                 });
             }
@@ -173,7 +182,7 @@ impl ClientShellState {
                     tab.dialog = Some(Dialog::Input {
                         title: "rename / move to absolute path".into(),
                         input: TextEditor::new(path, true),
-                        operation: FileOperation::Move,
+                        purpose: InputPurpose::Operation(FileOperation::Move),
                         sources: vec![path.clone()],
                     });
                 }
@@ -194,11 +203,11 @@ impl ClientShellState {
                     }
                     .into(),
                     input: TextEditor::new(&format!("{}/", root.trim_end_matches('/')), false),
-                    operation: if index == 10 {
+                    purpose: InputPurpose::Operation(if index == 10 {
                         FileOperation::CreateFile
                     } else {
                         FileOperation::CreateDirectory
-                    },
+                    }),
                     sources: Vec::new(),
                 });
             }
@@ -276,6 +285,38 @@ impl ClientShellState {
         self.persist_chrome_preferences(outcome);
         outcome.repaint = true;
     }
+    /// Asks where on this machine to save the selected entries (D1). The
+    /// checks are the ones `start_download` repeats, so a refusal reads the
+    /// same wherever it comes from.
+    pub(in crate::client::shell) fn investigation_download_prompt(
+        &mut self,
+        outcome: &mut ClientShellInput,
+    ) {
+        outcome.repaint = true;
+        let folder = self.download_dir.clone();
+        let Some(tab) = self.investigation_mut() else {
+            return;
+        };
+        let paths = tab.paths();
+        if paths.is_empty() {
+            return;
+        }
+        if let Err(refusal) = crate::download::local::check_selection(&paths) {
+            tab.notice = refusal;
+            return;
+        }
+        tab.notice = if folder.is_empty() {
+            "enter a folder on this machine".into()
+        } else {
+            String::new()
+        };
+        tab.dialog = Some(Dialog::Input {
+            title: format!("download {} item(s) to (this machine):", paths.len()),
+            input: TextEditor::new(&folder, true),
+            purpose: InputPurpose::Download,
+            sources: paths,
+        });
+    }
     pub(in crate::client::shell) fn investigation_paste(
         &mut self,
         _outcome: &mut ClientShellInput,
@@ -317,7 +358,7 @@ impl ClientShellState {
             tab.dialog = Some(Dialog::Input {
                 title: "paste destination: absolute directory".into(),
                 input: TextEditor::new(&root, true),
-                operation,
+                purpose: InputPurpose::Operation(operation),
                 sources,
             });
         }
