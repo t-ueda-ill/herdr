@@ -250,6 +250,14 @@ pub(crate) fn should_query_host_terminal_palette() -> bool {
     !running_inside_wsl()
 }
 
+/// Where this client saves downloads unless the user types another folder.
+pub(crate) fn default_download_dir() -> Option<PathBuf> {
+    super::xdg_download_dir(
+        |key| std::env::var_os(key),
+        |path| std::fs::read_to_string(path).ok(),
+    )
+}
+
 /// Drop text syntax on this host (see [`super::DropPathSyntax`]).
 pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
     if running_inside_wsl() {

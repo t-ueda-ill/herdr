@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::platform::home_dir_from_env;
+
 const DEFAULT_WORKTREE_PREFIX: &str = "worktree";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,50 +92,6 @@ fn join_tilde_rest(home: PathBuf, rest: &str, is_windows: bool) -> PathBuf {
     } else {
         home.join(rest)
     }
-}
-
-fn home_dir_from_env(
-    is_windows: bool,
-    env: impl Fn(&str) -> Option<OsString>,
-) -> Result<PathBuf, ()> {
-    if !is_windows {
-        return env("HOME").map(PathBuf::from).ok_or(());
-    }
-
-    if let Some(path) = usable_home_path(env("USERPROFILE")) {
-        return Ok(path);
-    }
-    if let (Some(drive), Some(path)) = (
-        usable_home_component(env("HOMEDRIVE")),
-        usable_home_component(env("HOMEPATH")),
-    ) {
-        let path = path.to_string_lossy();
-        if !path.starts_with(['\\', '/']) {
-            return usable_home_path(env("HOME")).ok_or(());
-        }
-        let combined = format!("{}{}", drive.to_string_lossy(), path);
-        if let Some(path) = usable_home_path(Some(OsString::from(combined))) {
-            return Ok(path);
-        }
-    }
-
-    usable_home_path(env("HOME")).ok_or(())
-}
-
-fn usable_home_path(value: Option<OsString>) -> Option<PathBuf> {
-    let value = value?;
-    if value.is_empty() || value == "~" {
-        return None;
-    }
-    Some(PathBuf::from(value))
-}
-
-fn usable_home_component(value: Option<OsString>) -> Option<OsString> {
-    let value = value?;
-    if value.is_empty() || value == "~" {
-        return None;
-    }
-    Some(value)
 }
 
 pub(crate) fn expand_tilde_absolute_path(path: &str) -> PathBuf {
@@ -695,50 +653,6 @@ prunable stale
         assert_eq!(
             expand_tilde_path_from_env("/tmp/worktrees", false, |_| None),
             PathBuf::from("/tmp/worktrees")
-        );
-    }
-
-    #[test]
-    fn home_dir_uses_windows_profile_before_literal_home() {
-        assert_eq!(
-            home_dir_from_env(true, |key| match key {
-                "HOME" => Some("~".into()),
-                "USERPROFILE" => Some(r"C:\Users\herdr".into()),
-                _ => None,
-            }),
-            Ok(PathBuf::from(r"C:\Users\herdr"))
-        );
-    }
-
-    #[test]
-    fn home_dir_uses_windows_drive_and_path_when_profile_is_missing() {
-        assert_eq!(
-            home_dir_from_env(true, |key| match key {
-                "HOMEDRIVE" => Some("C:".into()),
-                "HOMEPATH" => Some(r"\Users\herdr".into()),
-                _ => None,
-            }),
-            Ok(PathBuf::from(r"C:\Users\herdr"))
-        );
-    }
-
-    #[test]
-    fn home_dir_rejects_incomplete_windows_drive_and_path() {
-        assert_eq!(
-            home_dir_from_env(true, |key| match key {
-                "HOMEDRIVE" => Some("C:".into()),
-                "HOMEPATH" => Some("".into()),
-                _ => None,
-            }),
-            Err(())
-        );
-        assert_eq!(
-            home_dir_from_env(true, |key| match key {
-                "HOMEDRIVE" => Some("C:".into()),
-                "HOMEPATH" => Some("Users\\herdr".into()),
-                _ => None,
-            }),
-            Err(())
         );
     }
 

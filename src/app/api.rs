@@ -11,6 +11,7 @@ mod integrations;
 mod layouts;
 mod open_editor;
 mod pane_directory;
+pub(crate) mod pane_download;
 pub(crate) mod pane_upload;
 mod panes;
 pub(crate) mod plugins;
@@ -260,6 +261,7 @@ impl App {
         let mut worktree_restore_updates = Vec::new();
         if let AppEvent::PaneDied { pane_id, .. } = &ev {
             self.upload_sessions.abort_pane(*pane_id);
+            self.download_sessions.abort_pane(*pane_id);
             if self
                 .state
                 .popup_pane
@@ -1191,6 +1193,15 @@ impl App {
                     "uploads are handled asynchronously by the app runtime",
                 );
             }
+            Method::PaneDownloadBegin(_)
+            | Method::PaneDownloadCancel(_)
+            | Method::PaneDownloadRead(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "downloads are handled asynchronously by the app runtime",
+                );
+            }
             Method::WorktreeCreate(params) => {
                 let _ = params;
                 return responses::encode_error(
@@ -1536,6 +1547,27 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "git init failed for {}", path.display());
+    }
+
+    #[test]
+    fn download_methods_are_refused_by_the_synchronous_dispatch() {
+        use crate::api::schema::{Method, PaneDownloadCancelParams, Request};
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let reply = app.handle_api_request(Request {
+            id: "r".into(),
+            method: Method::PaneDownloadCancel(PaneDownloadCancelParams {
+                download_id: "d".into(),
+            }),
+        });
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&reply).unwrap();
+        assert_eq!(error.error.code, "invalid_request");
     }
 
     fn app_with_overlay(

@@ -10,17 +10,19 @@ use crate::api::schema::{
     Method, PaneLocation, PaneLocationKind, PaneUploadBeginParams, Request, ResponseResult,
 };
 use crate::app::App;
+use crate::offhost::launcher::{EnvironmentLauncher, Transfer};
 use crate::offhost::{ops, PaneEnvironment, PaneTarget};
 use crate::server::client_shell::{
     running_off_host_shell, running_pane_off_host_shell, RunningOffHostShell,
 };
 use crate::terminal::TerminalId;
 use crate::upload::path::Failure;
+use crate::upload::receiver_script::RECEIVER_SCRIPT;
 use crate::upload::registry::{UploadEnvironment, UploadHandle, UploadOwner, UploadTargetKey};
 use crate::upload::session::{Declared, Session};
 use crate::upload::sink::UploadSink;
 use crate::upload::sink_host::HostSink;
-use crate::upload::sink_remote::{EnvironmentLauncher, RemoteSink, RemoteTimeouts};
+use crate::upload::sink_remote::{RemoteSink, RemoteTimeouts};
 use crate::upload::worker::{Control, Reply, Timeouts, UploadJob, Worker, WriteJob};
 use crate::upload::UPLOAD_WINDOW;
 
@@ -65,11 +67,11 @@ struct ResolvedTarget {
     destination: Destination,
 }
 
-fn invalid(message: impl Into<String>) -> Failure {
+pub(super) fn invalid(message: impl Into<String>) -> Failure {
     ("invalid_params", message.into())
 }
 
-fn reply_for(id: String, respond: UploadResponder) -> Reply {
+pub(super) fn reply_for(id: String, respond: UploadResponder) -> Reply {
     Box::new(move |result| {
         respond(match result {
             Ok(result) => encode_success(id, result),
@@ -78,7 +80,7 @@ fn reply_for(id: String, respond: UploadResponder) -> Reply {
     })
 }
 
-fn host_location() -> PaneLocation {
+pub(super) fn host_location() -> PaneLocation {
     PaneLocation {
         kind: PaneLocationKind::Host,
         ssh_host: None,
@@ -107,7 +109,7 @@ fn validate_remote_destination(destination: &str) -> Result<String, Failure> {
     Ok(destination.to_owned())
 }
 
-fn ensure_offhost_supported() -> Result<(), Failure> {
+pub(super) fn ensure_offhost_supported() -> Result<(), Failure> {
     if !crate::platform::OFFHOST_FILE_VIEWER_SUPPORTED {
         return Err((
             "platform_unsupported",
@@ -117,7 +119,7 @@ fn ensure_offhost_supported() -> Result<(), Failure> {
     Ok(())
 }
 
-fn environment_of(shell: Option<RunningOffHostShell<'_>>) -> UploadEnvironment {
+pub(super) fn environment_of(shell: Option<RunningOffHostShell<'_>>) -> UploadEnvironment {
     match shell {
         Some(RunningOffHostShell::Container(launch)) => {
             UploadEnvironment::OffHost(Box::new(PaneEnvironment::Container(launch.clone())))
@@ -211,7 +213,11 @@ impl App {
     }
 
     /// Whether the target is gone or its shell moved since begin.
-    fn upload_target_changed(&self, target: &UploadTargetKey, began: &UploadEnvironment) -> bool {
+    pub(super) fn upload_target_changed(
+        &self,
+        target: &UploadTargetKey,
+        began: &UploadEnvironment,
+    ) -> bool {
         let current = if let Some(public) = &target.public_pane {
             let Some((ws_idx, pane)) = self.parse_pane_id(public) else {
                 return true;
@@ -255,7 +261,11 @@ impl App {
                 (UploadEnvironment::OffHost(env), Destination::Remote(destination)) => (
                     env.location(),
                     Box::new(RemoteSink::new(
-                        Box::new(EnvironmentLauncher::system(PaneEnvironment::clone(env))),
+                        Box::new(EnvironmentLauncher::system(
+                            PaneEnvironment::clone(env),
+                            RECEIVER_SCRIPT,
+                            Transfer::UPLOAD,
+                        )),
                         destination,
                         token,
                         control.clone(),

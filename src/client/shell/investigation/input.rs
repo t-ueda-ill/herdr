@@ -425,29 +425,46 @@ impl ClientShellState {
                 _ => {}
             },
             Dialog::Input {
-                title,
                 input,
-                operation,
+                purpose,
                 sources,
+                ..
             } => {
                 if code == KeyCode::Enter {
                     let value = input.to_string();
-                    let root_change = title == "root";
-                    let paths = if sources.is_empty() {
-                        vec![value.clone()]
-                    } else {
-                        sources.clone()
-                    };
-                    let destination = (!sources.is_empty()).then_some(value.clone());
-                    let operation = operation.clone();
+                    let purpose = purpose.clone();
+                    let sources = sources.clone();
+                    // Why a placeholder home: the real one is looked up where
+                    // the files are written, but every other rule is known
+                    // here, and a typo should leave the dialog open.
+                    if purpose == InputPurpose::Download {
+                        if let Err(refusal) = crate::client::download::destination::resolve(
+                            &value,
+                            std::path::Path::new("/"),
+                            crate::client::download::destination::PathSyntax::current(),
+                        ) {
+                            tab.notice = refusal;
+                            return;
+                        }
+                    }
                     tab.dialog = None;
-                    if root_change {
-                        self.change_file_viewer_root(value, None, outcome);
-                    } else {
-                        self.investigation_plan_operation(
-                            operation_params(operation, paths, destination),
-                            outcome,
-                        );
+                    match purpose {
+                        InputPurpose::Root => {
+                            self.change_file_viewer_root(value, None, outcome);
+                        }
+                        InputPurpose::Download => self.queue_download(sources, value),
+                        InputPurpose::Operation(operation) => {
+                            let destination = (!sources.is_empty()).then_some(value.clone());
+                            let paths = if sources.is_empty() {
+                                vec![value]
+                            } else {
+                                sources
+                            };
+                            self.investigation_plan_operation(
+                                operation_params(operation, paths, destination),
+                                outcome,
+                            );
+                        }
                     }
                 } else {
                     input.handle_key(key);

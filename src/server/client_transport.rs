@@ -114,17 +114,65 @@ fn decode_endpoint_request(request: &str) -> serde_json::Result<DecodedEndpointR
         },
     )
 }
-/// Decodes one upload control. Why only `pane.upload.*`: the control lane has
-/// no surface lease, so it must not become a second door to every method.
-fn decode_upload_request(request: &str) -> serde_json::Result<DecodedEndpointRequest> {
+/// Which transfer an endpoint control belongs to. Each direction has its own
+/// request and response kinds and its own method family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransferLane {
+    Upload,
+    Download,
+}
+
+impl TransferLane {
+    pub(crate) fn of_request_kind(kind: &str) -> Option<Self> {
+        match kind {
+            crate::protocol::endpoint::UPLOAD_REQUEST_KIND => Some(Self::Upload),
+            crate::protocol::endpoint::DOWNLOAD_REQUEST_KIND => Some(Self::Download),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn response_kind(self) -> &'static str {
+        match self {
+            Self::Upload => crate::protocol::endpoint::UPLOAD_RESPONSE_KIND,
+            Self::Download => crate::protocol::endpoint::DOWNLOAD_RESPONSE_KIND,
+        }
+    }
+
+    const fn method_prefix(self) -> &'static str {
+        match self {
+            Self::Upload => "pane.upload.",
+            Self::Download => "pane.download.",
+        }
+    }
+
+    /// The word messages use for this direction.
+    pub(crate) const fn noun(self) -> &'static str {
+        match self {
+            Self::Upload => "upload",
+            Self::Download => "download",
+        }
+    }
+}
+
+/// Decodes one transfer control. Why only the lane's own methods: the control
+/// lane has no surface lease, so it must not become a second door to every
+/// method, and a download kind must not carry upload methods or the reverse.
+fn decode_transfer_request(
+    request: &str,
+    lane: TransferLane,
+) -> serde_json::Result<DecodedEndpointRequest> {
     let head = serde_json::from_str::<EndpointRequestHead>(request)?;
-    if !head.method.starts_with("pane.upload.") {
+    if !head.method.starts_with(lane.method_prefix()) {
         return Ok(DecodedEndpointRequest::Error {
             request_id: head.id,
             code: "unsupported_endpoint_command",
             message: format!(
-                "method {:?} cannot be sent as an upload control",
-                head.method
+                "method {:?} cannot be sent as {} control",
+                head.method,
+                match lane {
+                    TransferLane::Upload => "an upload",
+                    TransferLane::Download => "a download",
+                }
             ),
         });
     }
@@ -134,7 +182,7 @@ fn decode_upload_request(request: &str) -> serde_json::Result<DecodedEndpointReq
             Err(error) => DecodedEndpointRequest::Error {
                 request_id: head.id,
                 code: "invalid_request",
-                message: format!("invalid upload request: {error}"),
+                message: format!("invalid {} request: {error}", lane.noun()),
             },
         },
     )
@@ -570,22 +618,29 @@ pub(crate) enum ServerEvent {
         final_chunk: bool,
         data: Vec<u8>,
     },
-    /// A client sent one `pane.upload.*` request as an endpoint control.
-    ClientUploadRequest {
+    /// A client sent one `pane.upload.*` or `pane.download.*` request as an
+    /// endpoint control.
+    ClientTransferRequest {
         client_id: u64,
+        lane: TransferLane,
         request: Box<crate::api::schema::Request>,
     },
-    /// A well-framed upload control could not be dispatched.
-    ClientUploadRequestError {
+    /// A well-framed transfer control could not be dispatched.
+    ClientTransferRequestError {
         client_id: u64,
+        lane: TransferLane,
         request_id: String,
         code: &'static str,
         message: String,
     },
     /// A client asked whether uploads work on its connection.
     ClientUploadProbe { client_id: u64 },
-    /// An upload session answered a client's control request.
-    ClientUploadResponseReady { client_id: u64, data: String },
+    /// A transfer session answered a client's control request.
+    ClientTransferResponseReady {
+        client_id: u64,
+        lane: TransferLane,
+        data: String,
+    },
     /// A client detached gracefully.
     ClientDetach { client_id: u64 },
     /// A client connection was lost.
@@ -1381,22 +1436,26 @@ fn client_read_loop_with_endpoint_controls(
                 }
             }
             ClientMessage::EndpointControl { kind, data }
-                if kind == crate::protocol::endpoint::UPLOAD_REQUEST_KIND =>
+                if TransferLane::of_request_kind(&kind).is_some() =>
             {
+                // Why not a fallible bind: the guard already matched the kind,
+                // and match guards cannot bind (if-let guards are unstable).
+                let lane = TransferLane::of_request_kind(&kind).unwrap_or(TransferLane::Upload);
                 if data.len() > crate::server::client_commands::MAX_ENDPOINT_COMMAND_BYTES {
                     warn!(
                         client_id,
                         request_size = data.len(),
-                        "oversized upload control, closing"
+                        lane = lane.noun(),
+                        "oversized transfer control, closing"
                     );
                     let _ = server_event_tx
                         .blocking_send(ServerEvent::ClientDisconnected { client_id });
                     break;
                 }
-                let decoded = match decode_upload_request(&data) {
+                let decoded = match decode_transfer_request(&data, lane) {
                     Ok(decoded) => decoded,
                     Err(error) => {
-                        warn!(client_id, %error, "invalid upload control envelope, closing");
+                        warn!(client_id, %error, lane = lane.noun(), "invalid transfer control envelope, closing");
                         let _ = server_event_tx
                             .blocking_send(ServerEvent::ClientDisconnected { client_id });
                         break;
@@ -1408,21 +1467,30 @@ fn client_read_loop_with_endpoint_controls(
                 };
                 if request_id.len() > crate::server::client_commands::MAX_ENDPOINT_REQUEST_ID_BYTES
                 {
-                    warn!(client_id, "oversized upload control request id, closing");
+                    warn!(
+                        client_id,
+                        lane = lane.noun(),
+                        "oversized transfer control request id, closing"
+                    );
                     let _ = server_event_tx
                         .blocking_send(ServerEvent::ClientDisconnected { client_id });
                     break;
                 }
                 match decoded {
                     DecodedEndpointRequest::Dispatch(request) => {
-                        ServerEvent::ClientUploadRequest { client_id, request }
+                        ServerEvent::ClientTransferRequest {
+                            client_id,
+                            lane,
+                            request,
+                        }
                     }
                     DecodedEndpointRequest::Error {
                         request_id,
                         code,
                         message,
-                    } => ServerEvent::ClientUploadRequestError {
+                    } => ServerEvent::ClientTransferRequestError {
                         client_id,
+                        lane,
                         request_id,
                         code,
                         message,
@@ -2356,14 +2424,15 @@ mod tests {
         ));
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "upload request"),
-            ServerEvent::ClientUploadRequest { client_id: 7, request }
+            ServerEvent::ClientTransferRequest { client_id: 7, lane: TransferLane::Upload, request }
                 if request.id == "u1"
                     && matches!(request.method, crate::api::schema::Method::PaneUploadCancel(_))
         ));
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "other method"),
-            ServerEvent::ClientUploadRequestError {
+            ServerEvent::ClientTransferRequestError {
                 client_id: 7,
+                lane: TransferLane::Upload,
                 request_id,
                 code: "unsupported_endpoint_command",
                 ..
@@ -2377,6 +2446,119 @@ mod tests {
             .join()
             .expect("read thread join")
             .expect("read thread result");
+    }
+
+    fn download_control(data: String) -> ClientMessage {
+        ClientMessage::EndpointControl {
+            kind: crate::protocol::endpoint::DOWNLOAD_REQUEST_KIND.into(),
+            data,
+        }
+    }
+
+    #[test]
+    fn download_controls_keep_to_their_own_methods_and_lane() {
+        let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-download");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(8);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let read_quit = should_quit.clone();
+        let handle = std::thread::spawn(move || {
+            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+        });
+        let read =
+            r#"{"id":"d1","method":"pane.download.read","params":{"download_id":"dl-1","seq":0}}"#;
+        let upload_in_download =
+            r#"{"id":"d2","method":"pane.upload.cancel","params":{"upload_id":"up-1"}}"#;
+        let download_in_upload =
+            r#"{"id":"d3","method":"pane.download.cancel","params":{"download_id":"dl-1"}}"#;
+        let other = r#"{"id":"d4","method":"pane.close","params":{"pane_id":"p"}}"#;
+
+        for message in [
+            download_control(read.into()),
+            download_control(upload_in_download.into()),
+            upload_control(download_in_upload.into()),
+            download_control(other.into()),
+            ClientMessage::Detach,
+        ] {
+            protocol::write_message(&mut client_stream, &message).unwrap();
+        }
+
+        assert!(matches!(
+            recv_server_event(&mut server_event_rx, "download request"),
+            ServerEvent::ClientTransferRequest { client_id: 7, lane: TransferLane::Download, request }
+                if request.id == "d1"
+                    && matches!(request.method, crate::api::schema::Method::PaneDownloadRead(_))
+        ));
+        for (label, id, lane) in [
+            (
+                "upload method in a download kind",
+                "d2",
+                TransferLane::Download,
+            ),
+            (
+                "download method in an upload kind",
+                "d3",
+                TransferLane::Upload,
+            ),
+            (
+                "other method in a download kind",
+                "d4",
+                TransferLane::Download,
+            ),
+        ] {
+            assert!(
+                matches!(
+                    recv_server_event(&mut server_event_rx, label),
+                    ServerEvent::ClientTransferRequestError {
+                        client_id: 7,
+                        lane: got,
+                        request_id,
+                        code: "unsupported_endpoint_command",
+                        ..
+                    } if request_id == id && got == lane
+                ),
+                "{label}"
+            );
+        }
+        assert!(matches!(
+            recv_server_event(&mut server_event_rx, "detach"),
+            ServerEvent::ClientDetach { client_id: 7 }
+        ));
+        handle
+            .join()
+            .expect("read thread join")
+            .expect("read thread result");
+    }
+
+    #[test]
+    fn an_oversized_or_malformed_download_control_closes_the_connection() {
+        for (label, data) in [
+            (
+                "client-read-download-big",
+                "x".repeat(crate::server::client_commands::MAX_ENDPOINT_COMMAND_BYTES + 1),
+            ),
+            ("client-read-download-bad", "not json".to_owned()),
+        ] {
+            let (mut client_stream, server_stream, _path) = local_stream_pair(label);
+            let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+            let should_quit = Arc::new(AtomicBool::new(false));
+            let read_quit = should_quit.clone();
+            let handle = std::thread::spawn(move || {
+                client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            });
+
+            protocol::write_message(&mut client_stream, &download_control(data)).unwrap();
+
+            assert!(matches!(
+                recv_server_event(&mut server_event_rx, label),
+                ServerEvent::ClientDisconnected { client_id: 7 }
+            ));
+            drop(client_stream);
+            should_quit.store(true, Ordering::Release);
+            handle
+                .join()
+                .expect("read thread join")
+                .expect("read thread result");
+        }
     }
 
     #[test]

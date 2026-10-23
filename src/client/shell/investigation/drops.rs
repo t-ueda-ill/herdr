@@ -7,7 +7,7 @@
 use super::*;
 use crate::api::schema::*;
 use crate::client::shell::file_viewer::model::FileLocation;
-use crate::client::shell::ClientUploadDecision;
+use crate::client::shell::{ClientDownloadRequest, ClientUploadDecision};
 
 /// How a tree drop reaches the tab's filesystem.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +61,22 @@ impl ClientShellState {
                 .map_or(root, str::to_owned),
             None => root,
         };
-        let place = match tab.browser.location.as_ref() {
+        let place = self.workbench_place(tab);
+        Some(WorkbenchDropTarget {
+            tab: tab.id,
+            destination,
+            place,
+            location: FileLocation::to_pane_location(tab.browser.location.as_ref()),
+        })
+    }
+
+    /// Where this tab's files are read and written: the server's disk, or a
+    /// live pane of its ssh/container location.
+    pub(in crate::client::shell) fn workbench_place(
+        &self,
+        tab: &Investigation,
+    ) -> WorkbenchDropPlace {
+        match tab.browser.location.as_ref() {
             None => WorkbenchDropPlace::Host,
             Some(location) => match self.file_location_pane(
                 tab.browser.workspace_id.as_deref(),
@@ -71,13 +86,32 @@ impl ClientShellState {
                 Some(pane_id) => WorkbenchDropPlace::Pane(pane_id),
                 None => WorkbenchDropPlace::NoPane(Self::no_pane_notice(location)),
             },
+        }
+    }
+
+    /// Hands the dialog's answer to the client loop. The destination stays as
+    /// typed: `~` and the platform's path syntax are resolved where the files
+    /// are written.
+    pub(in crate::client::shell) fn queue_download(
+        &mut self,
+        paths: Vec<String>,
+        destination: String,
+    ) {
+        let Some(tab) = self.investigation() else {
+            return;
         };
-        Some(WorkbenchDropTarget {
+        let request = ClientDownloadRequest {
             tab: tab.id,
-            destination,
-            place,
+            endpoint_id: tab.endpoint.clone(),
+            place: self.workbench_place(tab),
             location: FileLocation::to_pane_location(tab.browser.location.as_ref()),
-        })
+            paths,
+            destination,
+        };
+        self.download_requests.push(request);
+        if let Some(tab) = self.investigation_mut() {
+            tab.notice = "preparing download…".into();
+        }
     }
 
     /// Shows an upload's question in its tab. Why refuse when another dialog

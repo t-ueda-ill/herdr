@@ -124,6 +124,22 @@ impl HeadlessServer {
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.lease_shell_endpoint_command(&api_request_id, &request.method);
         }
+        if matches!(
+            request.method,
+            api::schema::Method::PaneDownloadBegin(_)
+                | api::schema::Method::PaneDownloadRead(_)
+                | api::schema::Method::PaneDownloadCancel(_)
+        ) {
+            // Why not the generic dispatch: that would own the session as the
+            // API socket, which a disconnect does not clean up.
+            return self.dispatch_download(
+                crate::app::DownloadOrigin::ShellClient(client_id),
+                *request,
+                Box::new(move |response| {
+                    let _ = respond_to.send(response);
+                }),
+            );
+        }
         if request.method.independent_of_surface() {
             return self.handle_api_request_with_shutdown_check_inner(
                 api::ApiRequestMessage {

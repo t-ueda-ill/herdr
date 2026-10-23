@@ -1,44 +1,28 @@
 use std::process::Stdio;
 
 use super::*;
+use crate::container::ContainerLaunch;
 use crate::container::{ContainerRef, ContainerShell};
 use crate::noninteractive_process::fake_program::FakeProgram;
+use crate::noninteractive_process::spawn_streaming;
+use crate::offhost::launcher::{
+    script_argv, EnvironmentLauncher, LocalShellLauncher, OffhostLauncher, Transfer,
+};
+use crate::offhost::PaneEnvironment;
 use crate::ssh_host::SshLaunch;
+use crate::upload::receiver_script::RECEIVER_SCRIPT;
 use crate::upload::sink_tests;
 use crate::upload::test_support::TempDir;
-
-/// Runs the receiver with a local shell instead of docker or ssh.
-pub(crate) struct LocalShellLauncher {
-    pub(crate) shell: Vec<String>,
-}
-
-impl ReceiverLauncher for LocalShellLauncher {
-    fn launch(&self, args: &[&str]) -> Result<StreamingChild, Failure> {
-        let mut argv: Vec<String> = self.shell[1..].to_vec();
-        argv.extend(["-c".to_owned(), RECEIVER_SCRIPT.to_owned(), "sh".to_owned()]);
-        argv.extend(args.iter().map(|arg| (*arg).to_owned()));
-        spawn_streaming(std::path::Path::new(&self.shell[0]), &argv)
-            .map_err(|error| upload_failed(format!("{error:?}")))
-    }
-
-    fn classify(&self, status: Option<i32>, stderr: &str) -> Failure {
-        upload_failed(format!("receiver exited with {status:?}: {stderr}"))
-    }
-
-    fn timed_out(&self) -> Failure {
-        upload_failed("timed out")
-    }
-
-    fn begin_budget(&self) -> Duration {
-        Duration::from_secs(10)
-    }
-}
+use std::ffi::OsString;
+use std::path::PathBuf;
 
 pub(crate) fn local_sink(shell: &[String], dest: &str, control: Arc<Control>) -> RemoteSink {
     RemoteSink::new(
-        Box::new(LocalShellLauncher {
-            shell: shell.to_vec(),
-        }),
+        Box::new(LocalShellLauncher::new(
+            shell.to_vec(),
+            RECEIVER_SCRIPT,
+            "upload_failed",
+        )),
         dest.to_owned(),
         crate::upload::stage_token(),
         control,
@@ -68,6 +52,13 @@ fn ssh_launch(control_path: Option<&str>) -> SshLaunch {
     SshLaunch::new("deploy@devbox".into(), control_path.map(Into::into)).unwrap()
 }
 
+fn script_argv_for_upload(
+    env: &PaneEnvironment,
+    args: &[&str],
+) -> Result<(&'static str, Vec<OsString>), Failure> {
+    script_argv(env, Transfer::UPLOAD, RECEIVER_SCRIPT, args)
+}
+
 fn strings(argv: Vec<OsString>) -> Vec<String> {
     argv.into_iter()
         .map(|arg| arg.into_string().unwrap())
@@ -76,7 +67,7 @@ fn strings(argv: Vec<OsString>) -> Vec<String> {
 
 #[test]
 fn a_container_receiver_runs_through_docker_exec_with_stdin_as_the_pane_user() {
-    let (program, argv) = receiver_argv(&container(None), &["/work", "tok"]).unwrap();
+    let (program, argv) = script_argv_for_upload(&container(None), &["/work", "tok"]).unwrap();
     let argv = strings(argv);
 
     assert_eq!(program, "docker");
@@ -89,7 +80,7 @@ fn a_container_receiver_runs_through_docker_exec_with_stdin_as_the_pane_user() {
 fn an_ssh_receiver_requires_the_panes_shared_connection() {
     let env = PaneEnvironment::Ssh(ssh_launch(None));
 
-    let error = receiver_argv(&env, &["", "tok"]).unwrap_err();
+    let error = script_argv_for_upload(&env, &["", "tok"]).unwrap_err();
 
     assert_eq!(error.0, "ssh_unavailable");
     assert!(
@@ -102,7 +93,8 @@ fn an_ssh_receiver_requires_the_panes_shared_connection() {
 
 #[test]
 fn a_container_on_an_ssh_host_without_a_control_path_is_refused_instead_of_logging_in() {
-    let error = receiver_argv(&container(Some(ssh_launch(None))), &["", "tok"]).unwrap_err();
+    let error =
+        script_argv_for_upload(&container(Some(ssh_launch(None))), &["", "tok"]).unwrap_err();
 
     assert_eq!(error.0, "ssh_unavailable");
     assert!(error.1.contains("deploy@devbox"));
@@ -112,7 +104,7 @@ fn a_container_on_an_ssh_host_without_a_control_path_is_refused_instead_of_loggi
 fn an_ssh_receiver_uses_the_control_path_in_batch_mode() {
     let env = PaneEnvironment::Ssh(ssh_launch(Some("/tmp/ctl-%C")));
 
-    let (program, argv) = receiver_argv(&env, &["/srv", "tok"]).unwrap();
+    let (program, argv) = script_argv_for_upload(&env, &["/srv", "tok"]).unwrap();
     let argv = strings(argv);
 
     assert_eq!(program, "ssh");
@@ -134,6 +126,8 @@ fn the_launcher_streams_through_the_docker_cli_it_was_given() {
         env: container(None),
         docker: docker.program(),
         ssh: PathBuf::from("/nonexistent/ssh"),
+        script: RECEIVER_SCRIPT,
+        transfer: Transfer::UPLOAD,
     };
     let mut sink = RemoteSink::new(
         Box::new(launcher),
@@ -162,6 +156,8 @@ fn a_receiver_that_cannot_start_reports_the_classified_failure() {
         env: container(None),
         docker: docker.program(),
         ssh: PathBuf::from("/nonexistent/ssh"),
+        script: RECEIVER_SCRIPT,
+        transfer: Transfer::UPLOAD,
     };
     let mut sink = RemoteSink::new(
         Box::new(launcher),
@@ -188,6 +184,8 @@ fn a_receiver_that_stops_reading_is_killed_by_the_watchdog() {
         env: container(None),
         docker: docker.program(),
         ssh: PathBuf::from("/nonexistent/ssh"),
+        script: RECEIVER_SCRIPT,
+        transfer: Transfer::UPLOAD,
     };
     let mut sink = RemoteSink::new(
         Box::new(launcher),
@@ -221,7 +219,7 @@ struct ScriptLauncher {
     budget: Duration,
 }
 
-impl ReceiverLauncher for ScriptLauncher {
+impl OffhostLauncher for ScriptLauncher {
     fn launch(&self, args: &[&str]) -> Result<StreamingChild, Failure> {
         let mut argv = vec!["-c".to_owned(), self.script.to_owned(), "sh".to_owned()];
         argv.extend(args.iter().map(|arg| (*arg).to_owned()));
@@ -349,6 +347,8 @@ fn cancelling_while_a_write_is_blocked_terminates_the_receiver() {
         env: container(None),
         docker: docker.program(),
         ssh: PathBuf::from("/nonexistent/ssh"),
+        script: RECEIVER_SCRIPT,
+        transfer: Transfer::UPLOAD,
     };
     let mut sink = RemoteSink::new(
         Box::new(launcher),
@@ -425,7 +425,11 @@ fn a_real_container_receives_a_tree_through_docker_exec() {
     assert!(reset.success());
     let upload = |collision| {
         let mut sink = RemoteSink::new(
-            Box::new(EnvironmentLauncher::system(env.clone())),
+            Box::new(EnvironmentLauncher::system(
+                env.clone(),
+                RECEIVER_SCRIPT,
+                Transfer::UPLOAD,
+            )),
             "/tmp/herdr-live".into(),
             crate::upload::stage_token(),
             Arc::default(),

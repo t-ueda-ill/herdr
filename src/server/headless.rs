@@ -83,7 +83,7 @@ mod notifications;
 mod render;
 mod retained_surface;
 mod surface_interest;
-mod uploads;
+mod transfers;
 
 // Producers can refill even a bounded channel while it is being drained.
 // Yield to scheduled work and rendering between batches; select! below
@@ -262,7 +262,7 @@ pub struct HeadlessServer {
     /// Sender for server events (cloned for each client thread).
     server_event_tx: mpsc::Sender<ServerEvent>,
     /// Upload answers for endpoint-control clients, as `(client_id, json)`.
-    upload_responses: std::sync::mpsc::Sender<(u64, String)>,
+    transfer_responses: std::sync::mpsc::Sender<transfers::TransferResponse>,
 }
 
 #[cfg(windows)]
@@ -399,7 +399,7 @@ impl HeadlessServer {
             should_quit,
             server_stop,
             server_event_rx,
-            upload_responses: uploads::spawn_upload_response_pump(server_event_tx.clone()),
+            transfer_responses: transfers::spawn_transfer_response_pump(server_event_tx.clone()),
             server_event_tx,
         })
     }
@@ -968,6 +968,9 @@ impl HeadlessServer {
         let was_foreground = self.foreground_client_id == Some(client_id);
         self.app
             .upload_sessions
+            .abort_owner(crate::upload::registry::UploadOwner::Client(client_id));
+        self.app
+            .download_sessions
             .abort_owner(crate::upload::registry::UploadOwner::Client(client_id));
         let removed = self.clients.remove(&client_id);
         self.tab_geometry_controllers
@@ -2877,21 +2880,27 @@ impl HeadlessServer {
                 );
                 navigation_changed | geometry_changed
             }
-            ServerEvent::ClientUploadRequest { client_id, request } => {
-                self.handle_client_upload_request(client_id, request)
-            }
-            ServerEvent::ClientUploadRequestError {
+            ServerEvent::ClientTransferRequest {
                 client_id,
+                lane,
+                request,
+            } => self.handle_client_transfer_request(client_id, lane, request),
+            ServerEvent::ClientTransferRequestError {
+                client_id,
+                lane,
                 request_id,
                 code,
                 message,
-            } => self.handle_client_upload_request_error(client_id, request_id, code, message),
+            } => self
+                .handle_client_transfer_request_error(client_id, lane, request_id, code, message),
             ServerEvent::ClientUploadProbe { client_id } => {
                 self.handle_client_upload_probe(client_id)
             }
-            ServerEvent::ClientUploadResponseReady { client_id, data } => {
-                self.handle_client_upload_response(client_id, data)
-            }
+            ServerEvent::ClientTransferResponseReady {
+                client_id,
+                lane,
+                data,
+            } => self.handle_client_transfer_response(client_id, lane, data),
             ServerEvent::ClientDetach { client_id } => {
                 info!(client_id, "client detached");
                 self.send_terminal_stream_detach_shutdown(client_id);
@@ -2931,8 +2940,8 @@ impl HeadlessServer {
             ServerEvent::ClientConnected { .. }
                 | ServerEvent::ClientShellConnected { .. }
                 | ServerEvent::ClientShellEndpointResponseChunkReady { .. }
-                | ServerEvent::ClientUploadRequest { .. }
-                | ServerEvent::ClientUploadResponseReady { .. }
+                | ServerEvent::ClientTransferRequest { .. }
+                | ServerEvent::ClientTransferResponseReady { .. }
                 | ServerEvent::ClientDisconnected { .. }
                 | ServerEvent::ClientWriterDrained { .. }
                 | ServerEvent::QuitSignal
@@ -3389,6 +3398,16 @@ impl HeadlessServer {
         ) {
             self.app
                 .handle_deferred_pane_upload_api_request(msg.request, msg.respond_to);
+            return changed;
+        }
+        if matches!(
+            &msg.request.method,
+            api::schema::Method::PaneDownloadBegin(_)
+                | api::schema::Method::PaneDownloadRead(_)
+                | api::schema::Method::PaneDownloadCancel(_)
+        ) {
+            self.app
+                .handle_deferred_pane_download_api_request(msg.request, msg.respond_to);
             return changed;
         }
         if matches!(

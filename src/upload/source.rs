@@ -18,6 +18,20 @@ pub(crate) struct SourceEntry {
     pub(crate) rel: String,
     pub(crate) local: PathBuf,
     pub(crate) header: PaneUploadEntryHeader,
+    /// Which file this was at scan time. Uploads never read it; downloads
+    /// compare it with the file they open, to notice a path swapped since.
+    pub(crate) identity: Option<crate::platform::FileIdentity>,
+}
+
+/// How a walk differs from an upload's. The default is the upload's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ScanOptions {
+    /// A folder that cannot be listed is kept as an empty entry with a
+    /// warning, instead of failing the whole walk.
+    pub(crate) skip_unreadable_dirs: bool,
+    /// A symlink named directly in `paths` is replaced by what it points at
+    /// (its entry keeps the link's name). Links met inside folders stay links.
+    pub(crate) follow_top_level_symlinks: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -76,7 +90,7 @@ fn alternate_name(name: &str, n: u32, split_extension: bool) -> String {
     }
 }
 
-fn mtime(metadata: &fs::Metadata) -> Option<i64> {
+pub(crate) fn mtime(metadata: &fs::Metadata) -> Option<i64> {
     let seconds = metadata
         .modified()
         .ok()?
@@ -108,12 +122,27 @@ fn usable_name(name: &std::ffi::OsStr, shown: &Path, warnings: &mut Vec<String>)
 struct Walker {
     scan: Scan,
     max_entries: u64,
+    options: ScanOptions,
 }
 
 impl Walker {
-    fn visit(&mut self, local: &Path, rel: String) -> Result<bool, ScanError> {
-        let metadata = fs::symlink_metadata(local)
+    /// `top`: `local` is one of the paths the caller named.
+    fn visit(&mut self, local: &Path, rel: String, top: bool) -> Result<bool, ScanError> {
+        let mut metadata = fs::symlink_metadata(local)
             .map_err(|error| format!("cannot read {}: {error}", local.display()))?;
+        let mut resolved = None;
+        if top && self.options.follow_top_level_symlinks && metadata.file_type().is_symlink() {
+            // Why canonicalize rather than only `metadata`: everything below
+            // (children, the later `open_regular_nofollow`) needs a path whose
+            // last component is no longer a link.
+            let target = fs::canonicalize(local)
+                .map_err(|error| format!("cannot read {}: {error}", local.display()))?;
+            metadata = fs::metadata(&target)
+                .map_err(|error| format!("cannot read {}: {error}", local.display()))?;
+            resolved = Some(target);
+        }
+        let local = resolved.as_deref().unwrap_or(local);
+        let identity = crate::platform::metadata_identity(&metadata);
         let file_type = metadata.file_type();
         let mode = crate::platform::permission_bits(&metadata);
         let mtime = mtime(&metadata);
@@ -170,12 +199,22 @@ impl Walker {
             rel: rel.clone(),
             local: local.to_path_buf(),
             header,
+            identity,
         });
         if is_dir {
-            let mut children: Vec<_> = fs::read_dir(local)
-                .map_err(|error| format!("cannot list {}: {error}", local.display()))?
-                .flatten()
-                .collect();
+            let listing = match fs::read_dir(local) {
+                Ok(listing) => listing,
+                Err(error) if self.options.skip_unreadable_dirs => {
+                    self.scan
+                        .warnings
+                        .push(format!("could not list {}: {error}", local.display()));
+                    return Ok(true);
+                }
+                Err(error) => {
+                    return Err(format!("cannot list {}: {error}", local.display()).into());
+                }
+            };
+            let mut children: Vec<_> = listing.flatten().collect();
             children.sort_by_key(|child| child.file_name());
             for child in children {
                 let path = child.path();
@@ -183,7 +222,7 @@ impl Walker {
                 else {
                     continue;
                 };
-                self.visit(&path, format!("{rel}/{name}"))?;
+                self.visit(&path, format!("{rel}/{name}"), false)?;
             }
         }
         Ok(true)
@@ -206,12 +245,23 @@ pub(crate) fn scan_limited(
     duplicates: DuplicateNames,
     max_entries: u64,
 ) -> Result<Scan, ScanError> {
+    scan_limited_with(paths, duplicates, max_entries, ScanOptions::default())
+}
+
+/// [`scan_limited`] with the walk's behaviour chosen by `options`.
+pub(crate) fn scan_limited_with(
+    paths: &[PathBuf],
+    duplicates: DuplicateNames,
+    max_entries: u64,
+    options: ScanOptions,
+) -> Result<Scan, ScanError> {
     if paths.len() > MAX_NAMES {
         return Err(format!("at most {MAX_NAMES} paths can be uploaded at once").into());
     }
     let mut walker = Walker {
         scan: Scan::default(),
         max_entries,
+        options,
     };
     let mut taken = HashSet::new();
     for path in paths {
@@ -237,7 +287,7 @@ pub(crate) fn scan_limited(
                 }
             }
         }
-        if walker.visit(path, name.clone())? {
+        if walker.visit(path, name.clone(), true)? {
             taken.insert(name.clone());
             walker.scan.names.push(name);
         }
@@ -546,5 +596,61 @@ mod tests {
         let result: Result<Vec<_>, _> = Writes::new(&scan, "up".into(), 1024).collect();
 
         assert!(result.unwrap_err().contains("changed"));
+    }
+
+    #[test]
+    fn an_upload_walk_still_keeps_a_selected_symlink_as_a_link() {
+        let dir = TempDir::new("scan-default-options");
+        std::fs::write(dir.join("real"), b"x").unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("alias")).unwrap();
+
+        let scan = scan(&[dir.join("alias")], DuplicateNames::Reject, 100).unwrap();
+
+        assert_eq!(scan.entries[0].header.kind, PaneUploadEntryKind::Symlink);
+    }
+
+    #[test]
+    fn a_selected_symlink_is_replaced_by_its_target_only_when_asked() {
+        let dir = TempDir::new("scan-follow-top");
+        std::fs::write(dir.join("real"), b"xyz").unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("alias")).unwrap();
+        let options = ScanOptions {
+            follow_top_level_symlinks: true,
+            ..ScanOptions::default()
+        };
+
+        let scan =
+            scan_limited_with(&[dir.join("alias")], DuplicateNames::Reject, 100, options).unwrap();
+
+        assert_eq!(scan.names, ["alias"]);
+        assert_eq!(scan.entries[0].header.kind, PaneUploadEntryKind::File);
+        assert_eq!(scan.entries[0].header.size, Some(3));
+        assert!(scan.entries[0].identity.is_some());
+    }
+
+    #[test]
+    fn an_unreadable_folder_becomes_an_empty_entry_with_a_warning_only_when_asked() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = TempDir::new("scan-skip-unreadable");
+        let root = dir.join("t");
+        std::fs::create_dir_all(root.join("locked")).unwrap();
+        std::fs::set_permissions(
+            root.join("locked"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o0),
+        )
+        .unwrap();
+        let options = ScanOptions {
+            skip_unreadable_dirs: true,
+            ..ScanOptions::default()
+        };
+
+        let strict = scan(std::slice::from_ref(&root), DuplicateNames::Reject, 100);
+        let lenient = scan_limited_with(&[root], DuplicateNames::Reject, 100, options).unwrap();
+
+        assert!(strict.is_err());
+        assert_eq!(rels(&lenient), ["t", "t/locked"]);
+        assert!(lenient.warnings[0].contains("could not list"));
     }
 }

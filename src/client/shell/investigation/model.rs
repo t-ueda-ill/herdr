@@ -240,6 +240,18 @@ pub(in crate::client::shell) struct Replacement {
     pub after: FileChange,
     pub diff: Vec<String>,
 }
+/// What Enter does with an input dialog's text.
+/// Why not a variant of `Dialog` per purpose: pasting, drawing and the footer
+/// match on `Dialog::Input`, and a variant forgotten there drops typed text.
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::client::shell) enum InputPurpose {
+    /// `files.operate` with this operation (host only).
+    Operation(FileOperation),
+    /// Change the workbench root.
+    Root,
+    /// Save the selected entries on this machine.
+    Download,
+}
 #[derive(Debug)]
 pub(in crate::client::shell) enum Dialog {
     Menu {
@@ -251,7 +263,7 @@ pub(in crate::client::shell) enum Dialog {
     Input {
         title: String,
         input: TextEditor,
-        operation: FileOperation,
+        purpose: InputPurpose,
         sources: Vec<String>,
     },
     Confirm {
@@ -643,7 +655,10 @@ pub(in crate::client::shell) const MENU: &[&str] = &[
     "refresh content search",
     "refresh files",
     "open as root",
+    DOWNLOAD_ITEM,
 ];
+/// Looked up by label, not index: other branches append menu items too.
+pub(in crate::client::shell) const DOWNLOAD_ITEM: &str = "download…";
 pub(in crate::client::shell) fn operation_params(
     operation: FileOperation,
     paths: Vec<String>,

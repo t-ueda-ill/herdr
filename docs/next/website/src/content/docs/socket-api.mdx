@@ -104,7 +104,7 @@ Raw socket method names use dot notation:
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Container | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH hosts | `ssh.open`, `ssh.hosts` |
-| Files | `directory.list`, `directory.index`, `pane.open_editor`, `pane.directory.list`, `pane.directory.index`, `pane.directory.open_editor`, `pane.file.read`, `pane.upload.begin`, `pane.upload.write`, `pane.upload.finish`, `pane.upload.cancel` |
+| Files | `directory.list`, `directory.index`, `pane.open_editor`, `pane.directory.list`, `pane.directory.index`, `pane.directory.open_editor`, `pane.file.read`, `pane.upload.begin`, `pane.upload.write`, `pane.upload.finish`, `pane.upload.cancel`, `pane.download.begin`, `pane.download.read`, `pane.download.cancel` |
 | Tab | `tab.create`, `tab.create_inherit`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
 | Pane | `pane.split`, `pane.split_inherit`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
@@ -591,6 +591,36 @@ Each `write` carries `upload_id`, a `/`-separated `path` starting with one of th
 | `platform_unsupported` | a container or SSH destination on a Windows server |
 
 Shell-mode TUI clients send these requests as `endpoint.upload.request.v1` endpoint controls and use them only when the server advertises all four methods and the `pane_upload_control` capability; a direct attach asks with `endpoint.upload.probe.v1`. Without them, drops paste the local path as before.
+
+### Downloads
+
+`pane.download.begin`, `pane.download.read`, and `pane.download.cancel` stream files and folders out of the environment a pane's shell sees (the server host, a container, or an SSH host) to a client. `herdr pane download` and `download…` in the file workbench use them. The server keeps no copy of the bytes on its disk and reads the source only as fast as the client asks, one answer per `read`. The client assembles the tree and publishes it when the stream ends.
+
+```json
+{ "id": "d1", "method": "pane.download.begin", "params": { "pane_id": "w1:p2", "paths": ["/etc/hosts", "/var/log/app"], "max_bytes": 131072 } }
+```
+
+`begin` takes an optional `pane_id` (a workspace pane); without it the source is the server's own filesystem. `paths` lists 1 to 1,024 absolute paths in that environment, each at most 4,096 bytes and 256 KiB together, without `..` or control characters. Their last components become the top-level names, which must be unique and valid (at most 255 bytes, not starting with `.herdr-upload-`). A top-level symbolic link is followed and its target's content is saved; links inside folders stay links. `max_bytes` caps the decoded data one answer carries (default and ceiling 524,288; 0 is refused). It answers `pane_download_started` with `download_id`, `location`, `names`, the estimates `entries` and `bytes` from a walk made before it returns, `chunk_bytes`, and `window` (2).
+
+`read` takes `download_id` and `seq`, starting at 0 and increasing by one: each read takes the next part of the stream, so a stream is ordered and at most `window` reads may be unanswered (a client that opens a new socket per request, like the CLI, sends one at a time). It answers `pane_download_chunk` with `seq`, `records`, `sent_entries`, `sent_bytes`, `done`, and `warnings`. A record has the shape of a `pane.upload.write`: a `/`-separated `path` starting with one of the names, `entry` on the first record of a path, `offset`, base64 `data`, and `last`. Directories and links are one record. Parents come before their children. `records` may be empty while the source is slow (a heartbeat, after at most 25 seconds). The final answer has `done: true` and no records, and carries `warnings`: skipped entries and other non-fatal problems, at most 32 KiB, with control characters escaped. A read with the wrong `seq` is refused with `invalid_params` and the session continues; after `done` or an error that ends the session, reads that were already in flight get `download_not_found` or `download_cancelled`, and a client drops them.
+
+`cancel` takes `download_id` and answers `ok`. A download also ends when its pane closes or changes environment, its client disconnects, a server handoff starts, nothing is read for 120 seconds before the first read or between reads, or the source stops sending for 120 seconds. The server allows 4 downloads at a time, 2 per client, of at most 16 GiB and 100,000 entries each.
+
+| Code | Meaning |
+| --- | --- |
+| `invalid_params` | a path or name is not valid, a count or length is over the limit, `max_bytes` is 0, a top-level item is a FIFO, socket, or device, or `seq` is wrong |
+| `not_found`, `permission_denied` | a path is missing or cannot be read when the download begins |
+| `download_too_large` | the walk or the stream passes 16 GiB or 100,000 entries |
+| `download_busy` | too many downloads, or more reads than `window` |
+| `download_not_found`, `download_cancelled` | the download ended, expired, or belongs to another client |
+| `download_source_changed` | a file changed, vanished, or could not be read while it was streamed |
+| `download_failed` | the source stopped sending, its output was malformed, or the answer did not fit a frame; the message has the details |
+| `stale_pane_target` | the pane's environment changed or the pane ended during the download |
+| `container_unavailable`, `container_not_found`, `offhost_shell_unavailable` | as for `pane.directory.*` |
+| `ssh_unavailable` | the SSH pane's connection is not shared (ControlMaster), or the host cannot be reached |
+| `platform_unsupported` | a container or SSH source on a Windows server |
+
+Shell-mode TUI clients send these requests as `endpoint.download.request.v1` endpoint controls, with answers in `endpoint.download.response.v1`, and use them only when the server advertises all three methods and the `pane_download_control` capability. Without them the `download…` menu item says `this server cannot send files; update Herdr there`.
 
 ## Agent view queries
 

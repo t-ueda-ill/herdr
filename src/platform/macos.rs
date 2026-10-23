@@ -1266,6 +1266,11 @@ pub(crate) fn copy_symbolic_link(
     std::os::unix::fs::symlink(std::fs::read_link(source)?, target)
 }
 
+/// Where this client saves downloads unless the user types another folder.
+pub(crate) fn default_download_dir() -> Option<PathBuf> {
+    super::home_downloads_dir(|key| std::env::var_os(key))
+}
+
 /// Drop text syntax on this host (see [`super::DropPathSyntax`]).
 pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
     super::DropPathSyntax::Posix

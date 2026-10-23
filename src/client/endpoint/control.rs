@@ -14,6 +14,10 @@ pub(crate) enum EndpointControlMessage {
     /// The JSON response to one `pane.upload.*` control, matched by its id.
     UploadResponse(String),
     UploadReady(crate::protocol::endpoint::EndpointUploadReady),
+    /// The JSON response to one `pane.download.*` control, matched by its id.
+    /// Why a string: a read answer carries up to about 1.3 MB of base64, and
+    /// the client loop must not decode it (design §4.4).
+    DownloadResponse(String),
     Ignored,
 }
 
@@ -31,6 +35,9 @@ pub(crate) fn decode_endpoint_control(
     }
     if kind == crate::protocol::endpoint::UPLOAD_RESPONSE_KIND {
         return Ok(EndpointControlMessage::UploadResponse(data.to_owned()));
+    }
+    if kind == crate::protocol::endpoint::DOWNLOAD_RESPONSE_KIND {
+        return Ok(EndpointControlMessage::DownloadResponse(data.to_owned()));
     }
     if kind == crate::protocol::endpoint::UPLOAD_READY_KIND {
         return Ok(serde_json::from_str(data)
@@ -116,6 +123,18 @@ mod tests {
             decode_endpoint_control(crate::protocol::endpoint::UPLOAD_READY_KIND, "{}").unwrap(),
             EndpointControlMessage::Ignored
         ));
+    }
+
+    #[test]
+    fn a_download_answer_is_passed_on_undecoded() {
+        let EndpointControlMessage::DownloadResponse(data) = decode_endpoint_control(
+            crate::protocol::endpoint::DOWNLOAD_RESPONSE_KIND,
+            r#"{"id":"download:1:r0"}"#,
+        )
+        .unwrap() else {
+            panic!("expected a download response");
+        };
+        assert_eq!(data, r#"{"id":"download:1:r0"}"#);
     }
 
     #[test]

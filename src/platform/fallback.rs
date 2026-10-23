@@ -351,6 +351,11 @@ pub(crate) fn set_path_modified(
     std::fs::File::open(path)?.set_modified(modified)
 }
 
+/// Where this client saves downloads unless the user types another folder.
+pub(crate) fn default_download_dir() -> Option<std::path::PathBuf> {
+    super::home_downloads_dir(|key| std::env::var_os(key))
+}
+
 /// Drop text syntax on this host (see [`super::DropPathSyntax`]).
 pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
     super::DropPathSyntax::Posix
@@ -359,4 +364,19 @@ pub(crate) fn drop_path_syntax() -> super::DropPathSyntax {
 /// The local path a dropped token names, or `None` when it is not absolute.
 pub(crate) fn dropped_path(token: &str) -> Option<std::path::PathBuf> {
     super::drop_paths::posix_drop_path(token)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn metadata_identity(_metadata: &std::fs::Metadata) -> Option<super::FileIdentity> {
+    None
+}
+
+#[cfg(not(unix))]
+pub(crate) fn open_regular_nofollow(
+    _path: &std::path::Path,
+) -> std::io::Result<(std::fs::File, super::FileIdentity)> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening without following links is unavailable",
+    ))
 }

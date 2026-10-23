@@ -52,7 +52,7 @@ pub(crate) use state::*;
 #[cfg(test)]
 pub(super) use surface_patch::apply_composed_surface_patch;
 pub(super) use surface_patch::{ClientComposedSurfacePatch, ClientPaneSurfacePatchOutcome};
-pub(crate) use uploads::ClientUploadDecision;
+pub(crate) use uploads::{ClientDownloadRequest, ClientUploadDecision};
 
 use crossterm::event::KeyCode;
 #[cfg(test)]

@@ -1903,3 +1903,114 @@ fn pane_split_inherit_request_takes_the_pane_split_params() {
     assert_eq!(params.target_pane_id.as_deref(), Some("w1:p2"));
     assert_eq!(params.direction, SplitDirection::Down);
 }
+
+#[test]
+fn download_started_round_trips_as_a_response_result() {
+    let result = ResponseResult::PaneDownloadStarted(PaneDownloadStarted {
+        download_id: "dl_1".into(),
+        location: PaneLocation {
+            kind: PaneLocationKind::Host,
+            container: None,
+            ssh_host: None,
+        },
+        names: vec!["a.txt".into(), "dir".into()],
+        entries: 3,
+        bytes: 42,
+        chunk_bytes: 524_288,
+        window: 2,
+    });
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(json["type"], "pane_download_started");
+    assert_eq!(
+        serde_json::from_value::<ResponseResult>(json).unwrap(),
+        result
+    );
+}
+
+#[test]
+fn download_chunk_round_trips_and_defaults_missing_fields() {
+    let result = ResponseResult::PaneDownloadChunk(PaneDownloadChunk {
+        seq: 1,
+        records: vec![PaneDownloadRecord {
+            path: "dir/a.txt".into(),
+            entry: Some(PaneUploadEntryHeader {
+                kind: PaneUploadEntryKind::File,
+                mode: 0o644,
+                mtime: Some(1_700_000_000),
+                size: Some(2),
+                link_target: None,
+            }),
+            offset: 0,
+            data: "aGk=".into(),
+            last: true,
+        }],
+        done: false,
+        sent_entries: 1,
+        sent_bytes: 2,
+        warnings: vec![],
+    });
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(json["type"], "pane_download_chunk");
+    assert_eq!(
+        serde_json::from_value::<ResponseResult>(json).unwrap(),
+        result
+    );
+
+    let heartbeat: PaneDownloadChunk = serde_json::from_value(serde_json::json!({
+        "seq": 3, "sent_entries": 0, "sent_bytes": 0
+    }))
+    .unwrap();
+    assert!(heartbeat.records.is_empty() && !heartbeat.done && heartbeat.warnings.is_empty());
+}
+
+#[test]
+fn download_record_with_an_unknown_entry_kind_still_decodes() {
+    let record: PaneDownloadRecord = serde_json::from_value(serde_json::json!({
+        "path": "x", "entry": {"kind": "socket", "mode": 0}, "last": true
+    }))
+    .unwrap();
+    assert_eq!(record.entry.unwrap().kind, PaneUploadEntryKind::Unknown);
+}
+
+#[test]
+fn download_begin_leaves_pane_and_max_bytes_optional() {
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "r", "method": "pane.download.begin", "params": {"paths": ["/etc/hosts"]}
+    }))
+    .unwrap();
+    let Method::PaneDownloadBegin(params) = request.method else {
+        panic!("wrong method");
+    };
+    assert_eq!(params.pane_id, None);
+    assert_eq!(params.max_bytes, None);
+    assert_eq!(params.paths, vec!["/etc/hosts".to_string()]);
+}
+
+#[test]
+fn download_methods_are_surface_independent_and_advertised_to_client_shells() {
+    let methods = [
+        Method::PaneDownloadBegin(PaneDownloadBeginParams {
+            pane_id: None,
+            paths: vec![],
+            max_bytes: None,
+        }),
+        Method::PaneDownloadRead(PaneDownloadReadParams {
+            download_id: "d".into(),
+            seq: 0,
+        }),
+        Method::PaneDownloadCancel(PaneDownloadCancelParams {
+            download_id: "d".into(),
+        }),
+    ];
+    for method in methods {
+        assert!(method.independent_of_surface());
+    }
+    let advertised = operations::client_shell_method_names();
+    for name in [
+        "pane.download.begin",
+        "pane.download.cancel",
+        "pane.download.read",
+    ] {
+        assert!(advertised.contains(&name), "{name} is not advertised");
+    }
+}

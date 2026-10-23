@@ -19,7 +19,57 @@ pub(crate) enum ClientUploadDecision {
     },
 }
 
+/// The workbench's dialog asked to save these paths on this machine. The client
+/// loop starts the download (design §5.2, §5.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClientDownloadRequest {
+    /// The investigation tab, which shows the outcome too.
+    pub(crate) tab: u64,
+    pub(crate) endpoint_id: crate::client::endpoint::ClientEndpointId,
+    /// Where the files are read: the server's disk, or a pane's environment.
+    pub(crate) place: WorkbenchDropPlace,
+    /// The environment the tab browses.
+    pub(crate) location: crate::api::schema::PaneLocation,
+    pub(crate) paths: Vec<String>,
+    /// The dialog's text, as typed. Resolving it is the worker's job.
+    pub(crate) destination: String,
+}
+
 impl ClientShellState {
+    /// Where the dialog starts, worked out once when the client starts.
+    pub(crate) fn set_download_dir(&mut self, dir: String) {
+        self.download_dir = dir;
+    }
+
+    pub(crate) fn download_dir(&self) -> &str {
+        &self.download_dir
+    }
+
+    pub(crate) fn take_download_requests(&mut self) -> Vec<ClientDownloadRequest> {
+        std::mem::take(&mut self.download_requests)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn queue_download_for_test(&mut self, request: ClientDownloadRequest) {
+        self.download_requests.push(request);
+    }
+
+    /// Why `Uploaded`/`UploadFailed` and not kinds of their own: a kind only
+    /// picks the color and the group, and these two already repeat.
+    pub(crate) fn push_download_notice(
+        &mut self,
+        failed: bool,
+        title: String,
+        body: String,
+    ) -> bool {
+        let kind = if failed {
+            ClientEndpointNoticeKind::UploadFailed
+        } else {
+            ClientEndpointNoticeKind::Uploaded
+        };
+        self.push_endpoint_notice(kind, "download", title, body)
+    }
+
     /// Returns whether the card changed and needs a repaint.
     pub(crate) fn set_upload_progress(&mut self, view: Option<UploadProgressView>) -> bool {
         if self.upload_progress == view {
@@ -136,5 +186,71 @@ impl ClientShellState {
         self.visible_endpoint_notice
             .as_ref()
             .map(|notice| (notice.title.as_str(), notice.body.as_str()))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn shell() -> ClientShellState {
+        ClientShellState::new(ClientShellConfig::from_config(
+            &crate::config::Config::default(),
+        ))
+    }
+
+    fn request(destination: &str) -> ClientDownloadRequest {
+        ClientDownloadRequest {
+            tab: 1,
+            endpoint_id: crate::client::endpoint::ClientEndpointId::Local,
+            place: WorkbenchDropPlace::Host,
+            location: crate::api::schema::PaneLocation {
+                kind: crate::api::schema::PaneLocationKind::Host,
+                ssh_host: None,
+                container: None,
+            },
+            paths: vec!["/srv/a".into()],
+            destination: destination.into(),
+        }
+    }
+
+    #[test]
+    fn queued_download_requests_are_handed_over_once_in_order() {
+        let mut shell = shell();
+        shell.queue_download_for_test(request("/a"));
+        shell.queue_download_for_test(request("/b"));
+
+        let taken = shell.take_download_requests();
+
+        assert_eq!(
+            taken
+                .iter()
+                .map(|r| r.destination.as_str())
+                .collect::<Vec<_>>(),
+            ["/a", "/b"]
+        );
+        assert!(shell.take_download_requests().is_empty());
+    }
+
+    #[test]
+    fn the_dialogs_starting_folder_is_what_the_client_set() {
+        let mut shell = shell();
+        assert_eq!(shell.download_dir(), "");
+
+        shell.set_download_dir("/home/me/Downloads".into());
+
+        assert_eq!(shell.download_dir(), "/home/me/Downloads");
+    }
+
+    #[test]
+    fn every_download_is_announced_not_just_the_first() {
+        let mut shell = shell();
+
+        assert!(shell.push_download_notice(false, "Downloaded".into(), "1 item to /a".into()));
+        assert!(shell.push_download_notice(false, "Downloaded".into(), "1 item to /b".into()));
+        assert_eq!(
+            shell.endpoint_notice_for_test(),
+            Some(("Downloaded", "1 item to /b"))
+        );
     }
 }

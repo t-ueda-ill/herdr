@@ -6,9 +6,7 @@
 //! small files take minutes, and sshd's `MaxSessions` caps parallelism. One
 //! process also keeps publication and rollback inside one shell.
 
-use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
 use std::process::{Child, ChildStdin};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
@@ -16,109 +14,14 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::api::schema::PaneUploadCollision;
-use crate::container::ContainerLaunch;
-use crate::noninteractive_process::{spawn_streaming, RunError, StreamingChild};
-use crate::offhost::exec::{classify_failure, command_argv, ExecError};
-use crate::offhost::PaneEnvironment;
+use crate::noninteractive_process::StreamingChild;
+use crate::offhost::launcher::OffhostLauncher;
 
 use super::path::Failure;
-use super::receiver_script::{self as script, Token, TokenReader, RECEIVER_SCRIPT};
+use super::receiver_script::{self as script, Token, TokenReader};
 use super::session::{DirectoryAttrs, EntryStart};
 use super::sink::{kept_stage_failure, upload_failed, Began, Committed, UploadSink};
 use super::worker::{Control, PHASE_COMMITTING, PHASE_DONE};
-
-/// Starts the receiver somewhere. The seam lets tests run it with local shells.
-pub(crate) trait ReceiverLauncher: Send + Sync {
-    fn launch(&self, args: &[&str]) -> Result<StreamingChild, Failure>;
-    /// Why the receiver stopped, from its exit status and stderr.
-    fn classify(&self, status: Option<i32>, stderr: &str) -> Failure;
-    fn timed_out(&self) -> Failure;
-    /// Time to start and answer the begin queries.
-    fn begin_budget(&self) -> Duration;
-}
-
-/// Q14: the message names the cause and what to do.
-pub(crate) fn connection_not_shared(host: &str) -> Failure {
-    (
-        "ssh_unavailable",
-        format!(
-            "cannot upload to {host}: the pane's ssh connection is not shared \
-             (ControlMaster unavailable). Reopen the ssh pane from Herdr so its \
-             connection can be shared, then drop again."
-        ),
-    )
-}
-
-/// The receiver's argv in `env`. Why refuse a container on an ssh host
-/// without a control path, unlike directory reads: a transfer must never open
-/// a second login of its own (Q14).
-pub(crate) fn receiver_argv(
-    env: &PaneEnvironment,
-    args: &[&str],
-) -> Result<(&'static str, Vec<OsString>), Failure> {
-    if let PaneEnvironment::Container(ContainerLaunch { ssh: Some(ssh), .. }) = env {
-        if ssh.control_path.is_none() {
-            return Err(connection_not_shared(&ssh.host));
-        }
-    }
-    command_argv(env, RECEIVER_SCRIPT, args).map_err(|error| match error {
-        ExecError::SshControlUnavailable { host } => connection_not_shared(&host),
-        other => other.failure(),
-    })
-}
-
-/// Runs the receiver in a pane's environment with the docker or ssh CLI.
-pub(crate) struct EnvironmentLauncher {
-    pub(crate) env: PaneEnvironment,
-    pub(crate) docker: PathBuf,
-    pub(crate) ssh: PathBuf,
-}
-
-impl EnvironmentLauncher {
-    pub(crate) fn system(env: PaneEnvironment) -> Self {
-        Self {
-            env,
-            docker: PathBuf::from("docker"),
-            ssh: PathBuf::from("ssh"),
-        }
-    }
-
-    fn over_ssh(&self) -> bool {
-        !matches!(
-            &self.env,
-            PaneEnvironment::Container(ContainerLaunch { ssh: None, .. })
-        )
-    }
-}
-
-impl ReceiverLauncher for EnvironmentLauncher {
-    fn launch(&self, args: &[&str]) -> Result<StreamingChild, Failure> {
-        let (program, argv) = receiver_argv(&self.env, args)?;
-        let over_ssh = program == "ssh";
-        let path = if over_ssh { &self.ssh } else { &self.docker };
-        spawn_streaming(path, &argv).map_err(|error| match error {
-            RunError::NotFound if over_ssh => ExecError::SshNotFound.failure(),
-            RunError::NotFound => ExecError::DockerNotFound.failure(),
-            RunError::Timeout => ExecError::Timeout { over_ssh }.failure(),
-            RunError::Failed { detail, .. } => ExecError::Failed { over_ssh, detail }.failure(),
-        })
-    }
-
-    fn classify(&self, status: Option<i32>, stderr: &str) -> Failure {
-        classify_failure(&self.env, status, stderr, self.over_ssh()).failure()
-    }
-
-    fn timed_out(&self) -> Failure {
-        ExecError::Timeout {
-            over_ssh: self.over_ssh(),
-        }
-        .failure()
-    }
-
-    fn begin_budget(&self) -> Duration {
-        self.env.deadline_budget(false)
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RemoteTimeouts {
@@ -198,7 +101,7 @@ fn entry_error(what: &str, entry: &str) -> Failure {
 }
 
 impl Process {
-    fn start(launcher: &dyn ReceiverLauncher, args: &[&str]) -> Result<Self, Failure> {
+    fn start(launcher: &dyn OffhostLauncher, args: &[&str]) -> Result<Self, Failure> {
         let StreamingChild {
             child,
             stdin,
@@ -385,7 +288,7 @@ fn spawn_watchdog(
 }
 
 pub(crate) struct RemoteSink {
-    launcher: Box<dyn ReceiverLauncher>,
+    launcher: Box<dyn OffhostLauncher>,
     /// Empty: the receiver starts in the login directory (spec Q6).
     destination: String,
     token: String,
@@ -400,7 +303,7 @@ pub(crate) struct RemoteSink {
 
 impl RemoteSink {
     pub(crate) fn new(
-        launcher: Box<dyn ReceiverLauncher>,
+        launcher: Box<dyn OffhostLauncher>,
         destination: String,
         token: String,
         control: Arc<Control>,

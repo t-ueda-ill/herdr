@@ -1241,3 +1241,298 @@ fn a_tree_drop_into_a_location_without_a_live_pane_names_it() {
     assert!(run.begin.is_none());
     assert_eq!(run.notice, "no pane running in app");
 }
+
+/// What `start_download` did with one request: the begin it sent, the tab's notice.
+#[cfg(unix)]
+struct DownloadRun {
+    begin: Option<crate::api::schema::PaneDownloadBeginParams>,
+    notice: String,
+    started: bool,
+}
+
+#[cfg(unix)]
+struct DownloadSetup {
+    place: shell::WorkbenchDropPlace,
+    advertised: bool,
+    is_remote_client: bool,
+    busy_with_upload: bool,
+    paths: Vec<String>,
+}
+
+#[cfg(unix)]
+impl Default for DownloadSetup {
+    fn default() -> Self {
+        Self {
+            place: shell::WorkbenchDropPlace::Host,
+            advertised: true,
+            is_remote_client: false,
+            busy_with_upload: false,
+            paths: vec!["/srv/a.txt".into()],
+        }
+    }
+}
+
+#[cfg(unix)]
+fn download_started(setup: DownloadSetup) -> DownloadRun {
+    let dir = crate::upload::test_support::TempDir::new("client-start-download");
+    let negotiation = if setup.advertised {
+        endpoint::EndpointNegotiation::new(
+            download::DOWNLOAD_METHODS
+                .iter()
+                .map(|method| (*method).to_owned())
+                .collect(),
+            vec![crate::protocol::endpoint::PANE_DOWNLOAD_CONTROL_CAPABILITY.to_owned()],
+        )
+    } else {
+        endpoint::EndpointNegotiation::default()
+    };
+    let sent = RecordingTransport::default();
+    let mut endpoints = endpoint::EndpointRegistry::new(sent.clone(), 1, negotiation);
+    let mut state = ClientState::test_new();
+    let tab = state
+        .shell
+        .as_mut()
+        .unwrap()
+        .push_test_investigation("/srv");
+    state
+        .shell
+        .as_mut()
+        .unwrap()
+        .set_download_dir(dir.path().display().to_string());
+    if setup.busy_with_upload {
+        // An upload in flight is a drop whose paths are being checked.
+        let file = dir.join("u.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        state.uploads.offer_workbench_drop(
+            upload::runtime::WorkbenchDrop {
+                paths: vec![file],
+                target: upload::transfer::WorkbenchTarget {
+                    tab,
+                    destination: "/srv".into(),
+                    pane_id: None,
+                    location: host_location(),
+                },
+                endpoint_id: endpoint::ClientEndpointId::Local,
+                generation: 1,
+                chunk_cap: crate::upload::UPLOAD_CHUNK_BYTES,
+                download_busy: false,
+            },
+            move |event| tx.send(event).is_ok(),
+        );
+    }
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(8);
+    let now = std::time::Instant::now();
+
+    let busy_before = state.downloads.busy();
+    let repainted = start_download(
+        &mut state,
+        &mut endpoints,
+        &event_tx,
+        shell::ClientDownloadRequest {
+            tab,
+            endpoint_id: endpoint::ClientEndpointId::Local,
+            place: setup.place,
+            location: host_location(),
+            paths: setup.paths,
+            destination: dir.path().display().to_string(),
+        },
+        setup.is_remote_client,
+        now,
+    );
+    let started = state.downloads.busy() && !busy_before;
+    if started {
+        // The writer prepares the folder, then the answer sends begin.
+        let Some(ClientLoopEvent::Download(event)) = event_rx.blocking_recv() else {
+            panic!("worker event");
+        };
+        let effects = state.downloads.worker_event(event, now);
+        download::runtime::apply_download_effects(&mut state, &mut endpoints, effects, now);
+    }
+    let begin = sent
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|message| match message {
+            ClientMessage::EndpointControl { kind, data }
+                if kind == crate::protocol::endpoint::DOWNLOAD_REQUEST_KIND =>
+            {
+                let request: crate::api::schema::Request = serde_json::from_str(data).ok()?;
+                match request.method {
+                    crate::api::schema::Method::PaneDownloadBegin(params) => Some(params),
+                    _ => None,
+                }
+            }
+            _ => None,
+        });
+    let notice = state
+        .shell
+        .as_ref()
+        .unwrap()
+        .workbench_notice_for_test(tab)
+        .unwrap_or_default()
+        .to_owned();
+    assert!(repainted || started || !notice.is_empty() || begin.is_some());
+    DownloadRun {
+        begin,
+        notice,
+        started,
+    }
+}
+
+#[cfg(unix)]
+fn host_location() -> crate::api::schema::PaneLocation {
+    crate::api::schema::PaneLocation {
+        kind: crate::api::schema::PaneLocationKind::Host,
+        ssh_host: None,
+        container: None,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_download_from_this_machines_server_begins_without_a_pane_and_with_the_full_chunk() {
+    let run = download_started(DownloadSetup::default());
+
+    let begin = run.begin.expect("begin sent");
+    assert_eq!(begin.pane_id, None);
+    assert_eq!(begin.paths, ["/srv/a.txt"]);
+    assert_eq!(
+        begin.max_bytes,
+        Some(crate::download::DOWNLOAD_CHUNK_BYTES as u64)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_download_over_a_remote_client_asks_for_small_answers() {
+    let run = download_started(DownloadSetup {
+        is_remote_client: true,
+        ..DownloadSetup::default()
+    });
+
+    assert_eq!(
+        run.begin.expect("begin sent").max_bytes,
+        Some(upload::transfer::REMOTE_CHUNK_BYTES as u64)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_download_from_an_off_host_tab_begins_through_its_pane() {
+    let run = download_started(DownloadSetup {
+        place: shell::WorkbenchDropPlace::Pane("p2".into()),
+        ..DownloadSetup::default()
+    });
+
+    assert_eq!(
+        run.begin.expect("begin sent").pane_id.as_deref(),
+        Some("p2")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_download_from_a_server_without_download_methods_only_says_so() {
+    let run = download_started(DownloadSetup {
+        advertised: false,
+        ..DownloadSetup::default()
+    });
+
+    assert!(!run.started);
+    assert!(run.begin.is_none());
+    assert_eq!(
+        run.notice,
+        "this server cannot send files; update Herdr there"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_download_while_an_upload_runs_only_says_so() {
+    let run = download_started(DownloadSetup {
+        busy_with_upload: true,
+        ..DownloadSetup::default()
+    });
+
+    assert!(!run.started);
+    assert!(run.begin.is_none());
+    assert_eq!(run.notice, "another upload is still running");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_download_from_a_location_without_a_live_pane_names_it() {
+    let run = download_started(DownloadSetup {
+        place: shell::WorkbenchDropPlace::NoPane("no pane running in app".into()),
+        ..DownloadSetup::default()
+    });
+
+    assert!(run.begin.is_none());
+    assert_eq!(run.notice, "no pane running in app");
+}
+
+#[cfg(unix)]
+#[test]
+fn two_selected_names_that_differ_only_in_case_are_refused_before_begin() {
+    let run = download_started(DownloadSetup {
+        paths: vec!["/srv/Makefile".into(), "/other/makefile".into()],
+        ..DownloadSetup::default()
+    });
+
+    assert!(!run.started);
+    assert!(run.begin.is_none());
+    assert!(
+        run.notice.contains("same name on this machine"),
+        "{}",
+        run.notice
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_download_from_a_closed_connection_only_says_so() {
+    let mut endpoints = endpoint::EndpointRegistry::new(
+        RecordingTransport::default(),
+        1,
+        endpoint::EndpointNegotiation::default(),
+    );
+    let mut state = ClientState::test_new();
+    let tab = state
+        .shell
+        .as_mut()
+        .unwrap()
+        .push_test_investigation("/srv");
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+    let remote = endpoint::ClientEndpointId::Ssh(
+        endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+    );
+
+    start_download(
+        &mut state,
+        &mut endpoints,
+        &event_tx,
+        shell::ClientDownloadRequest {
+            tab,
+            endpoint_id: remote,
+            place: shell::WorkbenchDropPlace::Host,
+            location: host_location(),
+            paths: vec!["/srv/a.txt".into()],
+            destination: "/tmp".into(),
+        },
+        false,
+        std::time::Instant::now(),
+    );
+
+    assert!(!state.downloads.busy());
+    assert_eq!(
+        state
+            .shell
+            .as_ref()
+            .unwrap()
+            .workbench_notice_for_test(tab)
+            .unwrap(),
+        "the connection to this server is closed"
+    );
+}

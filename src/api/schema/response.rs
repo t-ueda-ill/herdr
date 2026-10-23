@@ -345,6 +345,8 @@ pub enum ResponseResult {
     PaneUploadStarted(super::pane_upload::PaneUploadStarted),
     PaneUploadProgress(super::pane_upload::PaneUploadProgress),
     PaneUploadFinished(super::pane_upload::PaneUploadFinished),
+    PaneDownloadStarted(super::pane_download::PaneDownloadStarted),
+    PaneDownloadChunk(super::pane_download::PaneDownloadChunk),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
