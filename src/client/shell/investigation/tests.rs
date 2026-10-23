@@ -3471,9 +3471,10 @@ mod parent_row {
     }
 
     #[test]
-    fn open_as_root_is_the_last_menu_entry() {
+    fn open_as_root_keeps_index_24_ahead_of_download() {
         assert_eq!(MENU[24], "open as root");
-        assert_eq!(MENU.len(), 25);
+        assert_eq!(MENU[25], DOWNLOAD_ITEM);
+        assert_eq!(MENU.len(), 26);
     }
 
     #[test]
