@@ -3041,6 +3041,22 @@ mod parent_row {
         );
     }
 
+    #[test]
+    fn an_empty_root_selects_the_parent_row_instead_of_its_notice() {
+        let mut state = state();
+        let tab = state.investigation_mut().unwrap();
+        if let Some(DirectoryState::Loaded(listing)) = tab.browser.directories.get_mut("/repo") {
+            listing.entries.clear();
+        }
+        tab.browser.rebuild(false);
+        let tab = state.investigation().unwrap();
+        assert!(
+            tab.browser.rows.len() > 1,
+            "empty root shows .. and a notice"
+        );
+        assert!(tab.browser.rows[tab.browser.selected].parent_link);
+    }
+
     fn rooted_at_parent(state: &ClientShellState) -> bool {
         let tab = state.investigation().unwrap();
         tab.browser.root.as_deref() == Some("/")

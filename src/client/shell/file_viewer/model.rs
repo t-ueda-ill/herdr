@@ -591,10 +591,12 @@ impl ClientFileViewerOverlay {
             .or_else(|| entries.last().copied());
         self.selected = match nearest {
             Some(index) => index,
+            // Why not the first notice row: a notice is not selectable, so
+            // with no entries only the ".." row can hold the selection.
             None => self
                 .rows
                 .iter()
-                .position(|row| !row.parent_link)
+                .position(|row| row.parent_link)
                 .unwrap_or(0),
         };
     }

@@ -244,14 +244,6 @@ impl ClientShellState {
                     self.workbench.visible = false;
                 }
             }
-            22 => tab.schedule_search(),
-            23 => self.refresh_investigation_files(),
-            24 => match tab.root_candidate() {
-                Some(root) => {
-                    self.change_file_viewer_root(root, None, outcome);
-                }
-                None => tab.notice = "select a file or folder to open as root".into(),
-            },
             21 => {
                 if let Some(found) = tab.matches.get(tab.selected_match) {
                     let indexes: Vec<_> = tab
@@ -271,6 +263,14 @@ impl ClientShellState {
                     }
                 }
             }
+            22 => tab.schedule_search(),
+            23 => self.refresh_investigation_files(),
+            24 => match tab.root_candidate() {
+                Some(root) => {
+                    self.change_file_viewer_root(root, None, outcome);
+                }
+                None => tab.notice = "select a file or folder to open as root".into(),
+            },
             _ => {}
         }
         self.persist_chrome_preferences(outcome);
