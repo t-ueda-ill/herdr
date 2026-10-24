@@ -199,13 +199,14 @@ fn names_a_line_cannot_carry_are_left_out_with_a_warning() {
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("new\nline"), b"x").unwrap();
     let raw = std::ffi::OsStr::from_bytes(b"bad\xffname");
-    std::fs::write(root.join(raw), b"x").unwrap();
+    // Why count what was created: APFS refuses a name that is not UTF-8.
+    let odd_names = 1 + usize::from(std::fs::write(root.join(raw), b"x").is_ok());
     std::fs::write(root.join("fine"), b"x").unwrap();
 
     let frames = stream(&[&root]);
 
     assert_eq!(rels(&frames), ["t", "t/fine"]);
-    assert_eq!(warnings(&frames).len(), 2);
+    assert_eq!(warnings(&frames).len(), odd_names);
 }
 
 #[test]
@@ -410,13 +411,17 @@ fn a_top_level_fifo_or_non_utf8_name_is_refused_as_invalid() {
     let dir = TempDir::new("host-top-invalid");
     mkfifo(&dir.join("pipe"));
     let raw = dir.path().join(std::ffi::OsStr::from_bytes(b"bad\xffname"));
-    std::fs::write(&raw, b"x").unwrap();
+    // Why optional: APFS refuses a name that is not UTF-8, so on macOS there
+    // is no such file to refuse.
+    let odd_name_exists = std::fs::write(&raw, b"x").is_ok();
 
     let fifo = source(&[&dir.join("pipe")], fast()).begin().unwrap_err();
-    let name = source(&[&raw], fast()).begin().unwrap_err();
 
     assert_eq!(fifo.0, "invalid_params");
-    assert_eq!(name.0, "invalid_params");
+    if odd_name_exists {
+        let name = source(&[&raw], fast()).begin().unwrap_err();
+        assert_eq!(name.0, "invalid_params");
+    }
 }
 
 #[test]

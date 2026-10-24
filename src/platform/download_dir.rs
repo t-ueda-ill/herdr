@@ -131,11 +131,6 @@ pub(crate) fn xdg_download_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-
-    fn parse(contents: &str) -> Option<PathBuf> {
-        parse_user_dirs(contents, Path::new("/home/me"))
-    }
 
     #[test]
     fn home_dir_uses_windows_profile_before_literal_home() {
@@ -181,133 +176,145 @@ mod tests {
         );
     }
 
-    #[test]
-    fn user_dirs_expand_home_in_the_download_entry() {
-        assert_eq!(
-            parse("XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\n"),
-            Some(PathBuf::from("/home/me/Downloads"))
-        );
-        assert_eq!(
-            parse("XDG_DOWNLOAD_DIR=\"$HOME/ダウンロード\""),
-            Some(PathBuf::from("/home/me/ダウンロード"))
-        );
-    }
+    // Why Unix only: these cover the Linux and macOS lookup, which reads
+    // slash-rooted paths that Windows does not call absolute and joins with `\`.
+    #[cfg(unix)]
+    mod unix_clients {
+        use super::*;
+        use std::path::Path;
 
-    #[test]
-    fn user_dirs_accept_an_absolute_path_and_an_unquoted_value() {
-        assert_eq!(
-            parse("XDG_DOWNLOAD_DIR=\"/data/dl\""),
-            Some(PathBuf::from("/data/dl"))
-        );
-        assert_eq!(
-            parse("XDG_DOWNLOAD_DIR=$HOME/dl"),
-            Some(PathBuf::from("/home/me/dl"))
-        );
-    }
+        fn parse(contents: &str) -> Option<PathBuf> {
+            parse_user_dirs(contents, Path::new("/home/me"))
+        }
 
-    #[test]
-    fn user_dirs_skip_comments_other_keys_and_take_the_last_download_entry() {
-        let contents = "# XDG_DOWNLOAD_DIR=\"$HOME/old\"\n\
-            XDG_DESKTOP_DIR=\"$HOME/Desktop\"\n\
-            XDG_DOWNLOAD_DIR=\"$HOME/first\"\n\
-            XDG_DOWNLOAD_DIR=\"$HOME/second\"\n";
-        assert_eq!(parse(contents), Some(PathBuf::from("/home/me/second")));
-    }
+        #[test]
+        fn user_dirs_expand_home_in_the_download_entry() {
+            assert_eq!(
+                parse("XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\n"),
+                Some(PathBuf::from("/home/me/Downloads"))
+            );
+            assert_eq!(
+                parse("XDG_DOWNLOAD_DIR=\"$HOME/ダウンロード\""),
+                Some(PathBuf::from("/home/me/ダウンロード"))
+            );
+        }
 
-    #[test]
-    fn user_dirs_without_a_usable_download_entry_give_nothing() {
-        assert_eq!(parse(""), None);
-        assert_eq!(parse("XDG_DESKTOP_DIR=\"$HOME/Desktop\""), None);
-        assert_eq!(parse("XDG_DOWNLOAD_DIR=\"relative/dir\""), None);
-        assert_eq!(parse("XDG_DOWNLOAD_DIRS=\"$HOME/x\""), None);
-        assert_eq!(parse("XDG_DOWNLOAD_DIR=\"$(rm -rf x)\""), None);
-    }
+        #[test]
+        fn user_dirs_accept_an_absolute_path_and_an_unquoted_value() {
+            assert_eq!(
+                parse("XDG_DOWNLOAD_DIR=\"/data/dl\""),
+                Some(PathBuf::from("/data/dl"))
+            );
+            assert_eq!(
+                parse("XDG_DOWNLOAD_DIR=$HOME/dl"),
+                Some(PathBuf::from("/home/me/dl"))
+            );
+        }
 
-    #[test]
-    fn user_dirs_that_name_the_home_folder_mean_no_downloads_folder() {
-        assert_eq!(parse("XDG_DOWNLOAD_DIR=\"$HOME/\""), None);
-        assert_eq!(parse("XDG_DOWNLOAD_DIR=\"$HOME\""), None);
-        assert_eq!(parse("XDG_DOWNLOAD_DIR=\"/home/me\""), None);
-        assert_eq!(parse("XDG_DOWNLOAD_DIR=\"$HOME//\""), None);
-    }
+        #[test]
+        fn user_dirs_skip_comments_other_keys_and_take_the_last_download_entry() {
+            let contents = "# XDG_DOWNLOAD_DIR=\"$HOME/old\"\n\
+                XDG_DESKTOP_DIR=\"$HOME/Desktop\"\n\
+                XDG_DOWNLOAD_DIR=\"$HOME/first\"\n\
+                XDG_DOWNLOAD_DIR=\"$HOME/second\"\n";
+            assert_eq!(parse(contents), Some(PathBuf::from("/home/me/second")));
+        }
 
-    #[test]
-    fn a_doubled_slash_after_home_stays_under_home() {
-        assert_eq!(
-            parse("XDG_DOWNLOAD_DIR=\"$HOME//Downloads\""),
-            Some(PathBuf::from("/home/me/Downloads"))
-        );
-    }
+        #[test]
+        fn user_dirs_without_a_usable_download_entry_give_nothing() {
+            assert_eq!(parse(""), None);
+            assert_eq!(parse("XDG_DESKTOP_DIR=\"$HOME/Desktop\""), None);
+            assert_eq!(parse("XDG_DOWNLOAD_DIR=\"relative/dir\""), None);
+            assert_eq!(parse("XDG_DOWNLOAD_DIRS=\"$HOME/x\""), None);
+            assert_eq!(parse("XDG_DOWNLOAD_DIR=\"$(rm -rf x)\""), None);
+        }
 
-    #[test]
-    fn the_downloads_folder_needs_an_absolute_home() {
-        let downloads = |home: &'static str| {
-            home_downloads_dir(move |key| (key == "HOME").then(|| home.into()))
-        };
-        assert_eq!(
-            downloads("/home/me"),
-            Some(PathBuf::from("/home/me/Downloads"))
-        );
-        assert_eq!(downloads(""), None);
-        assert_eq!(downloads("rel"), None);
-        assert_eq!(xdg(&[("HOME", "rel")], &[]), None);
-    }
+        #[test]
+        fn user_dirs_that_name_the_home_folder_mean_no_downloads_folder() {
+            assert_eq!(parse("XDG_DOWNLOAD_DIR=\"$HOME/\""), None);
+            assert_eq!(parse("XDG_DOWNLOAD_DIR=\"$HOME\""), None);
+            assert_eq!(parse("XDG_DOWNLOAD_DIR=\"/home/me\""), None);
+            assert_eq!(parse("XDG_DOWNLOAD_DIR=\"$HOME//\""), None);
+        }
 
-    fn xdg(env: &[(&str, &str)], files: &[(&str, &str)]) -> Option<PathBuf> {
-        xdg_download_dir(
-            |key| {
-                env.iter()
-                    .find(|(name, _)| *name == key)
-                    .map(|(_, value)| OsString::from(value))
-            },
-            |path| {
-                files
-                    .iter()
-                    .find(|(name, _)| Path::new(name) == path)
-                    .map(|(_, contents)| (*contents).to_owned())
-            },
-        )
-    }
+        #[test]
+        fn a_doubled_slash_after_home_stays_under_home() {
+            assert_eq!(
+                parse("XDG_DOWNLOAD_DIR=\"$HOME//Downloads\""),
+                Some(PathBuf::from("/home/me/Downloads"))
+            );
+        }
 
-    #[test]
-    fn the_environment_variable_beats_the_user_dirs_file() {
-        assert_eq!(
-            xdg(
-                &[("HOME", "/home/me"), ("XDG_DOWNLOAD_DIR", "/srv/dl")],
-                &[(
-                    "/home/me/.config/user-dirs.dirs",
-                    "XDG_DOWNLOAD_DIR=\"$HOME/from-file\""
-                )],
-            ),
-            Some(PathBuf::from("/srv/dl"))
-        );
-    }
+        #[test]
+        fn the_downloads_folder_needs_an_absolute_home() {
+            let downloads = |home: &'static str| {
+                home_downloads_dir(move |key| (key == "HOME").then(|| home.into()))
+            };
+            assert_eq!(
+                downloads("/home/me"),
+                Some(PathBuf::from("/home/me/Downloads"))
+            );
+            assert_eq!(downloads(""), None);
+            assert_eq!(downloads("rel"), None);
+            assert_eq!(xdg(&[("HOME", "rel")], &[]), None);
+        }
 
-    #[test]
-    fn a_relative_environment_variable_is_ignored() {
-        assert_eq!(
-            xdg(&[("HOME", "/home/me"), ("XDG_DOWNLOAD_DIR", "dl")], &[]),
-            Some(PathBuf::from("/home/me/Downloads"))
-        );
-    }
+        fn xdg(env: &[(&str, &str)], files: &[(&str, &str)]) -> Option<PathBuf> {
+            xdg_download_dir(
+                |key| {
+                    env.iter()
+                        .find(|(name, _)| *name == key)
+                        .map(|(_, value)| OsString::from(value))
+                },
+                |path| {
+                    files
+                        .iter()
+                        .find(|(name, _)| Path::new(name) == path)
+                        .map(|(_, contents)| (*contents).to_owned())
+                },
+            )
+        }
 
-    #[test]
-    fn the_user_dirs_file_is_read_from_xdg_config_home_when_set() {
-        assert_eq!(
-            xdg(
-                &[("HOME", "/home/me"), ("XDG_CONFIG_HOME", "/cfg")],
-                &[("/cfg/user-dirs.dirs", "XDG_DOWNLOAD_DIR=\"$HOME/from-cfg\"")],
-            ),
-            Some(PathBuf::from("/home/me/from-cfg"))
-        );
-    }
+        #[test]
+        fn the_environment_variable_beats_the_user_dirs_file() {
+            assert_eq!(
+                xdg(
+                    &[("HOME", "/home/me"), ("XDG_DOWNLOAD_DIR", "/srv/dl")],
+                    &[(
+                        "/home/me/.config/user-dirs.dirs",
+                        "XDG_DOWNLOAD_DIR=\"$HOME/from-file\""
+                    )],
+                ),
+                Some(PathBuf::from("/srv/dl"))
+            );
+        }
 
-    #[test]
-    fn the_downloads_folder_in_home_is_the_last_resort() {
-        assert_eq!(
-            xdg(&[("HOME", "/home/me")], &[]),
-            Some(PathBuf::from("/home/me/Downloads"))
-        );
-        assert_eq!(xdg(&[], &[]), None);
+        #[test]
+        fn a_relative_environment_variable_is_ignored() {
+            assert_eq!(
+                xdg(&[("HOME", "/home/me"), ("XDG_DOWNLOAD_DIR", "dl")], &[]),
+                Some(PathBuf::from("/home/me/Downloads"))
+            );
+        }
+
+        #[test]
+        fn the_user_dirs_file_is_read_from_xdg_config_home_when_set() {
+            assert_eq!(
+                xdg(
+                    &[("HOME", "/home/me"), ("XDG_CONFIG_HOME", "/cfg")],
+                    &[("/cfg/user-dirs.dirs", "XDG_DOWNLOAD_DIR=\"$HOME/from-cfg\"")],
+                ),
+                Some(PathBuf::from("/home/me/from-cfg"))
+            );
+        }
+
+        #[test]
+        fn the_downloads_folder_in_home_is_the_last_resort() {
+            assert_eq!(
+                xdg(&[("HOME", "/home/me")], &[]),
+                Some(PathBuf::from("/home/me/Downloads"))
+            );
+            assert_eq!(xdg(&[], &[]), None);
+        }
     }
 }
