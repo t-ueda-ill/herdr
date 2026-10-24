@@ -78,11 +78,17 @@ __herdr_osc7
     .to_owned()
 }
 
-/// Fish counterpart of [`injected_cwd_integration_posix`]. `hostname` is read
+/// Fish counterpart of [`injected_cwd_integration_posix`]. The host is read
 /// once, and the path is encoded with `string` so no process starts per `cd`.
+/// Why `$HOSTNAME` before fish's own `$hostname`: the POSIX body prefers it,
+/// and both bodies must name the same host for one machine.
 pub(crate) fn injected_cwd_integration_fish() -> String {
     r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
-set -g __herdr_host $hostname
+if test -n "$HOSTNAME"
+    set -g __herdr_host $HOSTNAME
+else
+    set -g __herdr_host $hostname
+end
 function __herdr_osc7 --on-variable PWD
     isatty stdin; or return 0
     set -l path (string replace -a '%' '%25' -- $PWD)
