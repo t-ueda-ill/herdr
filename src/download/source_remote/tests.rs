@@ -266,9 +266,11 @@ while :; do sleep 1; done"#,
 fn a_full_queue_holds_the_helper_back_without_counting_as_a_stall() {
     let dir = TempDir::new("remote-backpressure");
     std::fs::write(dir.join("big"), pattern(4 * 1024 * 1024)).unwrap();
+    // Why not a shorter stall: a loaded CI runner can pause the helper's own
+    // reads for longer than 150 ms while the queue drains, which is a real stall.
     let options = RemoteOptions {
         queue: 2,
-        stall: Duration::from_millis(150),
+        stall: Duration::from_millis(400),
         ..fast()
     };
     let mut source = real(&["/bin/sh".to_owned()], &[&dir.join("big")], options);
@@ -277,7 +279,7 @@ fn a_full_queue_holds_the_helper_back_without_counting_as_a_stall() {
     let control = Control::default();
     let first = source.next(Duration::from_millis(100), &control).unwrap();
     assert!(first.is_some());
-    std::thread::sleep(Duration::from_millis(700));
+    std::thread::sleep(Duration::from_millis(2000));
 
     let mut frames = vec![first.unwrap()];
     frames.extend(drain(&mut source).unwrap());
