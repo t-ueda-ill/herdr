@@ -1,4 +1,5 @@
 use super::*;
+use crate::integration::remote_shell::{remote_shell_manual_install, RemoteShell};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -218,6 +219,8 @@ fn run_in_pty_with_script(
     command.env("TMPDIR", tmp);
     command.env("TERM", "dumb");
     command.env("HOSTNAME", "testhost");
+    // Only dash and ash read it; it is where a user's sh rc lives.
+    command.env("ENV", home.join(".shrc"));
     let mut child = pair.slave.spawn_command(command).expect("spawn");
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().expect("reader");
@@ -530,11 +533,28 @@ fn run_fake_agents_with_rc(shell: &str, rc: &str, input: &str) -> String {
 /// `fake_body` is the shell script behind the fake `claude` and
 /// `cursor-agent`.
 fn run_fake_agents_with(shell: &str, rc: &str, fake_body: &str, input: &str) -> String {
+    run_fake_agents_in(shell, rc, "", fake_body, input)
+}
+
+/// The bash under test; tests only, so CI can aim the bash tests at bash 3.2.
+fn bash_program() -> String {
+    std::env::var("HERDR_TEST_BASH").unwrap_or_else(|_| "bash".to_owned())
+}
+
+/// `rc` is the rc of bash, zsh and dash; `fish_config` is config.fish.
+fn run_fake_agents_in(
+    shell: &str,
+    rc: &str,
+    fish_config: &str,
+    fake_body: &str,
+    input: &str,
+) -> String {
     let root = scratch(&format!("agents-{shell}"));
     let home = root.join("home");
     let tmp = root.join("tmp");
     let bin = home.join("bin");
-    for dir in [&tmp, &bin] {
+    let fish_dir = home.join(".config/fish");
+    for dir in [&tmp, &bin, &fish_dir] {
         std::fs::create_dir_all(dir).unwrap();
     }
     for name in ["claude", "cursor-agent"] {
@@ -543,19 +563,31 @@ fn run_fake_agents_with(shell: &str, rc: &str, fake_body: &str, input: &str) -> 
         std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
     }
-    std::fs::write(home.join(".bashrc"), rc).unwrap();
-    std::fs::write(home.join(".zshrc"), rc).unwrap();
+    for name in [".bashrc", ".zshrc", ".shrc"] {
+        std::fs::write(home.join(name), rc).unwrap();
+    }
+    std::fs::write(fish_dir.join("config.fish"), fish_config).unwrap();
+    let program = if shell == "bash" {
+        bash_program()
+    } else {
+        shell.to_owned()
+    };
+    let set_path = if shell == "fish" {
+        "set -x PATH $HOME/bin $PATH"
+    } else {
+        "PATH=$HOME/bin:$PATH"
+    };
     run_in_pty(
         &[
             root.to_str().unwrap(),
-            shell,
+            &program,
             "0",
             &injected_integration_posix(),
             &injected_integration_fish(),
         ],
         &home,
         &tmp,
-        &format!("PATH=$HOME/bin:$PATH\n{input}\nexit"),
+        &format!("{set_path}\n{input}\nexit"),
     )
 }
 
@@ -696,6 +728,170 @@ fn zsh_runs_the_real_dashed_command_when_the_alias_wraps_the_same_name() {
         return;
     }
     assert_alias_for_the_wrapped_command_runs_the_real_one("zsh", "cursor-agent", "cursor");
+}
+
+#[test]
+fn dash_runs_the_real_command_when_the_alias_wraps_the_same_name() {
+    if !installed("dash") {
+        return;
+    }
+    assert_alias_for_the_wrapped_command_runs_the_real_one("dash", "claude", "claude");
+}
+
+fn assert_a_user_function_for_the_wrapped_command_is_left_alone(shell: &str, command: &str) {
+    let rc = format!("{command}() {{ echo user-fn \"$@\"; }}\n");
+    let out = run_fake_agents_with(shell, &rc, "echo \"fake $*\"\n", &format!("{command} x"));
+    assert!(out.contains("user-fn x"), "{out:?}");
+    assert!(!out.contains("fake"), "{out:?}");
+    assert!(agent_claims(&out).is_empty(), "{out:?}");
+}
+
+#[test]
+fn bash_leaves_a_function_the_user_defined_for_a_wrapped_command_alone() {
+    if !installed("bash") {
+        return;
+    }
+    assert_a_user_function_for_the_wrapped_command_is_left_alone("bash", "claude");
+}
+
+#[test]
+fn bash_leaves_a_function_the_user_defined_for_a_wrapped_dashed_command_alone() {
+    if !installed("bash") {
+        return;
+    }
+    let out = run_fake_agents_with(
+        "bash",
+        "cursor-agent() { echo user-fn \"$@\"; }\n",
+        "echo \"fake $*\"\n",
+        "cursor-agent x",
+    );
+    assert!(out.contains("user-fn x"), "{out:?}");
+    assert!(agent_claims(&out).is_empty(), "{out:?}");
+}
+
+/// No translated locale is installed on the CI images, so a `type` function
+/// stands in for bash printing its message in another language.
+const TRANSLATED_TYPE_RC: &str =
+    "type() { case $1 in -t) builtin type \"$@\" ;; *) echo \"$1 は関数です\" ;; esac; }\n";
+
+#[test]
+fn bash_leaves_a_user_function_alone_when_type_prints_a_translated_message() {
+    if !installed("bash") {
+        return;
+    }
+    let rc = format!("{TRANSLATED_TYPE_RC}claude() {{ echo user-fn \"$@\"; }}\n");
+    let out = run_fake_agents_with("bash", &rc, "echo \"fake $*\"\n", "claude x");
+    assert!(out.contains("user-fn x"), "{out:?}");
+    assert!(agent_claims(&out).is_empty(), "{out:?}");
+}
+
+#[test]
+fn zsh_leaves_a_user_function_alone_when_type_prints_a_translated_message() {
+    if !installed("zsh") {
+        return;
+    }
+    let rc = format!("{TRANSLATED_TYPE_RC}claude() {{ echo user-fn \"$@\"; }}\n");
+    let out = run_fake_agents_with("zsh", &rc, "echo \"fake $*\"\n", "claude x");
+    assert!(out.contains("user-fn x"), "{out:?}");
+    assert!(agent_claims(&out).is_empty(), "{out:?}");
+}
+
+#[test]
+fn zsh_leaves_a_function_the_user_defined_for_a_wrapped_command_alone() {
+    if !installed("zsh") {
+        return;
+    }
+    assert_a_user_function_for_the_wrapped_command_is_left_alone("zsh", "claude");
+}
+
+#[test]
+fn dash_leaves_a_function_the_user_defined_for_a_wrapped_command_alone() {
+    if !installed("dash") {
+        return;
+    }
+    assert_a_user_function_for_the_wrapped_command_is_left_alone("dash", "claude");
+}
+
+/// The user's rc holds the alias and then the manual integration, so the
+/// injected copy that follows finds the alias already removed.
+fn assert_the_alias_target_survives_a_second_installation(
+    shell: &str,
+    flavor: RemoteShell,
+    label: &str,
+) {
+    let rc = format!(
+        "{FORK_GUARD_RC}alias claude='claude --from-alias'\n{}",
+        remote_shell_manual_install(flavor)
+    );
+    let out = run_fake_agents_with(shell, &rc, "echo \"fake $*\"\n", "claude x");
+    assert_start_then_exit(&out, label);
+    assert!(out.contains("fake --from-alias x"), "{out:?}");
+}
+
+#[test]
+fn bash_keeps_the_alias_target_when_the_integration_is_installed_twice() {
+    if !installed("bash") {
+        return;
+    }
+    assert_the_alias_target_survives_a_second_installation("bash", RemoteShell::Bash, "claude");
+}
+
+#[test]
+fn zsh_keeps_the_alias_target_when_the_integration_is_installed_twice() {
+    if !installed("zsh") {
+        return;
+    }
+    assert_the_alias_target_survives_a_second_installation("zsh", RemoteShell::Zsh, "claude");
+}
+
+#[test]
+fn dash_keeps_the_alias_target_when_the_integration_is_installed_twice() {
+    if !installed("dash") {
+        return;
+    }
+    assert_the_alias_target_survives_a_second_installation("dash", RemoteShell::Sh, "claude");
+}
+
+#[test]
+fn fish_leaves_a_function_the_user_defined_for_a_wrapped_command_alone() {
+    if !installed("fish") {
+        return;
+    }
+    let out = run_fake_agents_in(
+        "fish",
+        "",
+        "function claude\n    echo user-fn $argv\nend\n",
+        "echo \"fake $*\"\n",
+        "claude x",
+    );
+    assert!(out.contains("user-fn x"), "{out:?}");
+    assert!(agent_claims(&out).is_empty(), "{out:?}");
+}
+
+#[test]
+fn fish_leaves_an_alias_the_user_defined_for_a_wrapped_command_alone() {
+    if !installed("fish") {
+        return;
+    }
+    let out = run_fake_agents_in(
+        "fish",
+        "",
+        "alias claude='echo alias-ran'\n",
+        "echo \"fake $*\"\n",
+        "claude x",
+    );
+    assert!(out.contains("alias-ran x"), "{out:?}");
+    assert!(agent_claims(&out).is_empty(), "{out:?}");
+}
+
+#[test]
+fn fish_announces_a_wrapped_agent_without_a_user_definition() {
+    if !installed("fish") {
+        return;
+    }
+    let out = run_fake_agents_in("fish", "", "", "echo \"fake $*\"\n", "claude x");
+    assert_start_then_exit(&out, "claude");
+    assert!(out.contains("fake x"), "{out:?}");
 }
 
 fn assert_ctrl_c_ends_the_claim_and_returns_to_the_prompt(shell: &str) {
