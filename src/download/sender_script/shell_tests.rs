@@ -880,3 +880,49 @@ fn a_read_that_fails_halfway_is_a_changed_trailer_even_when_size_and_time_are_un
         assert!(trailer.is_err());
     });
 }
+
+#[test]
+fn a_cat_killed_by_sigpipe_after_the_whole_body_is_an_unchanged_trailer() {
+    each_local_shell(|shell| {
+        if ignores_path_for_tools(shell) {
+            return;
+        }
+        let dir = tree("sigpipe-cat");
+        let root = dir.join("t");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("f"), pattern(65_536)).unwrap();
+        let bin = dir.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let real_cat = String::from_utf8(
+            std::process::Command::new("sh")
+                .args(["-c", "command -v cat"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        // Delivers the whole file named after `--`, then dies as if `head` had closed the pipe.
+        write_tool(
+            &bin,
+            "cat",
+            &format!(
+                "if [ \"$1\" = -- ]; then {real} -- \"$2\"; kill -PIPE $$; fi\nexec {real} \"$@\"",
+                real = real_cat.trim()
+            ),
+        );
+        let shell = with_env(
+            shell,
+            &[(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )],
+        );
+
+        let outcome = download(&shell, &[&root]);
+
+        assert_eq!(outcome.failure, None);
+        let (body, trailer) = outcome.file("t/f");
+        assert!(body == pattern(65_536));
+        assert_eq!(trailer, Ok(()));
+    });
+}
