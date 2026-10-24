@@ -265,9 +265,13 @@ mod tests {
         assert!(argv[6].starts_with("exec sh -c 'eval"), "{}", argv[6]);
     }
 
+    // Why unix only: the command only ever runs on a POSIX remote, and on
+    // Windows `bash` can resolve to the WSL launcher instead of a shell.
+    #[cfg(unix)]
     const TRICKY: [&str; 5] = ["it's", "a\\b", "100%", "!x", "line1\nline2"];
 
     /// The command, run by `shell -c` as sshd does, then decoded by `sh`.
+    #[cfg(unix)]
     fn run_through(shell: &str) -> Option<String> {
         let inner = format!(
             "printf '%s|' {}",
@@ -327,6 +331,7 @@ mod tests {
         assert!(argv.last().unwrap().len() < 64 * 1024);
     }
 
+    #[cfg(unix)]
     #[test]
     fn portable_remote_command_survives_sh_and_bash() {
         for shell in ["sh", "bash", "dash"] {
@@ -336,6 +341,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn portable_remote_command_survives_other_login_shells_when_installed() {
         for shell in ["zsh", "fish", "tcsh", "csh"] {
