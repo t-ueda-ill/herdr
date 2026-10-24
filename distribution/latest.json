@@ -1,23 +1,42 @@
 {
-  "version": "0.9.506",
+  "version": "0.9.507",
   "protocol": 22,
   "endpoint_generation": 1,
-  "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.506\n- Source commit: e1046cc4e5a2aaba787eecacd6bd615024a84159\n\nSHA-256:\n\n```\n8e9370cfb419926ade265cbc74d75ce808241323200596437b2172f478cfe500  herdr-linux-x86_64\n5aaeb092147db2940d00a587c554b66a4707f007741fba8fb5e18ea053240ff7  herdr-linux-aarch64\nc258967c2fd302e5a915ad75b4618978d5bae4df1248eb7120624023e99d0317  herdr-macos-x86_64\nea713bb635af81502c12d6b2b363c008ecdfb69e79ba923c5c4408bb605405e8  herdr-macos-aarch64\ne8a3c031f38dc66e4d34ecf2278bfb2cf76da46ddcde532eb0a100fbac404d20  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.505 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/24\n* feat: prefix container and ssh spaces with [c] and [s] in the sidebar by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/28\n* feat: follow the pane directory, add root navigation, hover, and help passthrough in the files workbench by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/27\n* feat: download files and folders from the file workbench to this machine by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/29\n* chore: prepare v0.9.506 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/30\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.505...v0.9.506",
+  "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.507\n- Source commit: 6cae1f36210232071c2ba418b486c7eb3b091b9c\n\nSHA-256:\n\n```\n549ec59b164cd726714bf5ce330aee14ff3ca030a6b50e852800bff695f037a8  herdr-linux-x86_64\n032da2e5d4c6496c7999f3dbf3b7f231429406677026f9a73f07c5905786d5a3  herdr-linux-aarch64\n2065dda41bdfe3e06552333404414221b51182aa81e06b22b5736ace853f1b54  herdr-macos-x86_64\n6bd05dcf6b2dd3876e5d77ab23da004c82cda1189f168a58a2a22d3926fd7074  herdr-macos-aarch64\n7b4060e731fe1b82d4285fc5f5bc11032337ffc2d9881e68169fedeedd928ff6  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.506 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/31\n* test: make the download tests hold on macos, windows, and busybox runners by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/33\n* feat: follow the remote directory in ssh and container panes by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/32\n* test: drive the opencode tui plugin tests with a fake clock by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/35\n* feat: announce agents started in ssh and container panes by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/34\n* chore: prepare v0.9.507 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/36\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.506...v0.9.507",
   "assets": {
-    "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.506/herdr-linux-x86_64",
-    "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.506/herdr-linux-aarch64",
-    "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.506/herdr-macos-x86_64",
-    "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.506/herdr-macos-aarch64",
-    "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.506/herdr-windows-x86_64.zip"
+    "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-linux-x86_64",
+    "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-linux-aarch64",
+    "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-macos-x86_64",
+    "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-macos-aarch64",
+    "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-windows-x86_64.zip"
   },
   "sha256": {
-    "linux-x86_64": "8e9370cfb419926ade265cbc74d75ce808241323200596437b2172f478cfe500",
-    "linux-aarch64": "5aaeb092147db2940d00a587c554b66a4707f007741fba8fb5e18ea053240ff7",
-    "macos-x86_64": "c258967c2fd302e5a915ad75b4618978d5bae4df1248eb7120624023e99d0317",
-    "macos-aarch64": "ea713bb635af81502c12d6b2b363c008ecdfb69e79ba923c5c4408bb605405e8",
-    "windows-x86_64": "e8a3c031f38dc66e4d34ecf2278bfb2cf76da46ddcde532eb0a100fbac404d20"
+    "linux-x86_64": "549ec59b164cd726714bf5ce330aee14ff3ca030a6b50e852800bff695f037a8",
+    "linux-aarch64": "032da2e5d4c6496c7999f3dbf3b7f231429406677026f9a73f07c5905786d5a3",
+    "macos-x86_64": "2065dda41bdfe3e06552333404414221b51182aa81e06b22b5736ace853f1b54",
+    "macos-aarch64": "6bd05dcf6b2dd3876e5d77ab23da004c82cda1189f168a58a2a22d3926fd7074",
+    "windows-x86_64": "7b4060e731fe1b82d4285fc5f5bc11032337ffc2d9881e68169fedeedd928ff6"
   },
   "releases": {
+    "0.9.507": {
+      "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.507\n- Source commit: 6cae1f36210232071c2ba418b486c7eb3b091b9c\n\nSHA-256:\n\n```\n549ec59b164cd726714bf5ce330aee14ff3ca030a6b50e852800bff695f037a8  herdr-linux-x86_64\n032da2e5d4c6496c7999f3dbf3b7f231429406677026f9a73f07c5905786d5a3  herdr-linux-aarch64\n2065dda41bdfe3e06552333404414221b51182aa81e06b22b5736ace853f1b54  herdr-macos-x86_64\n6bd05dcf6b2dd3876e5d77ab23da004c82cda1189f168a58a2a22d3926fd7074  herdr-macos-aarch64\n7b4060e731fe1b82d4285fc5f5bc11032337ffc2d9881e68169fedeedd928ff6  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.506 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/31\n* test: make the download tests hold on macos, windows, and busybox runners by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/33\n* feat: follow the remote directory in ssh and container panes by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/32\n* test: drive the opencode tui plugin tests with a fake clock by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/35\n* feat: announce agents started in ssh and container panes by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/34\n* chore: prepare v0.9.507 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/36\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.506...v0.9.507",
+      "protocol": 22,
+      "endpoint_generation": 1,
+      "assets": {
+        "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-linux-x86_64",
+        "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-linux-aarch64",
+        "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-macos-x86_64",
+        "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-macos-aarch64",
+        "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-windows-x86_64.zip"
+      },
+      "sha256": {
+        "linux-x86_64": "549ec59b164cd726714bf5ce330aee14ff3ca030a6b50e852800bff695f037a8",
+        "linux-aarch64": "032da2e5d4c6496c7999f3dbf3b7f231429406677026f9a73f07c5905786d5a3",
+        "macos-x86_64": "2065dda41bdfe3e06552333404414221b51182aa81e06b22b5736ace853f1b54",
+        "macos-aarch64": "6bd05dcf6b2dd3876e5d77ab23da004c82cda1189f168a58a2a22d3926fd7074",
+        "windows-x86_64": "7b4060e731fe1b82d4285fc5f5bc11032337ffc2d9881e68169fedeedd928ff6"
+      }
+    },
     "0.9.506": {
       "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.506\n- Source commit: e1046cc4e5a2aaba787eecacd6bd615024a84159\n\nSHA-256:\n\n```\n8e9370cfb419926ade265cbc74d75ce808241323200596437b2172f478cfe500  herdr-linux-x86_64\n5aaeb092147db2940d00a587c554b66a4707f007741fba8fb5e18ea053240ff7  herdr-linux-aarch64\nc258967c2fd302e5a915ad75b4618978d5bae4df1248eb7120624023e99d0317  herdr-macos-x86_64\nea713bb635af81502c12d6b2b363c008ecdfb69e79ba923c5c4408bb605405e8  herdr-macos-aarch64\ne8a3c031f38dc66e4d34ecf2278bfb2cf76da46ddcde532eb0a100fbac404d20  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.505 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/24\n* feat: prefix container and ssh spaces with [c] and [s] in the sidebar by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/28\n* feat: follow the pane directory, add root navigation, hover, and help passthrough in the files workbench by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/27\n* feat: download files and folders from the file workbench to this machine by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/29\n* chore: prepare v0.9.506 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/30\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.505...v0.9.506",
       "protocol": 22,
