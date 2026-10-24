@@ -219,6 +219,18 @@ fn each_local_shell(check: impl Fn(&[String])) {
     }
 }
 
+/// Why not BusyBox for a test that fakes a tool through PATH: its shell runs
+/// `cat`, `find`, `stat` and the rest as built-in applets without consulting
+/// PATH, so a tool put in front, or taken away, changes nothing, and a PATH
+/// that lacks `busybox` cannot even start it.
+fn ignores_path_for_tools(shell: &[String]) -> bool {
+    let busybox = shell.iter().any(|word| word == "busybox");
+    if busybox {
+        eprintln!("skipping {shell:?}: it runs its tools without consulting PATH");
+    }
+    busybox
+}
+
 fn tree(label: &str) -> TempDir {
     TempDir::new(label)
 }
@@ -290,9 +302,15 @@ fn names_with_newlines_quotes_spaces_dollars_and_leading_dashes_survive() {
             b"bad-\xff-utf8".to_vec(),
             b"*".to_vec(),
         ];
-        for name in &names {
-            std::fs::write(root.join(std::ffi::OsStr::from_bytes(name)), name).unwrap();
-        }
+        // Why keep only the names the filesystem takes: APFS refuses a name
+        // that is not UTF-8, and a name it refuses cannot be downloaded.
+        let names: Vec<Vec<u8>> = names
+            .into_iter()
+            .filter(|name| {
+                std::fs::write(root.join(std::ffi::OsStr::from_bytes(name)), name).is_ok()
+            })
+            .collect();
+        assert!(names.len() >= 9, "{names:?}");
 
         let outcome = download(shell, &[&root]);
 
@@ -487,6 +505,9 @@ fn modes_come_from_the_listing() {
 #[test]
 fn the_modification_time_is_the_files_and_a_missing_stat_leaves_it_unknown() {
     each_local_shell(|shell| {
+        if ignores_path_for_tools(shell) {
+            return;
+        }
         let dir = tree("mtime");
         let root = dir.join("t");
         std::fs::create_dir(&root).unwrap();
@@ -601,6 +622,9 @@ fn several_selections_are_streamed_in_the_order_given() {
 #[test]
 fn a_selection_that_vanishes_before_the_walk_is_reported_as_changed() {
     each_local_shell(|shell| {
+        if ignores_path_for_tools(shell) {
+            return;
+        }
         let dir = tree("vanish");
         let victim = dir.join("t");
         std::fs::create_dir(&victim).unwrap();
@@ -813,6 +837,9 @@ fn a_file_that_grows_mid_stream_still_delivers_its_declared_size_and_a_changed_t
 #[test]
 fn a_read_that_fails_halfway_is_a_changed_trailer_even_when_size_and_time_are_unchanged() {
     each_local_shell(|shell| {
+        if ignores_path_for_tools(shell) {
+            return;
+        }
         let dir = tree("failing-cat");
         let root = dir.join("t");
         std::fs::create_dir(&root).unwrap();
@@ -851,5 +878,51 @@ fn a_read_that_fails_halfway_is_a_changed_trailer_even_when_size_and_time_are_un
         assert_eq!(body.len(), 100_000);
         assert!(body[..50_000] == pattern(100_000)[..50_000]);
         assert!(trailer.is_err());
+    });
+}
+
+#[test]
+fn a_cat_killed_by_sigpipe_after_the_whole_body_is_an_unchanged_trailer() {
+    each_local_shell(|shell| {
+        if ignores_path_for_tools(shell) {
+            return;
+        }
+        let dir = tree("sigpipe-cat");
+        let root = dir.join("t");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("f"), pattern(65_536)).unwrap();
+        let bin = dir.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let real_cat = String::from_utf8(
+            std::process::Command::new("sh")
+                .args(["-c", "command -v cat"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        // Delivers the whole file named after `--`, then dies as if `head` had closed the pipe.
+        write_tool(
+            &bin,
+            "cat",
+            &format!(
+                "if [ \"$1\" = -- ]; then {real} -- \"$2\"; kill -PIPE $$; fi\nexec {real} \"$@\"",
+                real = real_cat.trim()
+            ),
+        );
+        let shell = with_env(
+            shell,
+            &[(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )],
+        );
+
+        let outcome = download(&shell, &[&root]);
+
+        assert_eq!(outcome.failure, None);
+        let (body, trailer) = outcome.file("t/f");
+        assert!(body == pattern(65_536));
+        assert_eq!(trailer, Ok(()));
     });
 }

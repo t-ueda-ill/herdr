@@ -157,7 +157,7 @@ impl Harness {
                 input: destination.display().to_string(),
                 default_dir: String::new(),
                 home: None,
-                syntax: super::super::destination::PathSyntax::Posix,
+                syntax: super::super::destination::PathSyntax::current(),
             },
             move |event| emit.send(event).is_ok(),
         );

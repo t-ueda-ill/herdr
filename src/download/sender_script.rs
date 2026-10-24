@@ -50,15 +50,21 @@ use super::notice_text;
 /// Why fd 3 for `cat`'s status: a pipeline hides it, and dash has no pipefail.
 /// A read that fails halfway (EIO, a dropped NFS mount) leaves size and mtime
 /// as they were, so only that status finds the zeros that fill the rest.
+/// Why `cat` killed by SIGPIPE (141 = 128 + 13 on Linux, macOS and BSD) counts
+/// as success: only `head -c` closing the pipe can send it, and `head` closes it
+/// after taking all `size` bytes, so the body is complete. A file that grew is
+/// still reported by the size and mtime in the trailer. `cat` and `head` race
+/// at the pipe boundary, so the signal arrives on some runs and not on others.
 /// Why skip the pipeline for an empty file: BSD `head -c 0` is an error.
 /// Why `L` for a name without `/` in its path: a link selected on its own is
 /// followed (its target is saved), while links inside folders stay links.
 /// Why the trailing dot after `readlink`: `$(...)` strips every trailing
 /// newline, which would send a different target. The server skips the link
 /// when a newline remains.
+/// Why `readlink -n`: GNU and BusyBox always end the output with a newline,
+/// BSD (macOS) adds one only when the target does not end in one, so the
+/// output without `-n` cannot be cut back to the target the same way on both.
 pub(crate) const EMIT_SCRIPT: &str = r##"exec 4>&1
-nl='
-'
 bits() {
   b=0
   case $1 in r??) b=4 ;; esac
@@ -90,7 +96,7 @@ for f do
   deref=
   case $rel in */*) ;; *) deref=L ;; esac
   if [ -L "$f" ] && [ -z "$deref" ]; then
-    if t=$(readlink -- "$f" 2>/dev/null && echo .) && t=${t%.} && t=${t%"$nl"} && [ -n "$t" ]
+    if t=$(readlink -n -- "$f" 2>/dev/null && echo .) && t=${t%.} && [ -n "$t" ]
     then printf 'l\0%s\0%s\0' "$rel" "$t"
     else printf 's\0%s\0link\0' "$rel"
     fi
@@ -103,7 +109,7 @@ for f do
     size=${m%% *}
     printf 'f\0%s\0%s\0' "$rel" "$m"
     if [ "$size" -gt 0 ]; then
-      st=$( { { cat -- "$f" 2>/dev/null; printf %s "$?" >&3; cat /dev/zero 2>/dev/null; } \
+      st=$( { { cat -- "$f" 2>/dev/null; c=$?; [ "$c" -ne 141 ] || c=0; printf %s "$c" >&3; cat /dev/zero 2>/dev/null; } \
               | head -c "$size" >&4; } 3>&1 )
     else
       st=0

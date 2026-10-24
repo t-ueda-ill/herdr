@@ -14,7 +14,7 @@ fn destination(input: &str, default_dir: &str, home: Option<&std::path::Path>) -
         input: input.into(),
         default_dir: default_dir.into(),
         home: home.map(std::path::Path::to_path_buf),
-        syntax: PathSyntax::Posix,
+        syntax: PathSyntax::current(),
     }
 }
 
