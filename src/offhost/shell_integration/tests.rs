@@ -561,8 +561,15 @@ fn run_fake_agents_with(shell: &str, rc: &str, fake_body: &str, input: &str) -> 
 
 /// An rc prefix that makes a runaway wrapper recursion fail to fork instead
 /// of exhausting the machine.
-const FORK_GUARD_RC: &str =
-    "ulimit -u $(( $(ps -u $(id -u) -L -o lwp= | wc -l) + 80 )) 2>/dev/null || :\n";
+/// Why threads on Linux and processes elsewhere: Linux counts threads against
+/// `ulimit -u`, macOS counts processes. Why `/proc` and not whether `ps -L`
+/// works: macOS `ps -L` succeeds too, printing its keyword list.
+const FORK_GUARD_RC: &str = "if [ -d /proc/self/task ]; then\n\
+  __herdr_n=$(ps -u $(id -u) -L -o lwp= | wc -l)\n\
+else\n\
+  __herdr_n=$(ps -u $(id -u) -o pid= | wc -l)\n\
+fi\n\
+ulimit -u $(( __herdr_n + 80 )) 2>/dev/null || :\n";
 
 /// `(verb, token, label)` of each agent claim in order; exit has no label.
 fn agent_claims(output: &str) -> Vec<(String, String, String)> {
