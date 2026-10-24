@@ -41,7 +41,7 @@ fn integration_remote_shell(args: &[String]) -> std::io::Result<i32> {
         },
         _ => return usage(),
     };
-    print!("{}", crate::integration::remote_shell_function(shell));
+    print!("{}", crate::integration::remote_shell_manual_install(shell));
     Ok(0)
 }
 

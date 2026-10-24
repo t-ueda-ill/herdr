@@ -73,9 +73,15 @@ Some restricted Linux runtimes do not expose a terminal foreground process group
 
 ## Agents on other machines
 
-Herdr finds an agent through the process tree of the machine it runs on. An agent started inside an SSH pane or a container pane is not in that tree, so Herdr cannot see it on its own. To list such an agent and get its notifications, install a small shell function on the machine where the agent runs. It announces `claude` and `codex` when they start and exit, using a private terminal escape sequence (OSC 43737, body `herdr-agent;v=1;`). Any Herdr in front of that terminal picks it up.
+Herdr finds an agent through the process tree of the machine it runs on. An agent started inside an SSH pane or a container pane is not in that tree, so Herdr cannot see it on its own. Shell functions on the machine where the agent runs announce each start and exit through a private terminal escape sequence (OSC 43737, body `herdr-agent;v=1;`). Any Herdr in front of that terminal picks it up.
 
-Print the function for the remote shell and append it to that shell's rc file:
+In an SSH or container pane that Herdr opened, nothing needs to be installed. The launcher loads the functions after your own rc files, so your aliases for these commands are kept, and it removes them from disk once the shell has started (see `shell_integration` under [SSH and container panes](/docs/configuration#ssh-and-container-panes)).
+
+The functions wrap these commands: `amp`, `agy`, `claude`, `cline`, `codex`, `copilot`, `cursor-agent`, `devin`, `droid`, `gemini`, `grok`, `hermes`, `kilo`, `kimi`, `kiro-cli`, `letta`, `maki`, `muse`, `opencode`, `pi`, `qodercli`, and `qwen`. In `sh` (dash, ash), `cursor-agent` and `kiro-cli` are not wrapped, because those shells do not accept `-` in a function name.
+
+Agents whose state comes only from their hooks (pi, omp, mastracode, opencode, kilo, and kimi) are listed with their identity, but their state stays weak on another machine, because the hooks report to the machine they run on and not to the Herdr in front of the pane.
+
+For an `ssh` command you type in a local pane, Herdr cannot load the functions for you. Print them for the remote shell, which include the working directory report, and append them to that shell's rc file:
 
 ```bash
 herdr integration remote-shell --shell bash >> ~/.bashrc
@@ -85,7 +91,7 @@ If Herdr is not installed on the remote machine, pipe it from the local one: `he
 
 Use `--shell zsh`, `--shell fish` or `--shell sh` (dash and ash) for those shells. Without `--shell`, Herdr picks one from `$SHELL`. The function writes to `/dev/tty`, so it needs a controlling terminal. Inside tmux, the function wraps the sequence for passthrough, and tmux 3.3 or later must also have `allow-passthrough on`. mosh drops the sequence. `exec claude` skips the function.
 
-Only panes that Herdr itself opened as an SSH or container pane are watched. An `ssh` command you type in a local pane is not. A live handoff from `herdr update` keeps the claimed agent of a pane Herdr opened.
+Only panes that Herdr itself opened as an SSH or container pane are watched, with or without the functions above. An `ssh` command you type in a local pane is not. A live handoff from `herdr update` keeps the claimed agent of a pane Herdr opened.
 
 If the exit marker never arrives (the shell was killed, an agent stopped with Ctrl+Z, or an agent killed by a signal under fish), release the agent by hand:
 

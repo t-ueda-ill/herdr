@@ -6,9 +6,7 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use crate::integration::remote_shell::{
-    injected_cwd_integration_fish, injected_cwd_integration_posix,
-};
+use crate::integration::{injected_integration_fish, injected_integration_posix};
 
 /// Run as `sh -c LAUNCHER sh START_DIR SHELL LOGIN POSIX_BODY FISH_BODY`.
 ///
@@ -126,10 +124,7 @@ pub(crate) fn launcher_argv(
     shell_integration: bool,
 ) -> Vec<OsString> {
     let (posix, fish) = if shell_integration {
-        (
-            injected_cwd_integration_posix(),
-            injected_cwd_integration_fish(),
-        )
+        (injected_integration_posix(), injected_integration_fish())
     } else {
         (String::new(), String::new())
     };

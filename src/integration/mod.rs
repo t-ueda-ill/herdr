@@ -24,7 +24,9 @@ pub(crate) use registry::{
     experimental_letta_integration_status, installed_integration_statuses,
     integration_recommendations, integration_target_label, print_outdated_update_notice,
 };
-pub(crate) use remote_shell::{remote_shell_function, RemoteShell};
+pub(crate) use remote_shell::{
+    injected_integration_fish, injected_integration_posix, remote_shell_manual_install, RemoteShell,
+};
 pub(crate) use types::{
     ExperimentalIntegrationStatus, IntegrationRecommendation, IntegrationStatus,
     IntegrationStatusKind,

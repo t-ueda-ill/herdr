@@ -1,5 +1,5 @@
 //! Shell functions for the machine where an agent runs when that machine is
-//! not the one running herdr (ssh, containers). They announce `claude` and
+//! not the one running herdr (ssh, containers). They announce agents like `claude` and
 //! `codex` through a private OSC so the herdr in front of the pane can list the
 //! agent and send notifications. The byte contract lives in `pane/osc.rs`.
 
@@ -8,7 +8,7 @@ pub(crate) enum RemoteShell {
     Bash,
     Zsh,
     Fish,
-    /// POSIX sh, dash and ash: no subshell-safe signal handling, no aliases array.
+    /// POSIX sh, dash and ash: no subshell-safe signal handling.
     Sh,
 }
 
@@ -104,100 +104,287 @@ __herdr_osc7
     .to_owned()
 }
 
-/// Agents the generated functions wrap.
-const WRAPPED_AGENTS: [&str; 2] = ["claude", "codex"];
+/// A command the generated functions wrap, and the label sent in the OSC.
+/// They differ where the process is not named after the agent: `cursor-agent`
+/// is Cursor, `kiro-cli` is Kiro.
+pub(crate) struct WrappedAgent {
+    pub(crate) command: &'static str,
+    pub(crate) label: &'static str,
+}
+
+const fn wrapped(command: &'static str, label: &'static str) -> WrappedAgent {
+    WrappedAgent { command, label }
+}
+
+/// Every agent with a bundled detection manifest. `omp` and `mastracode` are
+/// left out because they have no manifest, so a start claim could not be
+/// adopted for them.
+pub(crate) const WRAPPED_AGENTS: [WrappedAgent; 22] = [
+    wrapped("amp", "amp"),
+    wrapped("agy", "agy"),
+    wrapped("claude", "claude"),
+    wrapped("cline", "cline"),
+    wrapped("codex", "codex"),
+    wrapped("cursor-agent", "cursor"),
+    wrapped("devin", "devin"),
+    wrapped("droid", "droid"),
+    wrapped("gemini", "gemini"),
+    wrapped("grok", "grok"),
+    wrapped("hermes", "hermes"),
+    wrapped("kilo", "kilo"),
+    wrapped("kimi", "kimi"),
+    wrapped("kiro-cli", "kiro"),
+    wrapped("letta", "letta"),
+    wrapped("maki", "maki"),
+    wrapped("muse", "muse"),
+    wrapped("opencode", "opencode"),
+    wrapped("pi", "pi"),
+    wrapped("qodercli", "qodercli"),
+    wrapped("qwen", "qwen"),
+    wrapped("copilot", "copilot"),
+];
+
+impl WrappedAgent {
+    /// dash and ash reject `-` in a function name.
+    fn is_posix_function_name(&self) -> bool {
+        !self.command.contains('-')
+    }
+
+    fn variable_suffix(&self) -> String {
+        self.command.replace('-', "_")
+    }
+}
 
 pub(crate) fn remote_shell_function(shell: RemoteShell) -> String {
     match shell {
-        RemoteShell::Bash => {
-            posix_function(|agent| format!("${{BASH_ALIASES[{agent}]-}}"), SUBSHELL_RUN)
-        }
-        RemoteShell::Zsh => posix_function(|agent| format!("${{aliases[{agent}]-}}"), SUBSHELL_RUN),
-        RemoteShell::Sh => posix_function(|_| String::new(), TRAP_RUN),
+        RemoteShell::Bash => posix_function(&subshell_run(false), true),
+        RemoteShell::Zsh => posix_function(&subshell_run(true), true),
+        RemoteShell::Sh => posix_function(TRAP_RUN, false),
         RemoteShell::Fish => fish_function(),
     }
 }
 
+/// What `herdr integration remote-shell` prints: the directory report and the
+/// agent functions, for a shell herdr did not start.
+pub(crate) fn remote_shell_manual_install(shell: RemoteShell) -> String {
+    match shell {
+        RemoteShell::Fish => format!(
+            "{}{}",
+            injected_cwd_integration_fish(),
+            remote_shell_function(shell)
+        ),
+        _ => format!(
+            "{}{}",
+            injected_cwd_integration_posix(),
+            remote_shell_function(shell)
+        ),
+    }
+}
+
+/// Body the launcher sources in a bash, zsh or sh pane: directory report plus
+/// agent functions.
+pub(crate) fn injected_integration_posix() -> String {
+    format!(
+        "{}{}",
+        injected_cwd_integration_posix(),
+        injected_agent_integration_posix()
+    )
+}
+
+/// Body the launcher sources in a fish pane.
+pub(crate) fn injected_integration_fish() -> String {
+    format!("{}{}", injected_cwd_integration_fish(), fish_function())
+}
+
 /// Exit is announced by a subshell EXIT trap, which also fires when the agent
 /// dies of a signal; a plain statement after the call would be skipped when an
-/// interactive shell abandons the command list on SIGINT. INT/TERM are not
-/// trapped, because Ctrl-C that only cancels an agent action must not release.
-const SUBSHELL_RUN: &str = r#"__herdr_agent_run() {
-  local __herdr_kind=$1 __herdr_alias=$2 __herdr_token
-  shift 2
-  __herdr_token="$$-${RANDOM:-0}${RANDOM:-0}"
-  __herdr_agent_osc "herdr-agent;v=1;start;$__herdr_token;$__herdr_kind"
+/// interactive shell abandons the command list on SIGINT. TERM is not trapped,
+/// and INT is trapped only by zsh (see `subshell_run`), because Ctrl-C that
+/// only cancels an agent action must not release.
+///
+/// Why the wrapper function is unset before the alias is evaluated: an alias
+/// such as `alias claude='claude --flag'` names the wrapped command itself, so
+/// evaluating it would call this wrapper again and recurse without end. The
+/// unset is local to the subshell, so the interactive shell keeps its wrapper.
+fn subshell_run(zsh: bool) -> String {
+    // Why a no-op handler and not a release: zsh's subshell dies of SIGINT
+    // without running its EXIT trap, so the claim would stay. `:` does not
+    // announce anything, so a Ctrl-C that only cancels an agent action still
+    // does not release; the subshell survives, waits for the agent (which has
+    // default traps again in its own process and still gets the Ctrl-C), and
+    // leaves normally, which fires the EXIT trap.
+    let trap_int = if zsh { "    trap ':' INT\n" } else { "" };
+    format!(
+        r#"__herdr_agent_run() {{
+  local __herdr_cmd=$1 __herdr_label=$2 __herdr_alias=$3 __herdr_token
+  shift 3
+  __herdr_token="$$-${{RANDOM:-0}}${{RANDOM:-0}}"
+  __herdr_agent_osc "herdr-agent;v=1;start;$__herdr_token;$__herdr_label"
   (
     trap '__herdr_agent_osc "herdr-agent;v=1;exit;$__herdr_token"' EXIT
-    if [ -n "$__herdr_alias" ]; then
+{trap_int}    if [ -n "$__herdr_alias" ]; then
+      unset -f -- "$__herdr_cmd"
       eval "$__herdr_alias \"\$@\""
     else
-      command "$__herdr_kind" "$@"
+      command "$__herdr_cmd" "$@"
     fi
   )
+}}
+"#
+    )
 }
-"#;
 
 /// Why not the subshell above: dash and ash kill the subshell on Ctrl-C and
 /// leave the agent detached from the prompt. Trapping INT keeps this shell
 /// alive across the child's SIGINT, so the exit marker is written after it.
+///
+/// Why a busy flag and not `unset -f` as above: there is no subshell to hold
+/// the unset, and the wrapper must survive for the next call. While the flag is
+/// set the wrapper runs the real command, which stops an alias that names the
+/// wrapped command from recursing.
 const TRAP_RUN: &str = r#"__herdr_agent_run() {
-  local __herdr_kind=$1 __herdr_token __herdr_rc=0
-  shift 2
+  local __herdr_cmd=$1 __herdr_label=$2 __herdr_alias=$3 __herdr_token __herdr_rc=0
+  shift 3
   __herdr_seq=$(( ${__herdr_seq:-0} + 1 ))
   __herdr_token="$$-$(date +%s)-$__herdr_seq"
-  __herdr_agent_osc "herdr-agent;v=1;start;$__herdr_token;$__herdr_kind"
+  __herdr_agent_osc "herdr-agent;v=1;start;$__herdr_token;$__herdr_label"
   trap ':' INT
-  command "$__herdr_kind" "$@" || __herdr_rc=$?
+  if [ -n "$__herdr_alias" ]; then
+    eval "__herdr_busy_$__herdr_cmd=1"
+    eval "$__herdr_alias \"\$@\"" || __herdr_rc=$?
+    eval "unset __herdr_busy_$__herdr_cmd"
+  else
+    command "$__herdr_cmd" "$@" || __herdr_rc=$?
+  fi
   trap - INT
   __herdr_agent_osc "herdr-agent;v=1;exit;$__herdr_token"
   return "$__herdr_rc"
 }
 "#;
 
-fn posix_function(alias_lookup: impl Fn(&str) -> String, run: &str) -> String {
-    let setup: String = WRAPPED_AGENTS
+const POSIX_OSC: &str = r#"__herdr_agent_osc() {
+  if [ -n "${TMUX:-}" ]; then
+    { printf '\033Ptmux;\033\033]43737;%s\007\033\\' "$1" >/dev/tty; } 2>/dev/null || :
+  else
+    { printf '\033]43737;%s\007' "$1" >/dev/tty; } 2>/dev/null || :
+  fi
+}
+"#;
+
+/// Wraps one command: `__herdr_wrap <command> <label> <variable suffix>`.
+///
+/// Why one function with `eval` and not a definition per command: bash and dash
+/// parse a whole `if` before running it, and an alias still in place rewrites
+/// the name in `claude() {` while it is parsed. The definition is therefore
+/// built after the `unalias`, at run time. The alias is read from the output of
+/// `alias NAME` and not from `BASH_ALIASES` or `aliases`, because bash 3.2
+/// (macOS `/bin/bash`) has no `BASH_ALIASES` and dash has neither; the value
+/// part of that output is a quoted shell word, so `eval` takes it back.
+///
+/// The alias is captured only when one exists: a second run of this code, for
+/// example the injected copy after the same code in the user's rc, finds the
+/// aliases already removed and must keep what the first run captured.
+/// A function of the same name that herdr did not define is the user's own and
+/// stays as it is. Why a marker variable and not a look at the function body:
+/// dash cannot print a function body. Why a different lookup per shell: the
+/// message of bash's plain `type` is translated by locale, so bash asks
+/// `type -t` and zsh asks its `functions` table; only dash and ash, whose
+/// `type` is not translated, match the message. The zsh form is `eval`ed
+/// because dash cannot parse `${+functions[$1]}`.
+const WRAP_HELPER: &str = r#"__herdr_wrap() {
+  local __herdr_a __herdr_f=
+  if [ -n "${BASH_VERSION-}" ]; then
+    [ "$(type -t "$1" 2>/dev/null)" = function ] && __herdr_f=1
+  elif [ -n "${ZSH_VERSION-}" ]; then
+    eval '(( ${+functions[$1]} )) && __herdr_f=1'
+  else
+    case $(type "$1" 2>/dev/null) in
+      "$1 is a function"*|"$1 is a shell function"*) __herdr_f=1 ;;
+    esac
+  fi
+  if [ -n "$__herdr_f" ]; then
+    eval "[ -n \"\${__herdr_fn_$3-}\" ]" || return 0
+  fi
+  if __herdr_a=$(alias "$1" 2>/dev/null); then
+    __herdr_a=${__herdr_a#alias }
+    eval "__herdr_alias_$3=${__herdr_a#"$1"=}"
+  fi
+  unalias "$1" 2>/dev/null || :
+  eval "$1() { if [ -n \"\${__herdr_busy_$3-}\" ]; then command $1 \"\$@\"; else __herdr_agent_run $1 $2 \"\${__herdr_alias_$3-}\" \"\$@\"; fi; }"
+  eval "__herdr_fn_$3=1"
+}
+"#;
+
+fn wrap_calls(dashed: bool) -> String {
+    WRAPPED_AGENTS
         .iter()
+        .filter(|agent| agent.is_posix_function_name() != dashed)
         .map(|agent| {
-            // The alias is captured before it is removed, because a leftover
-            // alias would be expanded inside the function definition below and
-            // `command claude` would then run the alias target twice or fail.
-            let capture = alias_lookup(agent);
-            let capture = if capture.is_empty() {
-                String::new()
-            } else {
-                format!("__herdr_alias_{agent}=\"{capture}\"\n")
-            };
             format!(
-                "{capture}unalias {agent} 2>/dev/null || :\n{agent}() {{ __herdr_agent_run {agent} \"${{__herdr_alias_{agent}-}}\" \"$@\"; }}\n"
+                "__herdr_wrap {} {} {}\n",
+                agent.command,
+                agent.label,
+                agent.variable_suffix()
             )
         })
-        .collect();
+        .collect()
+}
+
+fn posix_function(run: &str, dashed_names: bool) -> String {
+    let plain = wrap_calls(false);
+    let dashed = if dashed_names {
+        wrap_calls(true)
+    } else {
+        String::new()
+    };
     format!(
-        r#"# herdr remote-shell integration: lets a herdr in front of this shell list
-# and notify for claude/codex started here. Needs a controlling terminal.
-__herdr_agent_osc() {{
-  if [ -n "${{TMUX:-}}" ]; then
-    {{ printf '\033Ptmux;\033\033]43737;%s\007\033\\' "$1" >/dev/tty; }} 2>/dev/null || :
-  else
-    {{ printf '\033]43737;%s\007' "$1" >/dev/tty; }} 2>/dev/null || :
-  fi
-}}
-{run}{setup}"#
+        "# herdr remote-shell integration: lets a herdr in front of this shell list\n\
+# and notify for agents started here. Needs a controlling terminal.\n\
+{POSIX_OSC}{run}{WRAP_HELPER}{plain}{dashed}unset -f __herdr_wrap\n"
+    )
+}
+
+/// Agent functions for the one body that bash, zsh and sh all source.
+///
+/// Why the dashed names are behind a shell test: dash rejects `-` in a
+/// function name, and `eval` of such a definition is an error there.
+fn injected_agent_integration_posix() -> String {
+    let bash_run = subshell_run(false);
+    let zsh_run = subshell_run(true);
+    let plain = wrap_calls(false);
+    let dashed = wrap_calls(true);
+    format!(
+        r#"# herdr agent integration: lets the herdr in front of this shell list and notify for agents started here.
+{POSIX_OSC}if [ -n "${{BASH_VERSION:-}}" ]; then
+{bash_run}elif [ -n "${{ZSH_VERSION:-}}" ]; then
+{zsh_run}else
+{TRAP_RUN}fi
+{WRAP_HELPER}{plain}if [ -n "${{BASH_VERSION:-}}" ] || [ -n "${{ZSH_VERSION:-}}" ]; then
+{dashed}fi
+unset -f __herdr_wrap
+"#
     )
 }
 
 fn fish_function() -> String {
     let wrappers: String = WRAPPED_AGENTS
         .iter()
-        .map(|agent| format!("function {agent}\n    __herdr_agent_run {agent} $argv\nend\n"))
+        .map(|agent| {
+            format!(
+                "if not functions -q {command}; or functions {command} | string match -q '*__herdr_agent_run*'\n    function {command}\n        __herdr_agent_run {command} {label} $argv\n    end\nend\n",
+                command = agent.command,
+                label = agent.label
+            )
+        })
         .collect();
+    // Why a function that already exists is left alone: fish aliases are
+    // functions, so it is the user's alias or function unless its body is ours.
     // Why not an EXIT trap as in bash/zsh: fish has no subshell to hang one
     // on, and fish abandons the running function when the agent dies of
     // SIGINT, so a killed agent leaves its claim until `pane release-agent`.
     format!(
         r#"# herdr remote-shell integration: lets a herdr in front of this shell list
-# and notify for claude/codex started here. Needs a controlling terminal.
+# and notify for agents started here. Needs a controlling terminal.
 # Limit: an agent killed by a signal is not announced as exited.
 function __herdr_agent_osc
     isatty stdin; or return 0
@@ -209,10 +396,11 @@ function __herdr_agent_osc
     return 0
 end
 function __herdr_agent_run
-    set -l kind $argv[1]
+    set -l cmd $argv[1]
+    set -l label $argv[2]
     set -l token (random)(random)
-    __herdr_agent_osc "herdr-agent;v=1;start;$fish_pid-$token;$kind"
-    command $kind $argv[2..-1]
+    __herdr_agent_osc "herdr-agent;v=1;start;$fish_pid-$token;$label"
+    command $cmd $argv[3..-1]
     set -l code $status
     __herdr_agent_osc "herdr-agent;v=1;exit;$fish_pid-$token"
     return $code
@@ -372,6 +560,102 @@ mod tests {
         assert!(text.contains("EXIT"));
         assert!(!text.contains("INT"));
         assert!(!text.contains("TERM"));
+    }
+
+    #[test]
+    fn zsh_keeps_its_subshell_alive_across_sigint_with_a_no_op_handler() {
+        let zsh = remote_shell_function(RemoteShell::Zsh);
+
+        assert!(zsh.contains("trap ':' INT"));
+        assert!(
+            !zsh.contains("trap '__herdr_agent_osc \"herdr-agent;v=1;exit;$__herdr_token\"' INT")
+        );
+    }
+
+    #[test]
+    fn bash_and_zsh_unset_the_wrapper_before_evaluating_the_alias() {
+        for shell in [RemoteShell::Bash, RemoteShell::Zsh] {
+            let text = remote_shell_function(shell);
+            let unset = text.find("unset -f -- \"$__herdr_cmd\"").expect("unset");
+            let eval = text.find("eval \"$__herdr_alias").expect("eval");
+            assert!(unset < eval, "{shell:?}");
+        }
+    }
+
+    #[test]
+    fn wrapped_commands_map_only_to_labels_the_claim_parser_accepts() {
+        for agent in &WRAPPED_AGENTS {
+            let parsed = crate::detect::parse_agent_label(agent.label);
+            let by_command = crate::detect::parse_agent_label(agent.command);
+            assert!(parsed.is_some(), "{} -> {}", agent.command, agent.label);
+            assert_eq!(parsed, by_command, "{}", agent.command);
+            assert_eq!(
+                crate::detect::agent_label(parsed.expect("checked")),
+                agent.label,
+                "{} sends the canonical label",
+                agent.command
+            );
+        }
+    }
+
+    #[test]
+    fn wrapped_commands_are_the_interactive_executables_of_manifest_agents() {
+        #[cfg(not(windows))]
+        for agent in &WRAPPED_AGENTS {
+            let parsed = crate::detect::parse_agent_label(agent.label).expect("label");
+            assert_eq!(
+                crate::detect::interactive_agent_executable(parsed),
+                agent.command
+            );
+        }
+        let mut commands: Vec<_> = WRAPPED_AGENTS.iter().map(|agent| agent.command).collect();
+        commands.sort_unstable();
+        commands.dedup();
+        assert_eq!(commands.len(), WRAPPED_AGENTS.len());
+    }
+
+    #[test]
+    fn every_shell_wraps_the_widened_agent_list() {
+        for shell in [RemoteShell::Bash, RemoteShell::Zsh, RemoteShell::Fish] {
+            let text = remote_shell_function(shell);
+            for agent in &WRAPPED_AGENTS {
+                assert!(text.contains(agent.command), "{shell:?} {}", agent.command);
+            }
+        }
+    }
+
+    #[test]
+    fn sh_function_omits_commands_that_are_not_valid_function_names() {
+        let text = remote_shell_function(RemoteShell::Sh);
+        assert!(!text.contains("cursor-agent"));
+        assert!(!text.contains("kiro-cli"));
+        assert!(text.contains("__herdr_wrap copilot copilot copilot"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn injected_bodies_are_valid_in_every_shell() {
+        let posix = injected_integration_posix();
+        syntax_check("bash", "-n", &posix);
+        syntax_check("dash", "-n", &posix);
+        syntax_check("zsh", "-n", &posix);
+        syntax_check("fish", "-n", &injected_integration_fish());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_install_output_is_valid_and_reports_the_directory() {
+        for (shell, name, flag) in [
+            (RemoteShell::Bash, "bash", "-n"),
+            (RemoteShell::Sh, "dash", "-n"),
+            (RemoteShell::Zsh, "zsh", "-n"),
+            (RemoteShell::Fish, "fish", "-n"),
+        ] {
+            let text = remote_shell_manual_install(shell);
+            assert!(text.contains("]7;file://"), "{shell:?}");
+            assert!(text.contains("herdr-agent;v=1;start;"), "{shell:?}");
+            syntax_check(name, flag, &text);
+        }
     }
 
     #[test]

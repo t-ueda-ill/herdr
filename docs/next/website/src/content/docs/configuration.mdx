@@ -123,7 +123,7 @@ When enabled, `herdr --remote` writes a private temporary SSH config that includ
 
 ## SSH and container panes
 
-Herdr starts the shell of an SSH or container pane through a short launcher. The launcher loads a temporary script that reports the shell's working directory, so the sidebar, the file workbench, and new tabs and splits follow `cd`. Nothing on the remote machine is edited: the script is written to a temporary directory and removed once the shell has started.
+Herdr starts the shell of an SSH or container pane through a short launcher. The launcher loads a temporary script that reports the shell's working directory, so the sidebar, the file workbench, and new tabs and splits follow `cd`. The same script announces the start and exit of coding agents run in the pane (see [Agents on other machines](/docs/agents#agents-on-other-machines)). Nothing on the remote machine is edited: the script is written to a temporary directory and removed once the shell has started.
 
 ```toml
 [offhost]
