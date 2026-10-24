@@ -56,9 +56,10 @@ use super::notice_text;
 /// Why the trailing dot after `readlink`: `$(...)` strips every trailing
 /// newline, which would send a different target. The server skips the link
 /// when a newline remains.
+/// Why `readlink -n`: GNU and BusyBox always end the output with a newline,
+/// BSD (macOS) adds one only when the target does not end in one, so the
+/// output without `-n` cannot be cut back to the target the same way on both.
 pub(crate) const EMIT_SCRIPT: &str = r##"exec 4>&1
-nl='
-'
 bits() {
   b=0
   case $1 in r??) b=4 ;; esac
@@ -90,7 +91,7 @@ for f do
   deref=
   case $rel in */*) ;; *) deref=L ;; esac
   if [ -L "$f" ] && [ -z "$deref" ]; then
-    if t=$(readlink -- "$f" 2>/dev/null && echo .) && t=${t%.} && t=${t%"$nl"} && [ -n "$t" ]
+    if t=$(readlink -n -- "$f" 2>/dev/null && echo .) && t=${t%.} && [ -n "$t" ]
     then printf 'l\0%s\0%s\0' "$rel" "$t"
     else printf 's\0%s\0link\0' "$rel"
     fi
