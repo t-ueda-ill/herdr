@@ -85,7 +85,7 @@ herdr integration remote-shell --shell bash >> ~/.bashrc
 
 zsh、fish、sh（dash や ash）では `--shell zsh`、`--shell fish`、`--shell sh` を指定します。`--shell` を省略すると、Herdr は `$SHELL` から選びます。この関数は `/dev/tty` に書き込むため、制御端末が必要です。tmux の中ではパススルー用に包んで送りますが、tmux 3.3 以降で `allow-passthrough on` も必要です。mosh はこのシーケンスを落とします。`exec claude` は関数を通りません。
 
-監視の対象になるのは、Herdr 自身が SSH ペインまたはコンテナペインとして開いたペインだけです。ローカルのペインで手打ちした `ssh` は対象外です。`herdr update` によるライブハンドオフの後も、申告された識別は引き継がれず、次にエージェントを起動したときに戻ります。
+監視の対象になるのは、Herdr 自身が SSH ペインまたはコンテナペインとして開いたペインだけです。ローカルのペインで手打ちした `ssh` は対象外です。`herdr update` によるライブハンドオフでは、Herdr が開いたペインの申告済みエージェントが引き継がれます。
 
 終了の合図が届かなかった場合（シェルが kill された、Ctrl+Z で止めた、fish でシグナルにより終了した）は、手動で解除します。
 

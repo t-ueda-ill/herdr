@@ -85,7 +85,7 @@ If Herdr is not installed on the remote machine, pipe it from the local one: `he
 
 Use `--shell zsh`, `--shell fish` or `--shell sh` (dash and ash) for those shells. Without `--shell`, Herdr picks one from `$SHELL`. The function writes to `/dev/tty`, so it needs a controlling terminal. Inside tmux, the function wraps the sequence for passthrough, and tmux 3.3 or later must also have `allow-passthrough on`. mosh drops the sequence. `exec claude` skips the function.
 
-Only panes that Herdr itself opened as an SSH or container pane are watched. An `ssh` command you type in a local pane is not, and neither is a pane after a live handoff from `herdr update`: the claimed identity is dropped and returns the next time the agent starts.
+Only panes that Herdr itself opened as an SSH or container pane are watched. An `ssh` command you type in a local pane is not. A live handoff from `herdr update` keeps the claimed agent of a pane Herdr opened.
 
 If the exit marker never arrives (the shell was killed, an agent stopped with Ctrl+Z, or an agent killed by a signal under fish), release the agent by hand:
 

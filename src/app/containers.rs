@@ -1022,6 +1022,7 @@ mod tests {
             canonical: "shop/db".into(),
             id: "abc123".into(),
             workdir: None,
+            start_dir: None,
             user: None,
             shell: ContainerShell::BashOrSh,
             ssh: None,

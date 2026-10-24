@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::api::schema::{
     ContainerOpenTarget, Method, PaneSplitParams, TabCreateInheritParams, TabCreateParams,
 };
@@ -15,7 +17,7 @@ use super::responses::encode_error;
 /// Why not borrow it: the create handlers take `&mut self`, which a borrow of
 /// the source terminal's state would outlive.
 enum InheritedLaunch {
-    Container(ContainerLaunch),
+    Container(Box<ContainerLaunch>),
     Ssh(SshLaunch),
 }
 
@@ -31,9 +33,26 @@ impl InheritedLaunch {
 impl From<RunningOffHostShell<'_>> for InheritedLaunch {
     fn from(running: RunningOffHostShell<'_>) -> Self {
         match running {
-            RunningOffHostShell::Container(launch) => Self::Container(launch.clone()),
+            RunningOffHostShell::Container(launch) => Self::Container(Box::new(launch.clone())),
             RunningOffHostShell::Ssh(launch) => Self::Ssh(launch.clone()),
         }
+    }
+}
+
+impl InheritedLaunch {
+    /// Opens the new shell in `reported`, the source shell's own directory.
+    ///
+    /// Why a container with an explicit `cwd` keeps none: that `cwd` is a host
+    /// path, and the bind-mount replan picks the container directory for it.
+    /// Why ssh keeps it anyway: an explicit host path means nothing on the
+    /// remote machine, so it never competes with the reported directory.
+    fn starting_in(mut self, reported: Option<PathBuf>, explicit_cwd: bool) -> Self {
+        match &mut self {
+            Self::Container(launch) if !explicit_cwd => launch.start_dir = reported,
+            Self::Container(_) => {}
+            Self::Ssh(launch) => launch.start_dir = reported,
+        }
+        self
     }
 }
 
@@ -41,8 +60,22 @@ impl App {
     /// Reuses the stored launch instead of resolving docker or the ssh config
     /// again: this runs on the app thread. Why not the stored metadata alone
     /// to decide: a cold-restored pane keeps it while running a host shell.
-    fn inherited_launch(&self, ws_idx: usize, pane_id: PaneId) -> Option<InheritedLaunch> {
-        running_pane_off_host_shell(self, ws_idx, pane_id).map(InheritedLaunch::from)
+    fn inherited_launch(
+        &self,
+        ws_idx: usize,
+        pane_id: PaneId,
+        explicit_cwd: bool,
+    ) -> Option<InheritedLaunch> {
+        let launch =
+            running_pane_off_host_shell(self, ws_idx, pane_id).map(InheritedLaunch::from)?;
+        // Why not a fallback to the stored workdir: a pane that has not
+        // reported yet opens where it always did, and `workdir` stays the
+        // launcher's fallback for a directory that no longer exists.
+        let reported = self
+            .state
+            .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+            .and_then(|runtime| runtime.foreground_cwd());
+        Some(launch.starting_in(reported, explicit_cwd))
     }
 
     /// The pane a new tab inherits from, pinning the workspace when the
@@ -101,7 +134,7 @@ impl App {
             }
             _ => return None,
         };
-        match self.inherited_launch(ws_idx, pane_id)? {
+        match self.inherited_launch(ws_idx, pane_id, true)? {
             InheritedLaunch::Container(launch) if launch.ssh.is_none() => {
                 Some((ContainerRef::Name(launch.id), target))
             }
@@ -122,7 +155,9 @@ impl App {
             Ok(source) => source,
             Err((code, message)) => return encode_error(id, &code, message),
         };
-        let inherited = source.and_then(|(ws_idx, pane_id)| self.inherited_launch(ws_idx, pane_id));
+        let explicit_cwd = create.cwd.is_some();
+        let inherited = source
+            .and_then(|(ws_idx, pane_id)| self.inherited_launch(ws_idx, pane_id, explicit_cwd));
         match inherited {
             Some(launch) => self.handle_tab_create(id, create, launch.target()),
             None => self.handle_tab_create(id, create, PaneLaunchTarget::Host),
@@ -138,7 +173,7 @@ impl App {
             Ok(location) => location,
             Err((code, message)) => return encode_error(id, &code, message),
         };
-        match self.inherited_launch(ws_idx, pane_id) {
+        match self.inherited_launch(ws_idx, pane_id, params.cwd.is_some()) {
             Some(launch) => self.handle_pane_split(id, params, launch.target()),
             None => self.handle_pane_split(id, params, PaneLaunchTarget::Host),
         }
@@ -183,6 +218,7 @@ mod tests {
             canonical: "db".into(),
             id: "cid".into(),
             workdir: Some("/srv/app".into()),
+            start_dir: None,
             user: Some("app".into()),
             shell: ContainerShell::BashOrSh,
             ssh,
@@ -344,6 +380,94 @@ mod tests {
 
         assert_launch_or_failure_without_host_fallback(&app, &response, &source, |terminal| {
             assert_eq!(terminal.container.as_ref(), Some(&launch));
+        });
+        shutdown_test_runtimes(&mut app);
+    }
+
+    fn report_cwd(app: &App, cwd: &str) {
+        app.terminal_runtimes
+            .get(&source_terminal(app))
+            .expect("source runtime")
+            .test_set_reported_cwd(cwd.into());
+    }
+
+    #[tokio::test]
+    async fn new_tab_from_an_ssh_pane_opens_in_the_directory_it_reported() {
+        let (mut app, _) = app_with_focused_shell(Shell::Ssh(ssh_launch()));
+        let source = source_terminal(&app);
+        report_cwd(&app, "/srv/project/src");
+
+        let response = app.handle_tab_create_inherit("req".into(), tab_params(None));
+
+        assert_launch_or_failure_without_host_fallback(&app, &response, &source, |terminal| {
+            let launch = terminal.ssh.as_ref().expect("ssh launch");
+            assert_eq!(launch.start_dir, Some("/srv/project/src".into()));
+        });
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn new_tab_from_an_ssh_pane_that_has_not_reported_opens_in_the_login_directory() {
+        let (mut app, _) = app_with_focused_shell(Shell::Ssh(ssh_launch()));
+        let source = source_terminal(&app);
+
+        let response = app.handle_tab_create_inherit("req".into(), tab_params(None));
+
+        assert_launch_or_failure_without_host_fallback(&app, &response, &source, |terminal| {
+            assert_eq!(terminal.ssh.as_ref().expect("ssh launch").start_dir, None);
+        });
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn new_tab_from_an_ssh_pane_ignores_an_explicit_cwd_and_keeps_the_reported_directory() {
+        let (mut app, _) = app_with_focused_shell(Shell::Ssh(ssh_launch()));
+        let source = source_terminal(&app);
+        report_cwd(&app, "/srv/project");
+        let mut params = tab_params(None);
+        params.create.cwd = Some(std::env::temp_dir().to_string_lossy().into_owned());
+
+        let response = app.handle_tab_create_inherit("req".into(), params);
+
+        assert_launch_or_failure_without_host_fallback(&app, &response, &source, |terminal| {
+            let launch = terminal.ssh.as_ref().expect("ssh launch");
+            assert_eq!(launch.start_dir, Some("/srv/project".into()));
+        });
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn split_of_a_container_pane_opens_in_the_directory_it_reported() {
+        let (mut app, pane) = app_with_focused_shell(Shell::Container(container_launch(None)));
+        let source = source_terminal(&app);
+        report_cwd(&app, "/srv/app/lib");
+
+        let response = app.handle_pane_split_inherit("req".into(), split_params(Some(pane)));
+
+        assert_launch_or_failure_without_host_fallback(&app, &response, &source, |terminal| {
+            let launch = terminal.container.as_ref().expect("container launch");
+            assert_eq!(launch.start_dir, Some("/srv/app/lib".into()));
+            assert_eq!(launch.workdir, Some("/srv/app".into()), "fallback stays");
+        });
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn new_tab_from_a_container_pane_with_an_explicit_cwd_opens_no_directory() {
+        let (mut app, _) =
+            app_with_focused_shell(Shell::Container(container_launch(Some(ssh_launch()))));
+        let source = source_terminal(&app);
+        report_cwd(&app, "/srv/app/lib");
+        let mut params = tab_params(None);
+        params.create.cwd = Some(std::env::temp_dir().to_string_lossy().into_owned());
+
+        let response = app.handle_tab_create_inherit("req".into(), params);
+
+        assert_launch_or_failure_without_host_fallback(&app, &response, &source, |terminal| {
+            let launch = terminal.container.as_ref().expect("container launch");
+            assert_eq!(launch.start_dir, None);
         });
         shutdown_test_runtimes(&mut app);
     }

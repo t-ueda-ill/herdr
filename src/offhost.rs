@@ -8,11 +8,10 @@ pub(crate) mod launcher;
 pub(crate) mod ops;
 pub(crate) mod parse;
 pub(crate) mod scripts;
+pub(crate) mod shell_integration;
 pub(crate) mod tokens;
 
 pub(crate) use exec::PaneEnvironment;
-
-use crate::container::ContainerLaunch;
 
 /// Where a pane is, from what the app thread already holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +32,8 @@ impl PaneTarget {
     /// pane has no such default; its script starts in the login directory.
     pub(crate) fn resolve(environment: PaneEnvironment, reported_cwd: Option<String>) -> Self {
         let launch_dir = match &environment {
-            PaneEnvironment::Container(ContainerLaunch { workdir, .. }) => workdir
+            PaneEnvironment::Container(launch) => launch
+                .workdir
                 .as_ref()
                 .and_then(|dir| dir.to_str())
                 .map(str::to_owned),

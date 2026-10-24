@@ -20,6 +20,7 @@ fn launch() -> crate::container::ContainerLaunch {
         canonical: "shop/db".into(),
         id: CONTAINER_ID.into(),
         workdir: None,
+        start_dir: None,
         user: Some("node".into()),
         shell: crate::container::ContainerShell::BashOrSh,
         ssh: None,
@@ -27,7 +28,7 @@ fn launch() -> crate::container::ContainerLaunch {
 }
 
 fn container_pane(running: bool) -> OffHostPaneFixture {
-    OffHostPaneFixture::new(OffHostShell::Container(launch()), running)
+    OffHostPaneFixture::new(OffHostShell::Container(Box::new(launch())), running)
 }
 
 fn container_target(container_id: &str) -> OffHostTarget {
@@ -224,7 +225,7 @@ async fn client_shell_snapshot_advertises_only_running_container_panes() {
 #[tokio::test]
 async fn staged_remote_container_image_pastes_the_path_and_tracks_the_remote_target() {
     let mut fixture = OffHostPaneFixture::new(
-        OffHostShell::Container(remote_launch(Some(REMOTE_CONTROL_PATH))),
+        OffHostShell::Container(Box::new(remote_launch(Some(REMOTE_CONTROL_PATH)))),
         true,
     );
     let event = fixture.staged(remote_container_target(), Ok(staged_image()));
@@ -259,7 +260,8 @@ async fn staged_remote_container_image_is_removed_when_the_pane_moved_to_the_loc
 #[cfg(not(windows))]
 #[tokio::test]
 async fn remote_container_pane_without_a_shared_connection_never_reaches_the_local_docker() {
-    let mut fixture = OffHostPaneFixture::new(OffHostShell::Container(remote_launch(None)), true);
+    let mut fixture =
+        OffHostPaneFixture::new(OffHostShell::Container(Box::new(remote_launch(None))), true);
 
     assert!(!fixture.paste_image());
 
@@ -279,7 +281,7 @@ async fn remote_container_pane_without_a_shared_connection_never_reaches_the_loc
 #[tokio::test]
 async fn client_shell_snapshot_names_the_ssh_host_of_a_remote_container_pane() {
     let fixture = OffHostPaneFixture::new(
-        OffHostShell::Container(remote_launch(Some(REMOTE_CONTROL_PATH))),
+        OffHostShell::Container(Box::new(remote_launch(Some(REMOTE_CONTROL_PATH)))),
         true,
     );
 

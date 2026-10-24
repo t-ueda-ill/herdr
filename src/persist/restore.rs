@@ -614,6 +614,15 @@ fn restore_tab(
         let handoff_agent_state = imported_runtime
             .as_ref()
             .and_then(|imported| imported.state.agent_state.clone());
+        // Why no Idle seed for a carried claim: the claim watcher adopts the
+        // agent again, and the manifest detection reports its real state on the
+        // next tick; a seeded Idle would flash before that.
+        #[cfg(unix)]
+        let carries_claim = imported_runtime
+            .as_ref()
+            .is_some_and(|imported| imported.state.offhost_claim.is_some());
+        #[cfg(not(unix))]
+        let carries_claim = false;
         let pending_native_agent_restore = if was_imported {
             None
         } else {
@@ -753,7 +762,7 @@ fn restore_tab(
                     (Some(_), None) => {}
                     (None, _) => {}
                 }
-                if let Some(agent) = initial_restore_agent {
+                if let Some(agent) = initial_restore_agent.filter(|_| !carries_claim) {
                     let _ = terminal.set_detected_state_with_screen_signals_at(
                         Some(agent),
                         AgentState::Idle,
@@ -1584,6 +1593,7 @@ mod tests {
             ssh: Some(super::super::snapshot::PaneSshSnapshot {
                 host: host.into(),
                 control_path: Some(PathBuf::from("/tmp/hssh-1/abc-%C")),
+                has_remote_command: true,
             }),
             ..test_container_snapshot(name)
         }
@@ -1736,6 +1746,7 @@ mod tests {
                 canonical: "scratch".into(),
                 id: "herdr-test-scratch-id".into(),
                 workdir: Some(PathBuf::from("/work")),
+                start_dir: None,
                 user: None,
                 shell: crate::container::ContainerShell::BashOrSh,
                 ssh: None,
@@ -1804,6 +1815,7 @@ mod tests {
                 canonical: "scratch".into(),
                 id: "herdr-test-scratch-id".into(),
                 workdir: Some(PathBuf::from("/work")),
+                start_dir: None,
                 user: None,
                 shell: crate::container::ContainerShell::BashOrSh,
                 ssh: crate::ssh_host::SshLaunch::new(
@@ -1934,6 +1946,7 @@ mod tests {
         super::super::snapshot::PaneSshSnapshot {
             host: host.into(),
             control_path: Some(PathBuf::from(format!("/tmp/hssh-test/{host}-%C"))),
+            has_remote_command: true,
         }
     }
 
@@ -1951,6 +1964,18 @@ mod tests {
             container: None,
             ssh,
         }
+    }
+
+    #[test]
+    fn restored_ssh_launch_keeps_a_host_checked_for_a_remote_command() {
+        let mut checked = test_ssh_snapshot("prod");
+        checked.has_remote_command = false;
+
+        let launch = restored_ssh_launch(&ssh_pane(Some(checked))).expect("launch");
+        assert!(!launch.has_remote_command);
+
+        let unchecked = restored_ssh_launch(&ssh_pane(Some(test_ssh_snapshot("prod"))));
+        assert!(unchecked.expect("launch").has_remote_command);
     }
 
     #[tokio::test]
@@ -2714,6 +2739,151 @@ mod tests {
                 state_before_handoff == AgentState::Blocked
             );
         }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn live_handoff_keeps_an_off_host_shell_with_its_directory_and_agent_claim() {
+        let (snapshot, _) = snapshot_with_saved_pane_history();
+        let (events, mut events_rx) = mpsc::channel(32);
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let snapshot = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let pane_id = workspaces[0].tabs[0].panes.keys().next().copied().unwrap();
+        let runtime = runtimes.values().next().unwrap();
+        runtime
+            .pause_handoff_reader(std::time::Duration::from_secs(2))
+            .unwrap();
+        let mut state = runtime.handoff_runtime_state(pane_id.raw());
+        state.in_ssh = true;
+        state.reported_cwd = Some("/srv/remote project".into());
+        state.offhost_claim = Some(crate::handoff_runtime::HandoffOffHostClaim {
+            kind: "claude".into(),
+            token: "42-1".into(),
+        });
+        let state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        let mut imports = HashMap::from([(
+            pane_id.raw(),
+            crate::handoff_runtime::ImportedHandoffRuntime {
+                master_fd: runtime.duplicate_handoff_fd().unwrap(),
+                state,
+            },
+        )]);
+
+        let (_, restored_terminals, restored_runtimes) = restore_handoff(
+            &snapshot,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            &mut imports,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+
+        let restored = restored_runtimes.values().next().unwrap();
+        assert!(restored.shell_runs_off_host());
+        assert_eq!(
+            restored.foreground_cwd(),
+            Some("/srv/remote project".into())
+        );
+        let carried = restored
+            .handoff_runtime_state(pane_id.raw())
+            .offhost_claim
+            .expect("the claim survives a second handoff");
+        assert_eq!(
+            (carried.kind.as_str(), carried.token.as_str()),
+            ("claude", "42-1")
+        );
+        let adopted = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(event) = events_rx.recv().await {
+                if let crate::events::AppEvent::AgentProcessDetected { agent, .. } = event {
+                    return Some(agent);
+                }
+            }
+            None
+        })
+        .await
+        .expect("the restored claim is adopted");
+        assert_eq!(adopted, Some(crate::detect::Agent::Claude));
+        let terminal = restored_terminals.values().next().unwrap();
+        assert_eq!(
+            terminal.state,
+            AgentState::Unknown,
+            "no Idle seed before the first detection"
+        );
+        drop(restored_runtimes);
+        drop(runtimes);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn live_handoff_from_a_host_shell_stays_a_host_shell() {
+        let (snapshot, _) = snapshot_with_saved_pane_history();
+        let (events, _events_rx) = mpsc::channel(32);
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let snapshot = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let pane_id = workspaces[0].tabs[0].panes.keys().next().copied().unwrap();
+        let runtime = runtimes.values().next().unwrap();
+        runtime
+            .pause_handoff_reader(std::time::Duration::from_secs(2))
+            .unwrap();
+        let state = runtime.handoff_runtime_state(pane_id.raw());
+        assert!(!state.in_container && !state.in_ssh);
+        assert_eq!(state.offhost_claim, None);
+        let mut imports = HashMap::from([(
+            pane_id.raw(),
+            crate::handoff_runtime::ImportedHandoffRuntime {
+                master_fd: runtime.duplicate_handoff_fd().unwrap(),
+                state,
+            },
+        )]);
+
+        let (_, _, restored_runtimes) = restore_handoff(
+            &snapshot,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            &mut imports,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+
+        assert!(!restored_runtimes
+            .values()
+            .next()
+            .unwrap()
+            .shell_runs_off_host());
+        drop(restored_runtimes);
+        drop(runtimes);
     }
 
     #[tokio::test]

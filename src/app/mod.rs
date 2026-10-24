@@ -558,6 +558,7 @@ impl App {
             kitty_graphics_enabled: config.kitty_graphics_enabled(),
             default_shell: config.terminal.default_shell.clone(),
             shell_mode: config.terminal.shell_mode,
+            offhost_shell_integration: config.offhost.shell_integration,
             new_terminal_cwd: config.terminal.new_cwd.clone(),
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
             sound: config.ui.sound.clone(),
@@ -1017,6 +1018,10 @@ impl App {
             self.state.default_shell = config.terminal.default_shell.clone();
             self.state.shell_mode = config.terminal.shell_mode;
             self.state.new_terminal_cwd = config.terminal.new_cwd.clone();
+        }
+
+        if !invalid_section("offhost") {
+            self.state.offhost_shell_integration = config.offhost.shell_integration;
         }
 
         if !invalid_section("worktrees") {

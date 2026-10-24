@@ -125,6 +125,21 @@ pub struct PaneSshSnapshot {
     pub host: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control_path: Option<PathBuf>,
+    /// Absent means "present": a session written before the lookup existed must
+    /// not start injecting a launcher over a command the user configured.
+    #[serde(
+        default = "remote_command_unknown",
+        skip_serializing_if = "is_remote_command_unknown"
+    )]
+    pub has_remote_command: bool,
+}
+
+fn remote_command_unknown() -> bool {
+    true
+}
+
+fn is_remote_command_unknown(has_remote_command: &bool) -> bool {
+    *has_remote_command
 }
 
 impl From<&crate::ssh_host::SshLaunch> for PaneSshSnapshot {
@@ -132,6 +147,7 @@ impl From<&crate::ssh_host::SshLaunch> for PaneSshSnapshot {
         Self {
             host: launch.host.clone(),
             control_path: launch.control_path.clone(),
+            has_remote_command: launch.has_remote_command,
         }
     }
 }
@@ -144,6 +160,7 @@ impl PaneSshSnapshot {
     // copy could disagree with it after a hand edit.
     pub(crate) fn to_launch(&self) -> Option<crate::ssh_host::SshLaunch> {
         crate::ssh_host::SshLaunch::new(self.host.clone(), self.control_path.clone())
+            .map(|launch| launch.with_remote_command(self.has_remote_command))
     }
 }
 
@@ -229,6 +246,7 @@ impl PaneContainerSnapshot {
             canonical,
             id: snapshot.id.clone(),
             workdir: snapshot.workdir.clone(),
+            start_dir: None,
             user: snapshot.user.clone(),
             shell: match &snapshot.shell {
                 PaneContainerShellSnapshot::Explicit(shell) => {
@@ -933,14 +951,48 @@ mod tests {
     }
 
     #[test]
+    fn ssh_snapshot_keeps_a_checked_host_without_a_remote_command() {
+        let launch = crate::ssh_host::SshLaunch::new("prod".into(), None)
+            .unwrap()
+            .with_remote_command(false);
+
+        let snapshot = PaneSshSnapshot::from(&launch);
+        let encoded = serde_json::to_value(&snapshot).unwrap();
+        let back: PaneSshSnapshot = serde_json::from_value(encoded).unwrap();
+
+        assert!(!back.has_remote_command);
+        assert!(!back.to_launch().unwrap().has_remote_command);
+    }
+
+    #[test]
+    fn ssh_snapshot_without_the_field_counts_as_having_a_remote_command() {
+        let snapshot: PaneSshSnapshot =
+            serde_json::from_value(serde_json::json!({ "host": "prod" })).unwrap();
+
+        assert!(snapshot.has_remote_command);
+        assert!(snapshot.to_launch().unwrap().has_remote_command);
+    }
+
+    #[test]
+    fn ssh_snapshot_with_a_remote_command_serializes_as_before() {
+        let launch = crate::ssh_host::SshLaunch::new("prod".into(), None).unwrap();
+
+        let encoded = serde_json::to_value(PaneSshSnapshot::from(&launch)).unwrap();
+
+        assert_eq!(encoded, serde_json::json!({ "host": "prod" }));
+    }
+
+    #[test]
     fn round_trip_preserves_pane_ssh() {
         let multiplexed = PaneSshSnapshot {
             host: "deploy@prod".into(),
             control_path: Some(PathBuf::from("/tmp/hssh-1000/abc-%C")),
+            has_remote_command: true,
         };
         let plain = PaneSshSnapshot {
             host: "lab".into(),
             control_path: None,
+            has_remote_command: true,
         };
         let panes = HashMap::from([
             (
@@ -988,6 +1040,7 @@ mod tests {
             let snapshot = PaneSshSnapshot {
                 host: host.into(),
                 control_path: None,
+                has_remote_command: true,
             };
             assert_eq!(snapshot.to_launch(), None, "{host:?}");
         }
@@ -1072,6 +1125,7 @@ mod tests {
             ssh: Some(PaneSshSnapshot {
                 host: "deploy@prod".into(),
                 control_path: Some("/tmp/hssh-1/abc-%C".into()),
+                has_remote_command: true,
             }),
         };
         let panes = HashMap::from([(0, pane_snapshot_with_container(Some(remote.clone())))]);
@@ -1109,6 +1163,7 @@ mod tests {
                 ssh: Some(PaneSshSnapshot {
                     host: host.into(),
                     control_path: None,
+                    has_remote_command: true,
                 }),
             };
             assert_eq!(snapshot.to_launch(), None, "{host:?}");
@@ -1161,6 +1216,7 @@ mod tests {
             Some(PaneSshSnapshot {
                 host: "deploy@prod".into(),
                 control_path: Some("/tmp/hssh-1000/0123456789abcdef01234567-%C".into()),
+                has_remote_command: true,
             })
         );
     }
@@ -1711,6 +1767,7 @@ mod tests {
             },
             canonical: "shop/db".into(),
             id: "0123abcd".into(),
+            start_dir: None,
             workdir: Some(PathBuf::from("/work")),
             user: Some("dev".into()),
             shell: crate::container::ContainerShell::BashOrSh,

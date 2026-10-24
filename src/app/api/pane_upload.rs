@@ -121,9 +121,9 @@ pub(super) fn ensure_offhost_supported() -> Result<(), Failure> {
 
 pub(super) fn environment_of(shell: Option<RunningOffHostShell<'_>>) -> UploadEnvironment {
     match shell {
-        Some(RunningOffHostShell::Container(launch)) => {
-            UploadEnvironment::OffHost(Box::new(PaneEnvironment::Container(launch.clone())))
-        }
+        Some(RunningOffHostShell::Container(launch)) => UploadEnvironment::OffHost(Box::new(
+            PaneEnvironment::Container(Box::new(launch.clone())),
+        )),
         Some(RunningOffHostShell::Ssh(launch)) => {
             UploadEnvironment::OffHost(Box::new(PaneEnvironment::Ssh(launch.clone())))
         }

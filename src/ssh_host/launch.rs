@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::offhost::shell_integration::{launcher_argv, needs_launcher, LauncherShell};
+
 /// Fully resolved ssh pane target, kept so respawns never re-read the config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SshLaunch {
@@ -10,6 +12,13 @@ pub(crate) struct SshLaunch {
     pub(crate) canonical: String,
     /// Herdr-owned `ControlPath` template; `None` when multiplexing is unavailable.
     pub(crate) control_path: Option<PathBuf>,
+    /// Directory the remote shell is asked to start in, applied by the
+    /// launcher so a missing one falls back to the login directory.
+    pub(crate) start_dir: Option<PathBuf>,
+    /// True when `~/.ssh/config` sets `RemoteCommand` for the host, or when
+    /// that was not checked. Why default to true: a configured command owns the
+    /// session, and injecting a launcher there would replace it.
+    pub(crate) has_remote_command: bool,
 }
 
 impl SshLaunch {
@@ -20,7 +29,20 @@ impl SshLaunch {
             host,
             canonical,
             control_path,
+            start_dir: None,
+            has_remote_command: true,
         })
+    }
+
+    pub(crate) fn with_remote_command(mut self, has_remote_command: bool) -> Self {
+        self.has_remote_command = has_remote_command;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_start_dir(mut self, start_dir: Option<PathBuf>) -> Self {
+        self.start_dir = start_dir;
+        self
     }
 }
 
@@ -90,6 +112,51 @@ pub(crate) fn ssh_command_argv(launch: &SshLaunch, command: OsString) -> Vec<OsS
     );
     argv.push(command);
     argv
+}
+
+/// The argv of an ssh pane: plain [`ssh_argv`], or the launcher when the pane
+/// must enter `start_dir` or load the shell integration.
+///
+/// The launcher always runs a login shell, because a plain `ssh -t host` is
+/// answered with one and a command line is not. It names no shell, so `$SHELL`
+/// decides, as it does for the plain login. A host with a configured
+/// `RemoteCommand` keeps the plain argv: that command owns the session.
+pub(crate) fn ssh_pane_argv(launch: &SshLaunch, shell_integration: bool) -> Vec<OsString> {
+    if launch.has_remote_command || !needs_launcher(shell_integration, launch.start_dir.as_deref())
+    {
+        return ssh_argv(launch);
+    }
+    let command = launcher_argv(
+        launch.start_dir.as_deref(),
+        LauncherShell::Account,
+        true,
+        shell_integration,
+    )
+    .iter()
+    .map(|arg| shell_quote(&arg.to_string_lossy()))
+    .collect::<Vec<_>>()
+    .join(" ");
+    ssh_command_argv(launch, portable_remote_command(&command).into())
+}
+
+/// Wraps a POSIX command line so any login shell passes it through intact.
+///
+/// sshd runs the string with the account's login shell. In fish a backslash
+/// is an escape inside single quotes, and in csh a newline inside them is a
+/// syntax error and `!` starts history expansion. So every byte outside a
+/// small safe set is written as an octal escape, which `printf` decodes and
+/// `eval` runs under `sh`. `%` is escaped too because `printf` reads the text
+/// as its format. Why not `base64`: it is not guaranteed on a remote machine.
+pub(crate) fn portable_remote_command(posix_command: &str) -> String {
+    let mut escaped = String::with_capacity(posix_command.len() * 2);
+    for byte in posix_command.bytes() {
+        if byte.is_ascii_alphanumeric() || b"_./,:=+- ".contains(&byte) {
+            escaped.push(char::from(byte));
+        } else {
+            escaped.push_str(&format!("\\{byte:03o}"));
+        }
+    }
+    format!("exec sh -c 'eval \"$(printf \"{escaped}\")\"'")
 }
 
 /// `ssh [-S <control> -o ControlMaster=auto -o ControlPersist=600] <batch options> <host> <command>`.
@@ -167,6 +234,138 @@ mod tests {
         argv.into_iter()
             .map(|arg| arg.into_string().unwrap())
             .collect()
+    }
+
+    fn resolved(host: &str) -> SshLaunch {
+        SshLaunch::new(host.into(), None)
+            .unwrap()
+            .with_remote_command(false)
+    }
+
+    #[test]
+    fn ssh_pane_argv_is_plain_ssh_when_nothing_needs_the_launcher() {
+        let launch = resolved("prod");
+        assert_eq!(ssh_pane_argv(&launch, false), ssh_argv(&launch));
+    }
+
+    #[test]
+    fn ssh_pane_argv_runs_the_quoted_login_launcher_with_integration() {
+        let launch = resolved("prod").with_start_dir(Some("/srv/it's".into()));
+        let argv = strings(ssh_pane_argv(&launch, true));
+        assert_eq!(argv[..5], ["ssh", "-C", "-o", "RemoteCommand=none", "-t"]);
+        assert_eq!(argv[5], "prod");
+        assert_eq!(argv.len(), 7, "the launcher travels as one ssh argument");
+        assert!(argv[6].starts_with("exec sh -c 'eval \"$(printf \""));
+    }
+
+    #[test]
+    fn ssh_pane_argv_launches_only_for_the_start_dir_when_integration_is_off() {
+        let launch = resolved("prod").with_start_dir(Some("/srv".into()));
+        let argv = strings(ssh_pane_argv(&launch, false));
+        assert!(argv[6].starts_with("exec sh -c 'eval"), "{}", argv[6]);
+    }
+
+    // Why unix only: the command only ever runs on a POSIX remote, and on
+    // Windows `bash` can resolve to the WSL launcher instead of a shell.
+    #[cfg(unix)]
+    const TRICKY: [&str; 5] = ["it's", "a\\b", "100%", "!x", "line1\nline2"];
+
+    /// The command, run by `shell -c` as sshd does, then decoded by `sh`.
+    #[cfg(unix)]
+    fn run_through(shell: &str) -> Option<String> {
+        let inner = format!(
+            "printf '%s|' {}",
+            TRICKY
+                .iter()
+                .map(|arg| shell_quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let output = std::process::Command::new(shell)
+            .args(["-c", &portable_remote_command(&inner)])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    #[test]
+    fn portable_remote_command_keeps_safe_bytes_and_escapes_the_rest() {
+        let command = portable_remote_command("ls -l /a_b.c,d:e=f+g");
+        assert!(command.contains("ls -l /a_b.c,d:e=f+g"));
+        let command = portable_remote_command("'\\\n%!$`\"");
+        for (byte, octal) in [
+            ("'", "047"),
+            ("\\", "134"),
+            ("\n", "012"),
+            ("%", "045"),
+            ("!", "041"),
+            ("$", "044"),
+            ("`", "140"),
+            ("\"", "042"),
+        ] {
+            assert!(command.contains(&format!("\\{octal}")), "{byte:?}");
+        }
+    }
+
+    #[test]
+    fn portable_remote_command_has_no_byte_a_login_shell_could_reinterpret() {
+        let launch = resolved("prod").with_start_dir(Some("/srv/it's a%b".into()));
+        let argv = strings(ssh_pane_argv(&launch, true));
+        let command = argv.last().unwrap();
+        let wrapper = "exec sh -c 'eval \"$(printf \"\")\"'";
+        let body = command
+            .strip_prefix("exec sh -c 'eval \"$(printf \"")
+            .and_then(|rest| rest.strip_suffix("\")\"'"))
+            .unwrap_or_else(|| panic!("unexpected wrapper in {wrapper}"));
+        assert!(body
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_./,:=+- \\".contains(&b)));
+        assert!(!body.contains("\\\\"));
+    }
+
+    #[test]
+    fn launcher_command_for_a_real_pane_stays_far_below_the_argument_limit() {
+        let launch = resolved("prod").with_start_dir(Some("/srv".into()));
+        let argv = strings(ssh_pane_argv(&launch, true));
+        assert!(argv.last().unwrap().len() < 64 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_remote_command_survives_sh_and_bash() {
+        for shell in ["sh", "bash", "dash"] {
+            if let Some(out) = run_through(shell) {
+                assert_eq!(out, "it's|a\\b|100%|!x|line1\nline2|", "{shell}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_remote_command_survives_other_login_shells_when_installed() {
+        for shell in ["zsh", "fish", "tcsh", "csh"] {
+            if let Some(out) = run_through(shell) {
+                assert_eq!(out, "it's|a\\b|100%|!x|line1\nline2|", "{shell}");
+            }
+        }
+    }
+
+    #[test]
+    fn ssh_pane_argv_keeps_plain_ssh_for_a_configured_remote_command() {
+        let launch = resolved("prod")
+            .with_start_dir(Some("/srv".into()))
+            .with_remote_command(true);
+        assert_eq!(ssh_pane_argv(&launch, true), ssh_argv(&launch));
+    }
+
+    #[test]
+    fn ssh_launch_without_a_config_lookup_counts_as_having_a_remote_command() {
+        assert!(
+            SshLaunch::new("prod".into(), None)
+                .unwrap()
+                .has_remote_command
+        );
     }
 
     #[test]

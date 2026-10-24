@@ -30,6 +30,7 @@ fn launch(workdir: Option<&str>) -> ContainerLaunch {
         canonical: "scratch".into(),
         id: "cid".into(),
         workdir: workdir.map(Into::into),
+        start_dir: None,
         user: Some("dev".into()),
         shell: ContainerShell::BashOrSh,
         ssh: None,
@@ -381,7 +382,7 @@ async fn a_probe_for_a_pane_that_moved_to_another_environment_is_stale() {
 #[tokio::test]
 async fn a_probe_for_a_pane_that_closed_is_not_found() {
     let (mut app, _, _) = app_with_pane(PaneKind::Container(launch(Some("/work"))), None);
-    let environment = PaneEnvironment::Container(launch(Some("/work")));
+    let environment = PaneEnvironment::Container(Box::new(launch(Some("/work"))));
     let (result, rx) = probed(&app, "w404:p9", environment, Ok(()));
 
     let opened = app.handle_pane_editor_probed(result);
@@ -392,7 +393,7 @@ async fn a_probe_for_a_pane_that_closed_is_not_found() {
 
 #[test]
 fn pane_target_prefers_the_report_then_the_container_workdir_then_root() {
-    let container = |workdir| PaneEnvironment::Container(launch(workdir));
+    let container = |workdir| PaneEnvironment::Container(Box::new(launch(workdir)));
     let resolve = |env, reported: Option<&str>| {
         let PaneTarget { root, cwd, .. } = PaneTarget::resolve(env, reported.map(Into::into));
         (root, cwd)

@@ -37,15 +37,16 @@ fn factory(dest: &str) -> Box<dyn UploadSink> {
 sink_tests::sink_contract!(factory);
 
 fn container(ssh: Option<SshLaunch>) -> PaneEnvironment {
-    PaneEnvironment::Container(ContainerLaunch {
+    PaneEnvironment::Container(Box::new(ContainerLaunch {
         reference: ContainerRef::Name("scratch".into()),
         canonical: "scratch".into(),
         id: "cid".into(),
         workdir: None,
+        start_dir: None,
         user: Some("dev".into()),
         shell: ContainerShell::BashOrSh,
         ssh,
-    })
+    }))
 }
 
 fn ssh_launch(control_path: Option<&str>) -> SshLaunch {
@@ -399,15 +400,16 @@ fn a_real_container_receives_a_tree_through_docker_exec() {
         eprintln!("skipping: HERDR_TEST_DOCKER_CONTAINER is not set");
         return;
     };
-    let env = PaneEnvironment::Container(ContainerLaunch {
+    let env = PaneEnvironment::Container(Box::new(ContainerLaunch {
         reference: ContainerRef::Name(id.clone()),
         canonical: id.clone(),
         id: id.clone(),
         workdir: None,
+        start_dir: None,
         user: std::env::var("HERDR_TEST_DOCKER_USER").ok(),
         shell: ContainerShell::BashOrSh,
         ssh: None,
-    });
+    }));
     let docker = |args: &[&str]| {
         let output = std::process::Command::new("docker")
             .arg("exec")

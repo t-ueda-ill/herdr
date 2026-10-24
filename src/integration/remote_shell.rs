@@ -35,6 +35,75 @@ impl RemoteShell {
     }
 }
 
+/// Shared by the bash, zsh and sh bodies: one text, because the launcher
+/// passes a single POSIX body and branches on the running shell here.
+///
+/// The cwd is reported as OSC 7 on `/dev/tty` and not on stdout, so a prompt
+/// command substitution cannot swallow it. Only `%` is percent-encoded: that is
+/// the one byte `parse_file_uri_cwd` rejects, and every other byte of a path is
+/// carried raw, which avoids an external command per prompt.
+/// Why `eval` for the array forms: dash parses the whole body, and `name=(...)`
+/// is a syntax error there even in a branch that never runs.
+pub(crate) fn injected_cwd_integration_posix() -> String {
+    r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
+__herdr_host=${HOSTNAME:-}
+[ -n "$__herdr_host" ] || __herdr_host=$(hostname 2>/dev/null) || __herdr_host=
+__herdr_osc7() {
+  __herdr_rest=$PWD __herdr_path=
+  while case $__herdr_rest in *"%"*) true ;; *) false ;; esac; do
+    __herdr_path=$__herdr_path${__herdr_rest%%"%"*}%25
+    __herdr_rest=${__herdr_rest#*"%"}
+  done
+  __herdr_path=$__herdr_path$__herdr_rest
+  if [ -n "${TMUX:-}" ]; then
+    { printf '\033Ptmux;\033\033]7;file://%s%s\007\033\\' "$__herdr_host" "$__herdr_path" >/dev/tty; } 2>/dev/null || :
+  else
+    { printf '\033]7;file://%s%s\007' "$__herdr_host" "$__herdr_path" >/dev/tty; } 2>/dev/null || :
+  fi
+  return 0
+}
+if [ -n "${BASH_VERSION:-}" ]; then
+  case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+    "declare -a"*) eval 'PROMPT_COMMAND=(__herdr_osc7 "${PROMPT_COMMAND[@]}")' ;;
+    *) PROMPT_COMMAND="__herdr_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+  esac
+elif [ -n "${ZSH_VERSION:-}" ]; then
+  eval 'precmd_functions+=(__herdr_osc7); chpwd_functions+=(__herdr_osc7)'
+else
+  # A prompt cannot call a function in dash and ash, so `cd` reports instead.
+  cd() { command cd "$@" || return; __herdr_osc7; }
+fi
+__herdr_osc7
+"#
+    .to_owned()
+}
+
+/// Fish counterpart of [`injected_cwd_integration_posix`]. The host is read
+/// once, and the path is encoded with `string` so no process starts per `cd`.
+/// Why `$HOSTNAME` before fish's own `$hostname`: the POSIX body prefers it,
+/// and both bodies must name the same host for one machine.
+pub(crate) fn injected_cwd_integration_fish() -> String {
+    r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
+if test -n "$HOSTNAME"
+    set -g __herdr_host $HOSTNAME
+else
+    set -g __herdr_host $hostname
+end
+function __herdr_osc7 --on-variable PWD
+    isatty stdin; or return 0
+    set -l path (string replace -a '%' '%25' -- $PWD)
+    if set -q TMUX
+        printf '\033Ptmux;\033\033]7;file://%s%s\007\033\\' $__herdr_host $path >/dev/tty 2>/dev/null
+    else
+        printf '\033]7;file://%s%s\007' $__herdr_host $path >/dev/tty 2>/dev/null
+    end
+    return 0
+end
+__herdr_osc7
+"#
+    .to_owned()
+}
+
 /// Agents the generated functions wrap.
 const WRAPPED_AGENTS: [&str; 2] = ["claude", "codex"];
 

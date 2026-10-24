@@ -266,9 +266,11 @@ while :; do sleep 1; done"#,
 fn a_full_queue_holds_the_helper_back_without_counting_as_a_stall() {
     let dir = TempDir::new("remote-backpressure");
     std::fs::write(dir.join("big"), pattern(4 * 1024 * 1024)).unwrap();
+    // Why not a shorter stall: a loaded CI runner can pause the helper's own
+    // reads for longer than 150 ms while the queue drains, which is a real stall.
     let options = RemoteOptions {
         queue: 2,
-        stall: Duration::from_millis(150),
+        stall: Duration::from_millis(400),
         ..fast()
     };
     let mut source = real(&["/bin/sh".to_owned()], &[&dir.join("big")], options);
@@ -277,7 +279,7 @@ fn a_full_queue_holds_the_helper_back_without_counting_as_a_stall() {
     let control = Control::default();
     let first = source.next(Duration::from_millis(100), &control).unwrap();
     assert!(first.is_some());
-    std::thread::sleep(Duration::from_millis(700));
+    std::thread::sleep(Duration::from_millis(2000));
 
     let mut frames = vec![first.unwrap()];
     frames.extend(drain(&mut source).unwrap());
@@ -518,15 +520,16 @@ fn a_source_that_was_not_begun_or_begun_twice_refuses() {
 }
 
 fn container(ssh: Option<SshLaunch>) -> PaneEnvironment {
-    PaneEnvironment::Container(ContainerLaunch {
+    PaneEnvironment::Container(Box::new(ContainerLaunch {
         reference: ContainerRef::Name("scratch".into()),
         canonical: "scratch".into(),
         id: "cid".into(),
         workdir: None,
+        start_dir: None,
         user: Some("dev".into()),
         shell: ContainerShell::BashOrSh,
         ssh,
-    })
+    }))
 }
 
 fn ssh_launch(control_path: Option<&str>) -> SshLaunch {
@@ -665,15 +668,16 @@ fn a_real_container_streams_a_tree_through_docker_exec() {
         eprintln!("skipping: HERDR_TEST_DOCKER_CONTAINER is not set");
         return;
     };
-    let env = PaneEnvironment::Container(ContainerLaunch {
+    let env = PaneEnvironment::Container(Box::new(ContainerLaunch {
         reference: ContainerRef::Name(id.clone()),
         canonical: id.clone(),
         id: id.clone(),
         workdir: None,
+        start_dir: None,
         user: std::env::var("HERDR_TEST_DOCKER_USER").ok(),
         shell: ContainerShell::BashOrSh,
         ssh: None,
-    });
+    }));
     let setup = std::process::Command::new("docker")
         .args(["exec", &id, "sh", "-c"])
         .arg(

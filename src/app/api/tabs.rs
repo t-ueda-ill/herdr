@@ -113,7 +113,8 @@ impl App {
                     host_terminal_theme,
                     host_terminal_appearance,
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode)
-                        .with_launch_target(launch),
+                        .with_launch_target(launch)
+                        .with_shell_integration(self.state.offhost_shell_integration),
                     extra_env,
                 )
             });

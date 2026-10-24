@@ -13,7 +13,7 @@ pub(super) const STAGED_PATH: &str =
 /// The launch metadata a pane carries; whether it runs is a separate fact.
 #[derive(Clone)]
 pub(super) enum OffHostShell {
-    Container(crate::container::ContainerLaunch),
+    Container(Box<crate::container::ContainerLaunch>),
     Ssh(crate::ssh_host::SshLaunch),
 }
 
@@ -101,7 +101,7 @@ impl OffHostPaneFixture {
             .get_mut(&self.terminal_id)
             .expect("root pane terminal state");
         match &shell {
-            OffHostShell::Container(launch) => terminal.container = Some(launch.clone()),
+            OffHostShell::Container(launch) => terminal.container = Some((**launch).clone()),
             OffHostShell::Ssh(launch) => terminal.ssh = Some(launch.clone()),
         }
         self.shell = shell;

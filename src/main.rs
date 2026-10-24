@@ -428,6 +428,13 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # force keepalive or multiplexing off, it only stops herdr from adding its own.
 # manage_ssh_config = true
 
+[offhost]
+# Make shells in ssh and container panes report their working directory so the
+# sidebar, files, and new tabs and splits follow `cd`. Herdr loads a temporary
+# script when it starts the shell and edits no file on the remote machine.
+# Set false to start the plain shell. Hosts with a RemoteCommand are never injected.
+# shell_integration = true
+
 [experimental]
 # Allow launching herdr from inside a herdr-managed pane.
 # allow_nested = false

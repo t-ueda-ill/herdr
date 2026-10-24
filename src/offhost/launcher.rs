@@ -8,7 +8,6 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::container::ContainerLaunch;
 use crate::noninteractive_process::{spawn_streaming, RunError, StreamingChild};
 use crate::offhost::exec::{classify_failure, command_argv, ExecError};
 use crate::offhost::PaneEnvironment;
@@ -66,8 +65,8 @@ pub(crate) fn script_argv(
     script: &str,
     args: &[&str],
 ) -> Result<(&'static str, Vec<OsString>), Failure> {
-    if let PaneEnvironment::Container(ContainerLaunch { ssh: Some(ssh), .. }) = env {
-        if ssh.control_path.is_none() {
+    if let PaneEnvironment::Container(launch) = env {
+        if let Some(ssh) = launch.ssh.as_ref().filter(|ssh| ssh.control_path.is_none()) {
             return Err(connection_not_shared(transfer, &ssh.host));
         }
     }
@@ -100,7 +99,7 @@ impl EnvironmentLauncher {
     fn over_ssh(&self) -> bool {
         !matches!(
             &self.env,
-            PaneEnvironment::Container(ContainerLaunch { ssh: None, .. })
+            PaneEnvironment::Container(launch) if launch.ssh.is_none()
         )
     }
 }

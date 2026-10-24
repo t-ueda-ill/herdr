@@ -99,7 +99,8 @@ impl App {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let shell_config = crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode)
-            .with_launch_target(launch);
+            .with_launch_target(launch)
+            .with_shell_integration(self.state.offhost_shell_integration);
         let split_cwd = Some(split_cwd);
         let split_result = match params.ratio {
             Some(ratio) => ws.split_pane_with_ratio(
@@ -2422,6 +2423,7 @@ mod tests {
             canonical: "shop/db".into(),
             id: "cid".into(),
             workdir: None,
+            start_dir: None,
             user: None,
             shell: crate::container::ContainerShell::BashOrSh,
             ssh: None,
@@ -2455,6 +2457,7 @@ mod tests {
             canonical: "scratch".into(),
             id: "cid".into(),
             workdir: None,
+            start_dir: None,
             user: None,
             shell: crate::container::ContainerShell::BashOrSh,
             ssh: crate::ssh_host::SshLaunch::new("deploy@prod".into(), None),
