@@ -74,6 +74,10 @@ fn state() -> ClientShellState {
     state.workbench.tabs.push(investigation);
     state.workbench.active = Some(0);
     state.workbench.visible = true;
+    // Why full screen: these tests characterize the workbench covering the
+    // whole pane surface; split tests choose split themselves.
+    state.workbench.placement.presentation = FilesPresentation::Full;
+    state.remember_files_placement();
     state
 }
 fn press(
@@ -430,14 +434,20 @@ fn investigation_render_scale_profile() {
             .collect();
         surface.frame = FrameData::from_ratatui_buffer(&buffer, None);
         state.set_pane_surface(surface);
-        for mode in [0, 1, 2] {
+        // 0: another workspace's tab, 1: hidden, 2: full screen, 3: docked.
+        for mode in [0, 1, 2, 3] {
             if mode == 0 {
                 state.workbench.visible = false;
                 state.workbench.tabs[0].browser.workspace_id = Some("other".into());
             } else {
                 state.workbench.tabs[0].browser.workspace_id = Some("ws_1".into());
-                state.workbench.visible = mode == 2;
+                state.workbench.visible = mode >= 2;
             }
+            state.workbench.placement.presentation = if mode == 3 {
+                FilesPresentation::Split
+            } else {
+                FilesPresentation::Full
+            };
             for _ in 0..5 {
                 std::hint::black_box(state.compose(160, 48));
             }
@@ -615,6 +625,108 @@ fn restore_keeps_the_saved_entry_while_the_viewer_cannot_be_opened() {
         state.workbench.tabs[0].browser.root.as_deref(),
         Some("/repo")
     );
+}
+
+/// Restores `saved` into a fresh state whose shown placement is full
+/// screen at the bottom, then reopens it with open_files.
+fn reopened_after_restore(saved: SavedInvestigation) -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(crate::client::shell::tests::snapshot()));
+    state.workbench.placement = FilesPlacement::restore(SavedFilesPlacement {
+        presentation: FilesPresentation::Full,
+        dock: FilesDock::Bottom,
+        ..Default::default()
+    });
+    state.workbench.saved = vec![saved];
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    state.tick_investigation(later, &mut ClientShellInput::default());
+    assert_eq!(state.workbench.tabs.len(), 1, "the entry was restored");
+    assert!(!state.investigation_active(), "restoring does not show it");
+    assert!(state.toggle_investigation(&mut ClientShellInput::default()));
+    state
+}
+
+#[test]
+fn saved_entries_without_a_placement_load_and_reopen_split_on_the_left() {
+    let old: SavedInvestigation = serde_json::from_str(
+        r#"{"endpoint":"local","workspace":"ws_1","root":"/r","files":[],"active_file":null,"horizontal":false,"query":"","include":"","exclude":"","regex":false,"case_sensitive":false,"whole_word":false,"ignored":false,"content_search":false}"#,
+    )
+    .unwrap();
+    assert_eq!(old.placement, None);
+    assert!(!serde_json::to_string(&old).unwrap().contains("placement"));
+
+    let state = reopened_after_restore(old);
+    assert_eq!(
+        state.workbench.placement.presentation,
+        FilesPresentation::Split
+    );
+    assert_eq!(state.workbench.placement.dock, FilesDock::Left);
+}
+
+#[test]
+fn an_unreadable_saved_placement_loads_as_the_default() {
+    let saved: SavedInvestigation = serde_json::from_str(
+        r#"{"endpoint":"local","workspace":"ws_1","root":"/r","files":[],"active_file":null,"horizontal":false,"query":"","include":"","exclude":"","regex":false,"case_sensitive":false,"whole_word":false,"ignored":false,"content_search":false,"placement":"sideways"}"#,
+    )
+    .unwrap();
+    assert_eq!(saved.placement, None);
+    assert_eq!(saved.root, "/r");
+}
+
+#[test]
+fn a_restored_entry_reopens_with_its_saved_presentation_dock_and_ratio() {
+    let saved = SavedInvestigation {
+        placement: Some(SavedFilesPlacement {
+            presentation: FilesPresentation::Split,
+            dock: FilesDock::Right,
+            side_permille: Some(450),
+            bottom_permille: None,
+        }),
+        ..saved_in("local", "ws_1", "/repo")
+    };
+    let json = serde_json::to_string(&saved).unwrap();
+    let saved: SavedInvestigation = serde_json::from_str(&json).unwrap();
+
+    let state = reopened_after_restore(saved);
+    assert_eq!(
+        state.workbench.placement.presentation,
+        FilesPresentation::Split
+    );
+    assert_eq!(state.workbench.placement.dock, FilesDock::Right);
+    assert_eq!(state.workbench.placement.side_permille, 450);
+}
+
+#[test]
+fn a_preferred_placement_from_the_preferences_file_is_the_new_shells_placement() {
+    use super::super::preferences::{self, ClientChromePreferences};
+    let path = std::env::temp_dir().join(format!(
+        "herdr-files-placement-restore-{}.json",
+        std::process::id()
+    ));
+    preferences::store(
+        &path,
+        ClientChromePreferences {
+            files_placement: Some(SavedFilesPlacement {
+                presentation: FilesPresentation::Split,
+                dock: FilesDock::Right,
+                side_permille: Some(450),
+                bottom_permille: Some(250),
+            }),
+            ..ClientChromePreferences::default()
+        },
+    )
+    .expect("seed files placement preferences");
+    let config = ClientShellConfig::from_config(&crate::config::Config::default())
+        .with_preferences_path(path.clone());
+
+    let state = ClientShellState::new(config);
+    let _ = std::fs::remove_file(&path);
+
+    let placement = &state.workbench.placement;
+    assert_eq!(placement.presentation, FilesPresentation::Split);
+    assert_eq!(placement.dock, FilesDock::Right);
+    assert_eq!(placement.side_permille, 450);
+    assert_eq!(placement.bottom_permille, 250);
 }
 
 #[test]
@@ -1144,14 +1256,14 @@ mod offhost {
         use crossterm::event::KeyModifiers as M;
         let mut state = offhost_state();
         with_loaded_preview(&mut state);
-        for index in (6..=15).chain([22]) {
+        for label in HOST_ONLY {
             let mut outcome = ClientShellInput::default();
-            state.investigation_menu_action(index, &mut outcome);
-            assert!(requests(&outcome).is_empty(), "menu {index}");
+            state.investigation_menu_action(label, &mut outcome);
+            assert!(requests(&outcome).is_empty(), "menu {label}");
             assert_eq!(
                 state.investigation().unwrap().notice,
                 "not available inside app@devbox",
-                "menu {index}"
+                "menu {label}"
             );
             state.investigation_mut().unwrap().notice.clear();
         }
@@ -1170,7 +1282,7 @@ mod offhost {
             state.investigation_mut().unwrap().notice.clear();
         }
         let mut outcome = ClientShellInput::default();
-        state.investigation_paste(&mut outcome);
+        state.investigation_paste(false, &mut outcome);
         assert_eq!(
             state.investigation().unwrap().notice,
             "not available inside app@devbox"
@@ -1181,7 +1293,7 @@ mod offhost {
     fn host_tabs_still_run_their_file_operations() {
         let mut state = state();
         let mut outcome = ClientShellInput::default();
-        state.investigation_menu_action(12, &mut outcome);
+        state.investigation_menu_action(TRASH, &mut outcome);
         assert!(state.investigation().unwrap().notice.is_empty());
     }
 
@@ -1511,7 +1623,7 @@ mod offhost {
         tab.focus = Focus::Body;
         let mut outcome = ClientShellInput::default();
 
-        state.investigation_menu_action(4, &mut outcome);
+        state.investigation_menu_action(SEND_PATH, &mut outcome);
 
         assert!(matches!(
             &state.investigation().unwrap().dialog,
@@ -1526,7 +1638,7 @@ mod offhost {
         state.investigation_mut().unwrap().focus = Focus::Body;
         let mut outcome = ClientShellInput::default();
 
-        state.investigation_menu_action(5, &mut outcome);
+        state.investigation_menu_action(EDIT_FILE, &mut outcome);
 
         let [(id, Method::PaneDirectoryOpenEditor(edit))] = &requests(&outcome)[..] else {
             panic!("{:?}", requests(&outcome));
@@ -1551,7 +1663,7 @@ mod offhost {
         with_loaded_preview(&mut state);
         state.investigation_mut().unwrap().focus = Focus::Body;
         let mut outcome = ClientShellInput::default();
-        state.investigation_menu_action(5, &mut outcome);
+        state.investigation_menu_action(EDIT_FILE, &mut outcome);
         let (id, _) = requests(&outcome).remove(0);
 
         answer(&mut state, &id, Ok(ResponseResult::Ok {}));
@@ -2274,8 +2386,7 @@ mod offhost {
             state.investigation_mut().unwrap().last_poll = std::time::Instant::now();
             if via_menu {
                 let mut outcome = ClientShellInput::default();
-                state.investigation_menu_action(23, &mut outcome);
-                assert_eq!(MENU[23], "refresh files");
+                state.investigation_menu_action(REFRESH_FILES, &mut outcome);
             } else {
                 press(&mut state, KeyCode::F(5), M::empty());
             }
@@ -2362,8 +2473,11 @@ mod offhost {
             state.set_pane_surface(crate::client::shell::tests::surface());
             state.compose(width, 32).expect("composed investigation");
             let buttons = state.investigation_hits.buttons.clone();
-            let actions = buttons.iter().find(|(_, i)| *i == usize::MAX).unwrap().0;
-            let refresh = buttons.iter().find(|(_, i)| *i == 23).map(|(r, _)| *r);
+            let actions = buttons.iter().find(|(_, i)| i.is_none()).unwrap().0;
+            let refresh = buttons
+                .iter()
+                .find(|(_, i)| *i == Some(REFRESH_FILES))
+                .map(|(r, _)| *r);
             if width == 36 {
                 assert!(refresh.is_none(), "no room beside the title");
                 continue;
@@ -2391,7 +2505,7 @@ mod offhost {
         let mut state = refreshable_state();
         let mut outcome = ClientShellInput::default();
 
-        state.investigation_menu_action(23, &mut outcome);
+        state.investigation_menu_action(REFRESH_FILES, &mut outcome);
 
         assert!(state.investigation().unwrap().notice.is_empty());
         assert!(!state
@@ -2652,10 +2766,9 @@ mod offhost {
             .selected_files
             .insert("/etc/hosts".into());
         state.set_download_dir("~/Downloads".into());
-        let index = MENU.iter().position(|i| *i == DOWNLOAD_ITEM).unwrap();
         let mut outcome = ClientShellInput::default();
 
-        state.investigation_menu_action(index, &mut outcome);
+        state.investigation_menu_action(DOWNLOAD_ITEM, &mut outcome);
 
         assert!(matches!(
             state.investigation().unwrap().dialog,
@@ -2691,9 +2804,8 @@ mod offhost {
             .unwrap()
             .selected_files
             .insert("/etc/hosts".into());
-        let index = MENU.iter().position(|i| *i == DOWNLOAD_ITEM).unwrap();
         let mut outcome = ClientShellInput::default();
-        state.investigation_menu_action(index, &mut outcome);
+        state.investigation_menu_action(DOWNLOAD_ITEM, &mut outcome);
 
         press(
             &mut state,
@@ -2745,12 +2857,6 @@ mod download {
     use super::*;
     use crate::client::shell::{ClientDownloadRequest, WorkbenchDropPlace};
 
-    fn download_index() -> usize {
-        MENU.iter()
-            .position(|item| *item == DOWNLOAD_ITEM)
-            .expect("the menu lists the download item")
-    }
-
     fn select_files(state: &mut ClientShellState, paths: &[&str]) {
         let tab = state.investigation_mut().unwrap();
         tab.selected_files = paths.iter().map(|p| (*p).to_owned()).collect();
@@ -2758,7 +2864,7 @@ mod download {
 
     fn open(state: &mut ClientShellState) {
         let mut outcome = ClientShellInput::default();
-        state.investigation_menu_action(download_index(), &mut outcome);
+        state.investigation_menu_action(DOWNLOAD_ITEM, &mut outcome);
     }
 
     fn dialog_text(state: &ClientShellState) -> Option<String> {
@@ -2773,12 +2879,17 @@ mod download {
     }
 
     #[test]
-    fn the_menu_ends_with_the_download_item_and_leaves_the_host_only_range_alone() {
-        let index = download_index();
-
-        assert_eq!(index, MENU.len() - 1);
-        assert!(!matches!(index, 6..=15 | 22));
-        assert_eq!(MENU[23], "refresh files");
+    fn file_and_directory_menus_offer_download_and_it_works_off_host() {
+        assert!(MenuTarget::File
+            .labels(false, FilesPresentation::Full, FilesDock::Left)
+            .contains(&DOWNLOAD_ITEM));
+        assert!(MenuTarget::File
+            .labels(true, FilesPresentation::Full, FilesDock::Left)
+            .contains(&DOWNLOAD_ITEM));
+        assert!(MenuTarget::Directory
+            .labels(false, FilesPresentation::Full, FilesDock::Left)
+            .contains(&DOWNLOAD_ITEM));
+        assert!(!HOST_ONLY.contains(&DOWNLOAD_ITEM));
     }
 
     #[test]
@@ -2970,7 +3081,7 @@ mod download {
     fn the_change_root_input_is_a_root_purpose_and_enter_closes_it_without_a_download() {
         let mut state = state();
         let mut outcome = ClientShellInput::default();
-        state.investigation_menu_action(1, &mut outcome);
+        state.investigation_menu_action(CHANGE_ROOT, &mut outcome);
 
         assert!(matches!(
             state.investigation().unwrap().dialog,
@@ -3101,10 +3212,8 @@ mod drops {
         assert!(state.workbench_drop_target().is_none(), "a text field");
 
         let mut state = tree_with_selected(None);
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
-            selected: 0,
-            scroll: 0,
-        });
+        state.investigation_mut().unwrap().dialog =
+            Some(Dialog::menu(MenuTarget::Tree, MenuPlacement::Selection));
         assert!(state.workbench_drop_target().is_none(), "an open dialog");
 
         let mut state = tree_with_selected(None);
@@ -3236,10 +3345,8 @@ mod drops {
     fn a_tab_with_another_dialog_open_refuses_the_question() {
         let mut state = tree_with_selected(None);
         let tab = tab_id(&state);
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
-            selected: 0,
-            scroll: 0,
-        });
+        state.investigation_mut().unwrap().dialog =
+            Some(Dialog::menu(MenuTarget::Tree, MenuPlacement::Selection));
 
         assert!(!state.open_workbench_upload_dialog(tab, question(4, &[])));
         assert!(state.take_upload_decisions().is_empty());
@@ -3459,28 +3566,21 @@ mod parent_row {
         assert!(!marked.is_empty() && marked.iter().all(|p| p.starts_with("/repo/")));
         state.investigation_mut().unwrap().selected_files.clear();
 
-        for index in [3, 6, 7, 9, 12, 13] {
+        for label in [COPY_PATH, COPY_FILES, CUT_FILES, RENAME, TRASH, DELETE] {
             let mut outcome = ClientShellInput::default();
-            state.investigation_menu_action(index, &mut outcome);
+            state.investigation_menu_action(label, &mut outcome);
             let tab = state.investigation().unwrap();
-            assert!(tab.dialog.is_none(), "menu {index}");
-            assert!(outcome.actions.is_empty(), "menu {index}");
+            assert!(tab.dialog.is_none(), "menu {label}");
+            assert!(outcome.actions.is_empty(), "menu {label}");
         }
         assert!(state.workbench.clipboard.is_none());
-    }
-
-    #[test]
-    fn open_as_root_keeps_index_24_ahead_of_download() {
-        assert_eq!(MENU[24], "open as root");
-        assert_eq!(MENU[25], DOWNLOAD_ITEM);
-        assert_eq!(MENU.len(), 26);
     }
 
     #[test]
     fn open_as_root_makes_the_selected_directory_the_root() {
         let mut state = tree_state();
 
-        state.investigation_menu_action(24, &mut ClientShellInput::default());
+        state.investigation_menu_action(OPEN_AS_ROOT, &mut ClientShellInput::default());
 
         let tab = state.investigation().unwrap();
         assert_eq!(tab.browser.root.as_deref(), Some("/repo/src"));
@@ -3507,7 +3607,7 @@ mod parent_row {
             "/repo/src/a.txt"
         );
 
-        state.investigation_menu_action(24, &mut ClientShellInput::default());
+        state.investigation_menu_action(OPEN_AS_ROOT, &mut ClientShellInput::default());
 
         let tab = state.investigation().unwrap();
         assert_eq!(tab.browser.root.as_deref(), Some("/repo/src"));
@@ -3518,7 +3618,7 @@ mod parent_row {
         let mut state = tree_state();
         press(&mut state, KeyCode::Up, M::empty());
 
-        state.investigation_menu_action(24, &mut ClientShellInput::default());
+        state.investigation_menu_action(OPEN_AS_ROOT, &mut ClientShellInput::default());
 
         let tab = state.investigation().unwrap();
         assert_eq!(tab.browser.root.as_deref(), Some("/repo"));
@@ -3530,7 +3630,7 @@ mod hover {
     use super::*;
     use crate::api::schema::{DirectoryEntry, DirectoryEntryKind};
     use crate::client::shell::file_viewer::model::DirectoryState;
-    use crossterm::event::{KeyModifiers as M, MouseEvent, MouseEventKind};
+    use crossterm::event::{KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind};
 
     /// `/repo` holding `src/` and `a.txt`, composed so row hits exist.
     fn composed() -> ClientShellState {
@@ -3694,43 +3794,260 @@ mod hover {
             .expect("menu row is drawn")
     }
 
-    #[test]
-    fn hovering_a_scrolled_menu_keeps_the_viewport_so_a_click_hits_the_hovered_item() {
-        let mut state = composed();
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
-            selected: 0,
-            scroll: 0,
-        });
-        state.compose(120, 22).expect("composed menu");
-        let rows = state.investigation_hits.menu.len();
-        let scroll = MENU.len() - rows;
-        assert!(scroll > 1, "the menu must not fit in {rows} rows");
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
-            selected: 24,
-            scroll,
-        });
-        state.compose(120, 22).expect("composed scrolled menu");
-        let hovered = scroll + 1;
-        let second = menu_rect(&state, hovered);
-
-        move_to(&mut state, second.x + 1, second.y);
-        state.compose(120, 22).expect("recomposed menu");
-
-        assert!(matches!(
-            state.investigation().unwrap().dialog,
-            Some(Dialog::Menu { selected, scroll: kept }) if selected == hovered && kept == scroll
-        ));
-        assert_eq!(menu_rect(&state, hovered), second);
+    fn click(
+        state: &mut ClientShellState,
+        button: MouseButton,
+        column: u16,
+        row: u16,
+    ) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
         state.handle_investigation_mouse(
             MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: second.x + 1,
-                row: second.y,
+                kind: MouseEventKind::Down(button),
+                column,
+                row,
                 modifiers: M::empty(),
             },
             &mut outcome,
         );
+        outcome
+    }
+
+    /// Index of the first tree row whose entry passes `test`.
+    fn row_where(state: &ClientShellState, test: impl Fn(bool) -> bool) -> usize {
+        state
+            .investigation()
+            .unwrap()
+            .browser
+            .rows
+            .iter()
+            .position(|row| row.entry.as_ref().is_some_and(|entry| test(entry.is_dir)))
+            .expect("row exists")
+    }
+
+    fn open_menu(state: &mut ClientShellState, target: MenuTarget) {
+        state.investigation_mut().unwrap().dialog =
+            Some(Dialog::menu(target, MenuPlacement::Selection));
+    }
+
+    fn shown_labels(state: &ClientShellState) -> Vec<&'static str> {
+        let tab = state.investigation().unwrap();
+        let labels = tab.menu_labels(
+            state.workbench.placement.presentation,
+            state.workbench.placement.dock,
+        );
+        state
+            .investigation_hits
+            .menu
+            .iter()
+            .map(|(_, index)| labels[*index])
+            .collect()
+    }
+
+    fn symbol(frame: &crate::protocol::FrameData, x: u16, y: u16) -> String {
+        frame.cells[y as usize * frame.width as usize + x as usize]
+            .symbol
+            .clone()
+    }
+
+    #[test]
+    fn right_clicking_a_file_row_selects_it_and_opens_the_file_menu_framed_at_the_clicked_cell() {
+        let mut state = composed();
+        let file = row_where(&state, |is_dir| !is_dir);
+        state.investigation_mut().unwrap().browser.selected = row_where(&state, |is_dir| is_dir);
+        let row = row_rect(&state, file);
+        let (x, y) = (row.x + 3, row.y);
+
+        click(&mut state, MouseButton::Right, x, y);
+        let frame = state.compose(120, 32).expect("composed menu");
+
+        let tab = state.investigation().unwrap();
+        assert_eq!(tab.browser.selected, file);
+        assert_eq!(tab.focus, Focus::Results);
+        assert!(matches!(
+            tab.dialog,
+            Some(Dialog::Menu {
+                target: MenuTarget::File,
+                ..
+            })
+        ));
+        assert_eq!(
+            shown_labels(&state),
+            MenuTarget::File.labels(false, FilesPresentation::Full, FilesDock::Left)
+        );
+        assert_eq!(symbol(&frame, x, y), "┌");
+        assert_eq!(menu_rect(&state, 0).x, x + 1);
+        assert_eq!(menu_rect(&state, 0).y, y + 1);
+    }
+
+    #[test]
+    fn right_clicking_a_directory_row_opens_the_directory_menu() {
+        let mut state = composed();
+        let dir = row_where(&state, |is_dir| is_dir);
+        let row = row_rect(&state, dir);
+
+        click(&mut state, MouseButton::Right, row.x + 1, row.y);
+        state.compose(120, 32).expect("composed menu");
+
+        assert_eq!(
+            shown_labels(&state),
+            MenuTarget::Directory.labels(false, FilesPresentation::Full, FilesDock::Left)
+        );
+        assert!(shown_labels(&state).contains(&DOWNLOAD_ITEM));
+    }
+
+    #[test]
+    fn right_clicking_a_marked_row_keeps_the_marks_and_another_row_drops_them() {
+        let mut state = composed();
+        let file = row_where(&state, |is_dir| !is_dir);
+        let dir = row_where(&state, |is_dir| is_dir);
+        state
+            .investigation_mut()
+            .unwrap()
+            .selected_files
+            .insert("/repo/a.txt".into());
+        let row = row_rect(&state, file);
+        click(&mut state, MouseButton::Right, row.x + 1, row.y);
+        assert_eq!(state.investigation().unwrap().selected_files.len(), 1);
+
+        state.investigation_mut().unwrap().dialog = None;
+        let row = row_rect(&state, dir);
+        click(&mut state, MouseButton::Right, row.x + 1, row.y);
+        assert!(state.investigation().unwrap().selected_files.is_empty());
+    }
+
+    #[test]
+    fn right_clicking_the_tree_below_its_rows_opens_the_tree_menu() {
+        let mut state = composed();
+        let list = state.investigation_hits.list;
+        let last = state.investigation_hits.rows.last().expect("rows").0;
+        assert!(last.bottom() < list.bottom(), "the list has empty space");
+
+        click(
+            &mut state,
+            MouseButton::Right,
+            list.x + 2,
+            list.bottom() - 1,
+        );
+        state.compose(120, 32).expect("composed menu");
+
+        assert_eq!(
+            shown_labels(&state),
+            MenuTarget::Tree.labels(false, FilesPresentation::Full, FilesDock::Left)
+        );
+    }
+
+    #[test]
+    fn right_clicking_the_preview_opens_the_preview_menu() {
+        let mut state = composed();
+        let body = state.investigation_hits.body;
+
+        click(&mut state, MouseButton::Right, body.x + 8, body.y);
+        state.compose(120, 32).expect("composed menu");
+
+        assert_eq!(state.investigation().unwrap().focus, Focus::Body);
+        assert_eq!(
+            shown_labels(&state),
+            MenuTarget::Preview.labels(false, FilesPresentation::Full, FilesDock::Left)
+        );
+    }
+
+    #[test]
+    fn right_clicking_the_search_field_in_content_search_opens_the_search_menu() {
+        let mut state = composed();
+        state.investigation_mut().unwrap().content_search = true;
+        state.compose(120, 32).expect("composed search");
+        let field = state.investigation_hits.fields[0].0;
+
+        click(&mut state, MouseButton::Right, field.x + 1, field.y);
+        state.compose(120, 32).expect("composed menu");
+
+        assert_eq!(
+            shown_labels(&state),
+            MenuTarget::Search.labels(true, FilesPresentation::Full, FilesDock::Left)
+        );
+    }
+
+    #[test]
+    fn a_content_search_result_lists_the_match_toggle_and_a_tree_file_does_not() {
+        assert!(MenuTarget::File
+            .labels(true, FilesPresentation::Full, FilesDock::Left)
+            .contains(&"toggle matches in current file"));
+        assert!(!MenuTarget::File
+            .labels(false, FilesPresentation::Full, FilesDock::Left)
+            .contains(&"toggle matches in current file"));
+    }
+
+    #[test]
+    fn f10_opens_the_menu_of_the_selected_row_under_its_left_edge() {
+        let mut state = composed();
+        let dir = row_where(&state, |is_dir| is_dir);
+        state.investigation_mut().unwrap().browser.selected = dir;
+        state.investigation_mut().unwrap().focus = Focus::Results;
+        state.compose(120, 32).expect("composed tree");
+        let row = row_rect(&state, dir);
+
+        press(&mut state, KeyCode::F(10), M::empty());
+        state.compose(120, 32).expect("composed menu");
+
+        assert_eq!(
+            shown_labels(&state),
+            MenuTarget::Directory.labels(false, FilesPresentation::Full, FilesDock::Left)
+        );
+        let first = menu_rect(&state, 0);
+        assert_eq!((first.x, first.y), (row.x + 1, row.bottom() + 1));
+    }
+
+    #[test]
+    fn f10_on_the_focused_preview_opens_the_preview_menu() {
+        let mut state = composed();
+        state.investigation_mut().unwrap().focus = Focus::Body;
+
+        press(&mut state, KeyCode::F(10), M::empty());
+
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Menu {
+                target: MenuTarget::Preview,
+                anchor: MenuPlacement::Selection,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn hovering_a_scrolled_menu_keeps_the_viewport_so_a_click_hits_the_hovered_item() {
+        let mut state = composed();
+        let len = MenuTarget::Directory
+            .labels(false, FilesPresentation::Full, FilesDock::Left)
+            .len();
+        open_menu(&mut state, MenuTarget::Directory);
+        state.compose(120, 10).expect("composed menu");
+        let rows = state.investigation_hits.menu.len();
+        let scroll = len - rows;
+        assert!(scroll > 1, "the menu must not fit in {rows} rows");
+        if let Some(Dialog::Menu {
+            selected,
+            scroll: stored,
+            ..
+        }) = state.investigation_mut().unwrap().dialog.as_mut()
+        {
+            *selected = len - 1;
+            *stored = scroll;
+        }
+        state.compose(120, 10).expect("composed scrolled menu");
+        let hovered = scroll + 1;
+        let second = menu_rect(&state, hovered);
+
+        move_to(&mut state, second.x + 1, second.y);
+        state.compose(120, 10).expect("recomposed menu");
+
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Menu { selected, scroll: kept, .. }) if selected == hovered && kept == scroll
+        ));
+        assert_eq!(menu_rect(&state, hovered), second);
+        click(&mut state, MouseButton::Left, second.x + 1, second.y);
 
         assert!(state.investigation().unwrap().dialog.is_none());
     }
@@ -3738,47 +4055,55 @@ mod hover {
     #[test]
     fn shrinking_the_terminal_keeps_the_selected_menu_item_visible() {
         let mut state = composed();
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
-            selected: 24,
-            scroll: 0,
-        });
+        let last = MenuTarget::Directory
+            .labels(false, FilesPresentation::Full, FilesDock::Left)
+            .len()
+            - 1;
+        open_menu(&mut state, MenuTarget::Directory);
+        if let Some(Dialog::Menu { selected, .. }) =
+            state.investigation_mut().unwrap().dialog.as_mut()
+        {
+            *selected = last;
+        }
         state.compose(120, 40).expect("composed menu");
-        state.compose(120, 14).expect("composed smaller menu");
+        state.compose(120, 8).expect("composed smaller menu");
         assert!(state
             .investigation_hits
             .menu
             .iter()
-            .any(|(_, index)| *index == 24));
+            .any(|(_, index)| *index == last));
         assert!(matches!(
             state.investigation().unwrap().dialog,
-            Some(Dialog::Menu { selected: 24, scroll }) if scroll > 0
+            Some(Dialog::Menu { selected, scroll, .. }) if selected == last && scroll > 0
         ));
     }
 
     #[test]
     fn keyboard_navigation_scrolls_the_menu_to_keep_the_selection_visible() {
         let mut state = composed();
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
-            selected: 0,
-            scroll: 0,
-        });
-        state.compose(120, 22).expect("composed menu");
+        let len = MenuTarget::Directory
+            .labels(false, FilesPresentation::Full, FilesDock::Left)
+            .len();
+        open_menu(&mut state, MenuTarget::Directory);
+        state.compose(120, 10).expect("composed menu");
         let rows = state.investigation_hits.menu.len();
-        for _ in 0..24 {
+        assert!(rows < len);
+        for _ in 0..len {
             press(&mut state, KeyCode::Down, M::empty());
         }
         assert!(matches!(
             state.investigation().unwrap().dialog,
-            Some(Dialog::Menu { selected: 24, scroll }) if scroll == 25 - rows
+            Some(Dialog::Menu { selected, scroll, .. }) if selected == len - 1 && scroll == len - rows
         ));
-        for _ in 0..24 {
+        for _ in 0..len {
             press(&mut state, KeyCode::Up, M::empty());
         }
         assert!(matches!(
             state.investigation().unwrap().dialog,
             Some(Dialog::Menu {
                 selected: 0,
-                scroll: 0
+                scroll: 0,
+                ..
             })
         ));
     }
@@ -3786,18 +4111,9 @@ mod hover {
     #[test]
     fn moving_over_a_workbench_menu_row_highlights_it() {
         let mut state = composed();
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
-            selected: 0,
-            scroll: 0,
-        });
+        open_menu(&mut state, MenuTarget::Tree);
         state.compose(120, 32).expect("composed menu");
-        let rect = state
-            .investigation_hits
-            .menu
-            .iter()
-            .find(|(_, i)| *i == 2)
-            .map(|(r, _)| *r)
-            .expect("menu row is drawn");
+        let rect = menu_rect(&state, 2);
 
         let outcome = move_to(&mut state, rect.x + 1, rect.y);
 
@@ -3805,6 +4121,304 @@ mod hover {
             state.investigation().unwrap().dialog,
             Some(Dialog::Menu { selected: 2, .. })
         ));
+        assert!(outcome.repaint);
+    }
+
+    #[test]
+    fn moving_over_tree_rows_while_the_menu_is_open_hovers_no_row() {
+        let mut state = composed();
+        open_menu(&mut state, MenuTarget::Tree);
+        state.compose(120, 32).expect("composed menu");
+        let menu = state.investigation_hits.menu.clone();
+        let row = state
+            .investigation_hits
+            .rows
+            .iter()
+            .map(|(rect, _)| *rect)
+            .find(|rect| {
+                !menu
+                    .iter()
+                    .any(|(item, _)| item.y == rect.y && item.x <= rect.x + 1)
+            })
+            .expect("a row beside the menu");
+
+        move_to(&mut state, row.x + 1, row.y);
+
+        assert_eq!(state.investigation().unwrap().hovered, None);
+    }
+
+    #[test]
+    fn escape_closes_the_workbench_menu() {
+        let mut state = composed();
+        open_menu(&mut state, MenuTarget::Tree);
+        state.compose(120, 32).expect("composed menu");
+
+        let outcome = press(&mut state, KeyCode::Esc, M::empty());
+
+        assert!(state.investigation().unwrap().dialog.is_none());
+        assert!(outcome.actions.is_empty());
+    }
+
+    fn select_label(state: &mut ClientShellState, label: &str) -> usize {
+        let index = MenuTarget::Preview
+            .labels(false, FilesPresentation::Full, FilesDock::Left)
+            .iter()
+            .position(|item| *item == label)
+            .expect("listed");
+        if let Some(Dialog::Menu { selected, .. }) =
+            state.investigation_mut().unwrap().dialog.as_mut()
+        {
+            *selected = index;
+        }
+        index
+    }
+
+    #[test]
+    fn enter_runs_the_selected_workbench_menu_item_and_closes_the_menu() {
+        let mut state = composed();
+        let horizontal = state.investigation().unwrap().horizontal;
+        open_menu(&mut state, MenuTarget::Preview);
+        select_label(&mut state, TOGGLE_SPLIT_DIRECTION);
+        state.compose(120, 32).expect("composed menu");
+
+        let outcome = press(&mut state, KeyCode::Enter, M::empty());
+
+        let tab = state.investigation().unwrap();
+        assert!(tab.dialog.is_none());
+        assert_eq!(tab.horizontal, !horizontal);
+        assert!(outcome.actions.is_empty());
+    }
+
+    #[test]
+    fn clicking_a_workbench_menu_row_runs_that_item_and_closes_the_menu() {
+        let mut state = composed();
+        let horizontal = state.investigation().unwrap().horizontal;
+        open_menu(&mut state, MenuTarget::Preview);
+        state.compose(120, 32).expect("composed menu");
+        let index = MenuTarget::Preview
+            .labels(false, FilesPresentation::Full, FilesDock::Left)
+            .iter()
+            .position(|item| *item == TOGGLE_SPLIT_DIRECTION)
+            .expect("listed");
+        let rect = menu_rect(&state, index);
+
+        click(&mut state, MouseButton::Left, rect.x + 1, rect.y);
+
+        let tab = state.investigation().unwrap();
+        assert!(tab.dialog.is_none());
+        assert_eq!(tab.horizontal, !horizontal);
+    }
+
+    fn input_text(state: &ClientShellState) -> Option<String> {
+        match &state.investigation().unwrap().dialog {
+            Some(Dialog::Input { input, .. }) => Some(input.to_string()),
+            _ => None,
+        }
+    }
+
+    fn wheel(state: &mut ClientShellState, kind: MouseEventKind, column: u16, row: u16) {
+        state.handle_investigation_mouse(
+            MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: M::empty(),
+            },
+            &mut ClientShellInput::default(),
+        );
+    }
+
+    fn open_menu_cursor(state: &ClientShellState) -> Option<(usize, usize)> {
+        match state.investigation().unwrap().dialog {
+            Some(Dialog::Menu {
+                selected, scroll, ..
+            }) => Some((selected, scroll)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn every_label_of_every_menu_runs_an_action() {
+        let mut labels: Vec<(MenuTarget, &str)> = Vec::new();
+        for target in [
+            MenuTarget::File,
+            MenuTarget::Directory,
+            MenuTarget::Tree,
+            MenuTarget::Search,
+            MenuTarget::Preview,
+        ] {
+            for content_search in [false, true] {
+                for presentation in [FilesPresentation::Split, FilesPresentation::Full] {
+                    for dock in [FilesDock::Left, FilesDock::Right, FilesDock::Bottom] {
+                        for label in target.labels(content_search, presentation, dock) {
+                            if !labels.contains(&(target, *label)) {
+                                labels.push((target, *label));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (target, label) in labels {
+            let mut state = state();
+            open_menu(&mut state, target);
+
+            let ran = state.investigation_menu_action(label, &mut ClientShellInput::default());
+
+            assert!(ran, "{target:?} menu item {label:?} has no action");
+        }
+        let mut state = state();
+        assert!(!state.investigation_menu_action("no such item", &mut ClientShellInput::default()));
+    }
+
+    #[test]
+    fn the_tree_menu_shows_ignored_rows_and_the_search_menu_searches_ignored_files() {
+        let tree = MenuTarget::Tree.labels(false, FilesPresentation::Full, FilesDock::Left);
+        assert!(tree.contains(&SHOW_IGNORED));
+        assert!(!tree.contains(&INCLUDE_IGNORED));
+        assert!(MenuTarget::Search
+            .labels(true, FilesPresentation::Full, FilesDock::Left)
+            .contains(&INCLUDE_IGNORED));
+        let mut state = state();
+
+        open_menu(&mut state, MenuTarget::Tree);
+        state.investigation_menu_action(SHOW_IGNORED, &mut ClientShellInput::default());
+        let tab = state.investigation().unwrap();
+        assert!(tab.browser.show_ignored);
+        assert!(!tab.ignored);
+
+        open_menu(&mut state, MenuTarget::Search);
+        state.investigation_menu_action(INCLUDE_IGNORED, &mut ClientShellInput::default());
+        let tab = state.investigation().unwrap();
+        assert!(tab.ignored);
+        assert!(tab.browser.show_ignored);
+    }
+
+    #[test]
+    fn new_entries_and_pastes_from_empty_tree_space_go_into_the_root_not_the_selected_folder() {
+        let mut state = composed();
+        let dir = row_where(&state, |is_dir| is_dir);
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.selected = dir;
+        let folder = tab.browser.selected_entry().unwrap().path.clone();
+        state.workbench.clipboard = Some(FileClipboard {
+            endpoint: ClientEndpointId::Local,
+            boot: "boot-1".into(),
+            paths: vec!["/repo/a.txt".into()],
+            cut: false,
+        });
+
+        for (label, root, selected) in [
+            (NEW_FILE, "/repo/".to_owned(), format!("{folder}/")),
+            (NEW_DIRECTORY, "/repo/".to_owned(), format!("{folder}/")),
+            (PASTE_FILES, "/repo".to_owned(), folder.clone()),
+        ] {
+            open_menu(&mut state, MenuTarget::Tree);
+            state.investigation_menu_action(label, &mut ClientShellInput::default());
+            assert_eq!(input_text(&state), Some(root), "{label} from the tree");
+
+            open_menu(&mut state, MenuTarget::Directory);
+            state.investigation_menu_action(label, &mut ClientShellInput::default());
+            assert_eq!(input_text(&state), Some(selected), "{label} from a folder");
+        }
+    }
+
+    #[test]
+    fn right_clicking_a_file_row_previews_that_file() {
+        let mut state = composed();
+        state.investigation_mut().unwrap().preview = None;
+        let file = row_where(&state, |is_dir| !is_dir);
+        let row = row_rect(&state, file);
+
+        click(&mut state, MouseButton::Right, row.x + 1, row.y);
+
+        let tab = state.investigation().unwrap();
+        assert_eq!(
+            tab.document().map(|document| document.path.as_str()),
+            Some("/repo/a.txt")
+        );
+        assert!(tab.dialog.is_some());
+    }
+
+    #[test]
+    fn f10_in_a_search_field_opens_the_search_menu_under_that_field() {
+        use crate::api::schema::FileMatch;
+        let mut state = composed();
+        let tab = state.investigation_mut().unwrap();
+        tab.content_search = true;
+        tab.matches.push(FileMatch {
+            path: "/repo/a.txt".into(),
+            revision: "old".into(),
+            start: 0,
+            end: 1,
+            line: 1,
+            text: "hello".into(),
+            matched: "h".into(),
+            replacement: None,
+        });
+        tab.focus = Focus::Include;
+        state.compose(120, 32).expect("composed search");
+        let field = state
+            .investigation_hits
+            .fields
+            .iter()
+            .find(|(_, focus)| *focus == Focus::Include)
+            .map(|(rect, _)| *rect)
+            .expect("include field drawn");
+
+        press(&mut state, KeyCode::F(10), M::empty());
+        state.compose(120, 32).expect("composed menu");
+
+        assert_eq!(
+            shown_labels(&state),
+            MenuTarget::Search.labels(true, FilesPresentation::Full, FilesDock::Left)
+        );
+        let first = menu_rect(&state, 0);
+        assert_eq!((first.x, first.y), (field.x + 1, field.bottom() + 1));
+    }
+
+    #[test]
+    fn the_wheel_over_an_overflowing_menu_scrolls_it_by_one_and_keeps_the_selection_inside() {
+        let mut state = composed();
+        let len = MenuTarget::Directory
+            .labels(false, FilesPresentation::Full, FilesDock::Left)
+            .len();
+        open_menu(&mut state, MenuTarget::Directory);
+        state.compose(120, 10).expect("composed menu");
+        let rows = state.investigation_hits.menu.len();
+        assert!(rows + 1 < len, "the menu must not fit in {rows} rows");
+        let row = menu_rect(&state, 0);
+
+        wheel(&mut state, MouseEventKind::ScrollDown, row.x + 1, row.y);
+        assert_eq!(open_menu_cursor(&state), Some((1, 1)));
+        state.compose(120, 10).expect("scrolled menu");
+        assert_eq!(state.investigation_hits.menu[0].1, 1);
+
+        let row = menu_rect(&state, 1);
+        wheel(&mut state, MouseEventKind::ScrollUp, row.x + 1, row.y);
+        assert_eq!(open_menu_cursor(&state), Some((1, 0)));
+    }
+
+    #[test]
+    fn clicking_outside_the_workbench_menu_closes_it_without_acting() {
+        let mut state = composed();
+        let selected = state.investigation().unwrap().browser.selected;
+        open_menu(&mut state, MenuTarget::Tree);
+        state.compose(120, 32).expect("composed menu");
+        let area = state.layout(120, 32).pane_surface;
+        let point = (area.right() - 1, area.bottom() - 1);
+        assert!(!state
+            .investigation_hits
+            .menu
+            .iter()
+            .any(|(rect, _)| crate::client::shell::contains(*rect, point)));
+
+        let outcome = click(&mut state, MouseButton::Left, point.0, point.1);
+
+        let tab = state.investigation().unwrap();
+        assert!(tab.dialog.is_none());
+        assert_eq!(tab.browser.selected, selected);
+        assert!(outcome.actions.is_empty());
         assert!(outcome.repaint);
     }
 }
@@ -4022,10 +4636,8 @@ mod help_open {
     #[test]
     fn a_key_pressed_while_help_hides_a_dialog_only_reveals_it() {
         let mut state = with_help(false);
-        state.investigation_mut().unwrap().dialog = Some(Dialog::Menu {
-            selected: 0,
-            scroll: 0,
-        });
+        state.investigation_mut().unwrap().dialog =
+            Some(Dialog::menu(MenuTarget::Tree, MenuPlacement::Selection));
         let outcome = press(&mut state, KeyCode::Enter, M::empty());
         assert!(!help_open(&state));
         assert!(outcome.actions.is_empty());
@@ -4067,5 +4679,985 @@ mod help_open {
         state.workbench.visible = false;
         press(&mut state, KeyCode::Down, M::empty());
         assert_eq!(help_scroll(&state), 1);
+    }
+}
+
+#[test]
+fn open_files_steps_from_hidden_to_focused_files_to_hidden_and_reshows_the_same_tab() {
+    const COLS: u16 = 160;
+    const ROWS: u16 = 32;
+    let mut state = state();
+    state.workbench.placement.presentation = FilesPresentation::Split;
+    state.remember_files_placement();
+    state.show_files(0);
+    state.set_pane_surface(crate::client::shell::tests::surface());
+    state.compose(COLS, ROWS).expect("composed split");
+    let open_files = |state: &mut ClientShellState| {
+        let mut outcome = ClientShellInput::default();
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenFiles),
+            &mut outcome,
+        );
+        outcome
+    };
+    assert!(state.files_has_focus());
+
+    let hide = open_files(&mut state);
+    assert!(!state.workbench.visible);
+    assert!(!state.investigation_active());
+    assert!(!state.workbench.files_focused);
+    assert!(state.layout(COLS, ROWS).files_region.is_none());
+    assert!(!hide.actions.iter().any(|action| matches!(
+        action,
+        crate::client::shell::ClientShellAction::Endpoint { request, .. }
+            if matches!(request.method, crate::api::schema::Method::DirectoryList(_))
+    )));
+
+    open_files(&mut state);
+    assert!(state.files_has_focus());
+    assert_eq!(state.workbench.tabs.len(), 1);
+    assert_eq!(state.workbench.active, Some(0));
+    assert!(state.layout(COLS, ROWS).files_region.is_some());
+
+    state.show_terminal_side();
+    assert!(state.investigation_active());
+    assert!(!state.files_has_focus());
+
+    open_files(&mut state);
+    assert!(state.files_has_focus());
+    assert!(state.layout(COLS, ROWS).files_region.is_some());
+
+    open_files(&mut state);
+    assert!(!state.investigation_active());
+}
+
+#[test]
+fn open_files_in_full_screen_toggles_between_the_focused_workbench_and_hidden() {
+    let mut state = state();
+    state.set_pane_surface(crate::client::shell::tests::surface());
+    state.compose(160, 32).expect("composed full screen");
+    let open_files = |state: &mut ClientShellState| {
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenFiles),
+            &mut ClientShellInput::default(),
+        );
+    };
+    state.workbench.files_focused = false;
+    assert!(state.files_has_focus());
+
+    open_files(&mut state);
+    assert!(!state.investigation_active());
+
+    open_files(&mut state);
+    assert!(state.files_has_focus());
+    assert_eq!(state.workbench.active, Some(0));
+
+    state.show_terminal_side();
+    assert!(!state.investigation_active());
+}
+
+mod split {
+    use super::*;
+    use crossterm::event::{KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind};
+
+    const COLS: u16 = 160;
+    const ROWS: u16 = 32;
+
+    /// The workbench docked beside the test pane, just opened so the files
+    /// have focus, and composed so hits exist.
+    fn composed() -> ClientShellState {
+        let mut state = state();
+        state.workbench.placement.presentation = FilesPresentation::Split;
+        state.remember_files_placement();
+        state.show_files(0);
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        state.compose(COLS, ROWS).expect("composed split");
+        state
+    }
+
+    /// `composed`, with a terminal brought forward beside the files.
+    fn terminal_focused() -> ClientShellState {
+        let mut state = composed();
+        state.show_terminal_side();
+        state.compose(COLS, ROWS).expect("composed split");
+        state
+    }
+
+    fn reaches_pane(outcome: &ClientShellInput) -> bool {
+        outcome.requests.iter().any(|request| {
+            matches!(
+                request,
+                ClientMessage::ClientShellPaneInput { pane_id, .. } if pane_id == "pane_1"
+            )
+        })
+    }
+
+    fn open_files(state: &mut ClientShellState) {
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenFiles),
+            &mut ClientShellInput::default(),
+        );
+    }
+
+    fn mouse(
+        state: &mut ClientShellState,
+        kind: MouseEventKind,
+        x: u16,
+        y: u16,
+    ) -> ClientShellInput {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: M::empty(),
+        })])
+    }
+
+    /// The pane surface with the workbench out of the way.
+    fn whole_surface(state: &ClientShellState, cols: u16, rows: u16) -> Rect {
+        let layout = state.layout(cols, rows);
+        match layout.files_region {
+            Some(files) => files.union(layout.files_divider).union(layout.pane_surface),
+            None => layout.pane_surface,
+        }
+    }
+
+    #[test]
+    fn split_docks_the_files_region_on_the_chosen_edge_at_its_ratio() {
+        let mut state = state();
+        state.workbench.placement.presentation = FilesPresentation::Split;
+        let whole = whole_surface(&state, COLS, ROWS);
+        let side = ((whole.width - 1) * 3 + 5) / 10;
+
+        let left = state.layout(COLS, ROWS);
+        let files = left.files_region.unwrap();
+        assert_eq!(files, Rect::new(whole.x, whole.y, side, whole.height));
+        assert_eq!(left.files_divider.x, files.right());
+        assert_eq!(left.pane_surface.x, files.right() + 1);
+        assert_eq!(left.pane_surface.right(), whole.right());
+
+        state.workbench.placement.dock = FilesDock::Right;
+        let right = state.layout(COLS, ROWS);
+        let files = right.files_region.unwrap();
+        assert_eq!(files.right(), whole.right());
+        assert_eq!(files.width, side);
+        assert_eq!(right.pane_surface.x, whole.x);
+        assert_eq!(right.files_divider.x, right.pane_surface.right());
+
+        state.workbench.placement.dock = FilesDock::Bottom;
+        let bottom = state.layout(COLS, ROWS);
+        let files = bottom.files_region.unwrap();
+        assert_eq!(files.bottom(), whole.bottom());
+        assert_eq!(files.width, whole.width);
+        assert_eq!(files.height, ((whole.height - 1) * 4 + 5) / 10);
+        assert_eq!(bottom.files_divider.y, bottom.pane_surface.bottom());
+    }
+
+    #[test]
+    fn full_screen_and_a_hidden_workbench_leave_the_surface_whole() {
+        let mut state = state();
+        assert!(state.layout(COLS, ROWS).files_region.is_none());
+        state.workbench.placement.presentation = FilesPresentation::Split;
+        state.workbench.visible = false;
+        assert!(state.layout(COLS, ROWS).files_region.is_none());
+    }
+
+    #[test]
+    fn a_narrow_surface_falls_back_to_full_screen_and_returns_with_room_to_spare() {
+        let mut state = state();
+        state.config.mobile_width_threshold = 0;
+        state.workbench.placement.presentation = FilesPresentation::Split;
+        let sidebar = whole_surface(&state, COLS, ROWS).x;
+        let fits = sidebar + placement::MIN_TERMINAL_COLS + placement::MIN_FILES_COLS + 1;
+
+        let mut docked_at = |cols: u16| {
+            state.compose(cols, ROWS);
+            state.layout(cols, ROWS).files_region.is_some()
+        };
+        assert!(docked_at(fits));
+        assert!(!docked_at(fits - 1));
+        assert!(!docked_at(fits));
+        let returns = fits + placement::RETURN_MARGIN_COLS;
+        assert!(!docked_at(returns - 1));
+        assert!(docked_at(returns));
+        assert_eq!(
+            state.workbench.placement.presentation,
+            FilesPresentation::Split
+        );
+    }
+
+    #[test]
+    fn surface_size_is_the_terminal_side_in_split_and_the_whole_surface_in_full() {
+        let mut state = state();
+        let whole = state.layout(COLS, ROWS).pane_surface;
+        assert_eq!(state.surface_size(COLS, ROWS).cols, whole.width);
+
+        state.workbench.placement.presentation = FilesPresentation::Split;
+        let terminal = state.layout(COLS, ROWS).pane_surface;
+        let size = state.surface_size(COLS, ROWS);
+        assert_eq!((size.cols, size.rows), (terminal.width, terminal.height));
+        assert!(size.cols < whole.width);
+    }
+
+    #[test]
+    fn split_draws_terminals_and_files_with_a_divider_between() {
+        let mut state = composed();
+        let layout = state.layout(COLS, ROWS);
+        let files = layout.files_region.unwrap();
+        let frame = state.compose(COLS, ROWS).unwrap().frame;
+        let cell = |x: u16, y: u16| {
+            frame.cells[usize::from(y) * usize::from(COLS) + usize::from(x)]
+                .symbol
+                .clone()
+        };
+        assert_eq!(cell(layout.pane_surface.x, layout.pane_surface.y), "L");
+        assert_eq!(cell(layout.files_divider.x, layout.files_divider.y), "│");
+        assert_eq!(state.hits.files_divider, layout.files_divider);
+        assert_eq!(state.investigation_hits.region, files);
+        assert!(!state.hits.panes.is_empty());
+    }
+
+    #[test]
+    fn workbench_hits_are_cleared_by_a_frame_that_draws_no_workbench() {
+        let mut state = composed();
+        assert!(!state.investigation_hits.rows.is_empty());
+        state.workbench.tabs[0].browser.workspace_id = Some("ws_other".into());
+        state.compose(COLS, ROWS);
+        assert!(state.investigation_hits.rows.is_empty());
+        assert_eq!(state.investigation_hits.region, Rect::default());
+    }
+
+    #[test]
+    fn a_click_on_the_terminal_side_focuses_the_pane_and_keeps_the_files_region() {
+        let mut state = composed();
+        assert!(state.workbench.files_focused);
+        let pane = state.hits.panes[0].inner_rect;
+
+        let outcome = mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            pane.x + 1,
+            pane.y,
+        );
+
+        assert!(outcome.actions.iter().any(|action| matches!(
+            action,
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(
+                    &request.method,
+                    crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1"
+                )
+        )));
+        assert!(state.workbench.visible);
+        assert!(!state.workbench.files_focused);
+        assert!(state.layout(COLS, ROWS).files_region.is_some());
+    }
+
+    #[test]
+    fn keys_edit_the_files_while_the_docked_region_has_focus() {
+        let mut state = composed();
+        let outcome = press(&mut state, KeyCode::Char('/'), M::empty());
+        assert!(!reaches_pane(&outcome));
+        assert_eq!(state.investigation().unwrap().focus, Focus::Paths);
+        let outcome = press(&mut state, KeyCode::Char('x'), M::empty());
+        assert!(!reaches_pane(&outcome));
+        assert_eq!(state.investigation().unwrap().browser.query.as_str(), "x");
+    }
+
+    #[test]
+    fn keys_text_and_pastes_reach_the_terminal_once_it_has_focus_beside_the_files() {
+        let mut state = terminal_focused();
+        assert!(!state.host_keyboard_report_all_requested());
+
+        let outcome = press(&mut state, KeyCode::Char('/'), M::empty());
+        assert!(reaches_pane(&outcome));
+        assert_eq!(state.investigation().unwrap().focus, Focus::Results);
+        let outcome = state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Text(
+            crate::input::TextCommit::new("é"),
+        )]);
+        assert!(reaches_pane(&outcome));
+        let outcome = state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Paste(
+            "echo hi".into(),
+        )]);
+        assert!(reaches_pane(&outcome));
+        assert!(state.clipboard_image_target().is_some());
+        assert!(state.workbench_drop_target().is_none());
+        assert!(state.layout(COLS, ROWS).files_region.is_some());
+    }
+
+    #[test]
+    fn a_doubled_prefix_beside_the_files_sends_the_literal_prefix_to_the_terminal() {
+        let mut state = terminal_focused();
+        press(&mut state, KeyCode::Char('b'), M::CONTROL);
+        assert_eq!(state.mode, ClientShellMode::Prefix);
+        let outcome = press(&mut state, KeyCode::Char('b'), M::CONTROL);
+        assert!(reaches_pane(&outcome));
+    }
+
+    #[test]
+    fn a_prefix_binding_beside_the_files_runs_without_reaching_the_terminal() {
+        let mut state = terminal_focused();
+        let config: Config =
+            toml::from_str("[keys]\nopen_files = \"prefix+f\"\n").expect("open_files parses");
+        state.config = ClientShellConfig::from_config(&config);
+
+        press(&mut state, KeyCode::Char('b'), M::CONTROL);
+        let outcome = press(&mut state, KeyCode::Char('f'), M::empty());
+
+        assert!(!reaches_pane(&outcome));
+        assert_eq!(state.mode, ClientShellMode::Terminal);
+        assert!(state.files_has_focus());
+    }
+
+    #[test]
+    fn esc_with_nothing_selected_hands_the_keys_to_the_terminal_and_keeps_the_files_shown() {
+        let mut state = composed();
+        state.investigation_mut().unwrap().selected_files =
+            std::iter::once("/repo/a.txt".to_owned()).collect();
+
+        press(&mut state, KeyCode::Esc, M::empty());
+        assert!(state.workbench.files_focused);
+        assert!(state.investigation().unwrap().selected_files.is_empty());
+
+        press(&mut state, KeyCode::Esc, M::empty());
+        assert!(!state.workbench.files_focused);
+        assert!(state.layout(COLS, ROWS).files_region.is_some());
+        assert!(reaches_pane(&press(
+            &mut state,
+            KeyCode::Char('x'),
+            M::empty()
+        )));
+    }
+
+    #[test]
+    fn esc_in_full_screen_leaves_the_workbench_with_the_keys() {
+        let mut state = state();
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        state.compose(COLS, ROWS);
+        press(&mut state, KeyCode::Esc, M::empty());
+        assert!(state.files_has_focus());
+        assert!(!reaches_pane(&press(
+            &mut state,
+            KeyCode::Char('x'),
+            M::empty()
+        )));
+    }
+
+    #[test]
+    fn open_files_focuses_a_region_shown_beside_a_focused_terminal_before_hiding_it() {
+        let mut state = terminal_focused();
+
+        open_files(&mut state);
+        assert!(state.workbench.visible && state.workbench.files_focused);
+
+        open_files(&mut state);
+        assert!(!state.workbench.visible && !state.workbench.files_focused);
+
+        open_files(&mut state);
+        assert!(state.workbench.visible && state.workbench.files_focused);
+    }
+
+    #[test]
+    fn a_press_in_the_files_region_takes_the_keys_back_from_the_terminal() {
+        let mut state = terminal_focused();
+        let files = state.layout(COLS, ROWS).files_region.unwrap();
+        mouse(
+            &mut state,
+            MouseEventKind::ScrollDown,
+            files.x + 2,
+            files.y + 2,
+        );
+        assert!(!state.workbench.files_focused);
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            files.x + 2,
+            files.y + 2,
+        );
+        assert!(state.workbench.files_focused);
+        assert!(!reaches_pane(&press(
+            &mut state,
+            KeyCode::Char('x'),
+            M::empty()
+        )));
+    }
+
+    #[test]
+    fn close_tab_beside_the_files_closes_the_terminal_tab_not_the_investigation() {
+        let mut state = terminal_focused();
+        let mut outcome = ClientShellInput::default();
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::CloseTab),
+            &mut outcome,
+        );
+        assert_eq!(state.workbench.tabs.len(), 1);
+        assert!(state.workbench.visible);
+    }
+
+    #[test]
+    fn help_passing_input_to_the_files_closes_when_a_press_focuses_the_terminal() {
+        let mut state = composed();
+        state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
+            query: TextEditor::default(),
+            search_focused: false,
+            scroll: 0,
+        }));
+        state.compose(COLS, ROWS);
+        let pane = state.layout(COLS, ROWS).pane_surface;
+        let point = (pane.right() - 1, pane.bottom() - 1);
+        assert!(!crate::client::shell::contains(
+            state.hits.help_popup,
+            point
+        ));
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            point.0,
+            point.1,
+        );
+
+        assert!(state.overlay.is_none());
+        assert!(!state.workbench.files_focused);
+    }
+
+    #[test]
+    fn a_text_selection_begun_on_a_terminal_keeps_extending_into_the_files_region() {
+        let mut state = terminal_focused();
+        let pane = state.hits.panes[0].inner_rect;
+        let files = state.layout(COLS, ROWS).files_region.unwrap();
+        let cursor_before = state
+            .investigation()
+            .unwrap()
+            .preview
+            .as_ref()
+            .unwrap()
+            .cursor;
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            pane.x + 2,
+            pane.y,
+        );
+        mouse(
+            &mut state,
+            MouseEventKind::Drag(MouseButton::Left),
+            pane.x + 6,
+            pane.y,
+        );
+        assert!(state.selection.as_ref().is_some_and(|s| s.is_in_progress()));
+        mouse(
+            &mut state,
+            MouseEventKind::Drag(MouseButton::Left),
+            files.x + 2,
+            files.y + 2,
+        );
+        assert!(state.selection.as_ref().is_some_and(|s| s.is_dragging()));
+        mouse(
+            &mut state,
+            MouseEventKind::Up(MouseButton::Left),
+            files.x + 2,
+            files.y + 2,
+        );
+
+        // Finished and, with copy on select, handed to the clipboard.
+        assert!(state.selection.as_ref().is_none_or(|s| s.is_finalized()));
+        assert!(!state.workbench.files_focused);
+        let tab = state.investigation().unwrap();
+        assert_eq!(tab.preview.as_ref().unwrap().cursor, cursor_before);
+    }
+
+    #[test]
+    fn a_drag_begun_in_the_files_region_never_reaches_the_terminals() {
+        let mut state = composed();
+        let pane = state.hits.panes[0].inner_rect;
+        let body = state.investigation_hits.body;
+        assert!(!body.is_empty());
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            body.x + 8,
+            body.y,
+        );
+        let dragged = mouse(
+            &mut state,
+            MouseEventKind::Drag(MouseButton::Left),
+            pane.x + 4,
+            pane.y + 1,
+        );
+        let released = mouse(
+            &mut state,
+            MouseEventKind::Up(MouseButton::Left),
+            pane.x + 4,
+            pane.y + 1,
+        );
+
+        assert!(state.selection.is_none());
+        assert!(!reaches_pane(&dragged) && !reaches_pane(&released));
+        assert!(dragged.actions.is_empty() && released.actions.is_empty());
+        assert!(state.workbench.files_focused);
+        assert!(!state.workbench.files_drag);
+    }
+
+    #[test]
+    fn a_divider_drag_across_the_terminals_starts_no_text_selection() {
+        let mut state = composed();
+        let divider = state.hits.files_divider;
+        let pane = state.hits.panes[0].inner_rect;
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            divider.x,
+            divider.y + 3,
+        );
+        mouse(
+            &mut state,
+            MouseEventKind::Drag(MouseButton::Left),
+            pane.x + 20,
+            pane.y + 3,
+        );
+        mouse(
+            &mut state,
+            MouseEventKind::Up(MouseButton::Left),
+            pane.x + 20,
+            pane.y + 3,
+        );
+
+        assert!(state.selection.is_none());
+        assert!(state.chrome_drag.is_none());
+    }
+
+    #[test]
+    fn with_help_open_a_press_in_the_files_region_focuses_them_whatever_had_the_keys() {
+        let mut state = terminal_focused();
+        state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
+            query: TextEditor::default(),
+            search_focused: false,
+            scroll: 0,
+        }));
+        state.compose(COLS, ROWS);
+        assert!(!state.workbench.files_focused);
+        let files = state.layout(COLS, ROWS).files_region.unwrap();
+        let point = (files.x + 1, files.bottom() - 2);
+        assert!(!crate::client::shell::contains(
+            state.hits.help_popup,
+            point
+        ));
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            point.0,
+            point.1,
+        );
+
+        assert!(state.workbench.files_focused);
+        assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
+        assert!(state.help_passes_input_to_workbench());
+        assert!(!reaches_pane(&press(&mut state, KeyCode::Down, M::empty())));
+    }
+
+    #[test]
+    fn a_press_on_the_terminals_while_a_files_dialog_is_open_keeps_the_dialog_and_the_focus() {
+        let mut state = terminal_focused();
+        state.investigation_menu_action(RENAME, &mut ClientShellInput::default());
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Input { .. })
+        ));
+        state.compose(COLS, ROWS);
+        let pane = state.layout(COLS, ROWS).pane_surface;
+
+        let outcome = mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            pane.right() - 1,
+            pane.bottom() - 1,
+        );
+
+        assert!(!state.workbench.files_focused);
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Input { .. })
+        ));
+        assert!(!reaches_pane(&outcome));
+        assert!(outcome.actions.is_empty());
+    }
+
+    #[test]
+    fn a_right_click_in_the_files_region_opens_the_workbench_menu() {
+        let mut state = composed();
+        let files = state.layout(COLS, ROWS).files_region.unwrap();
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Right),
+            files.x + 2,
+            files.y,
+        );
+
+        assert!(state.overlay.is_none());
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Menu {
+                target: MenuTarget::Tree,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn dragging_the_divider_moves_it_clamps_and_resizes_the_terminals() {
+        let mut state = composed();
+        let whole = whole_surface(&state, COLS, ROWS);
+        let divider = state.hits.files_divider;
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            divider.x,
+            divider.y + 3,
+        );
+        let outcome = mouse(
+            &mut state,
+            MouseEventKind::Drag(MouseButton::Left),
+            whole.x + 50,
+            divider.y + 3,
+        );
+        assert!(outcome.resize);
+        assert_eq!(state.layout(COLS, ROWS).files_divider.x, whole.x + 50);
+
+        mouse(
+            &mut state,
+            MouseEventKind::Drag(MouseButton::Left),
+            whole.right() - 1,
+            divider.y + 3,
+        );
+        assert_eq!(
+            state.layout(COLS, ROWS).pane_surface.width,
+            placement::MIN_TERMINAL_COLS
+        );
+        mouse(
+            &mut state,
+            MouseEventKind::Up(MouseButton::Left),
+            whole.right() - 1,
+            divider.y + 3,
+        );
+        assert!(state.chrome_drag.is_none());
+        assert!(state.investigation().unwrap().dialog.is_none());
+        let saved = state.workbench.tabs[0].placement.expect("ratio saved");
+        assert_eq!(
+            saved.side_permille,
+            Some(state.workbench.placement.side_permille)
+        );
+    }
+
+    #[test]
+    fn a_chosen_dock_is_saved_with_the_workspace_entries() {
+        let mut state = composed();
+        state.investigation_menu_action(DOCK_BOTTOM, &mut ClientShellInput::default());
+        state.investigation_menu_action(SHOW_FULL_SCREEN, &mut ClientShellInput::default());
+
+        let saved = state.persisted_investigations();
+        let placement = saved[0].placement.expect("placement saved");
+        assert_eq!(placement.dock, FilesDock::Bottom);
+        assert_eq!(placement.presentation, FilesPresentation::Full);
+    }
+
+    /// `composed`, with its tab moved to another workspace than the
+    /// focused `ws_1`, shown docked `dock`.
+    fn other_workspace_shown(dock: FilesDock) -> ClientShellState {
+        let mut state = composed();
+        state.workbench.tabs[0].browser.workspace_id = Some("ws_other".into());
+        state.workbench.placement.dock = dock;
+        state.remember_files_placement();
+        state
+    }
+
+    #[test]
+    fn a_workspace_opening_its_first_investigation_starts_from_the_shown_placement() {
+        let mut state = other_workspace_shown(FilesDock::Right);
+
+        state.open_file_viewer_for(Some("ws_1".into()), &mut ClientShellInput::default());
+        let opened = state.workbench.tabs.last().expect("opened tab");
+        assert_eq!(opened.browser.workspace_id.as_deref(), Some("ws_1"));
+        assert_eq!(opened.placement.map(|p| p.dock), Some(FilesDock::Right));
+    }
+
+    #[test]
+    fn restoring_an_entry_in_the_background_keeps_the_shown_placement() {
+        let mut state = other_workspace_shown(FilesDock::Right);
+        let mut sibling = super::state().workbench.tabs.remove(0);
+        sibling.placement = Some(SavedFilesPlacement {
+            dock: FilesDock::Bottom,
+            ..Default::default()
+        });
+        state.workbench.tabs.push(sibling);
+        state.workbench.saved = vec![saved_in("local", "ws_1", "/repo")];
+
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        state.tick_investigation(later, &mut ClientShellInput::default());
+        assert_eq!(state.workbench.tabs.len(), 3, "the entry was restored");
+        assert_eq!(state.workbench.active, Some(0));
+        assert_eq!(state.workbench.placement.dock, FilesDock::Right);
+    }
+
+    #[test]
+    fn a_chosen_dock_reaches_pending_entries_of_the_workspace() {
+        let mut state = composed();
+        state.workbench.saved = vec![
+            saved_in("local", "ws_1", "/repo"),
+            saved_in("local", "ws_other", "/other"),
+        ];
+        state.investigation_menu_action(DOCK_BOTTOM, &mut ClientShellInput::default());
+        assert_eq!(
+            state.workbench.saved[0].placement.map(|p| p.dock),
+            Some(FilesDock::Bottom)
+        );
+        assert_eq!(state.workbench.saved[1].placement, None);
+
+        state.remove_investigation(0);
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        state.tick_investigation(later, &mut ClientShellInput::default());
+        assert_eq!(state.workbench.tabs.len(), 1, "the entry was restored");
+        assert!(state.toggle_investigation(&mut ClientShellInput::default()));
+        assert_eq!(state.workbench.placement.dock, FilesDock::Bottom);
+    }
+
+    #[test]
+    fn showing_a_tab_shows_its_workspace_placement() {
+        let mut state = composed();
+        state.hide_files();
+        state.workbench.tabs[0].placement = Some(SavedFilesPlacement {
+            dock: FilesDock::Bottom,
+            ..Default::default()
+        });
+
+        state.show_files(0);
+        assert_eq!(state.workbench.placement.dock, FilesDock::Bottom);
+        assert_eq!(
+            state.workbench.placement.presentation,
+            FilesPresentation::Split
+        );
+    }
+
+    #[test]
+    fn the_tree_menu_offers_the_other_presentation_and_docks() {
+        let labels = MenuTarget::Tree.labels(false, FilesPresentation::Split, FilesDock::Left);
+        assert!(labels.contains(&SHOW_FULL_SCREEN));
+        assert!(!labels.contains(&SHOW_SPLIT));
+        assert!(labels.contains(&DOCK_RIGHT) && labels.contains(&DOCK_BOTTOM));
+        assert!(!labels.contains(&DOCK_LEFT));
+
+        let labels = MenuTarget::Tree.labels(false, FilesPresentation::Full, FilesDock::Bottom);
+        assert!(labels.contains(&SHOW_SPLIT));
+        assert!(!labels.contains(&SHOW_FULL_SCREEN));
+        assert!(labels.contains(&DOCK_LEFT) && labels.contains(&DOCK_RIGHT));
+        assert!(!labels.contains(&DOCK_BOTTOM));
+    }
+
+    #[test]
+    fn menu_items_switch_presentation_and_dock() {
+        let mut state = composed();
+        let mut outcome = ClientShellInput::default();
+        state.investigation_menu_action(DOCK_BOTTOM, &mut outcome);
+        assert_eq!(state.workbench.placement.dock, FilesDock::Bottom);
+        assert!(outcome.repaint);
+
+        state.investigation_menu_action(SHOW_FULL_SCREEN, &mut outcome);
+        assert_eq!(
+            state.workbench.placement.presentation,
+            FilesPresentation::Full
+        );
+        state.investigation_menu_action(DOCK_RIGHT, &mut outcome);
+        assert_eq!(state.workbench.placement.dock, FilesDock::Right);
+        assert_eq!(
+            state.workbench.placement.presentation,
+            FilesPresentation::Split
+        );
+        state.investigation_menu_action(SHOW_FULL_SCREEN, &mut outcome);
+        state.investigation_menu_action(SHOW_SPLIT, &mut outcome);
+        assert_eq!(
+            state.workbench.placement.presentation,
+            FilesPresentation::Split
+        );
+    }
+
+    #[test]
+    fn choosing_full_screen_from_the_menu_resizes_the_terminals() {
+        let mut state = composed();
+        let files = state.layout(COLS, ROWS).files_region.unwrap();
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Right),
+            files.x + 2,
+            files.y,
+        );
+        state.compose(COLS, ROWS);
+        let labels = MenuTarget::Tree.labels(false, FilesPresentation::Split, FilesDock::Left);
+        let item = labels.iter().position(|l| *l == SHOW_FULL_SCREEN).unwrap();
+        let (row, _) = *state
+            .investigation_hits
+            .menu
+            .iter()
+            .find(|(_, index)| *index == item)
+            .expect("full screen item drawn");
+
+        let outcome = mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            row.x + 1,
+            row.y,
+        );
+
+        assert!(outcome.resize);
+        assert!(state.investigation_full_screen());
+    }
+
+    #[test]
+    fn moving_the_dock_with_the_same_terminal_size_repaints_without_resizing() {
+        let mut state = composed();
+        let files = state.layout(COLS, ROWS).files_region.unwrap();
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Right),
+            files.x + 2,
+            files.y,
+        );
+        state.compose(COLS, ROWS);
+        let labels = MenuTarget::Tree.labels(false, FilesPresentation::Split, FilesDock::Left);
+        let item = labels.iter().position(|l| *l == DOCK_RIGHT).unwrap();
+        let (row, _) = *state
+            .investigation_hits
+            .menu
+            .iter()
+            .find(|(_, index)| *index == item)
+            .expect("dock right item drawn");
+
+        let outcome = mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            row.x + 1,
+            row.y,
+        );
+
+        assert!(outcome.repaint);
+        assert!(!outcome.resize);
+        assert_eq!(state.workbench.placement.dock, FilesDock::Right);
+    }
+
+    #[test]
+    fn split_never_pauses_the_terminal_stream_but_full_screen_does() {
+        let mut state = state();
+        state.workbench.placement.presentation = FilesPresentation::Split;
+        let mut out = ClientShellInput::default();
+        state.reconcile_investigation_surface(7, "boot-1", true, false, &mut out);
+        assert!(state.file_surface_pause().is_none());
+
+        state.workbench.placement.presentation = FilesPresentation::Full;
+        state.reconcile_investigation_surface(7, "boot-1", true, false, &mut out);
+        assert!(state.file_surface_pause().is_some());
+    }
+
+    #[test]
+    fn a_choice_of_split_ignores_an_earlier_narrow_fallback() {
+        let mut state = state();
+        state.config.mobile_width_threshold = 0;
+        state.workbench.placement.presentation = FilesPresentation::Split;
+        let sidebar = whole_surface(&state, COLS, ROWS).x;
+        let fits = sidebar + placement::MIN_TERMINAL_COLS + placement::MIN_FILES_COLS + 1;
+        state.compose(fits - 1, ROWS);
+        assert!(state.workbench.placement.narrow());
+        let mut outcome = ClientShellInput::default();
+        state.investigation_menu_action(SHOW_FULL_SCREEN, &mut outcome);
+        state.investigation_menu_action(SHOW_SPLIT, &mut outcome);
+        assert!(state.layout(fits, ROWS).files_region.is_some());
+    }
+}
+
+mod split_patches {
+    use super::*;
+
+    fn patch() -> crate::protocol::PaneSurfacePatch {
+        let surface = crate::client::shell::tests::surface();
+        let mut pane = surface.panes[0].clone();
+        pane.content_revision += 1;
+        crate::protocol::PaneSurfacePatch {
+            boot_id: "boot-1".into(),
+            projection_revision: 1,
+            base_surface_revision: surface.surface_revision,
+            surface_revision: surface.surface_revision + 1,
+            rows: vec![crate::protocol::PaneSurfacePatchRow {
+                x: 0,
+                y: 0,
+                cells: vec![surface.frame.cells[0].clone()],
+            }],
+            panes: vec![pane],
+            cursor: None,
+        }
+    }
+
+    /// The test surface resized to the terminal side, as the server sends
+    /// once it has followed the dock.
+    fn docked_surface(state: &ClientShellState) -> crate::protocol::PaneSurfaceFrame {
+        let mut surface = crate::client::shell::tests::surface();
+        let area = state.layout(160, 32).pane_surface;
+        let buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, area.width, area.height));
+        surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
+        surface
+    }
+
+    #[test]
+    fn terminal_output_beside_the_focused_files_keeps_the_files_cursor() {
+        let mut state = state();
+        state.workbench.placement.presentation = FilesPresentation::Split;
+        state.remember_files_placement();
+        state.show_files(0);
+        state.investigation_mut().unwrap().focus = Focus::Paths;
+        state.set_pane_surface(docked_surface(&state));
+        let frame = state.compose(160, 32).expect("composed split").frame;
+        assert!(state.investigation_hits.docked);
+        assert!(frame.cursor.is_some());
+
+        let mut terminal_cursor = patch();
+        terminal_cursor.cursor = Some(crate::protocol::CursorState {
+            x: 0,
+            y: 0,
+            visible: true,
+            shape: Default::default(),
+        });
+        let ClientPaneSurfacePatchOutcome::Applied(Some(applied)) =
+            state.apply_pane_surface_patch(terminal_cursor)
+        else {
+            panic!("patch fell back to a recompose");
+        };
+        assert_eq!(applied.cursor, frame.cursor);
+    }
+
+    #[test]
+    fn terminal_output_beside_unfocused_files_shows_the_terminal_cursor() {
+        let mut state = state();
+        state.workbench.placement.presentation = FilesPresentation::Split;
+        state.set_pane_surface(docked_surface(&state));
+        state.compose(160, 32).expect("composed split");
+        let terminal = state.layout(160, 32).pane_surface;
+
+        let mut terminal_cursor = patch();
+        terminal_cursor.cursor = Some(crate::protocol::CursorState {
+            x: 1,
+            y: 0,
+            visible: true,
+            shape: Default::default(),
+        });
+        let ClientPaneSurfacePatchOutcome::Applied(Some(applied)) =
+            state.apply_pane_surface_patch(terminal_cursor)
+        else {
+            panic!("patch fell back to a recompose");
+        };
+        assert_eq!(applied.cursor.map(|c| c.x), Some(terminal.x + 1));
     }
 }

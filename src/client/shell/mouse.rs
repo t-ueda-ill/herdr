@@ -679,13 +679,114 @@ impl ClientShellState {
     /// Whether a pointer event outside the keybinds popup belongs to the
     /// workbench behind it. Events inside the popup, and a scrollbar drag
     /// that began there, stay with Help.
+    ///
+    /// Why a press in the docked files region passes without files focus,
+    /// unlike keys: the press itself says where the reader is working.
     fn help_mouse_passes_to_workbench(&self, mouse: MouseEvent) -> bool {
-        self.help_passes_input_to_workbench()
+        let point = (mouse.column, mouse.row);
+        let press_in_files = matches!(mouse.kind, MouseEventKind::Down(_))
+            && self.investigation_active()
+            && self.investigation_hits.docked
+            && super::contains(self.investigation_hits.region, point);
+        self.help_open_without_search()
+            && (self.files_has_focus() || press_in_files)
             && !matches!(
                 self.chrome_drag,
                 Some(ClientChromeDrag::HelpScrollbar { .. })
             )
-            && !super::contains(self.hits.help_popup, (mouse.column, mouse.row))
+            && !super::contains(self.hits.help_popup, point)
+    }
+
+    /// A drag or release that belongs to a gesture begun outside the files
+    /// region: on a pane, its scrollbar or split, or other chrome. Why by
+    /// gesture rather than pointer: a text selection crossing into the
+    /// files region must keep extending and finish where it started.
+    fn outside_gesture_in_progress(&self, mouse: MouseEvent) -> bool {
+        matches!(mouse.kind, MouseEventKind::Drag(_) | MouseEventKind::Up(_))
+            && (self.pane_mouse_gesture.is_some()
+                || self
+                    .word_selection_gesture
+                    .as_ref()
+                    .is_some_and(|gesture| !gesture.released)
+                || self
+                    .selection
+                    .as_ref()
+                    .is_some_and(crate::selection::Selection::is_in_progress)
+                || self
+                    .chrome_drag
+                    .as_ref()
+                    .is_some_and(|drag| !matches!(drag, ClientChromeDrag::FilesDivider)))
+    }
+
+    /// Drags the line between the docked files region and the terminals.
+    ///
+    /// Why before the workbench handler: a drag crossing into the files
+    /// region would otherwise select preview text instead of resizing.
+    fn handle_files_divider_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let dragging = matches!(self.chrome_drag, Some(ClientChromeDrag::FilesDivider));
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left)
+                if super::contains(self.hits.files_divider, (mouse.column, mouse.row)) =>
+            {
+                self.chrome_drag = Some(ClientChromeDrag::FilesDivider);
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) if dragging => {
+                self.move_files_divider(mouse.column, mouse.row, outcome);
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) if dragging => {
+                self.chrome_drag = None;
+                // Why on release only: each drag step would rewrite the
+                // preferences file.
+                self.remember_files_placement();
+                self.persist_chrome_preferences(outcome);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn move_files_divider(&mut self, column: u16, row: u16, outcome: &mut ClientShellInput) {
+        let Some((cols, rows)) = self.last_composed_size else {
+            return;
+        };
+        let layout = self.layout(cols, rows);
+        let Some(files) = layout.files_region else {
+            return;
+        };
+        let surface = files.union(layout.files_divider).union(layout.pane_surface);
+        if self.workbench.placement.drag_to(surface, column, row) {
+            outcome.repaint = true;
+            outcome.resize = true;
+        }
+    }
+
+    /// A press on the terminals beside a docked files region gives them the
+    /// keys back (Q9b). Why not left to the PaneFocus request: a press on
+    /// the pane that already has focus, or one forwarded to a mouse-reporting
+    /// program, sends none.
+    fn focus_terminal_side_on_press(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
+        if !self.workbench.files_focused
+            || !self.investigation_hits.docked
+            || !matches!(mouse.kind, MouseEventKind::Down(_))
+        {
+            return;
+        }
+        let Some((cols, rows)) = self.last_composed_size else {
+            return;
+        };
+        if super::contains(
+            self.layout(cols, rows).pane_surface,
+            (mouse.column, mouse.row),
+        ) {
+            self.show_terminal_side();
+            outcome.repaint = true;
+        }
     }
 
     /// Routes mouse input through overlays, shell controls, and pane interactions.
@@ -705,16 +806,27 @@ impl ClientShellState {
         // input through, so the decision cannot be read again afterwards.
         let help_passthrough = self.overlay.is_some() && self.help_mouse_passes_to_workbench(mouse);
         if self.overlay.is_none() || help_passthrough {
-            let workbench_was_visible = self.workbench.visible;
-            if self.handle_investigation_mouse(mouse, outcome) {
+            if self.handle_files_divider_mouse(mouse, outcome) {
                 return;
             }
+            let files_had_focus = self.files_has_focus();
+            if !self.outside_gesture_in_progress(mouse)
+                && self.handle_investigation_mouse(mouse, outcome)
+            {
+                return;
+            }
+            self.focus_terminal_side_on_press(mouse, outcome);
             // Why not leave Help to its outside-click branch: that branch
             // returns early, so a terminal tab press would never be recorded
             // and its release would send no TabFocus.
-            if help_passthrough && workbench_was_visible && !self.workbench.visible {
+            if help_passthrough && files_had_focus && !self.files_has_focus() {
                 self.overlay = None;
             }
+        }
+        // Why here too: a release the workbench never saw, once it was
+        // hidden or covered mid-drag, must not leave the next drag owned.
+        if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+            self.workbench.files_drag = false;
         }
         self.update_link_hover(mouse, outcome);
         let point = (mouse.column, mouse.row);
@@ -1061,6 +1173,8 @@ impl ClientShellState {
                     self.set_sidebar_width_from_column(mouse.column, outcome);
                     return;
                 }
+                // Moved by `handle_files_divider_mouse` before any other handler.
+                Some(ClientChromeDrag::FilesDivider) => return,
                 Some(ClientChromeDrag::SidebarSection) => {
                     self.set_sidebar_section_from_row(mouse.row, outcome);
                     return;
@@ -1392,7 +1506,9 @@ impl ClientShellState {
                             );
                         }
                     }
-                    ClientChromeDrag::SidebarWidth | ClientChromeDrag::SidebarSection => {
+                    ClientChromeDrag::SidebarWidth
+                    | ClientChromeDrag::SidebarSection
+                    | ClientChromeDrag::FilesDivider => {
                         self.persist_chrome_preferences(outcome);
                     }
                     ClientChromeDrag::WorkspaceScrollbar { .. }
@@ -1418,63 +1534,7 @@ impl ClientShellState {
                 return;
             }
         }
-        if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
-            let row_hit = self
-                .hits
-                .global_menu_rows
-                .iter()
-                .find(|(rect, _)| super::contains(*rect, point))
-                .copied();
-            match mouse.kind {
-                MouseEventKind::Moved => {
-                    if let (Some((_, index)), Some(ClientShellOverlay::GlobalMenu(menu))) =
-                        (row_hit, self.overlay.as_mut())
-                    {
-                        menu.highlighted = index;
-                        outcome.repaint = true;
-                    }
-                }
-                MouseEventKind::Down(MouseButton::Left) => {
-                    if super::contains(self.hits.global_launcher, point) {
-                        self.toggle_global_menu();
-                        outcome.repaint = true;
-                    } else if let Some((_, index)) = row_hit {
-                        self.activate_global_menu_item(index, outcome);
-                    } else {
-                        self.overlay = None;
-                        outcome.repaint = true;
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
-        if matches!(self.overlay, Some(ClientShellOverlay::ContextMenu(_))) {
-            let row_hit = self
-                .hits
-                .context_menu_rows
-                .iter()
-                .find(|(rect, _)| super::contains(*rect, point))
-                .copied();
-            match mouse.kind {
-                MouseEventKind::Moved => {
-                    if let (Some((_, index)), Some(ClientShellOverlay::ContextMenu(menu))) =
-                        (row_hit, self.overlay.as_mut())
-                    {
-                        menu.highlighted = index;
-                        outcome.repaint = true;
-                    }
-                }
-                MouseEventKind::Down(MouseButton::Left) => {
-                    if let Some((_, index)) = row_hit {
-                        self.activate_context_menu_item(index, outcome);
-                    } else {
-                        self.overlay = None;
-                        outcome.repaint = true;
-                    }
-                }
-                _ => {}
-            }
+        if self.route_popup_menu_mouse(mouse.kind, point, outcome) {
             return;
         }
         if matches!(
@@ -2159,12 +2219,8 @@ impl ClientShellState {
                     return;
                 }
                 if super::contains(self.hits.new_workspace, point) {
-                    self.record_binding(
-                        crate::input::KeybindMatch::Action(
-                            crate::input::KeybindAction::NewWorkspace,
-                        ),
-                        outcome,
-                    );
+                    self.open_new_workspace_menu();
+                    outcome.repaint = true;
                     return;
                 }
                 if super::contains(self.hits.new_tab, point) {

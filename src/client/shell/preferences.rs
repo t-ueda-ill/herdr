@@ -32,6 +32,12 @@ pub(super) struct ClientChromePreferences {
     pub(super) remote_collapsed_groups: Vec<ClientRemoteCollapsedGroups>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) open_picker: Option<ClientOpenPickerPreferences>,
+    #[serde(
+        default,
+        deserialize_with = "super::investigation::lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(super) files_placement: Option<super::investigation::SavedFilesPlacement>,
 }
 
 /// Favorites and successful opens of the ssh host, container host and
@@ -153,6 +159,18 @@ mod tests {
 
         assert_eq!(preferences.sidebar_width, Some(30));
         assert_eq!(preferences.open_picker, None);
+    }
+
+    #[test]
+    fn an_unreadable_files_placement_loads_as_absent_and_keeps_the_rest() {
+        let preferences: ClientChromePreferences = serde_json::from_str(
+            r#"{"sidebar_width":30,"files_placement":"left","investigations":[{"endpoint":"local","workspace":"ws_1","root":"/r","files":[],"active_file":null,"horizontal":false,"query":"","include":"","exclude":"","regex":false,"case_sensitive":false,"whole_word":false,"ignored":false,"content_search":false}]}"#,
+        )
+        .expect("client chrome preferences with an unknown files placement");
+
+        assert_eq!(preferences.files_placement, None);
+        assert_eq!(preferences.sidebar_width, Some(30));
+        assert_eq!(preferences.investigations.len(), 1);
     }
 
     #[test]

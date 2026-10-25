@@ -92,7 +92,7 @@ fn push_host_theme_update(
 
 impl ClientShellState {
     pub(crate) fn host_keyboard_report_all_requested(&self) -> bool {
-        self.investigation_active()
+        self.files_has_focus()
             || matches!(
                 self.mode,
                 ClientShellMode::Prefix | ClientShellMode::Navigate
@@ -121,7 +121,7 @@ impl ClientShellState {
             || key.kind != KeyEventKind::Press
             || self.mode != ClientShellMode::Terminal
             || self.overlay.is_some()
-            || self.investigation_active()
+            || self.files_has_focus()
         {
             return None;
         }
@@ -200,13 +200,18 @@ impl ClientShellState {
     /// the reader is looking at the keys while moving through the tree, so
     /// only the search field, which needs the typed text, keeps the overlay.
     pub(super) fn help_passes_input_to_workbench(&self) -> bool {
+        self.help_open_without_search() && self.files_has_focus()
+    }
+
+    /// Help is open and its filter does not hold the keys.
+    pub(super) fn help_open_without_search(&self) -> bool {
         matches!(
             self.overlay,
             Some(ClientShellOverlay::Help(ClientHelpOverlay {
                 search_focused: false,
                 ..
             }))
-        ) && self.investigation_active()
+        )
     }
 
     /// Why not leave Help open: it is composed after the workbench, so a
@@ -230,8 +235,7 @@ impl ClientShellState {
     }
 
     fn workbench_takes_text(&self) -> bool {
-        (self.overlay.is_none() || self.help_passes_input_to_workbench())
-            && self.investigation_active()
+        (self.overlay.is_none() || self.help_passes_input_to_workbench()) && self.files_has_focus()
     }
 
     fn prepare_committed_text(&mut self, text: &str, outcome: &mut ClientShellInput) -> bool {
@@ -269,6 +273,7 @@ impl ClientShellState {
 
     pub(crate) fn handle_raw_events(&mut self, events: Vec<RawInputEvent>) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
+        let surface_before = self.composed_surface_size();
         if !events.is_empty() && self.endpoint_error.take().is_some() {
             self.endpoint_error_deadline = None;
             outcome.repaint = true;
@@ -443,6 +448,7 @@ impl ClientShellState {
             self.reconcile_input_source();
         }
         outcome.repaint |= self.resume_mobile_switcher_if_ready();
+        self.request_resize_if_surface_changed(surface_before, &mut outcome);
         outcome
     }
 
@@ -691,7 +697,7 @@ impl ClientShellState {
         key: &crate::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) -> Option<ClientInputTarget> {
-        if !self.investigation_active()
+        if !self.files_has_focus()
             && self.handle_modal_paste_shortcut_with(
                 key,
                 outcome,
@@ -743,7 +749,7 @@ impl ClientShellState {
         if matches!(key.code, KeyCode::Modifier(_)) {
             return None;
         }
-        if self.investigation_active() && self.mode != ClientShellMode::Prefix {
+        if self.files_has_focus() && self.mode != ClientShellMode::Prefix {
             if let Some(binding) =
                 crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
             {
@@ -797,7 +803,7 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return None;
                 }
-                if self.investigation_active() {
+                if self.files_has_focus() {
                     self.route_investigation_key(key, outcome);
                     return None;
                 }
@@ -814,7 +820,7 @@ impl ClientShellState {
                 if self.config.keybinds.matches_prefix(key) {
                     self.mode = return_mode;
                     outcome.repaint = true;
-                    if self.investigation_active() {
+                    if self.files_has_focus() {
                         return None;
                     }
                     return self.focused_pane_id().map(ClientInputTarget::Pane);
@@ -1234,9 +1240,9 @@ impl ClientShellState {
         {
             return None;
         }
-        // The workbench covers the panes and takes their pastes; a drop
-        // there must not reach the pane hidden behind it.
-        if self.overlay.is_none() && self.investigation_active() {
+        // The focused workbench takes pastes; a drop there must not reach
+        // the pane hidden behind it, or beside it while the files have focus.
+        if self.overlay.is_none() && self.files_has_focus() {
             return None;
         }
         if let Some(terminal_id) = self.popup_input_target().and_then(|target| match target {

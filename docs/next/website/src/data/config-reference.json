@@ -539,7 +539,7 @@
           "key": "keys.open_files",
           "type": "keybinding",
           "default": "unset",
-          "description": "Browse files from the focused pane's working directory and send a path to it. Unset by default."
+          "description": "Browse files from the focused pane's working directory and send a path to it. The files open beside the terminals, or full screen when chosen from their right-click menu. When the files are hidden, pressing it shows them and gives them the keys; when they are shown beside a terminal that has the keys, it gives the files the keys; otherwise it hides them. Unset by default."
         },
         {
           "key": "keys.rename_workspace",

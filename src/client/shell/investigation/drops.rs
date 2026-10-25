@@ -45,7 +45,10 @@ impl ClientShellState {
     /// Where a drop onto the shown tree would go, or `None` when the tree is
     /// not what receives pastes (a text field, a dialog, search results).
     pub(crate) fn workbench_drop_target(&self) -> Option<WorkbenchDropTarget> {
-        if self.overlay.is_some() {
+        // Why focus rather than the pointer: a drop arrives as pasted text
+        // with no position, so beside a focused terminal it is the
+        // terminal's, like any other paste.
+        if self.overlay.is_some() || !self.files_has_focus() {
             return None;
         }
         let tab = self.investigation()?;

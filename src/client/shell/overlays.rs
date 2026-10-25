@@ -2,6 +2,7 @@ use super::*;
 
 mod file_viewer_overlay;
 mod list_picker_overlay;
+pub(in crate::client::shell) mod menu_widget;
 mod open_picker_overlays;
 mod settings_overlay;
 mod worktree_overlays;
@@ -10,6 +11,7 @@ mod worktree_overlays;
 pub(crate) struct OverlayRender {
     pub(crate) area: Rect,
     pub(crate) menu_rows: Vec<(Rect, usize)>,
+    pub(crate) menu_scroll: usize,
     pub(crate) primary: Rect,
     pub(crate) clear: Rect,
     pub(crate) cancel: Rect,
@@ -58,6 +60,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::Navigator(_)
             | ClientShellOverlay::ContextMenu(_)
             | ClientShellOverlay::GlobalMenu(_)
+            | ClientShellOverlay::NewWorkspaceMenu(_)
     ) {
         for y in b.area.y..b.area.bottom() {
             for x in b.area.x..b.area.right() {
@@ -101,7 +104,9 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::FileViewer(v) => {
             file_viewer_overlay::render_file_viewer_overlay(b, v, p)
         }
-        ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
+        ClientShellOverlay::ContextMenu(_)
+        | ClientShellOverlay::GlobalMenu(_)
+        | ClientShellOverlay::NewWorkspaceMenu(_) => None,
     }
 }
 
@@ -112,74 +117,44 @@ pub(crate) fn render_global_menu(
     snapshot: &ClientShellSnapshot,
     palette: &Palette,
 ) -> Option<OverlayRender> {
-    let items = super::super::global_menu::global_menu_items(snapshot);
-    let screen = buffer.area;
-    let width = items
-        .iter()
-        .map(|(label, action)| {
-            display_width(label)
-                + u16::from(super::super::global_menu::global_menu_item_has_badge(
-                    snapshot, *action,
-                )) * 2
-        })
-        .max()
-        .unwrap_or(8)
-        .saturating_add(4)
-        .min(screen.width.max(1));
-    let height = (items.len() as u16)
-        .saturating_add(2)
-        .min(screen.height.max(1));
-    let x = launcher
-        .right()
-        .saturating_sub(width)
-        .min(screen.right().saturating_sub(width));
-    let y = launcher.y.saturating_sub(height).max(screen.y);
-    let rect = Rect::new(x, y, width, height);
-    let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
-    let mut rows = Vec::new();
-    for (index, (label, action)) in items.iter().enumerate() {
-        let row_y = inner.y.saturating_add(index as u16);
-        if row_y >= inner.bottom() {
-            break;
-        }
-        let row = Rect::new(inner.x, row_y, inner.width, 1);
-        let highlighted = index == menu.highlighted;
-        let style = if highlighted {
-            Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(palette.text).bg(palette.panel_bg)
-        };
-        buffer.set_style(row, style);
-        let has_badge = super::super::global_menu::global_menu_item_has_badge(snapshot, *action);
-        if has_badge {
-            let badge_style = if highlighted {
-                style
-            } else {
-                Style::default()
-                    .fg(palette.accent)
-                    .bg(palette.panel_bg)
-                    .add_modifier(Modifier::BOLD)
-            };
-            put_text(buffer, row.x, row.y, row.width.min(2), " ●", badge_style);
-            put_text(
-                buffer,
-                row.x.saturating_add(2),
-                row.y,
-                row.width.saturating_sub(2),
-                &format!(" {label}"),
-                style,
-            );
-        } else {
-            put_text(buffer, row.x, row.y, row.width, &format!(" {label}"), style);
-        }
-        rows.push((row, index));
-    }
+    let items = super::super::global_menu::global_menu_entries(snapshot);
+    let rendered = menu_widget::render_menu(
+        buffer,
+        &items,
+        menu_widget::MenuAnchor::AboveRightAligned(launcher),
+        super::super::global_menu::GLOBAL_MENU_LOOK,
+        Some(menu.highlighted),
+        menu.scroll,
+        palette,
+    )?;
     Some(OverlayRender {
-        area: rect,
-        menu_rows: rows,
+        area: rendered.area,
+        menu_rows: rendered.rows,
+        menu_scroll: rendered.scroll,
+        ..OverlayRender::default()
+    })
+}
+
+pub(crate) fn render_new_workspace_menu(
+    buffer: &mut Buffer,
+    footer: Rect,
+    menu: &ClientNewWorkspaceMenuOverlay,
+    items: &[menu_widget::MenuItem<'_>],
+    palette: &Palette,
+) -> Option<OverlayRender> {
+    let rendered = menu_widget::render_menu(
+        buffer,
+        items,
+        menu_widget::MenuAnchor::AboveLeftAligned(footer),
+        super::super::new_workspace_menu::NEW_WORKSPACE_MENU_LOOK,
+        menu.highlighted,
+        menu.scroll,
+        palette,
+    )?;
+    Some(OverlayRender {
+        area: rendered.area,
+        menu_rows: rendered.rows,
+        menu_scroll: rendered.scroll,
         ..OverlayRender::default()
     })
 }
@@ -189,53 +164,22 @@ pub(crate) fn render_context_menu(
     menu: &ClientContextMenuOverlay,
     palette: &Palette,
 ) -> Option<OverlayRender> {
-    let items = menu.items();
-    let screen = buffer.area;
-    let max_item_width = items
-        .iter()
-        .map(|item| display_width(item.label))
-        .max()
-        .unwrap_or(0);
-    let width = max_item_width
-        .saturating_add(4)
-        .max(14)
-        .min(screen.width.max(1));
-    let height = (items.len() as u16)
-        .saturating_add(2)
-        .min(screen.height.max(1));
-    let x = menu
-        .x
-        .min(screen.x.saturating_add(screen.width.saturating_sub(width)));
-    let y = menu.y.min(
-        screen
-            .y
-            .saturating_add(screen.height.saturating_sub(height)),
-    );
-    let rect = Rect::new(x, y, width, height);
-    let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
-    let mut rows = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        let row_y = inner.y.saturating_add(index as u16);
-        if row_y >= inner.bottom() {
-            break;
-        }
-        let row = Rect::new(inner.x, row_y, inner.width, 1);
-        let highlighted = index == menu.highlighted;
-        let style = if highlighted {
-            Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(palette.text).bg(palette.panel_bg)
-        };
-        buffer.set_style(row, style);
-        put_text(buffer, row.x, row.y, row.width, item.label, style);
-        rows.push((row, index));
-    }
+    let rendered = menu_widget::render_menu(
+        buffer,
+        &menu.menu_items(),
+        menu_widget::MenuAnchor::TopLeft {
+            x: menu.x,
+            y: menu.y,
+        },
+        super::super::context_menu::CONTEXT_MENU_LOOK,
+        Some(menu.highlighted),
+        menu.scroll,
+        palette,
+    )?;
     Some(OverlayRender {
-        area: rect,
-        menu_rows: rows,
+        area: rendered.area,
+        menu_rows: rendered.rows,
+        menu_scroll: rendered.scroll,
         ..OverlayRender::default()
     })
 }

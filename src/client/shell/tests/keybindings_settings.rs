@@ -80,6 +80,16 @@ fn shell_new_controls_use_the_same_client_action_routes_as_keybinds() {
             row: new_workspace.y,
             modifiers: KeyModifiers::empty(),
         })]);
+    assert!(create_workspace.actions.is_empty());
+    state.compose(106, 20).expect("new workspace chooser");
+    let (local, _) = state.hits.new_workspace_menu_rows[0];
+    let create_workspace =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: local.x + 1,
+            row: local.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
     let [ClientShellAction::Endpoint { request, .. }] = &create_workspace.actions[..] else {
         panic!("new workspace click should use the endpoint API");
     };

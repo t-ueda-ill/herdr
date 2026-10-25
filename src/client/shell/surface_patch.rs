@@ -80,6 +80,8 @@ fn fast_path_blocker(
         Some("client_surface_patch.fallback.copy_mode")
     } else if state.selection_highlight_clear_deadline.is_some() {
         Some("client_surface_patch.fallback.selection_deadline")
+    } else if state.docked_files_block_patch() {
+        Some("client_surface_patch.fallback.files_region")
     } else if patch.panes.iter().any(|pane| {
         !state
             .hits
@@ -106,6 +108,42 @@ fn pane_geometry_matches(
 }
 
 impl ClientShellState {
+    /// Whether a patch drawn straight onto the terminals beside a docked
+    /// files region could damage it: a workbench menu may reach over the
+    /// terminals, and a surface still sized for before the dock changed
+    /// would spill into it. The files cursor is kept by `patch_cursor`.
+    fn docked_files_block_patch(&self) -> bool {
+        if !self.investigation_hits.docked {
+            return false;
+        }
+        let stale_geometry = match (self.pane_surface.as_ref(), self.last_composed_size) {
+            (Some(surface), Some((cols, rows))) => {
+                let area = self.layout(cols, rows).pane_surface;
+                (surface.frame.width, surface.frame.height) != (area.width, area.height)
+            }
+            _ => true,
+        };
+        stale_geometry || self.investigation().is_some_and(|tab| tab.dialog.is_some())
+    }
+
+    /// The cursor a patched frame shows: the files cursor while the docked
+    /// files region has focus, else the terminal's, placed in `area`.
+    fn patch_cursor(
+        &self,
+        cursor: Option<&crate::protocol::CursorState>,
+        area: Rect,
+    ) -> Option<crate::protocol::CursorState> {
+        if self.investigation_hits.docked && self.workbench.files_focused {
+            return self.investigation_hits.focused_cursor.clone();
+        }
+        cursor.map(|cursor| crate::protocol::CursorState {
+            x: area.x.saturating_add(cursor.x),
+            y: area.y.saturating_add(cursor.y),
+            visible: cursor.visible,
+            shape: cursor.shape,
+        })
+    }
+
     pub(crate) fn apply_pane_surface_patch(
         &mut self,
         patch: crate::protocol::PaneSurfacePatch,
@@ -186,15 +224,7 @@ impl ClientShellState {
                     cells: row.cells.clone(),
                 })
                 .collect(),
-            cursor: patch
-                .cursor
-                .clone()
-                .map(|cursor| crate::protocol::CursorState {
-                    x: area.x.saturating_add(cursor.x),
-                    y: area.y.saturating_add(cursor.y),
-                    visible: cursor.visible,
-                    shape: cursor.shape,
-                }),
+            cursor: self.patch_cursor(patch.cursor.as_ref(), area),
         });
         if let Some(area) = fast_path_area {
             let applied = self

@@ -397,6 +397,7 @@ fn global_menu_offers_open_container_before_open_ssh_host() {
     let mut state = shell_state();
     state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
         highlighted: container,
+        scroll: 0,
     }));
     let prepare = state.handle_input_bytes(b"\r");
     assert!(matches!(

@@ -1,3 +1,4 @@
+use super::super::render::menu_widget;
 use super::*;
 use crate::api::schema::*;
 use crossterm::event::{KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind};
@@ -36,6 +37,7 @@ impl ClientShellState {
         let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
         let ctrl = modifiers.contains(M::CONTROL);
         let shift = modifiers.contains(M::SHIFT);
+        let docked = !self.investigation_full_screen();
         let Some(tab) = self.investigation_mut() else {
             return;
         };
@@ -44,28 +46,28 @@ impl ClientShellState {
             return;
         }
         if code == KeyCode::F(10) || code == KeyCode::Char('m') && modifiers == M::ALT {
-            tab.dialog = Some(Dialog::Menu {
-                selected: 0,
-                scroll: 0,
-            });
+            tab.dialog = Some(Dialog::menu(
+                tab.selection_menu_target(),
+                MenuPlacement::Selection,
+            ));
             return;
         }
         if code == KeyCode::F(5) {
-            self.investigation_menu_action(23, outcome);
+            self.investigation_menu_action(REFRESH_FILES, outcome);
             return;
         }
         if code == KeyCode::F(2) {
-            self.investigation_menu_action(9, outcome);
+            self.investigation_menu_action(RENAME, outcome);
             return;
         }
         if code == KeyCode::Delete && tab.focus == Focus::Results {
-            self.investigation_menu_action(12, outcome);
+            self.investigation_menu_action(TRASH, outcome);
             return;
         }
         if ctrl {
             match code {
                 KeyCode::Char('e') => {
-                    self.investigation_menu_action(5, outcome);
+                    self.investigation_menu_action(EDIT_FILE, outcome);
                     return;
                 }
                 KeyCode::Char('p') => {
@@ -274,15 +276,15 @@ impl ClientShellState {
         if ctrl {
             match code {
                 KeyCode::Char('c') => {
-                    self.investigation_menu_action(6, outcome);
+                    self.investigation_menu_action(COPY_FILES, outcome);
                     return;
                 }
                 KeyCode::Char('x') => {
-                    self.investigation_menu_action(7, outcome);
+                    self.investigation_menu_action(CUT_FILES, outcome);
                     return;
                 }
                 KeyCode::Char('v') => {
-                    self.investigation_paste(outcome);
+                    self.investigation_paste(false, outcome);
                     return;
                 }
                 KeyCode::Char('a') => {
@@ -306,6 +308,12 @@ impl ClientShellState {
                 tab.focus = Focus::Paths;
                 tab.content_search = false;
                 tab.hovered = None;
+            }
+            // Why the terminal only once nothing is selected: Esc first
+            // drops a selection, as it did before split. Why not in full
+            // screen: there the terminals are not on screen to take keys.
+            KeyCode::Esc if docked && tab.selected_files.is_empty() => {
+                self.workbench.files_focused = false;
             }
             KeyCode::Esc => {
                 tab.selected_files.clear();
@@ -398,6 +406,9 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         let menu_rows = self.investigation_hits.menu.len();
+        let FilesPlacement {
+            presentation, dock, ..
+        } = self.workbench.placement;
         let Some(tab) = self.investigation_mut() else {
             return;
         };
@@ -405,25 +416,37 @@ impl ClientShellState {
             tab.dialog = None;
             return;
         }
+        let labels = tab.menu_labels(presentation, dock);
         let Some(dialog) = tab.dialog.as_mut() else {
             return;
         };
         match dialog {
-            Dialog::Menu { selected, scroll } => match code {
-                KeyCode::Up | KeyCode::Down => {
-                    *selected = if code == KeyCode::Up {
-                        selected.saturating_sub(1)
-                    } else {
-                        (*selected + 1).min(MENU.len() - 1)
-                    };
-                    *scroll = menu_scroll_to_show(*selected, *scroll, menu_rows);
+            Dialog::Menu {
+                selected, scroll, ..
+            } => {
+                let items: Vec<menu_widget::MenuItem<'_>> = labels
+                    .iter()
+                    .map(|label| menu_widget::MenuItem::new(label))
+                    .collect();
+                match menu_widget::menu_key(code, Some(*selected), &items, false) {
+                    menu_widget::MenuKey::Move(index) => {
+                        *selected = index;
+                        *scroll = menu_widget::scroll_window(
+                            Some(index),
+                            *scroll,
+                            menu_rows,
+                            labels.len(),
+                        );
+                    }
+                    menu_widget::MenuKey::Activate(index) => {
+                        if let Some(label) = labels.get(index) {
+                            self.investigation_menu_action(label, outcome);
+                        }
+                    }
+                    menu_widget::MenuKey::Close => tab.dialog = None,
+                    menu_widget::MenuKey::Inert | menu_widget::MenuKey::Unhandled => {}
                 }
-                KeyCode::Enter => {
-                    let index = *selected;
-                    self.investigation_menu_action(index, outcome);
-                }
-                _ => {}
-            },
+            }
             Dialog::Input {
                 input,
                 purpose,
@@ -559,8 +582,7 @@ impl ClientShellState {
                 .find(|(r, _)| contains(*r, point))
             {
                 let index = *index;
-                self.workbench.active = Some(index);
-                self.workbench.visible = true;
+                self.show_files(index);
                 if let Some(tab) = self.investigation_mut() {
                     tab.hovered = None;
                 }
@@ -574,7 +596,7 @@ impl ClientShellState {
                 .find(|(r, _)| contains(*r, point))
             {
                 let _ = id;
-                self.workbench.visible = false;
+                self.show_terminal_side();
                 outcome.repaint = true;
                 return false;
             }
@@ -582,7 +604,55 @@ impl ClientShellState {
         if !self.investigation_active() {
             return false;
         }
+        let region = self.investigation_hits.region;
+        let docked = self.investigation_hits.docked;
+        let dialog_open = self.investigation().is_some_and(|tab| tab.dialog.is_some());
+        // Why a dialog takes every event: it is modal, and a menu that runs
+        // past the files region onto the terminals must still be clickable.
+        let files_drag = self.workbench.files_drag
+            && matches!(
+                mouse.kind,
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+            );
+        if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+            self.workbench.files_drag = false;
+        }
+        if files_drag && !contains(region, point) {
+            // Why swallowed rather than clamped into the region: the drag
+            // only moves the preview cursor, and the terminals beneath must
+            // not see a drag or release they never saw pressed.
+            return true;
+        }
+        if !dialog_open && !contains(region, point) {
+            // Why still here: the pointer leaving the region leaves the list.
+            if mouse.kind == MouseEventKind::Moved {
+                if let Some(tab) = self.investigation_mut() {
+                    if tab.hovered.take().is_some() {
+                        outcome.repaint = true;
+                    }
+                }
+            }
+            return false;
+        }
+        // Why any button but not the wheel: a press says where the reader is
+        // working, while scrolling the tree beside a terminal should leave
+        // keys with that terminal.
+        // Why only inside the region: a dialog takes presses on the
+        // terminals too, but keeping it modal must not move the keys there.
+        let press_in_region =
+            matches!(mouse.kind, MouseEventKind::Down(_)) && contains(region, point);
+        if docked && press_in_region && !self.workbench.files_focused {
+            self.workbench.files_focused = true;
+            outcome.repaint = true;
+        }
+        if docked && press_in_region && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.workbench.files_drag = true;
+        }
+        let FilesPlacement {
+            presentation, dock, ..
+        } = self.workbench.placement;
         // Sidebar and tab strip remain live; only the document/list surface captures input.
+        let menu_rows = self.investigation_hits.menu.len();
         let area = self.investigation_hits.body;
         let list = self.investigation_hits.list;
         let field = self
@@ -615,12 +685,9 @@ impl ClientShellState {
             .iter()
             .find(|(r, _)| contains(*r, point))
             .map(|(_, i)| *i);
-        let menu = self
-            .investigation_hits
-            .menu
-            .iter()
-            .find(|(r, _)| contains(*r, point))
-            .map(|(_, i)| *i);
+        // Why not looked up per item: every workbench menu item is enabled.
+        let menu =
+            menu_widget::menu_pointer(mouse.kind, &self.investigation_hits.menu, point, |_| true);
         let dialog_key = self
             .investigation_hits
             .dialog_keys
@@ -632,15 +699,46 @@ impl ClientShellState {
         };
         if tab.dialog.is_some() {
             tab.hovered = None;
-            if mouse.kind == MouseEventKind::Moved {
-                if let (Some(index), Some(Dialog::Menu { selected, .. })) =
-                    (menu, tab.dialog.as_mut())
-                {
-                    if *selected != index {
-                        *selected = index;
+            let labels = tab.menu_labels(presentation, dock);
+            if let Some(Dialog::Menu {
+                selected, scroll, ..
+            }) = tab.dialog.as_mut()
+            {
+                match menu {
+                    menu_widget::MenuPointer::Highlight(index) => {
+                        if *selected != index {
+                            *selected = index;
+                            outcome.repaint = true;
+                        }
+                    }
+                    menu_widget::MenuPointer::Scroll { up } => {
+                        let (next, highlighted) = menu_widget::wheel_window(
+                            up,
+                            *scroll,
+                            Some(*selected),
+                            menu_rows,
+                            labels.len(),
+                        );
+                        if next != *scroll {
+                            *scroll = next;
+                            *selected = highlighted.unwrap_or(*selected);
+                            outcome.repaint = true;
+                        }
+                    }
+                    menu_widget::MenuPointer::Activate(index) => {
+                        if let Some(label) = labels.get(index) {
+                            self.investigation_menu_action(label, outcome);
+                        }
+                    }
+                    menu_widget::MenuPointer::Close => {
+                        tab.dialog = None;
                         outcome.repaint = true;
                     }
+                    menu_widget::MenuPointer::Ignore => {}
                 }
+                return true;
+            }
+            if mouse.kind == MouseEventKind::Moved {
                 return true;
             }
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -655,11 +753,6 @@ impl ClientShellState {
                     return true;
                 }
             }
-            if let Some(index) =
-                menu.filter(|_| matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)))
-            {
-                self.investigation_menu_action(index, outcome);
-            }
             return true;
         }
         if mouse.kind == MouseEventKind::Moved {
@@ -670,7 +763,7 @@ impl ClientShellState {
                 tab.hovered = target;
                 outcome.repaint = true;
             }
-            return contains(area, point) || contains(list, point);
+            return docked || contains(area, point) || contains(list, point);
         }
         if matches!(
             mouse.kind,
@@ -696,13 +789,16 @@ impl ClientShellState {
         if let Some(index) =
             button.filter(|_| matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)))
         {
-            if index == usize::MAX {
-                tab.dialog = Some(Dialog::Menu {
-                    selected: 0,
-                    scroll: 0,
-                });
-            } else {
-                self.investigation_menu_action(index, outcome);
+            match index {
+                Some(label) => {
+                    self.investigation_menu_action(label, outcome);
+                }
+                None => {
+                    tab.dialog = Some(Dialog::menu(
+                        tab.selection_menu_target(),
+                        MenuPlacement::Selection,
+                    ))
+                }
             }
             outcome.repaint = true;
             return true;
@@ -716,6 +812,22 @@ impl ClientShellState {
                 tab.active_file = Some(index);
             }
             tab.focus = Focus::Body;
+            outcome.repaint = true;
+            return true;
+        }
+        if field.is_some() && mouse.kind == MouseEventKind::Down(MouseButton::Right) {
+            let target = if tab.content_search {
+                MenuTarget::Search
+            } else {
+                MenuTarget::Tree
+            };
+            tab.dialog = Some(Dialog::menu(
+                target,
+                MenuPlacement::Pointer {
+                    x: mouse.column,
+                    y: mouse.row,
+                },
+            ));
             outcome.repaint = true;
             return true;
         }
@@ -767,10 +879,14 @@ impl ClientShellState {
                     }
                 }
                 MouseEventKind::Down(MouseButton::Right) => {
-                    tab.dialog = Some(Dialog::Menu {
-                        selected: 0,
-                        scroll: 0,
-                    })
+                    tab.focus = Focus::Body;
+                    tab.dialog = Some(Dialog::menu(
+                        MenuTarget::Preview,
+                        MenuPlacement::Pointer {
+                            x: mouse.column,
+                            y: mouse.row,
+                        },
+                    ))
                 }
                 _ => {}
             }
@@ -835,10 +951,27 @@ impl ClientShellState {
                     }
                 }
                 MouseEventKind::Down(MouseButton::Right) => {
-                    tab.dialog = Some(Dialog::Menu {
-                        selected: 0,
-                        scroll: 0,
-                    })
+                    let target = match row {
+                        Some(index) => {
+                            tab.focus = Focus::Results;
+                            select_for_menu(tab, index);
+                            tab.row_menu_target(index)
+                        }
+                        None if tab.content_search => MenuTarget::Search,
+                        None => MenuTarget::Tree,
+                    };
+                    tab.dialog = Some(Dialog::menu(
+                        target,
+                        MenuPlacement::Pointer {
+                            x: mouse.column,
+                            y: mouse.row,
+                        },
+                    ));
+                    // As a left click would, so the preview shows what the
+                    // menu acts on; folders and `..` have no preview.
+                    if row.is_some() {
+                        self.request_investigation_preview(false, false, outcome);
+                    }
                 }
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                     let delta = if mouse.kind == MouseEventKind::ScrollUp {
@@ -861,7 +994,45 @@ impl ClientShellState {
             outcome.repaint = true;
             return true;
         }
-        false
+        if !docked {
+            return false;
+        }
+        // Docked, the pane surface around the region holds terminals: an
+        // event on the title, file bar or footer must not fall through to
+        // their handlers, and a right-click there opens the workbench menu.
+        if mouse.kind == MouseEventKind::Down(MouseButton::Right) {
+            let target = if tab.content_search {
+                MenuTarget::Search
+            } else {
+                MenuTarget::Tree
+            };
+            tab.dialog = Some(Dialog::menu(
+                target,
+                MenuPlacement::Pointer {
+                    x: mouse.column,
+                    y: mouse.row,
+                },
+            ));
+            outcome.repaint = true;
+        }
+        true
+    }
+}
+
+/// Makes the right-clicked row the one the menu acts on. A row inside a
+/// multi-selection keeps it, so the menu acts on every marked entry.
+fn select_for_menu(tab: &mut Investigation, index: usize) {
+    if tab.content_search {
+        tab.selected_match = index;
+        return;
+    }
+    tab.browser.selected = index;
+    let marked = tab
+        .browser
+        .selected_entry()
+        .is_some_and(|entry| tab.selected_files.contains(&entry.path));
+    if !marked {
+        tab.selected_files.clear();
     }
 }
 

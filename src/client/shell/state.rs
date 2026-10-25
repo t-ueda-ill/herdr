@@ -61,7 +61,13 @@ pub(super) struct ClientShellLayout {
     pub sidebar: Rect,
     pub tab_bar: Rect,
     pub mobile_header: Rect,
+    /// The terminals' share of the surface; the whole surface unless the
+    /// files workbench is docked beside it.
     pub pane_surface: Rect,
+    /// The docked files workbench, only while it is shown in split.
+    pub files_region: Option<Rect>,
+    /// The draggable line between `files_region` and `pane_surface`.
+    pub files_divider: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +110,8 @@ pub(super) struct ShellHitMap {
     pub(super) agent_max_scroll: usize,
     pub(super) agent_sort_toggle: Rect,
     pub(super) sidebar_divider: Rect,
+    /// The line between the docked files region and the terminals.
+    pub(super) files_divider: Rect,
     pub(super) sidebar_section_divider: Rect,
     pub(super) sidebar_toggle: Rect,
     pub(super) new_workspace: Rect,
@@ -119,6 +127,7 @@ pub(super) struct ShellHitMap {
     pub(super) upload_progress: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
+    pub(super) new_workspace_menu_rows: Vec<(Rect, usize)>,
     pub(super) overlay_primary: Rect,
     pub(super) overlay_clear: Rect,
     pub(super) overlay_cancel: Rect,
@@ -201,6 +210,8 @@ pub(super) struct ClientTabPress {
 pub(super) enum ClientChromeDrag {
     SidebarWidth,
     SidebarSection,
+    /// Moving the line between the docked files region and the terminals.
+    FilesDivider,
     WorkspaceScrollbar {
         grab_row_offset: u16,
     },
@@ -309,6 +320,7 @@ pub(super) enum ClientShellOverlayKind {
     FileViewer,
     ContextMenu,
     GlobalMenu,
+    NewWorkspaceMenu,
     Settings,
     UploadConfirm,
 }
@@ -401,6 +413,19 @@ pub(super) struct ClientHelpOverlay {
 #[derive(Debug)]
 pub(super) struct ClientGlobalMenuOverlay {
     pub(super) highlighted: usize,
+    /// First visible item. Not kept in the hit map: `render_shell` replaces
+    /// that every frame, which would reset the window under the pointer.
+    pub(super) scroll: usize,
+}
+
+#[derive(Debug)]
+pub(super) struct ClientNewWorkspaceMenuOverlay {
+    /// `None` until a key or the pointer picks a row: no choice is the
+    /// default, so Enter right after opening creates nothing.
+    pub(super) highlighted: Option<usize>,
+    /// First visible item. Not kept in the hit map: `render_shell` replaces
+    /// that every frame, which would reset the window under the pointer.
+    pub(super) scroll: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -850,6 +875,9 @@ pub(super) struct ClientContextMenuOverlay {
     pub(super) x: u16,
     pub(super) y: u16,
     pub(super) highlighted: usize,
+    /// First visible item. Not kept in the hit map: `render_shell` replaces
+    /// that every frame, which would reset the window under the pointer.
+    pub(super) scroll: usize,
 }
 
 pub(super) struct ClientContextMenuItem {
@@ -897,6 +925,7 @@ pub(super) enum ClientShellOverlay {
     FileViewer(Box<ClientFileViewerOverlay>),
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
+    NewWorkspaceMenu(ClientNewWorkspaceMenuOverlay),
     Settings(ClientSettingsOverlay),
     UploadConfirm(ClientUploadConfirmOverlay),
 }
@@ -918,6 +947,7 @@ impl ClientShellOverlay {
             Self::FileViewer(_) => ClientShellOverlayKind::FileViewer,
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
+            Self::NewWorkspaceMenu(_) => ClientShellOverlayKind::NewWorkspaceMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
             Self::UploadConfirm(_) => ClientShellOverlayKind::UploadConfirm,
         }
@@ -1449,6 +1479,10 @@ impl ClientShellState {
             file_viewer_generation: 0,
             workbench: investigation::Workbench {
                 saved: saved_investigations,
+                placement: preferences
+                    .files_placement
+                    .map(investigation::FilesPlacement::restore)
+                    .unwrap_or_default(),
                 ..Default::default()
             },
             investigation_hits: investigation::Hits::default(),
@@ -1566,7 +1600,14 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
+    /// The layout with the pane surface whole, before any files region.
+    fn undocked_layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
+        // Why `as_deref` rather than cloning the id: this runs for every
+        // surface-size query and frame, and must not allocate.
+        let focused_workspace = self
+            .snapshot
+            .as_deref()
+            .and_then(|s| s.focused_workspace_id.as_deref());
         self.config.layout(
             cols,
             rows,
@@ -1578,15 +1619,70 @@ impl ClientShellState {
                     .iter()
                     .filter(|t| {
                         t.endpoint == self.active_endpoint_id
-                            && t.browser.workspace_id
-                                == self
-                                    .snapshot
-                                    .as_ref()
-                                    .and_then(|s| s.focused_workspace_id.clone())
+                            && t.browser.workspace_id.as_deref() == focused_workspace
                     })
                     .count(),
             self.sidebar_width,
         )
+    }
+
+    /// Records, for the frame about to be composed, whether its pane surface
+    /// has room for the docked files region. Why per frame and visible or
+    /// not: `layout()` only reads the decision, so surface-size queries for
+    /// other sizes cannot flip it, and a window widened while the workbench
+    /// was hidden is judged afresh.
+    pub(super) fn refresh_files_fallback(&mut self, cols: u16, rows: u16) {
+        let surface = self.undocked_layout(cols, rows).pane_surface;
+        self.workbench.placement.refresh_narrow(surface);
+    }
+
+    pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
+        let mut layout = self.undocked_layout(cols, rows);
+        // Why not on the phone layout: it has no tab strip to switch back to
+        // the files tab, so the workbench keeps the whole surface there.
+        if self.workbench.placement.presentation == investigation::FilesPresentation::Split
+            && layout.mobile_header.is_empty()
+            && self.investigation_active()
+        {
+            if let Some(carve) = self.workbench.placement.carve(layout.pane_surface) {
+                layout.pane_surface = carve.terminal;
+                layout.files_region = Some(carve.files);
+                layout.files_divider = carve.divider;
+            }
+        }
+        layout
+    }
+
+    /// The workbench covers the whole pane surface: chosen, or fallen back to
+    /// because the surface is too small for both sides.
+    pub(crate) fn investigation_full_screen(&self) -> bool {
+        if !self.investigation_active() {
+            return false;
+        }
+        match self.last_composed_size {
+            Some((cols, rows)) => self.layout(cols, rows).files_region.is_none(),
+            None => self.workbench.placement.presentation == investigation::FilesPresentation::Full,
+        }
+    }
+
+    /// The surface size of the last composed frame. Input that shows, hides or
+    /// moves the files region compares it before and after to resize PTYs.
+    pub(crate) fn composed_surface_size(&self) -> Option<ClientSurfaceSize> {
+        self.last_composed_size
+            .map(|(cols, rows)| self.surface_size(cols, rows))
+    }
+
+    /// Asks for a resize when the terminals' share of the surface changed
+    /// since `before`, as showing or docking the files region does.
+    pub(crate) fn request_resize_if_surface_changed(
+        &self,
+        before: Option<ClientSurfaceSize>,
+        outcome: &mut ClientShellInput,
+    ) {
+        if before.is_some() && self.composed_surface_size() != before {
+            outcome.resize = true;
+            outcome.repaint = true;
+        }
     }
 
     pub(crate) fn surface_size(&self, cols: u16, rows: u16) -> ClientSurfaceSize {

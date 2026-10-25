@@ -80,6 +80,7 @@ impl ClientShellState {
             remote_collapsed_groups,
             open_picker: (!self.open_picker_memory.is_empty())
                 .then(|| self.open_picker_memory.clone()),
+            files_placement: self.workbench.placement.save(),
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);
@@ -422,6 +423,8 @@ impl ClientShellConfig {
                 tab_bar: Rect::default(),
                 mobile_header: Rect::new(0, 0, cols, header_height),
                 pane_surface: Rect::new(0, header_height, cols, rows.saturating_sub(header_height)),
+                files_region: None,
+                files_divider: Rect::default(),
             };
         }
 
@@ -468,6 +471,8 @@ impl ClientShellConfig {
             tab_bar,
             mobile_header: Rect::default(),
             pane_surface,
+            files_region: None,
+            files_divider: Rect::default(),
         }
     }
 

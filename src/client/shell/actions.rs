@@ -399,7 +399,7 @@ impl ClientShellState {
             _ => false,
         };
         if changes_focus {
-            self.workbench.visible = false;
+            self.show_terminal_side();
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
         if !self.endpoint_is_online(&self.active_endpoint_id) {

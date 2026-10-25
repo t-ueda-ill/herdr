@@ -440,9 +440,8 @@ impl ClientShellState {
                 match result {
                     Err(error) if error.code.as_deref() == Some("pane_not_found") => {
                         self.workbench.editor = None;
-                        self.workbench.active = Some(index);
-                        self.workbench.visible = true;
                         tab.last_poll = due_poll_time();
+                        self.show_files(index);
                     }
                     _ => {
                         if let Some(editor) = self.workbench.editor.as_mut() {
@@ -462,7 +461,9 @@ impl ClientShellState {
                             due: Instant::now(),
                             awaiting: false,
                         });
-                        self.workbench.visible = false;
+                        // Why not hidden in split: the editor pane takes
+                        // focus beside the files region.
+                        self.show_terminal_side();
                         self.workbench.terminal_requested = false;
                     }
                     Err(error) => {
@@ -854,8 +855,21 @@ impl ClientShellState {
             return;
         }
         let location = self.workbench.saved[position].location.clone();
-        let previous = (self.workbench.active, self.workbench.visible);
+        let previous = (
+            self.workbench.active,
+            self.workbench.visible,
+            self.workbench.files_focused,
+        );
+        // Why kept too: showing the restored tab adopts its workspace's
+        // placement, while the shown region may belong to another workspace.
+        let previous_placement = self.workbench.placement.save();
         let tabs_before = self.workbench.tabs.len();
+        // Why a live tab of the workspace wins over the entry: it carries
+        // the placement chosen since the entry was saved.
+        let workspace_has_tab =
+            self.workbench.tabs.iter().any(|t| {
+                t.endpoint == self.active_endpoint_id && t.browser.workspace_id == workspace
+            });
         let saved_root = self.workbench.saved[position].root.clone();
         self.open_file_viewer_in(workspace, Some(location), Some(saved_root), outcome);
         // Consumed only once a tab exists; a failed open keeps the entry for the next tick.
@@ -867,6 +881,9 @@ impl ClientShellState {
             return;
         };
         tab.horizontal = saved.horizontal;
+        if !workspace_has_tab {
+            tab.placement = saved.placement;
+        }
         tab.content_search = saved.content_search && tab.browser.location.is_none();
         tab.query = saved.query.as_str().into();
         tab.include = saved.include.as_str().into();
@@ -891,6 +908,13 @@ impl ClientShellState {
         tab.schedule_search();
         self.workbench.active = previous.0;
         self.workbench.visible = previous.1;
+        self.workbench.files_focused = previous.2;
+        // Why compared first: restoring also forgets the narrow fallback of
+        // the region still on screen.
+        if self.workbench.placement.save() != previous_placement {
+            self.workbench.placement =
+                FilesPlacement::restore(previous_placement.unwrap_or_default());
+        }
     }
 }
 
