@@ -729,8 +729,11 @@ impl ClientShellState {
     ) -> bool {
         let dragging = matches!(self.chrome_drag, Some(ClientChromeDrag::FilesDivider));
         match mouse.kind {
+            // Why not while a files dialog is open: its menu rows may lie
+            // across the divider column, and the press must reach them.
             MouseEventKind::Down(MouseButton::Left)
-                if super::contains(self.hits.files_divider, (mouse.column, mouse.row)) =>
+                if super::contains(self.hits.files_divider, (mouse.column, mouse.row))
+                    && self.investigation().is_none_or(|tab| tab.dialog.is_none()) =>
             {
                 self.chrome_drag = Some(ClientChromeDrag::FilesDivider);
                 true

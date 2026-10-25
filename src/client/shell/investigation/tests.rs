@@ -5876,4 +5876,63 @@ mod files_menu {
             Some((MenuTarget::File, MenuPlacement::Selection))
         );
     }
+
+    /// Opens the files-wide menu from the title line's right end, so the
+    /// menu runs across the divider of the left dock.
+    fn open_menu_across_the_divider(state: &mut ClientShellState) -> Rect {
+        let title = state.investigation_hits.title;
+        mouse(state, MouseButton::Right, title.right() - 2, title.y);
+        let area = menu_box(state);
+        let divider = state.hits.files_divider;
+        assert!(area.x < divider.x && divider.x < area.right() - 1);
+        divider
+    }
+
+    fn menu_row(state: &ClientShellState, label: &str) -> Rect {
+        let labels = MenuTarget::Tree.labels(false, FilesPresentation::Split, FilesDock::Left);
+        state
+            .investigation_hits
+            .menu
+            .iter()
+            .find(|(_, index)| labels[*index] == label)
+            .map(|(rect, _)| *rect)
+            .expect("menu row drawn")
+    }
+
+    #[test]
+    fn a_files_menu_crossing_the_divider_is_drawn_over_it() {
+        let mut state = composed();
+        let divider = open_menu_across_the_divider(&mut state);
+        let row = menu_row(&state, DOCK_RIGHT);
+
+        let frame = state.compose(COLS, ROWS).expect("composed menu").frame;
+
+        let at = usize::from(row.y) * usize::from(frame.width) + usize::from(divider.x);
+        assert_ne!(frame.cells[at].symbol, "│");
+    }
+
+    #[test]
+    fn a_press_on_the_divider_reaches_an_open_menu_instead_of_dragging() {
+        let mut state = composed();
+        let divider = open_menu_across_the_divider(&mut state);
+        let row = menu_row(&state, DOCK_RIGHT);
+
+        mouse(&mut state, MouseButton::Left, divider.x, row.y);
+
+        assert!(state.chrome_drag.is_none());
+        assert_eq!(state.workbench.placement.dock, FilesDock::Right);
+    }
+
+    #[test]
+    fn a_press_on_the_divider_with_no_menu_open_starts_a_divider_drag() {
+        let mut state = composed();
+        let divider = state.hits.files_divider;
+
+        mouse(&mut state, MouseButton::Left, divider.x, divider.y + 3);
+
+        assert!(matches!(
+            state.chrome_drag,
+            Some(crate::client::shell::ClientChromeDrag::FilesDivider)
+        ));
+    }
 }

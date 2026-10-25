@@ -690,13 +690,15 @@ impl ClientShellState {
         }) {
             if let Some(region) = layout.files_region {
                 let mut composed = frame.to_ratatui_buffer()?;
-                let files_cursor = self.render_investigation(&mut composed, layout);
+                // Why not after the files: a files menu is clamped to the
+                // screen, not the region, and may cross the divider column.
                 render_files_divider(
                     &mut composed,
                     layout.files_divider,
                     self.workbench.placement.dock,
                     &self.config.palette,
                 );
+                let files_cursor = self.render_investigation(&mut composed, layout);
                 if self.config.mouse_capture {
                     self.hits.files_divider = layout.files_divider;
                 }
@@ -874,13 +876,9 @@ impl ClientShellState {
         let layout = self.layout(cols, rows);
         let frame = self.compose_unavailable(cols, rows);
         let mut buffer = frame.to_ratatui_buffer()?;
-        let files_cursor = self.render_investigation(&mut buffer, layout);
-        let cursor = if layout.files_region.is_none() || self.files_has_focus() {
-            files_cursor
-        } else {
-            None
-        };
         if layout.files_region.is_some() {
+            // Why not after the files: a files menu is clamped to the
+            // screen, not the region, and may cross the divider column.
             render_files_divider(
                 &mut buffer,
                 layout.files_divider,
@@ -891,6 +889,12 @@ impl ClientShellState {
                 self.hits.files_divider = layout.files_divider;
             }
         }
+        let files_cursor = self.render_investigation(&mut buffer, layout);
+        let cursor = if layout.files_region.is_none() || self.files_has_focus() {
+            files_cursor
+        } else {
+            None
+        };
         self.reconcile_menu_scroll();
         if let Some(progress) = self.upload_progress.as_ref() {
             // Toasts are not drawn over the workbench, yet a tree upload must
