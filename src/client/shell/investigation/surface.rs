@@ -29,7 +29,13 @@ impl ClientShellState {
             self.workbench.terminal_input.clear();
             self.workbench.terminal_requested = false;
         }
-        let wants_terminal = !self.investigation_active() || self.workbench.terminal_requested;
+        // Why not paused in split: the terminals stay on screen beside the
+        // files region. Nor in its narrow fallback: a window resize that
+        // makes room again runs no reconcile, so a paused stream would leave
+        // the terminals blank until the next key.
+        let full_screen_chosen = self.investigation_active()
+            && self.workbench.placement.presentation == FilesPresentation::Full;
+        let wants_terminal = !full_screen_chosen || self.workbench.terminal_requested;
         if !wants_terminal
             && surface_active
             && self.workbench.pause.is_none()

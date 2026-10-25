@@ -573,59 +573,11 @@ impl ClientShellState {
             return;
         }
 
-        if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
-            match key.code {
-                KeyCode::Esc => {
-                    self.overlay = None;
-                    outcome.repaint = true;
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.move_global_menu_selection(-1);
-                    outcome.repaint = true;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.move_global_menu_selection(1);
-                    outcome.repaint = true;
-                }
-                KeyCode::Enter => {
-                    let highlighted = match self.overlay.as_ref() {
-                        Some(ClientShellOverlay::GlobalMenu(menu)) => menu.highlighted,
-                        _ => return,
-                    };
-                    self.activate_global_menu_item(highlighted, outcome);
-                }
-                _ => {}
-            }
+        if self.route_popup_menu_key(key.code, outcome) {
             return;
         }
 
         if self.route_settings_key(key, outcome) {
-            return;
-        }
-
-        if matches!(self.overlay, Some(ClientShellOverlay::ContextMenu(_))) {
-            match key.code {
-                KeyCode::Esc => {
-                    self.overlay = None;
-                    outcome.repaint = true;
-                }
-                KeyCode::Up => {
-                    self.move_context_menu_selection(-1);
-                    outcome.repaint = true;
-                }
-                KeyCode::Down => {
-                    self.move_context_menu_selection(1);
-                    outcome.repaint = true;
-                }
-                KeyCode::Enter => {
-                    let highlighted = match self.overlay.as_ref() {
-                        Some(ClientShellOverlay::ContextMenu(menu)) => menu.highlighted,
-                        _ => return,
-                    };
-                    self.activate_context_menu_item(highlighted, outcome);
-                }
-                _ => {}
-            }
             return;
         }
 

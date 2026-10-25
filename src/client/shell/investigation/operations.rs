@@ -101,40 +101,62 @@ pub(in crate::client::shell) fn prepare_document(
 pub(in crate::client::shell) fn unavailable_notice(location: &FileLocation) -> String {
     format!("not available inside {}", location.label())
 }
+/// Folder that new entries and pasted files go into: the root when
+/// `at_root`, else the selected folder, falling back to the root.
+fn destination_dir(browser: &ClientFileViewerOverlay, at_root: bool) -> String {
+    browser
+        .selected_entry()
+        .filter(|entry| entry.is_dir && !at_root)
+        .map(|entry| entry.path.clone())
+        .or_else(|| browser.root.clone())
+        .unwrap_or_default()
+}
 impl ClientShellState {
+    /// Runs a workbench menu action. Returns false when no tab is shown or
+    /// the label names no action, so a label added to a menu without an
+    /// action here is caught by the tests rather than doing nothing.
     pub(in crate::client::shell) fn investigation_menu_action(
         &mut self,
-        index: usize,
+        label: &str,
         outcome: &mut ClientShellInput,
-    ) {
+    ) -> bool {
         // Why before the host-only guard below: downloading works in every
         // location, so it must not say "not available inside ...".
-        if MENU.get(index) == Some(&DOWNLOAD_ITEM) {
+        if label == DOWNLOAD_ITEM {
             if let Some(tab) = self.investigation_mut() {
                 tab.dialog = None;
             }
             self.investigation_download_prompt(outcome);
-            return;
+            return true;
         }
         let Some(tab) = self.investigation_mut() else {
-            return;
+            return false;
         };
+        // Taken before the menu closes: creating and pasting from empty tree
+        // space act on the root, not on the row that happens to be selected.
+        let at_root = matches!(
+            tab.dialog,
+            Some(Dialog::Menu {
+                target: MenuTarget::Tree,
+                ..
+            })
+        );
         tab.dialog = None;
         // Kept in the menu and on their keys, but never sent to a server that
         // would act on the host: the notice says where it does not work.
-        if matches!(index, 6..=15 | 22) {
+        if HOST_ONLY.contains(&label) {
             if let Some(location) = tab.browser.location.as_ref() {
                 tab.notice = unavailable_notice(location);
                 outcome.repaint = true;
-                return;
+                return true;
             }
         }
-        match index {
-            0 => {
+        match label {
+            NEW_INVESTIGATION => {
                 let workspace = self.workspace_action_id();
                 self.open_file_viewer_for(workspace, outcome);
             }
-            1 => {
+            CHANGE_ROOT => {
                 let root = tab.browser.root.clone().unwrap_or_default();
                 tab.dialog = Some(Dialog::Input {
                     title: "root".into(),
@@ -143,8 +165,8 @@ impl ClientShellState {
                     sources: Vec::new(),
                 });
             }
-            2 => tab.horizontal = !tab.horizontal,
-            3 => {
+            TOGGLE_SPLIT_DIRECTION => tab.horizontal = !tab.horizontal,
+            COPY_PATH => {
                 if let Some(path) = tab.paths().first() {
                     outcome
                         .actions
@@ -152,7 +174,7 @@ impl ClientShellState {
                     tab.notice = format!("copied {path}");
                 }
             }
-            4 => {
+            SEND_PATH => {
                 if let Some(path) = tab.paths().first().cloned() {
                     let boot = tab.boot.clone();
                     let target = self.file_viewer_send_target();
@@ -164,20 +186,20 @@ impl ClientShellState {
                     }
                 }
             }
-            5 => self.investigation_open_editor(outcome),
-            6 | 7 if tab.paths().is_empty() => {
+            EDIT_FILE => self.investigation_open_editor(outcome),
+            COPY_FILES | CUT_FILES if tab.paths().is_empty() => {
                 tab.notice = "select a file or folder first".into();
             }
-            6 | 7 => {
+            COPY_FILES | CUT_FILES => {
                 self.workbench.clipboard = Some(FileClipboard {
                     endpoint: tab.endpoint.clone(),
                     boot: tab.boot.clone(),
                     paths: tab.paths(),
-                    cut: index == 7,
+                    cut: label == CUT_FILES,
                 });
             }
-            8 => self.investigation_paste(outcome),
-            9 => {
+            PASTE_FILES => self.investigation_paste(at_root, outcome),
+            RENAME => {
                 if let Some(path) = tab.paths().first() {
                     tab.dialog = Some(Dialog::Input {
                         title: "rename / move to absolute path".into(),
@@ -187,23 +209,17 @@ impl ClientShellState {
                     });
                 }
             }
-            10 | 11 => {
-                let root = tab
-                    .browser
-                    .selected_entry()
-                    .filter(|e| e.is_dir)
-                    .map(|e| e.path.clone())
-                    .or_else(|| tab.browser.root.clone())
-                    .unwrap_or_default();
+            NEW_FILE | NEW_DIRECTORY => {
+                let root = destination_dir(&tab.browser, at_root);
                 tab.dialog = Some(Dialog::Input {
-                    title: if index == 10 {
+                    title: if label == NEW_FILE {
                         "new file: absolute path"
                     } else {
                         "new directory: absolute path"
                     }
                     .into(),
                     input: TextEditor::new(&format!("{}/", root.trim_end_matches('/')), false),
-                    purpose: InputPurpose::Operation(if index == 10 {
+                    purpose: InputPurpose::Operation(if label == NEW_FILE {
                         FileOperation::CreateFile
                     } else {
                         FileOperation::CreateDirectory
@@ -211,12 +227,12 @@ impl ClientShellState {
                     sources: Vec::new(),
                 });
             }
-            12 | 13 => {
+            TRASH | DELETE => {
                 let paths = tab.paths();
                 if !paths.is_empty() {
                     self.investigation_plan_operation(
                         operation_params(
-                            if index == 12 {
+                            if label == TRASH {
                                 FileOperation::Trash
                             } else {
                                 FileOperation::Delete
@@ -228,32 +244,62 @@ impl ClientShellState {
                     );
                 }
             }
-            14 => self.investigation_prepare_replace(outcome),
-            15 => self.investigation_apply_replace(true, outcome),
-            16 => {
+            PREVIEW_REPLACEMENT => self.investigation_prepare_replace(outcome),
+            UNDO_REPLACEMENT => self.investigation_apply_replace(true, outcome),
+            TOGGLE_REGEX => {
                 tab.regex = !tab.regex;
                 tab.schedule_search();
             }
-            17 => {
+            TOGGLE_CASE => {
                 tab.case_sensitive = !tab.case_sensitive;
                 tab.schedule_search();
             }
-            18 => {
+            TOGGLE_WHOLE_WORD => {
                 tab.whole_word = !tab.whole_word;
                 tab.schedule_search();
             }
-            19 => {
+            INCLUDE_IGNORED => {
                 tab.ignored = !tab.ignored;
                 tab.schedule_search();
             }
-            20 => {
+            SHOW_IGNORED => {
+                tab.browser.show_ignored = !tab.browser.show_ignored;
+                tab.browser.rebuild(true);
+            }
+            CLOSE_INVESTIGATION => {
                 if let Some(index) = self.workbench.active {
                     self.workbench.tabs.remove(index);
                     self.workbench.active = None;
-                    self.workbench.visible = false;
+                    self.hide_files();
                 }
             }
-            21 => {
+            SHOW_FULL_SCREEN => {
+                self.workbench.placement.presentation = FilesPresentation::Full;
+                self.remember_files_placement();
+                outcome.repaint = true;
+            }
+            SHOW_SPLIT => {
+                self.workbench.placement.presentation = FilesPresentation::Split;
+                self.workbench.placement.reset_narrow();
+                self.remember_files_placement();
+                outcome.repaint = true;
+            }
+            // Why also switch to split: a dock only shows in split, so
+            // choosing one from full screen would otherwise do nothing.
+            DOCK_LEFT | DOCK_RIGHT | DOCK_BOTTOM => {
+                self.workbench.placement.dock = match label {
+                    DOCK_LEFT => FilesDock::Left,
+                    DOCK_RIGHT => FilesDock::Right,
+                    _ => FilesDock::Bottom,
+                };
+                self.workbench.placement.presentation = FilesPresentation::Split;
+                self.workbench.placement.reset_narrow();
+                self.remember_files_placement();
+                // Why stated: moving the dock can keep the surface size, so
+                // the resize check would not ask for a redraw.
+                outcome.repaint = true;
+            }
+            TOGGLE_FILE_MATCHES => {
                 if let Some(found) = tab.matches.get(tab.selected_match) {
                     let indexes: Vec<_> = tab
                         .matches
@@ -272,18 +318,19 @@ impl ClientShellState {
                     }
                 }
             }
-            22 => tab.schedule_search(),
-            23 => self.refresh_investigation_files(),
-            24 => match tab.root_candidate() {
+            REFRESH_SEARCH => tab.schedule_search(),
+            REFRESH_FILES => self.refresh_investigation_files(),
+            OPEN_AS_ROOT => match tab.root_candidate() {
                 Some(root) => {
                     self.change_file_viewer_root(root, None, outcome);
                 }
                 None => tab.notice = "select a file or folder to open as root".into(),
             },
-            _ => {}
+            _ => return false,
         }
         self.persist_chrome_preferences(outcome);
         outcome.repaint = true;
+        true
     }
     /// Asks where on this machine to save the selected entries (D1). The
     /// checks are the ones `start_download` repeats (the capability aside), so
@@ -319,8 +366,11 @@ impl ClientShellState {
             sources: paths,
         });
     }
+    /// Asks where to paste the copied or cut files: the root when `at_root`,
+    /// else the selected folder or the root.
     pub(in crate::client::shell) fn investigation_paste(
         &mut self,
+        at_root: bool,
         _outcome: &mut ClientShellInput,
     ) {
         let Some(tab) = self.investigation() else {
@@ -343,13 +393,7 @@ impl ClientShellState {
             }
             return;
         }
-        let root = tab
-            .browser
-            .selected_entry()
-            .filter(|e| e.is_dir)
-            .map(|e| e.path.clone())
-            .or_else(|| tab.browser.root.clone())
-            .unwrap_or_default();
+        let root = destination_dir(&tab.browser, at_root);
         let sources = clipboard.paths.clone();
         let operation = if clipboard.cut {
             FileOperation::Move

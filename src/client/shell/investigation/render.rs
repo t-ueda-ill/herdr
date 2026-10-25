@@ -1,4 +1,4 @@
-use super::super::render::{display_width, put_text};
+use super::super::render::{display_width, menu_widget, put_text};
 use super::*;
 use crossterm::event::KeyCode;
 use unicode_segmentation::UnicodeSegmentation;
@@ -22,12 +22,16 @@ impl ClientShellState {
     /// Why not in render: it only reads. A shrinking terminal leaves the
     /// stored offset hiding the selection, and Enter would run it unseen.
     pub(in crate::client::shell) fn reconcile_menu_scroll(&mut self) {
-        let first = self.investigation_hits.menu.first().map(|(_, i)| *i);
-        if let (Some(first), Some(Dialog::Menu { scroll, .. })) = (
-            first,
-            self.investigation_mut().and_then(|t| t.dialog.as_mut()),
-        ) {
-            *scroll = first;
+        // Why not when nothing was drawn: a hidden workbench leaves default
+        // hits, and writing their 0 would jump the menu when shown again.
+        if self.investigation_hits.menu.is_empty() {
+            return;
+        }
+        let drawn = self.investigation_hits.menu_scroll;
+        if let Some(Dialog::Menu { scroll, .. }) =
+            self.investigation_mut().and_then(|t| t.dialog.as_mut())
+        {
+            *scroll = drawn;
         }
     }
     pub(in crate::client::shell) fn render_investigation(
@@ -37,6 +41,7 @@ impl ClientShellState {
     ) -> Option<crate::protocol::CursorState> {
         self.investigation_hits = Hits::default();
         let active = self.investigation_active();
+        let in_front = self.files_has_focus();
         let snapshot = self.snapshot.as_deref()?;
         let tabs: Vec<_> = self
             .workbench
@@ -104,7 +109,7 @@ impl ClientShellState {
                 let rect = Rect::new(x, bar.y, remaining.min(width / (visible as u16)), 1);
                 b.set_style(
                     rect,
-                    if active && Some(*index) == self.workbench.active {
+                    if in_front && Some(*index) == self.workbench.active {
                         selected
                     } else {
                         base
@@ -114,7 +119,7 @@ impl ClientShellState {
                     b,
                     rect,
                     &format!(" ◈ {label} "),
-                    if active && Some(*index) == self.workbench.active {
+                    if in_front && Some(*index) == self.workbench.active {
                         selected
                     } else {
                         base
@@ -127,7 +132,12 @@ impl ClientShellState {
         if !active {
             return None;
         }
-        let area = layout.pane_surface;
+        let (area, docked) = match layout.files_region {
+            Some(region) => (region, true),
+            None => (layout.pane_surface, false),
+        };
+        self.investigation_hits.region = area;
+        self.investigation_hits.docked = docked;
         b.set_style(area, base);
         for y in area.y..area.bottom() {
             text(
@@ -138,6 +148,8 @@ impl ClientShellState {
             );
         }
         let index = self.workbench.active?;
+        let presentation = self.workbench.placement.presentation;
+        let dock = self.workbench.placement.dock;
         let tab = &mut self.workbench.tabs[index];
         let head = format!(
             " {}{} · {}",
@@ -151,16 +163,17 @@ impl ClientShellState {
                 "files"
             }
         );
-        let title = format!("{head} · F10 actions");
-        text(b, line(area, 0), &title, base.add_modifier(Modifier::BOLD));
+        text(b, line(area, 0), &head, base.add_modifier(Modifier::BOLD));
+        self.investigation_hits.title = line(area, 0);
+        let menu_width = 3u16;
         let actions = Rect::new(
-            area.right().saturating_sub(13).max(area.x),
+            area.right().saturating_sub(menu_width).max(area.x),
             area.y,
-            13.min(area.width),
+            menu_width.min(area.width),
             1,
         );
-        text(b, actions, "[F10 actions]", base.fg(p.accent));
-        self.investigation_hits.buttons.push((actions, usize::MAX));
+        text(b, actions, " ≡ ", base.fg(p.accent));
+        self.investigation_hits.buttons.push((actions, None));
         // Dropped rather than overlapped when the title needs the room.
         let refresh_width = 12u16;
         let refresh_x = actions.x.saturating_sub(refresh_width + 1);
@@ -173,7 +186,9 @@ impl ClientShellState {
         {
             let refresh = Rect::new(refresh_x, area.y, refresh_width, 1);
             text(b, refresh, "[F5 refresh]", base.fg(p.accent));
-            self.investigation_hits.buttons.push((refresh, 23));
+            self.investigation_hits
+                .buttons
+                .push((refresh, Some(REFRESH_FILES)));
         }
         let file_bar = line(area, 1);
         let mut x = file_bar.x;
@@ -259,22 +274,22 @@ impl ClientShellState {
             let mut x = area.x;
             for (action, label) in [
                 (
-                    16,
+                    TOGGLE_REGEX,
                     format!(" [{}] regex ", if tab.regex { "x" } else { " " }),
                 ),
                 (
-                    17,
+                    TOGGLE_CASE,
                     format!(" [{}] case ", if tab.case_sensitive { "x" } else { " " }),
                 ),
                 (
-                    18,
+                    TOGGLE_WHOLE_WORD,
                     format!(" [{}] word ", if tab.whole_word { "x" } else { " " }),
                 ),
                 (
-                    19,
+                    INCLUDE_IGNORED,
                     format!(" [{}] ignored ", if tab.ignored { "x" } else { " " }),
                 ),
-                (14, " [preview replace] ".into()),
+                (PREVIEW_REPLACEMENT, " [preview replace] ".into()),
             ] {
                 let rect = Rect::new(
                     x,
@@ -283,7 +298,7 @@ impl ClientShellState {
                     u16::from(area.height > 6),
                 );
                 text(b, rect, &label, base.fg(p.accent));
-                self.investigation_hits.buttons.push((rect, action));
+                self.investigation_hits.buttons.push((rect, Some(action)));
                 x = rect.right();
             }
         }
@@ -520,22 +535,130 @@ impl ClientShellState {
             cursor = super::super::text_editor::render(b, rect, &tab.find, base);
         }
         if let Some(dialog) = &tab.dialog {
-            cursor = render_dialog(b, area, dialog, tab, p, &mut self.investigation_hits);
+            let labels = tab.menu_labels(presentation, dock);
+            cursor = render_dialog(
+                b,
+                area,
+                dialog,
+                labels,
+                tab,
+                p,
+                &mut self.investigation_hits,
+            );
         }
-        self.hits.panes.clear();
-        self.hits.pane_splits.clear();
-        self.hits.popup = None;
+        // Why only over the whole surface: docked, the terminals beside the
+        // region are still drawn and must keep their pointer targets.
+        if !docked {
+            self.hits.panes.clear();
+            self.hits.pane_splits.clear();
+            self.hits.popup = None;
+        }
         cursor
     }
+}
+#[allow(clippy::too_many_arguments)] // Why: each is a distinct read-only input of one draw.
+fn render_menu(
+    b: &mut Buffer,
+    labels: &[&str],
+    target: MenuTarget,
+    placement: MenuPlacement,
+    selected: usize,
+    scroll: usize,
+    tab: &Investigation,
+    p: &Palette,
+    hits: &mut Hits,
+) {
+    let items: Vec<menu_widget::MenuItem<'_>> = labels
+        .iter()
+        .map(|label| menu_widget::MenuItem::new(label))
+        .collect();
+    let anchor = match placement {
+        MenuPlacement::Pointer { x, y } => menu_widget::MenuAnchor::TopLeft { x, y },
+        MenuPlacement::Selection => selection_anchor(target, tab, hits),
+        MenuPlacement::Header => header_anchor(hits),
+    };
+    if let Some(rendered) = menu_widget::render_menu(
+        b,
+        &items,
+        anchor,
+        super::super::context_menu::CONTEXT_MENU_LOOK,
+        Some(selected),
+        scroll,
+        p,
+    ) {
+        hits.menu = rendered.rows;
+        hits.menu_area = rendered.area;
+        hits.menu_scroll = rendered.scroll;
+    }
+}
+/// Under the title line's menu button, else the region's top-left when
+/// the frame had no room for it.
+fn header_anchor(hits: &Hits) -> menu_widget::MenuAnchor {
+    hits.buttons
+        .iter()
+        .find(|(_, label)| label.is_none())
+        .map_or(
+            menu_widget::MenuAnchor::TopLeft {
+                x: hits.region.x,
+                y: hits.region.y,
+            },
+            |(rect, _)| menu_widget::MenuAnchor::NearRect(*rect),
+        )
+}
+/// Under the focused search field or the selected row when it is drawn,
+/// else the top-left of the pane the target lives in.
+fn selection_anchor(
+    target: MenuTarget,
+    tab: &Investigation,
+    hits: &Hits,
+) -> menu_widget::MenuAnchor {
+    if target == MenuTarget::Preview {
+        return menu_widget::MenuAnchor::TopLeft {
+            x: hits.body.x,
+            y: hits.body.y,
+        };
+    }
+    if let Some((field, _)) = hits
+        .fields
+        .iter()
+        .find(|(_, focus)| target == MenuTarget::Search && *focus == tab.focus)
+    {
+        return menu_widget::MenuAnchor::NearRect(*field);
+    }
+    let selected = if tab.content_search {
+        tab.selected_match
+    } else {
+        tab.browser.selected
+    };
+    hits.rows.iter().find(|(_, row)| *row == selected).map_or(
+        menu_widget::MenuAnchor::TopLeft {
+            x: hits.list.x,
+            y: hits.list.y,
+        },
+        |(rect, _)| menu_widget::MenuAnchor::NearRect(*rect),
+    )
 }
 fn render_dialog(
     b: &mut Buffer,
     area: Rect,
     dialog: &Dialog,
+    labels: &[&str],
     tab: &Investigation,
     p: &Palette,
     hits: &mut Hits,
 ) -> Option<crate::protocol::CursorState> {
+    if let Dialog::Menu {
+        target,
+        anchor,
+        selected,
+        scroll,
+    } = dialog
+    {
+        render_menu(
+            b, labels, *target, *anchor, *selected, *scroll, tab, p, hits,
+        );
+        return None;
+    }
     let width = area.width.saturating_sub(4).min(110);
     let height = area.height.saturating_sub(2).min(28);
     let popup = Rect::new(
@@ -555,36 +678,8 @@ fn render_dialog(
     }
     let mut values = Vec::new();
     match dialog {
-        Dialog::Menu { selected, scroll } => {
-            // Why not written back: render only reads. A resize can leave the
-            // stored offset past the last page or the selection off it, so
-            // draw the corrected window and let compose persist it.
-            let rows = popup.height as usize;
-            let scroll = menu_scroll_to_show(
-                *selected,
-                (*scroll).min(MENU.len().saturating_sub(rows)),
-                rows,
-            );
-            for (i, label) in MENU
-                .iter()
-                .enumerate()
-                .skip(scroll)
-                .take(popup.height as usize)
-            {
-                let rect = line(popup, (i - scroll) as u16);
-                text(
-                    b,
-                    rect,
-                    &format!(" {label}"),
-                    if i == *selected {
-                        base.bg(p.accent).fg(p.panel_bg)
-                    } else {
-                        base
-                    },
-                );
-                hits.menu.push((rect, i));
-            }
-        }
+        // Drawn by `render_menu` above.
+        Dialog::Menu { .. } => {}
         Dialog::Input { title, input, .. } => {
             text(b, line(popup, 0), title, base);
             text(b, line(popup, 3), "Enter continue · Esc cancel", base);

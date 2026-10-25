@@ -3,6 +3,7 @@ mod drops;
 mod input;
 mod model;
 mod operations;
+mod placement;
 mod render;
 mod requests;
 mod surface;
@@ -11,9 +12,18 @@ mod tests;
 use super::*;
 pub(crate) use drops::{ClientUploadQuestion, WorkbenchDropPlace, WorkbenchDropTarget};
 pub(super) use model::*;
+pub(super) use placement::{
+    lenient, FilesDock, FilesPlacement, FilesPresentation, SavedFilesPlacement,
+};
 
 impl ClientShellState {
     pub(crate) fn investigation_active(&self) -> bool {
+        // Why `as_deref` rather than cloning the id: `layout()` calls this
+        // for every frame and surface-size query, which must not allocate.
+        let focused_workspace = self
+            .snapshot
+            .as_deref()
+            .and_then(|s| s.focused_workspace_id.as_deref());
         self.workbench.visible
             && self
                 .workbench
@@ -22,11 +32,7 @@ impl ClientShellState {
                 .is_some_and(|t| {
                     self.endpoint_boot_id(&self.active_endpoint_id) == Some(t.boot.as_str())
                         && t.endpoint == self.active_endpoint_id
-                        && t.browser.workspace_id
-                            == self
-                                .snapshot
-                                .as_ref()
-                                .and_then(|s| s.focused_workspace_id.clone())
+                        && t.browser.workspace_id.as_deref() == focused_workspace
                 })
     }
     pub(super) fn investigation(&self) -> Option<&Investigation> {
@@ -58,10 +64,80 @@ impl ClientShellState {
             .to_owned();
         let mut tab = Investigation::new(*viewer, self.active_endpoint_id.clone(), boot);
         tab.connection_generation = self.active_snapshot_generation;
+        // Why the shown placement when the workspace has no tab yet: it is
+        // the reader's latest choice, and the saved one for this workspace
+        // went with its last tab.
+        tab.placement = self
+            .workbench
+            .tabs
+            .iter()
+            .find(|t| same_workspace(t, &tab))
+            .map_or_else(|| self.workbench.placement.save(), |t| t.placement);
         self.mode = ClientShellMode::Terminal;
         self.workbench.tabs.push(tab);
-        self.workbench.active = Some(self.workbench.tabs.len() - 1);
+        self.show_files(self.workbench.tabs.len() - 1);
+    }
+    /// Shows tab `index` and brings the files region forward, in the
+    /// placement of its workspace.
+    pub(super) fn show_files(&mut self, index: usize) {
+        if let Some(saved) = self.workbench.tabs.get(index).map(|t| t.placement) {
+            // Why compared first: restoring also forgets the narrow
+            // fallback, which must survive reshowing the same workspace.
+            if saved != self.workbench.placement.save() {
+                self.workbench.placement = FilesPlacement::restore(saved.unwrap_or_default());
+            }
+        }
+        self.workbench.active = Some(index);
         self.workbench.visible = true;
+        self.workbench.files_focused = true;
+    }
+    /// Keeps the shown placement with every tab of the shown workspace, so
+    /// its saved entries and a later reopen use it (Q8).
+    pub(super) fn remember_files_placement(&mut self) {
+        let Some(shown) = self
+            .workbench
+            .active
+            .and_then(|i| self.workbench.tabs.get(i))
+        else {
+            return;
+        };
+        let (endpoint, workspace) = (shown.endpoint.clone(), shown.browser.workspace_id.clone());
+        let saved = self.workbench.placement.save();
+        for tab in &mut self.workbench.tabs {
+            if tab.endpoint == endpoint && tab.browser.workspace_id == workspace {
+                tab.placement = saved;
+            }
+        }
+        // Why pending entries too: an off-host entry waiting for its pane is
+        // restored after the live tabs may have closed, and would otherwise
+        // bring back the placement from before this choice.
+        let endpoint = endpoint.storage_key();
+        for entry in &mut self.workbench.saved {
+            if entry.endpoint == endpoint && entry.workspace == workspace {
+                entry.placement = saved;
+            }
+        }
+    }
+    /// Hides the workbench of the focused workspace.
+    pub(super) fn hide_files(&mut self) {
+        self.workbench.visible = false;
+        self.workbench.files_focused = false;
+    }
+    /// Brings the terminals forward. Full screen hides the workbench to do
+    /// so; split keeps the files region beside them (Q6a), since it belongs
+    /// to the workspace rather than to one terminal tab.
+    pub(super) fn show_terminal_side(&mut self) {
+        if !self.investigation_active() || self.investigation_full_screen() {
+            self.workbench.visible = false;
+        }
+        self.workbench.files_focused = false;
+    }
+    /// Keys, pastes and drops go to the files workbench rather than the
+    /// focused pane. Full screen always has focus; split has it once the
+    /// files region was brought forward and until a terminal is.
+    pub(super) fn files_has_focus(&self) -> bool {
+        self.investigation_active()
+            && (self.workbench.files_focused || self.investigation_full_screen())
     }
     pub(super) fn remove_investigation(&mut self, index: usize) {
         if index >= self.workbench.tabs.len() {
@@ -71,15 +147,24 @@ impl ClientShellState {
         match self.workbench.active {
             Some(active) if active == index => {
                 self.workbench.active = None;
-                self.workbench.visible = false;
+                self.hide_files();
             }
             Some(active) if active > index => self.workbench.active = Some(active - 1),
             _ => {}
         }
     }
+    /// Steps open_files through hidden, shown with focus, and hidden again.
+    /// A split region shown beside a focused terminal takes focus first
+    /// (Q18a), so the key never hides what the reader was about to use.
     pub(super) fn toggle_investigation(&mut self, outcome: &mut ClientShellInput) -> bool {
+        if self.files_has_focus() {
+            self.hide_files();
+            return true;
+        }
         if self.investigation_active() {
-            self.workbench.visible = false;
+            self.mode = ClientShellMode::Terminal;
+            self.workbench.files_focused = true;
+            outcome.repaint = true;
             return true;
         }
         let workspace = self
@@ -101,8 +186,7 @@ impl ClientShellState {
             .or_else(|| self.workbench.tabs.iter().rposition(wanted));
         if let Some(index) = recent {
             self.mode = ClientShellMode::Terminal;
-            self.workbench.active = Some(index);
-            self.workbench.visible = true;
+            self.show_files(index);
             self.reroot_file_viewer_to_pane(workspace.as_deref(), outcome);
             return true;
         }
@@ -137,11 +221,13 @@ impl ClientShellState {
         if investigations.is_empty() {
             return false;
         }
-        if action == A::CloseTab && self.investigation_active() {
+        // Why focus rather than visibility: beside a focused terminal the
+        // key closes that terminal's tab, as it would with no files shown.
+        if action == A::CloseTab && self.files_has_focus() {
             if let Some(index) = self.workbench.active {
                 self.workbench.tabs.remove(index);
                 self.workbench.active = None;
-                self.workbench.visible = false;
+                self.hide_files();
                 self.persist_chrome_preferences(outcome);
             }
             return true;
@@ -149,7 +235,7 @@ impl ClientShellState {
         let index = match action {
             A::SwitchTab(index) => index,
             A::PreviousTab | A::NextTab => {
-                let current = if self.investigation_active() {
+                let current = if self.files_has_focus() {
                     terminals.len()
                         + investigations
                             .iter()
@@ -168,7 +254,7 @@ impl ClientShellState {
             _ => return false,
         };
         if let Some(tab_id) = terminals.get(index) {
-            self.workbench.visible = false;
+            self.show_terminal_side();
             self.push_endpoint_method(
                 crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
                     tab_id: tab_id.clone(),
@@ -176,10 +262,14 @@ impl ClientShellState {
                 outcome,
             );
         } else if let Some(&index) = investigations.get(index.saturating_sub(terminals.len())) {
-            self.workbench.active = Some(index);
-            self.workbench.visible = true;
+            self.show_files(index);
         }
         outcome.repaint = true;
         true
     }
+}
+
+/// Both tabs browse the same workspace of the same endpoint.
+fn same_workspace(left: &Investigation, right: &Investigation) -> bool {
+    left.endpoint == right.endpoint && left.browser.workspace_id == right.browser.workspace_id
 }

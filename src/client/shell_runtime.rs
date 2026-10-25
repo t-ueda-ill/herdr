@@ -793,6 +793,33 @@ pub(super) fn install_client_shell_snapshot(
     Ok(())
 }
 
+/// Reports the shell's current surface size, through a pending activation
+/// when one is in flight.
+pub(super) fn send_client_shell_resize(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
+) {
+    let Some(shell) = state.shell.as_ref() else {
+        return;
+    };
+    let resize = client_shell_resize_message(
+        shell,
+        state.reported_size.0,
+        state.reported_size.1,
+        state.reported_cell_size.0,
+        state.reported_cell_size.1,
+        state.pixel_mouse_available(),
+    );
+    if let Some(activation) = pending_activation.as_mut() {
+        if let Err(error) = activation.update_resize(resize, endpoints) {
+            rollback_endpoint_activation(state, endpoints, pending_activation, error, false);
+        }
+    } else {
+        let _ = write_to_server(endpoints, &resize);
+    }
+}
+
 pub(super) fn finish_client_shell_input(
     state: &mut ClientState,
     mut outcome: shell::ClientShellInput,
@@ -809,22 +836,7 @@ pub(super) fn finish_client_shell_input(
         return Ok(true);
     }
     if outcome.resize {
-        let shell = state.shell.as_ref().expect("shell mode remains active");
-        let resize = client_shell_resize_message(
-            shell,
-            state.reported_size.0,
-            state.reported_size.1,
-            state.reported_cell_size.0,
-            state.reported_cell_size.1,
-            state.pixel_mouse_available(),
-        );
-        if let Some(activation) = pending_activation.as_mut() {
-            if let Err(error) = activation.update_resize(resize, endpoints) {
-                rollback_endpoint_activation(state, endpoints, pending_activation, error, false);
-            }
-        } else {
-            let _ = write_to_server(endpoints, &resize);
-        }
+        send_client_shell_resize(state, endpoints, pending_activation);
     }
     #[cfg(not(windows))]
     if outcome.query_host_appearance {

@@ -1233,6 +1233,7 @@ fn every_workspace_context_menu_ends_with_browse_files() {
             x: 0,
             y: 0,
             highlighted: 0,
+            scroll: 0,
         };
         let items = menu.items();
         let last = items.last().expect("workspace menu items");
@@ -1344,6 +1345,7 @@ fn the_global_menu_offers_open_files_before_the_remote_pickers() {
     let mut state = shell_state();
     state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
         highlighted: files,
+        scroll: 0,
     }));
     let outcome = state.handle_input_bytes(b"\r");
 

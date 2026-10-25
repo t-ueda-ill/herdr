@@ -1,6 +1,19 @@
+use super::render::menu_widget::{MenuItem, MenuLook};
 use super::*;
 
+pub(super) const CONTEXT_MENU_LOOK: MenuLook = MenuLook {
+    min_width: 14,
+    indent: 0,
+};
+
 impl ClientContextMenuOverlay {
+    pub(super) fn menu_items(&self) -> Vec<MenuItem<'static>> {
+        self.items()
+            .iter()
+            .map(|item| MenuItem::new(item.label))
+            .collect()
+    }
+
     pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
         use ClientContextMenuAction as Action;
 
@@ -130,6 +143,7 @@ impl ClientShellState {
             x,
             y,
             highlighted: 0,
+            scroll: 0,
         }));
     }
 
@@ -151,6 +165,7 @@ impl ClientShellState {
             x,
             y,
             highlighted: 0,
+            scroll: 0,
         }));
     }
 
@@ -176,19 +191,8 @@ impl ClientShellState {
             x,
             y,
             highlighted: 0,
+            scroll: 0,
         }));
-    }
-
-    pub(super) fn move_context_menu_selection(&mut self, delta: isize) {
-        let Some(ClientShellOverlay::ContextMenu(menu)) = self.overlay.as_mut() else {
-            return;
-        };
-        let item_count = menu.items().len();
-        if item_count == 0 {
-            return;
-        }
-        menu.highlighted = (menu.highlighted as isize + delta)
-            .clamp(0, item_count.saturating_sub(1) as isize) as usize;
     }
 
     pub(super) fn activate_context_menu_item(

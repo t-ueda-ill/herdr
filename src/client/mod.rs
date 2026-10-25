@@ -2240,6 +2240,10 @@ async fn run_client_loop(
                         let Some(completed) = completed else {
                             continue;
                         };
+                        let surface_before = state
+                            .shell
+                            .as_ref()
+                            .and_then(|shell| shell.composed_surface_size());
                         let (repaint, actions) = state.shell.as_mut().map_or_else(
                             || (false, Vec::new()),
                             |shell| {
@@ -2275,7 +2279,22 @@ async fn run_client_loop(
                             &mut scheduled_activation,
                         )?;
                         let repaint = repaint || dispatch_repaint;
+                        // An answer can show or hide the docked files region
+                        // (an editor opening or closing), which resizes PTYs.
+                        let surface_changed = surface_before.is_some()
+                            && state
+                                .shell
+                                .as_ref()
+                                .and_then(|shell| shell.composed_surface_size())
+                                != surface_before;
                         if replay_mouse.is_empty() {
+                            if surface_changed {
+                                send_client_shell_resize(
+                                    &mut state,
+                                    &mut write_stream,
+                                    &mut pending_activation,
+                                );
+                            }
                             if repaint {
                                 if let Some(frame) = state.shell.as_mut().and_then(|shell| {
                                     shell.compose(state.reported_size.0, state.reported_size.1)
@@ -2288,6 +2307,7 @@ async fn run_client_loop(
                                 let shell = state.shell.as_mut().expect("shell endpoint response");
                                 let mut outcome = shell.replay_mouse_events(replay_mouse);
                                 outcome.repaint |= repaint;
+                                outcome.resize |= surface_changed;
                                 let frame = outcome
                                     .repaint
                                     .then(|| {
@@ -2724,6 +2744,7 @@ async fn run_client_loop(
                         .collect::<Vec<_>>();
                     let (effects, outcome, frame) = {
                         let shell = state.shell.as_mut().expect("checked shell mode");
+                        let surface_before = shell.composed_surface_size();
                         let mut outcome = shell.tick_selection_autoscroll(now);
                         for expired in expired_endpoints {
                             if !shell.endpoint_is_active(&expired.endpoint_id) {
@@ -2738,6 +2759,7 @@ async fn run_client_loop(
                             outcome.actions.extend(actions);
                         }
                         shell.tick_investigation(now, &mut outcome);
+                        shell.request_resize_if_surface_changed(surface_before, &mut outcome);
                         let (effects, notification_repaint) = shell.tick_notifications(now);
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)

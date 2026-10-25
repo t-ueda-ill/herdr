@@ -9,7 +9,7 @@ impl ClientShellState {
         source: OpenPickerSource,
         outcome: &mut ClientShellInput,
     ) {
-        use crate::api::schema::{Method, SshContainerListParams, SshHostsParams};
+        use crate::api::schema::{Method, SshHostsParams};
 
         match source {
             OpenPickerSource::SshHost => {
@@ -20,20 +20,11 @@ impl ClientShellState {
                 );
             }
             OpenPickerSource::ContainerHost | OpenPickerSource::Container => {
-                let hosts = Method::SshHosts(SshHostsParams::default());
-                let remote_list = Method::SshContainerList(SshContainerListParams {
-                    host: String::new(),
-                    workspace_id: None,
-                });
                 // Checked up front, not through the push: an old server must
                 // fall back to local listing without an "Action unavailable" notice.
-                // Both methods are required so a host is never offered that
-                // cannot be listed, and no remote pick falls back to local docker.
-                if self.supports_endpoint_method(&hosts)
-                    && self.supports_endpoint_method(&remote_list)
-                {
+                if self.endpoint_lists_remote_containers() {
                     self.push_endpoint_method_with_kind(
-                        hosts,
+                        Method::SshHosts(SshHostsParams::default()),
                         PendingEndpointKind::PrepareOpenPicker(OpenPickerSource::ContainerHost),
                         outcome,
                     );
@@ -43,6 +34,36 @@ impl ClientShellState {
             }
         }
         outcome.repaint = true;
+    }
+
+    /// Both methods are required so a host is never offered that cannot be
+    /// listed, and no remote pick falls back to local docker.
+    pub(super) fn endpoint_lists_remote_containers(&self) -> bool {
+        use crate::api::schema::{Method, SshContainerListParams, SshHostsParams};
+
+        self.supports_endpoint_method(&Method::SshHosts(SshHostsParams::default()))
+            && self.supports_endpoint_method(&Method::SshContainerList(SshContainerListParams {
+                host: String::new(),
+                workspace_id: None,
+            }))
+    }
+
+    /// Whether `begin_open_picker` for this source reaches a listing instead
+    /// of the "Action unavailable" notice.
+    pub(super) fn endpoint_opens_picker(&self, source: OpenPickerSource) -> bool {
+        use crate::api::schema::{ContainerListParams, Method, SshHostsParams};
+
+        match source {
+            OpenPickerSource::SshHost => {
+                self.supports_endpoint_method(&Method::SshHosts(SshHostsParams::default()))
+            }
+            OpenPickerSource::ContainerHost | OpenPickerSource::Container => {
+                self.endpoint_lists_remote_containers()
+                    || self.supports_endpoint_method(&Method::ContainerList(
+                        ContainerListParams::default(),
+                    ))
+            }
+        }
     }
 
     fn list_local_containers(&mut self, outcome: &mut ClientShellInput) {

@@ -157,11 +157,15 @@ impl ClientShellState {
         // Every path below either redraws the card or leaves it undrawn, so a
         // stale area must never cancel an upload.
         self.hits.upload_progress = Rect::default();
+        // Why here rather than only in `render_investigation`: frames that
+        // draw no workbench would leave the last rects routing input.
+        self.investigation_hits = investigation::Hits::default();
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
             self.reveal_navigation_workspace = true;
             self.reveal_mobile_workspace = true;
         }
         self.last_composed_size = Some((cols, rows));
+        self.refresh_files_fallback(cols, rows);
         let valid_navigation_target = self.mode == ClientShellMode::Navigate
             && self
                 .navigate_workspace_id
@@ -173,10 +177,15 @@ impl ClientShellState {
                     && pending.target.endpoint_id == self.active_endpoint_id
                     && self.navigation_target_valid(&pending.target)
             });
-        if self.investigation_active() {
+        if self.investigation_full_screen() {
             return self.compose_investigation_only(cols, rows);
         }
         if self.snapshot.is_none() || self.pane_surface.is_none() {
+            // Why the workbench path: until the resized terminals arrive, a
+            // docked files region would otherwise vanish for a frame.
+            if self.layout(cols, rows).files_region.is_some() {
+                return self.compose_investigation_only(cols, rows);
+            }
             return Some(self.compose_unavailable(cols, rows).into());
         }
         let snapshot = self.snapshot.as_deref()?;
@@ -679,13 +688,34 @@ impl ClientShellState {
                         .as_ref()
                         .and_then(|s| s.focused_workspace_id.clone())
         }) {
-            let active = self.investigation_active();
-            if active {
+            if let Some(region) = layout.files_region {
                 let mut composed = frame.to_ratatui_buffer()?;
-                let cursor = self.render_investigation(&mut composed, layout);
-                occlusion.cover(layout.pane_surface);
+                // Why not after the files: a files menu is clamped to the
+                // screen, not the region, and may cross the divider column.
+                render_files_divider(
+                    &mut composed,
+                    layout.files_divider,
+                    self.workbench.placement.dock,
+                    &self.config.palette,
+                );
+                let files_cursor = self.render_investigation(&mut composed, layout);
+                if self.config.mouse_capture {
+                    self.hits.files_divider = layout.files_divider;
+                }
+                let menu = self.investigation_hits.menu_area;
+                for rect in [region, layout.files_divider, menu] {
+                    occlusion.cover(rect);
+                }
+                let cursor = if self.files_has_focus() {
+                    self.investigation_hits.focused_cursor = files_cursor.clone();
+                    files_cursor
+                } else {
+                    frame.cursor.clone()
+                };
                 frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
-                frame.clear_hyperlinks_in(layout.pane_surface);
+                frame.clear_hyperlinks_in(region);
+                frame.clear_hyperlinks_in(menu);
+                self.reconcile_menu_scroll();
             } else {
                 // Only chrome changes while reading terminal output. Avoid a
                 // full-frame round trip for an inactive investigation tab.
@@ -721,6 +751,7 @@ impl ClientShellState {
         frame: &mut FrameData,
         occlusion: &mut crate::kitty_graphics::surface::Occlusion,
     ) -> Option<()> {
+        let mut menu_scroll = None;
         if let Some(overlay) = self.overlay.as_ref() {
             let snapshot = self.snapshot.as_deref()?;
             let mut composed = frame.to_ratatui_buffer()?;
@@ -731,6 +762,7 @@ impl ClientShellState {
                 occlusion.cover(rendered.area);
                 overlay_area = rendered.area;
                 self.hits.context_menu_rows = rendered.menu_rows;
+                menu_scroll = Some(rendered.menu_scroll);
                 None
             } else if let ClientShellOverlay::GlobalMenu(menu) = overlay {
                 let rendered = render::render_global_menu(
@@ -743,6 +775,20 @@ impl ClientShellState {
                 occlusion.cover(rendered.area);
                 overlay_area = rendered.area;
                 self.hits.global_menu_rows = rendered.menu_rows;
+                menu_scroll = Some(rendered.menu_scroll);
+                None
+            } else if let ClientShellOverlay::NewWorkspaceMenu(menu) = overlay {
+                let rendered = render::render_new_workspace_menu(
+                    &mut composed,
+                    self.hits.new_workspace,
+                    menu,
+                    &self.new_workspace_menu_items(),
+                    &self.config.palette,
+                )?;
+                occlusion.cover(rendered.area);
+                overlay_area = rendered.area;
+                self.hits.new_workspace_menu_rows = rendered.menu_rows;
+                menu_scroll = Some(rendered.menu_scroll);
                 None
             } else {
                 let rendered = render::render_client_overlay(
@@ -796,6 +842,14 @@ impl ClientShellState {
             // behind the modal would match the modal's own blank cells.
             frame.clear_hyperlinks_in(overlay_area);
         }
+        if let Some(scroll) = menu_scroll {
+            match self.overlay.as_mut() {
+                Some(ClientShellOverlay::ContextMenu(menu)) => menu.scroll = scroll,
+                Some(ClientShellOverlay::GlobalMenu(menu)) => menu.scroll = scroll,
+                Some(ClientShellOverlay::NewWorkspaceMenu(menu)) => menu.scroll = scroll,
+                _ => {}
+            }
+        }
         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
             help.scroll = help.scroll.min(self.hits.help_max_scroll);
         }
@@ -822,7 +876,25 @@ impl ClientShellState {
         let layout = self.layout(cols, rows);
         let frame = self.compose_unavailable(cols, rows);
         let mut buffer = frame.to_ratatui_buffer()?;
-        let cursor = self.render_investigation(&mut buffer, layout);
+        if layout.files_region.is_some() {
+            // Why not after the files: a files menu is clamped to the
+            // screen, not the region, and may cross the divider column.
+            render_files_divider(
+                &mut buffer,
+                layout.files_divider,
+                self.workbench.placement.dock,
+                &self.config.palette,
+            );
+            if self.config.mouse_capture {
+                self.hits.files_divider = layout.files_divider;
+            }
+        }
+        let files_cursor = self.render_investigation(&mut buffer, layout);
+        let cursor = if layout.files_region.is_none() || self.files_has_focus() {
+            files_cursor
+        } else {
+            None
+        };
         self.reconcile_menu_scroll();
         if let Some(progress) = self.upload_progress.as_ref() {
             // Toasts are not drawn over the workbench, yet a tree upload must
@@ -845,9 +917,39 @@ impl ClientShellState {
         let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &[]);
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         occlusion.cover(layout.pane_surface);
+        if let Some(region) = layout.files_region {
+            occlusion.cover(region);
+            occlusion.cover(layout.files_divider);
+        }
         self.compose_shell_overlays(&mut frame, &mut occlusion)?;
         let graphics = self.compose_graphics(layout, &occlusion);
         Some(crate::client::frame_output::ComposedFrame { frame, graphics })
+    }
+}
+
+/// The line between the docked files region and the terminals, drawn like
+/// the sidebar's edge.
+fn render_files_divider(
+    buffer: &mut Buffer,
+    divider: Rect,
+    dock: investigation::FilesDock,
+    palette: &Palette,
+) {
+    let symbol = if dock == investigation::FilesDock::Bottom {
+        "─"
+    } else {
+        "│"
+    };
+    let style = Style::default()
+        .fg(palette.surface_dim)
+        .bg(palette.panel_bg);
+    for y in divider.y..divider.bottom() {
+        for x in divider.x..divider.right() {
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.set_symbol(symbol);
+                cell.set_style(style);
+            }
+        }
     }
 }
 

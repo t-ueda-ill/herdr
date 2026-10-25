@@ -425,6 +425,7 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
         .expect("detach item");
     state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
         highlighted: detach_index,
+        scroll: 0,
     }));
     let detach = state.handle_input_bytes(b"\r");
     assert!(detach.detach);
@@ -530,4 +531,626 @@ fn close_confirmation_error_becomes_client_owned_overlay_and_stable_workspace_cl
         crate::api::schema::Method::WorkspaceClose(params)
             if params.workspace_id == "ws_1" && !params.close_group
     ));
+}
+
+mod popup_menus {
+    use super::*;
+    use crate::client::shell::global_menu::{global_menu_item_has_badge, global_menu_items};
+    use crossterm::event::KeyCode;
+
+    fn shell(rows: u16) -> ClientShellState {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(surface());
+        state.compose(106, rows).expect("composed frame");
+        state
+    }
+
+    fn mouse(
+        state: &mut ClientShellState,
+        kind: MouseEventKind,
+        x: u16,
+        y: u16,
+    ) -> ClientShellInput {
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::empty(),
+        })])
+    }
+
+    fn key(state: &mut ClientShellState, code: KeyCode) -> ClientShellInput {
+        state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+            code,
+            KeyModifiers::empty(),
+        ))])
+    }
+
+    fn symbol_at(frame: &FrameData, x: u16, y: u16) -> String {
+        frame.cells[y as usize * frame.width as usize + x as usize]
+            .symbol
+            .clone()
+    }
+
+    /// Right-clicks the first workspace row and returns the clicked cell.
+    fn open_workspace_menu(state: &mut ClientShellState) -> (u16, u16) {
+        let workspace = state.hits.workspaces[0].rect;
+        let click = (workspace.x + 2, workspace.y);
+        mouse(
+            state,
+            MouseEventKind::Down(MouseButton::Right),
+            click.0,
+            click.1,
+        );
+        click
+    }
+
+    fn context_items(state: &ClientShellState) -> Vec<ClientContextMenuItem> {
+        match state.overlay.as_ref() {
+            Some(ClientShellOverlay::ContextMenu(menu)) => menu.items(),
+            _ => panic!("context menu is open"),
+        }
+    }
+
+    fn context_highlight(state: &ClientShellState) -> usize {
+        match state.overlay.as_ref() {
+            Some(ClientShellOverlay::ContextMenu(menu)) => menu.highlighted,
+            _ => panic!("context menu is open"),
+        }
+    }
+
+    fn global_highlight(state: &ClientShellState) -> usize {
+        match state.overlay.as_ref() {
+            Some(ClientShellOverlay::GlobalMenu(menu)) => menu.highlighted,
+            _ => panic!("global menu is open"),
+        }
+    }
+
+    fn open_global_menu(state: &mut ClientShellState) -> Rect {
+        let launcher = state.hits.global_launcher;
+        mouse(
+            state,
+            MouseEventKind::Down(MouseButton::Left),
+            launcher.x,
+            launcher.y,
+        );
+        launcher
+    }
+
+    #[test]
+    fn spaces_context_menu_opens_as_a_framed_panel_whose_corner_is_the_clicked_cell() {
+        let mut state = shell(20);
+        let (x, y) = open_workspace_menu(&mut state);
+        let items = context_items(&state);
+        let frame = state.compose(106, 20).expect("context menu frame");
+
+        let width = items
+            .iter()
+            .map(|item| crate::client::shell::render::display_width(item.label))
+            .max()
+            .unwrap_or(0)
+            .saturating_add(4)
+            .max(14);
+        let height = items.len() as u16 + 2;
+        let rows = &state.hits.context_menu_rows;
+        assert_eq!(rows.len(), items.len());
+        for (index, (rect, item)) in rows.iter().enumerate() {
+            assert_eq!(*item, index);
+            assert_eq!(*rect, Rect::new(x + 1, y + 1 + index as u16, width - 2, 1));
+        }
+        assert_eq!(symbol_at(&frame, x, y), "┌");
+        assert_eq!(symbol_at(&frame, x + width - 1, y), "┐");
+        assert_eq!(symbol_at(&frame, x, y + height - 1), "└");
+        assert_eq!(symbol_at(&frame, x + width - 1, y + height - 1), "┘");
+        assert_eq!(symbol_at(&frame, x, y + 1), "│");
+        assert_eq!(context_highlight(&state), 0);
+    }
+
+    #[test]
+    fn spaces_context_menu_opened_near_the_bottom_right_is_pushed_back_on_screen() {
+        let mut state = shell(20);
+        state.open_pane_context_menu("pane_1".into(), 105, 19);
+        let items = context_items(&state);
+        state.compose(106, 20).expect("context menu frame");
+
+        let rows = &state.hits.context_menu_rows;
+        let last = rows.last().expect("rows drawn").0;
+        assert_eq!(rows.len(), items.len());
+        assert_eq!(last.right() + 1, 106, "right border on the last column");
+        assert_eq!(last.y + 2, 20, "bottom border on the last row");
+    }
+
+    #[test]
+    fn moving_over_a_spaces_context_menu_row_highlights_it_and_moving_off_rows_keeps_it() {
+        let mut state = shell(20);
+        open_workspace_menu(&mut state);
+        state.compose(106, 20).expect("context menu frame");
+        let row = state.hits.context_menu_rows[2].0;
+
+        let outcome = mouse(&mut state, MouseEventKind::Moved, row.x + 1, row.y);
+        assert_eq!(context_highlight(&state), 2);
+        assert!(outcome.repaint);
+
+        let outcome = mouse(&mut state, MouseEventKind::Moved, 105, 19);
+        assert_eq!(context_highlight(&state), 2);
+        assert!(!outcome.repaint);
+    }
+
+    #[test]
+    fn clicking_outside_a_spaces_context_menu_closes_it_and_the_click_reaches_nothing_else() {
+        let mut state = shell(20);
+        open_workspace_menu(&mut state);
+        state.compose(106, 20).expect("context menu frame");
+        let pane = state.hits.panes[0].rect;
+        let point = (pane.right() - 2, pane.bottom() - 2);
+        assert!(!state
+            .hits
+            .context_menu_rows
+            .iter()
+            .any(|(rect, _)| contains(*rect, point)));
+
+        let outcome = mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            point.0,
+            point.1,
+        );
+
+        assert!(state.overlay.is_none());
+        assert!(outcome.actions.is_empty());
+        assert!(outcome.repaint);
+    }
+
+    #[test]
+    fn spaces_context_menu_keys_move_within_bounds_activate_with_enter_and_close_with_escape() {
+        let mut state = shell(20);
+        open_workspace_menu(&mut state);
+        let last = context_items(&state).len() - 1;
+
+        key(&mut state, KeyCode::Up);
+        assert_eq!(context_highlight(&state), 0);
+        key(&mut state, KeyCode::Down);
+        key(&mut state, KeyCode::Down);
+        key(&mut state, KeyCode::Up);
+        assert_eq!(context_highlight(&state), 1);
+        for _ in 0..last + 3 {
+            key(&mut state, KeyCode::Down);
+        }
+        assert_eq!(context_highlight(&state), last);
+
+        key(&mut state, KeyCode::Esc);
+        assert!(state.overlay.is_none());
+
+        open_workspace_menu(&mut state);
+        assert_eq!(
+            context_items(&state)[0].action,
+            ClientContextMenuAction::Rename
+        );
+        let outcome = key(&mut state, KeyCode::Enter);
+        assert!(outcome.actions.is_empty());
+        assert!(matches!(
+            state.overlay,
+            Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+                target: ClientRenameTarget::Workspace { ref workspace_id },
+                ..
+            })) if workspace_id == "ws_1"
+        ));
+    }
+
+    #[test]
+    fn global_menu_opens_as_a_framed_panel_right_aligned_directly_above_the_launcher() {
+        let mut state = shell(30);
+        let launcher = open_global_menu(&mut state);
+        let frame = state.compose(106, 30).expect("global menu frame");
+
+        let items = global_menu_items(&snapshot());
+        let width = items
+            .iter()
+            .map(|(label, action)| {
+                crate::client::shell::render::display_width(label)
+                    + u16::from(global_menu_item_has_badge(&snapshot(), *action)) * 2
+            })
+            .max()
+            .unwrap_or(8)
+            + 4;
+        let height = items.len() as u16 + 2;
+        let x = launcher.right() - width;
+        let y = launcher.y - height;
+        let rows = &state.hits.global_menu_rows;
+        assert_eq!(rows.len(), items.len());
+        for (index, (rect, item)) in rows.iter().enumerate() {
+            assert_eq!(*item, index);
+            assert_eq!(*rect, Rect::new(x + 1, y + 1 + index as u16, width - 2, 1));
+        }
+        assert_eq!(symbol_at(&frame, x, y), "┌");
+        assert_eq!(symbol_at(&frame, x + width - 1, y), "┐");
+        assert_eq!(symbol_at(&frame, x, y + height - 1), "└");
+        assert_eq!(symbol_at(&frame, x + width - 1, y + height - 1), "┘");
+        assert_eq!(global_highlight(&state), 0);
+    }
+
+    #[test]
+    fn moving_over_a_global_menu_row_highlights_it() {
+        let mut state = shell(30);
+        open_global_menu(&mut state);
+        state.compose(106, 30).expect("global menu frame");
+        let row = state.hits.global_menu_rows[2].0;
+
+        let outcome = mouse(&mut state, MouseEventKind::Moved, row.x + 1, row.y);
+
+        assert_eq!(global_highlight(&state), 2);
+        assert!(outcome.repaint);
+    }
+
+    #[test]
+    fn clicking_outside_the_global_menu_or_on_its_launcher_closes_it() {
+        let mut state = shell(30);
+        open_global_menu(&mut state);
+        state.compose(106, 30).expect("global menu frame");
+        let pane = state.hits.panes[0].rect;
+        let outcome = mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            pane.right() - 2,
+            pane.y + 1,
+        );
+        assert!(state.overlay.is_none());
+        assert!(outcome.actions.is_empty());
+
+        let launcher = open_global_menu(&mut state);
+        assert!(matches!(
+            state.overlay,
+            Some(ClientShellOverlay::GlobalMenu(_))
+        ));
+        state.compose(106, 30).expect("global menu frame");
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            launcher.x,
+            launcher.y,
+        );
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn global_menu_keys_move_within_bounds_with_arrows_or_j_k_and_close_with_escape() {
+        let mut state = shell(30);
+        open_global_menu(&mut state);
+        let last = global_menu_items(&snapshot()).len() - 1;
+
+        key(&mut state, KeyCode::Up);
+        assert_eq!(global_highlight(&state), 0);
+        key(&mut state, KeyCode::Down);
+        key(&mut state, KeyCode::Char('j'));
+        key(&mut state, KeyCode::Char('k'));
+        assert_eq!(global_highlight(&state), 1);
+        key(&mut state, KeyCode::Up);
+        for _ in 0..last + 3 {
+            key(&mut state, KeyCode::Down);
+        }
+        assert_eq!(global_highlight(&state), last);
+
+        key(&mut state, KeyCode::Esc);
+        assert!(state.overlay.is_none());
+    }
+
+    fn new_workspace_shell() -> ClientShellState {
+        let mut config = Config::default();
+        config.ui.prompt_new_workspace_name = false;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(surface());
+        state.compose(106, 20).expect("composed frame");
+        state
+    }
+
+    /// Clicks the spaces " new" footer and renders the chooser it opens.
+    fn open_new_workspace_chooser(state: &mut ClientShellState) -> ClientShellInput {
+        let footer = state.hits.new_workspace;
+        let outcome = mouse(
+            state,
+            MouseEventKind::Down(MouseButton::Left),
+            footer.x + 1,
+            footer.y,
+        );
+        state.compose(106, 20).expect("chooser frame");
+        outcome
+    }
+
+    fn click_chooser_row(state: &mut ClientShellState, index: usize) -> ClientShellInput {
+        let (row, _) = state
+            .hits
+            .new_workspace_menu_rows
+            .iter()
+            .copied()
+            .find(|(_, item)| *item == index)
+            .expect("chooser row drawn");
+        mouse(
+            state,
+            MouseEventKind::Down(MouseButton::Left),
+            row.x + 1,
+            row.y,
+        )
+    }
+
+    fn method_names(methods: &[crate::api::schema::Method]) -> Option<Vec<String>> {
+        Some(
+            methods
+                .iter()
+                .map(|method| crate::api::api_method_name(method).to_owned())
+                .collect(),
+        )
+    }
+
+    fn single_request(outcome: &ClientShellInput) -> &crate::api::schema::Method {
+        let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+            panic!("one endpoint request");
+        };
+        &request.method
+    }
+
+    #[test]
+    fn clicking_new_workspace_creates_one_from_the_current_workspace_without_cwd_or_label() {
+        let mut state = new_workspace_shell();
+
+        let opened = open_new_workspace_chooser(&mut state);
+        assert!(opened.actions.is_empty());
+        assert!(matches!(
+            state.overlay,
+            Some(ClientShellOverlay::NewWorkspaceMenu(_))
+        ));
+
+        let outcome = click_chooser_row(&mut state, 0);
+
+        let crate::api::schema::Method::WorkspaceCreate(params) = single_request(&outcome) else {
+            panic!("workspace.create");
+        };
+        assert_eq!(params.source_workspace_id.as_deref(), Some("ws_1"));
+        assert_eq!(params.cwd, None);
+        assert_eq!(params.label, None);
+        assert!(params.focus);
+        assert!(params.env.is_empty());
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn new_workspace_chooser_lists_local_ssh_and_container_directly_above_the_footer() {
+        let mut state = new_workspace_shell();
+        let footer = state.hits.new_workspace;
+        open_new_workspace_chooser(&mut state);
+
+        let labels: Vec<&str> = state
+            .new_workspace_menu_items()
+            .iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["local", "ssh host…", "container…"]);
+        let rows = &state.hits.new_workspace_menu_rows;
+        let indices: Vec<usize> = rows.iter().map(|(_, index)| *index).collect();
+        assert_eq!(indices, [0, 1, 2]);
+        let last = rows[2].0;
+        assert_eq!(
+            rows[0].0.x,
+            footer.x + 1,
+            "left border on the footer column"
+        );
+        assert_eq!(
+            last.y + 2,
+            footer.y,
+            "bottom border on the row above the footer"
+        );
+    }
+
+    #[test]
+    fn new_workspace_chooser_disables_ssh_host_when_the_server_lacks_ssh_hosts() {
+        use crate::api::schema::{ContainerListParams, Method};
+        let mut state = new_workspace_shell();
+        state.set_endpoint_methods(method_names(&[Method::ContainerList(
+            ContainerListParams::default(),
+        )]));
+        open_new_workspace_chooser(&mut state);
+
+        let enabled: Vec<bool> = state
+            .new_workspace_menu_items()
+            .iter()
+            .map(|item| item.enabled)
+            .collect();
+        assert_eq!(enabled, [true, false, true]);
+        let click = click_chooser_row(&mut state, 1);
+        assert!(click.actions.is_empty());
+        key(&mut state, KeyCode::Down);
+        key(&mut state, KeyCode::Down);
+        let enter = key(&mut state, KeyCode::Enter);
+        assert!(enter.actions.is_empty());
+        assert!(matches!(
+            state.overlay,
+            Some(ClientShellOverlay::NewWorkspaceMenu(_))
+        ));
+    }
+
+    #[test]
+    fn new_workspace_chooser_disables_container_when_the_server_cannot_list_containers() {
+        use crate::api::schema::{Method, SshHostsParams};
+        let mut state = new_workspace_shell();
+        state.set_endpoint_methods(method_names(&[Method::SshHosts(SshHostsParams::default())]));
+
+        let enabled: Vec<bool> = state
+            .new_workspace_menu_items()
+            .iter()
+            .map(|item| item.enabled)
+            .collect();
+        assert_eq!(enabled, [true, true, false]);
+    }
+
+    #[test]
+    fn choosing_ssh_host_in_the_new_workspace_chooser_lists_ssh_hosts_for_the_picker() {
+        let mut state = new_workspace_shell();
+        open_new_workspace_chooser(&mut state);
+
+        let outcome = click_chooser_row(&mut state, 1);
+
+        assert!(matches!(
+            single_request(&outcome),
+            crate::api::schema::Method::SshHosts(_)
+        ));
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn enter_activates_only_the_highlighted_chooser_row() {
+        let mut state = new_workspace_shell();
+        open_new_workspace_chooser(&mut state);
+
+        key(&mut state, KeyCode::Down);
+        key(&mut state, KeyCode::Down);
+        let outcome = key(&mut state, KeyCode::Enter);
+
+        assert!(matches!(
+            single_request(&outcome),
+            crate::api::schema::Method::SshHosts(_)
+        ));
+    }
+
+    fn chooser_highlight(state: &ClientShellState) -> Option<usize> {
+        match state.overlay.as_ref() {
+            Some(ClientShellOverlay::NewWorkspaceMenu(menu)) => menu.highlighted,
+            _ => panic!("new workspace chooser is open"),
+        }
+    }
+
+    #[test]
+    fn the_new_workspace_chooser_opens_with_no_row_highlighted_and_enter_does_nothing() {
+        let mut state = new_workspace_shell();
+        open_new_workspace_chooser(&mut state);
+        assert_eq!(chooser_highlight(&state), None);
+
+        let outcome = key(&mut state, KeyCode::Enter);
+
+        assert!(outcome.actions.is_empty());
+        assert_eq!(chooser_highlight(&state), None);
+    }
+
+    #[test]
+    fn down_or_hovering_highlights_a_chooser_row() {
+        let mut state = new_workspace_shell();
+        open_new_workspace_chooser(&mut state);
+        key(&mut state, KeyCode::Down);
+        assert_eq!(chooser_highlight(&state), Some(0));
+
+        key(&mut state, KeyCode::Esc);
+        open_new_workspace_chooser(&mut state);
+        assert_eq!(chooser_highlight(&state), None);
+        let (row, _) = state.hits.new_workspace_menu_rows[2];
+        mouse(&mut state, MouseEventKind::Moved, row.x + 1, row.y);
+        assert_eq!(chooser_highlight(&state), Some(2));
+    }
+
+    #[test]
+    fn up_without_a_highlight_starts_at_the_last_chooser_row() {
+        let mut state = new_workspace_shell();
+        open_new_workspace_chooser(&mut state);
+
+        key(&mut state, KeyCode::Up);
+
+        assert_eq!(chooser_highlight(&state), Some(2));
+    }
+
+    #[test]
+    fn the_wheel_over_an_overflowing_popup_menu_scrolls_it_by_one_and_keeps_the_highlight_inside() {
+        let mut state = shell(6);
+        open_global_menu(&mut state);
+        state.compose(106, 6).expect("global menu frame");
+        let item_count = global_menu_items(&snapshot()).len();
+        let visible = state.hits.global_menu_rows.len();
+        assert!(visible + 1 < item_count);
+        let (top, _) = state.hits.global_menu_rows[0];
+
+        mouse(&mut state, MouseEventKind::ScrollDown, top.x + 1, top.y);
+        state.compose(106, 6).expect("scrolled menu frame");
+
+        assert_eq!(state.hits.global_menu_rows[0].1, 1);
+        assert_eq!(global_highlight(&state), 1);
+
+        let (top, _) = state.hits.global_menu_rows[0];
+        mouse(&mut state, MouseEventKind::ScrollUp, top.x + 1, top.y);
+        state.compose(106, 6).expect("scrolled back frame");
+
+        assert_eq!(state.hits.global_menu_rows[0].1, 0);
+        assert_eq!(global_highlight(&state), 1);
+    }
+
+    #[test]
+    fn esc_or_a_click_outside_closes_the_new_workspace_chooser_without_a_request() {
+        let mut state = new_workspace_shell();
+        open_new_workspace_chooser(&mut state);
+        let esc = key(&mut state, KeyCode::Esc);
+        assert!(esc.actions.is_empty());
+        assert!(state.overlay.is_none());
+
+        open_new_workspace_chooser(&mut state);
+        let outside = mouse(&mut state, MouseEventKind::Down(MouseButton::Left), 100, 2);
+        assert!(outside.actions.is_empty());
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn multi_endpoint_new_footer_opens_the_same_chooser() {
+        let mut state = new_workspace_shell();
+        let profile = crate::client::endpoint::SavedSshEndpoint {
+            id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+                .expect("profile id"),
+            label: "Build".into(),
+            target: "dev@build.example".into(),
+            session: "agents".into(),
+            enabled: true,
+        };
+        let remote = ClientEndpointId::Ssh(profile.id.clone());
+        state.set_endpoint_catalog(&[profile]);
+        state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
+        state.compose(106, 20).expect("endpoint sidebar frame");
+        let footer = state.hits.new_workspace;
+        assert!(footer.width > " new".len() as u16, "endpoint footer drawn");
+
+        open_new_workspace_chooser(&mut state);
+        let outcome = click_chooser_row(&mut state, 0);
+
+        assert!(matches!(
+            single_request(&outcome),
+            crate::api::schema::Method::WorkspaceCreate(_)
+        ));
+    }
+
+    #[test]
+    fn an_overflowing_menu_keeps_its_scrolled_window_when_a_visible_row_is_hovered() {
+        let mut state = shell(6);
+        open_global_menu(&mut state);
+        state.compose(106, 6).expect("global menu frame");
+        let item_count = global_menu_items(&snapshot()).len();
+        assert!(state.hits.global_menu_rows.len() < item_count);
+        for _ in 0..item_count {
+            key(&mut state, KeyCode::Down);
+        }
+        state.compose(106, 6).expect("scrolled menu frame");
+        let scrolled: Vec<usize> = state
+            .hits
+            .global_menu_rows
+            .iter()
+            .map(|(_, index)| *index)
+            .collect();
+        assert_eq!(scrolled.last(), Some(&(item_count - 1)));
+
+        let (top, top_index) = state.hits.global_menu_rows[0];
+        mouse(&mut state, MouseEventKind::Moved, top.x + 1, top.y);
+        state.compose(106, 6).expect("hovered menu frame");
+
+        assert_eq!(global_highlight(&state), top_index);
+        let after: Vec<usize> = state
+            .hits
+            .global_menu_rows
+            .iter()
+            .map(|(_, index)| *index)
+            .collect();
+        assert_eq!(after, scrolled);
+    }
 }
