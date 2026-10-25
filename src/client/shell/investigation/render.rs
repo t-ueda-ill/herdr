@@ -163,15 +163,16 @@ impl ClientShellState {
                 "files"
             }
         );
-        let title = format!("{head} · F10 actions");
-        text(b, line(area, 0), &title, base.add_modifier(Modifier::BOLD));
+        text(b, line(area, 0), &head, base.add_modifier(Modifier::BOLD));
+        self.investigation_hits.title = line(area, 0);
+        let menu_width = 3u16;
         let actions = Rect::new(
-            area.right().saturating_sub(13).max(area.x),
+            area.right().saturating_sub(menu_width).max(area.x),
             area.y,
-            13.min(area.width),
+            menu_width.min(area.width),
             1,
         );
-        text(b, actions, "[F10 actions]", base.fg(p.accent));
+        text(b, actions, " ≡ ", base.fg(p.accent));
         self.investigation_hits.buttons.push((actions, None));
         // Dropped rather than overlapped when the title needs the room.
         let refresh_width = 12u16;
@@ -574,6 +575,7 @@ fn render_menu(
     let anchor = match placement {
         MenuPlacement::Pointer { x, y } => menu_widget::MenuAnchor::TopLeft { x, y },
         MenuPlacement::Selection => selection_anchor(target, tab, hits),
+        MenuPlacement::Header => header_anchor(hits),
     };
     if let Some(rendered) = menu_widget::render_menu(
         b,
@@ -588,6 +590,20 @@ fn render_menu(
         hits.menu_area = rendered.area;
         hits.menu_scroll = rendered.scroll;
     }
+}
+/// Under the title line's menu button, else the region's top-left when
+/// the frame had no room for it.
+fn header_anchor(hits: &Hits) -> menu_widget::MenuAnchor {
+    hits.buttons
+        .iter()
+        .find(|(_, label)| label.is_none())
+        .map_or(
+            menu_widget::MenuAnchor::TopLeft {
+                x: hits.region.x,
+                y: hits.region.y,
+            },
+            |(rect, _)| menu_widget::MenuAnchor::NearRect(*rect),
+        )
 }
 /// Under the focused search field or the selected row when it is drawn,
 /// else the top-left of the pane the target lives in.

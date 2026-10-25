@@ -321,6 +321,10 @@ pub(in crate::client::shell) enum MenuPlacement {
     /// Why not a cell fixed at open time: the row moves when the frame is
     /// resized or scrolled before the next draw.
     Selection,
+    /// Under the title line's menu button, else the region's top-left.
+    /// Why resolved at draw time like `Selection`: the button moves with
+    /// the region's width and dock.
+    Header,
 }
 #[derive(Debug)]
 pub(in crate::client::shell) struct UploadDialog {
@@ -719,8 +723,10 @@ pub(in crate::client::shell) struct Hits {
     /// The menu box, which may run past a docked region onto the terminals.
     pub menu_area: Rect,
     pub menu_scroll: usize,
-    /// `None` opens the actions menu; `Some` runs that menu action.
+    /// `None` opens the files-wide menu; `Some` runs that menu action.
     pub buttons: Vec<(Rect, Option<&'static str>)>,
+    /// The title line, whose right-click opens the files-wide menu.
+    pub title: Rect,
     pub dialog_keys: Vec<(Rect, KeyCode, crossterm::event::KeyModifiers)>,
     pub terminal_tabs: Vec<(Rect, String)>,
     /// Where the body was drawn: the files region in split, else the pane
@@ -733,7 +739,7 @@ pub(in crate::client::shell) struct Hits {
     /// it rather than move the cursor to the terminal.
     pub focused_cursor: Option<crate::protocol::CursorState>,
 }
-pub(in crate::client::shell) const NEW_INVESTIGATION: &str = "new investigation";
+pub(in crate::client::shell) const NEW_INVESTIGATION: &str = "new files tab";
 pub(in crate::client::shell) const CHANGE_ROOT: &str = "change root";
 pub(in crate::client::shell) const TOGGLE_SPLIT_DIRECTION: &str = "toggle split direction";
 pub(in crate::client::shell) const COPY_PATH: &str = "copy path";
@@ -756,7 +762,7 @@ pub(in crate::client::shell) const TOGGLE_WHOLE_WORD: &str = "toggle whole word"
 pub(in crate::client::shell) const INCLUDE_IGNORED: &str = "include ignored files";
 /// Tree rows for files that ignore rules leave out, like the `i` key.
 pub(in crate::client::shell) const SHOW_IGNORED: &str = "show ignored files";
-pub(in crate::client::shell) const CLOSE_INVESTIGATION: &str = "close investigation";
+pub(in crate::client::shell) const CLOSE_INVESTIGATION: &str = "close files tab";
 pub(in crate::client::shell) const TOGGLE_FILE_MATCHES: &str = "toggle matches in current file";
 pub(in crate::client::shell) const REFRESH_SEARCH: &str = "refresh content search";
 pub(in crate::client::shell) const REFRESH_FILES: &str = "refresh files";

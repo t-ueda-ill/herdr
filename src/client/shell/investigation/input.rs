@@ -45,6 +45,11 @@ impl ClientShellState {
             self.route_investigation_dialog(code, modifiers, key, outcome);
             return;
         }
+        // Why before the selection menu: its F10 check ignores modifiers.
+        if code == KeyCode::F(10) && shift {
+            tab.dialog = Some(Dialog::menu(MenuTarget::Tree, MenuPlacement::Header));
+            return;
+        }
         if code == KeyCode::F(10) || code == KeyCode::Char('m') && modifiers == M::ALT {
             tab.dialog = Some(Dialog::menu(
                 tab.selection_menu_target(),
@@ -574,7 +579,8 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         let point = (mouse.column, mouse.row);
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        let right = mouse.kind == MouseEventKind::Down(MouseButton::Right);
+        if right || mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             if let Some((_, index)) = self
                 .investigation_hits
                 .tabs
@@ -585,10 +591,15 @@ impl ClientShellState {
                 self.show_files(index);
                 if let Some(tab) = self.investigation_mut() {
                     tab.hovered = None;
+                    if right {
+                        open_files_menu(tab, mouse);
+                    }
                 }
                 outcome.repaint = true;
                 return true;
             }
+        }
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             if let Some((_, id)) = self
                 .investigation_hits
                 .terminal_tabs
@@ -679,6 +690,7 @@ impl ClientShellState {
             .iter()
             .find(|(r, _)| contains(*r, point))
             .map(|(_, i)| *i);
+        let title = contains(self.investigation_hits.title, point);
         let button = self
             .investigation_hits
             .buttons
@@ -793,13 +805,13 @@ impl ClientShellState {
                 Some(label) => {
                     self.investigation_menu_action(label, outcome);
                 }
-                None => {
-                    tab.dialog = Some(Dialog::menu(
-                        tab.selection_menu_target(),
-                        MenuPlacement::Selection,
-                    ))
-                }
+                None => tab.dialog = Some(Dialog::menu(MenuTarget::Tree, MenuPlacement::Header)),
             }
+            outcome.repaint = true;
+            return true;
+        }
+        if title && mouse.kind == MouseEventKind::Down(MouseButton::Right) {
+            open_files_menu(tab, mouse);
             outcome.repaint = true;
             return true;
         }
@@ -1019,6 +1031,26 @@ impl ClientShellState {
     }
 }
 
+/// Opens the files-wide menu with its corner at the clicked cell.
+/// Why not over another dialog: replacing a confirmation or a typed name
+/// would lose it.
+fn open_files_menu(tab: &mut Investigation, mouse: MouseEvent) {
+    if tab
+        .dialog
+        .as_ref()
+        .is_some_and(|dialog| !matches!(dialog, Dialog::Menu { .. }))
+    {
+        return;
+    }
+    tab.dialog = Some(Dialog::menu(
+        MenuTarget::Tree,
+        MenuPlacement::Pointer {
+            x: mouse.column,
+            y: mouse.row,
+        },
+    ));
+}
+
 /// Makes the right-clicked row the one the menu acts on. A row inside a
 /// multi-selection keeps it, so the menu acts on every marked entry.
 fn select_for_menu(tab: &mut Investigation, index: usize) {
@@ -1055,6 +1087,7 @@ impl ClientShellState {
             ("rename", KeyCode::F(2), M::empty()),
             ("delete", KeyCode::Delete, M::empty()),
             ("actions", KeyCode::F(10), M::empty()),
+            ("files_menu", KeyCode::F(10), M::SHIFT),
             ("refresh", KeyCode::F(5), M::empty()),
         ];
         let actual = crate::config::normalize_key_combo((key.code, key.modifiers));

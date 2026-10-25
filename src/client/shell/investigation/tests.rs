@@ -2466,7 +2466,7 @@ mod offhost {
     }
 
     #[test]
-    fn the_refresh_header_button_refreshes_and_never_overlaps_the_actions_button() {
+    fn the_refresh_header_button_refreshes_and_never_overlaps_the_files_menu_button() {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         for width in [120u16, 60, 36] {
             let mut state = refreshable_state();
@@ -5659,5 +5659,221 @@ mod split_patches {
             panic!("patch fell back to a recompose");
         };
         assert_eq!(applied.cursor.map(|c| c.x), Some(terminal.x + 1));
+    }
+}
+
+mod files_menu {
+    use super::*;
+    use crate::client::shell::{ClientContextMenuOverlay, ClientContextMenuTarget};
+    use crossterm::event::{KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind};
+
+    const COLS: u16 = 160;
+    const ROWS: u16 = 32;
+
+    /// The workbench docked beside the test pane with the files focused,
+    /// composed so hits exist.
+    fn composed() -> ClientShellState {
+        let mut state = state();
+        state.workbench.placement.presentation = FilesPresentation::Split;
+        state.remember_files_placement();
+        state.show_files(0);
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        state.compose(COLS, ROWS).expect("composed split");
+        state
+    }
+
+    fn mouse(state: &mut ClientShellState, button: MouseButton, x: u16, y: u16) {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(button),
+            column: x,
+            row: y,
+            modifiers: M::empty(),
+        })]);
+    }
+
+    fn menu(state: &ClientShellState) -> Option<(MenuTarget, MenuPlacement)> {
+        match state.investigation()?.dialog {
+            Some(Dialog::Menu { target, anchor, .. }) => Some((target, anchor)),
+            _ => None,
+        }
+    }
+
+    fn menu_button(state: &ClientShellState) -> Rect {
+        state
+            .investigation_hits
+            .buttons
+            .iter()
+            .find(|(_, label)| label.is_none())
+            .map(|(rect, _)| *rect)
+            .expect("menu button drawn")
+    }
+
+    fn menu_box(state: &mut ClientShellState) -> Rect {
+        state.compose(COLS, ROWS).expect("composed menu");
+        state.investigation_hits.menu_area
+    }
+
+    #[test]
+    fn right_clicking_the_title_line_opens_the_files_wide_menu_at_the_clicked_cell() {
+        let mut state = composed();
+        let title = state.investigation_hits.title;
+        let (x, y) = (title.x + 4, title.y);
+
+        mouse(&mut state, MouseButton::Right, x, y);
+
+        assert_eq!(
+            menu(&state),
+            Some((MenuTarget::Tree, MenuPlacement::Pointer { x, y }))
+        );
+        let area = menu_box(&mut state);
+        assert_eq!((area.x, area.y), (x, y));
+    }
+
+    #[test]
+    fn the_title_line_shows_the_menu_button_without_the_f10_hint() {
+        let mut state = composed();
+        let frame = state.compose(COLS, ROWS).expect("composed split");
+        let title = state.investigation_hits.title;
+        let row: String = frame.cells[title.y as usize * frame.width as usize..]
+            [..frame.width as usize]
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect();
+
+        assert!(!row.contains("F10"), "{row}");
+        let button = menu_button(&state);
+        assert_eq!(button.width, 3);
+        assert_eq!(button.right(), title.right());
+        assert!(row.contains('≡'), "{row}");
+    }
+
+    #[test]
+    fn clicking_the_menu_button_opens_the_files_wide_menu_beside_it() {
+        let mut state = composed();
+        let button = menu_button(&state);
+
+        mouse(&mut state, MouseButton::Left, button.x + 1, button.y);
+
+        assert_eq!(
+            menu(&state),
+            Some((MenuTarget::Tree, MenuPlacement::Header))
+        );
+        let area = menu_box(&mut state);
+        assert_eq!(area.y, button.bottom(), "drawn under the button");
+        assert!(area.x <= button.x && area.right() <= COLS);
+    }
+
+    #[test]
+    fn right_clicking_a_files_tab_activates_it_and_opens_its_files_wide_menu() {
+        let mut state = composed();
+        let sibling = super::state().workbench.tabs.remove(0);
+        state.workbench.tabs.push(sibling);
+        state.compose(COLS, ROWS).expect("composed two tabs");
+        let (rect, _) = *state
+            .investigation_hits
+            .tabs
+            .iter()
+            .find(|(_, index)| *index == 1)
+            .expect("second files tab drawn");
+
+        mouse(&mut state, MouseButton::Right, rect.x + 1, rect.y);
+
+        assert_eq!(state.workbench.active, Some(1));
+        assert_eq!(
+            menu(&state),
+            Some((
+                MenuTarget::Tree,
+                MenuPlacement::Pointer {
+                    x: rect.x + 1,
+                    y: rect.y
+                }
+            ))
+        );
+        assert!(state.overlay.is_none(), "no terminal tab menu");
+    }
+
+    #[test]
+    fn right_clicking_a_files_tab_keeps_an_open_confirmation() {
+        let mut state = composed();
+        state.investigation_mut().unwrap().dialog = Some(Dialog::Send {
+            path: "/repo/a.txt".into(),
+            pane: "pane_1".into(),
+            boot: "boot-1".into(),
+        });
+        let (rect, _) = state.investigation_hits.tabs[0];
+
+        mouse(&mut state, MouseButton::Right, rect.x + 1, rect.y);
+
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Send { .. })
+        ));
+    }
+
+    #[test]
+    fn right_clicking_a_terminal_tab_still_opens_the_terminal_tab_menu() {
+        let mut state = composed();
+        let (rect, tab_id) = state.investigation_hits.terminal_tabs[0].clone();
+
+        mouse(&mut state, MouseButton::Right, rect.x + 1, rect.y);
+
+        assert!(matches!(
+            &state.overlay,
+            Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+                target: ClientContextMenuTarget::Tab { tab_id: id, .. },
+                ..
+            })) if *id == tab_id
+        ));
+        assert!(menu(&state).is_none());
+    }
+
+    #[test]
+    fn shift_f10_opens_the_files_wide_menu_at_the_menu_button() {
+        let mut state = composed();
+        let button = menu_button(&state);
+
+        press(&mut state, KeyCode::F(10), M::SHIFT);
+
+        assert_eq!(
+            menu(&state),
+            Some((MenuTarget::Tree, MenuPlacement::Header))
+        );
+        assert_eq!(menu_box(&mut state).y, button.bottom());
+    }
+
+    #[test]
+    fn shift_f10_follows_a_configured_files_menu_key() {
+        let mut state = composed();
+        state
+            .config
+            .file_workbench_keys
+            .insert("files_menu".into(), "alt+f".into());
+
+        press(&mut state, KeyCode::Char('f'), M::ALT);
+
+        assert_eq!(
+            menu(&state),
+            Some((MenuTarget::Tree, MenuPlacement::Header))
+        );
+    }
+
+    #[test]
+    fn f10_still_opens_the_menu_of_the_selection() {
+        let mut state = composed();
+        let tab = state.investigation_mut().unwrap();
+        tab.focus = Focus::Results;
+        tab.browser.selected = tab
+            .browser
+            .rows
+            .iter()
+            .position(|row| row.entry.as_ref().is_some_and(|entry| !entry.is_dir))
+            .expect("file row");
+
+        press(&mut state, KeyCode::F(10), M::empty());
+
+        assert_eq!(
+            menu(&state),
+            Some((MenuTarget::File, MenuPlacement::Selection))
+        );
     }
 }

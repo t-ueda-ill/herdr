@@ -1028,7 +1028,7 @@
           "key": "ui.file_workbench_keys",
           "type": "table",
           "default": "{}",
-          "description": "Investigation-only key overrides by action name. Example: [ui.file_workbench_keys] next_file = \"alt+right\". Actions: pin, read, next_file, previous_file, close_file, find_files, search, replace, edit, copy, cut, paste, select_all, rename, delete, actions, refresh."
+          "description": "Files tab key overrides by action name. Example: [ui.file_workbench_keys] next_file = \"alt+right\". Actions: pin, read, next_file, previous_file, close_file, find_files, search, replace, edit, copy, cut, paste, select_all, rename, delete, actions, files_menu, refresh."
         },
         {
           "key": "ui.pane_borders",
