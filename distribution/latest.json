@@ -1,23 +1,42 @@
 {
-  "version": "0.9.507",
+  "version": "0.9.508",
   "protocol": 22,
   "endpoint_generation": 1,
-  "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.507\n- Source commit: 6cae1f36210232071c2ba418b486c7eb3b091b9c\n\nSHA-256:\n\n```\n549ec59b164cd726714bf5ce330aee14ff3ca030a6b50e852800bff695f037a8  herdr-linux-x86_64\n032da2e5d4c6496c7999f3dbf3b7f231429406677026f9a73f07c5905786d5a3  herdr-linux-aarch64\n2065dda41bdfe3e06552333404414221b51182aa81e06b22b5736ace853f1b54  herdr-macos-x86_64\n6bd05dcf6b2dd3876e5d77ab23da004c82cda1189f168a58a2a22d3926fd7074  herdr-macos-aarch64\n7b4060e731fe1b82d4285fc5f5bc11032337ffc2d9881e68169fedeedd928ff6  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.506 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/31\n* test: make the download tests hold on macos, windows, and busybox runners by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/33\n* feat: follow the remote directory in ssh and container panes by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/32\n* test: drive the opencode tui plugin tests with a fake clock by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/35\n* feat: announce agents started in ssh and container panes by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/34\n* chore: prepare v0.9.507 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/36\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.506...v0.9.507",
+  "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.508\n- Source commit: 7695bb76ca46d3e4d231250114ec2db150542148\n\nSHA-256:\n\n```\nab01b00934f80cc63f6d02a6ede4721ed0cba0efdac360d9dbf338e7fc0c2793  herdr-linux-x86_64\ne7ebbf3436fc882b0617699a4b5fdda471e877ad4adf93a544ddd18aacad21cb  herdr-linux-aarch64\n367247a97396db0ced02d0f927aab50b1c818078f7160fd92de3b99d81e2135c  herdr-macos-x86_64\n68cbfb760b603a70a70a070a5a19af706748a768501ff0c9690a22e08ec9443c  herdr-macos-aarch64\nf286bd5f86edd8e087d18643e52be371388c0ee2d32a4f78be2f81cdadd541f3  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.507 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/37\n* feat: dock the files workbench beside the terminals, share one anchored menu, and choose the new workspace kind by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/38\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.507...v0.9.508",
   "assets": {
-    "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-linux-x86_64",
-    "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-linux-aarch64",
-    "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-macos-x86_64",
-    "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-macos-aarch64",
-    "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.507/herdr-windows-x86_64.zip"
+    "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.508/herdr-linux-x86_64",
+    "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.508/herdr-linux-aarch64",
+    "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.508/herdr-macos-x86_64",
+    "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.508/herdr-macos-aarch64",
+    "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.508/herdr-windows-x86_64.zip"
   },
   "sha256": {
-    "linux-x86_64": "549ec59b164cd726714bf5ce330aee14ff3ca030a6b50e852800bff695f037a8",
-    "linux-aarch64": "032da2e5d4c6496c7999f3dbf3b7f231429406677026f9a73f07c5905786d5a3",
-    "macos-x86_64": "2065dda41bdfe3e06552333404414221b51182aa81e06b22b5736ace853f1b54",
-    "macos-aarch64": "6bd05dcf6b2dd3876e5d77ab23da004c82cda1189f168a58a2a22d3926fd7074",
-    "windows-x86_64": "7b4060e731fe1b82d4285fc5f5bc11032337ffc2d9881e68169fedeedd928ff6"
+    "linux-x86_64": "ab01b00934f80cc63f6d02a6ede4721ed0cba0efdac360d9dbf338e7fc0c2793",
+    "linux-aarch64": "e7ebbf3436fc882b0617699a4b5fdda471e877ad4adf93a544ddd18aacad21cb",
+    "macos-x86_64": "367247a97396db0ced02d0f927aab50b1c818078f7160fd92de3b99d81e2135c",
+    "macos-aarch64": "68cbfb760b603a70a70a070a5a19af706748a768501ff0c9690a22e08ec9443c",
+    "windows-x86_64": "f286bd5f86edd8e087d18643e52be371388c0ee2d32a4f78be2f81cdadd541f3"
   },
   "releases": {
+    "0.9.508": {
+      "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.508\n- Source commit: 7695bb76ca46d3e4d231250114ec2db150542148\n\nSHA-256:\n\n```\nab01b00934f80cc63f6d02a6ede4721ed0cba0efdac360d9dbf338e7fc0c2793  herdr-linux-x86_64\ne7ebbf3436fc882b0617699a4b5fdda471e877ad4adf93a544ddd18aacad21cb  herdr-linux-aarch64\n367247a97396db0ced02d0f927aab50b1c818078f7160fd92de3b99d81e2135c  herdr-macos-x86_64\n68cbfb760b603a70a70a070a5a19af706748a768501ff0c9690a22e08ec9443c  herdr-macos-aarch64\nf286bd5f86edd8e087d18643e52be371388c0ee2d32a4f78be2f81cdadd541f3  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.507 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/37\n* feat: dock the files workbench beside the terminals, share one anchored menu, and choose the new workspace kind by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/38\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.507...v0.9.508",
+      "protocol": 22,
+      "endpoint_generation": 1,
+      "assets": {
+        "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.508/herdr-linux-x86_64",
+        "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.508/herdr-linux-aarch64",
+        "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.508/herdr-macos-x86_64",
+        "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.508/herdr-macos-aarch64",
+        "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.508/herdr-windows-x86_64.zip"
+      },
+      "sha256": {
+        "linux-x86_64": "ab01b00934f80cc63f6d02a6ede4721ed0cba0efdac360d9dbf338e7fc0c2793",
+        "linux-aarch64": "e7ebbf3436fc882b0617699a4b5fdda471e877ad4adf93a544ddd18aacad21cb",
+        "macos-x86_64": "367247a97396db0ced02d0f927aab50b1c818078f7160fd92de3b99d81e2135c",
+        "macos-aarch64": "68cbfb760b603a70a70a070a5a19af706748a768501ff0c9690a22e08ec9443c",
+        "windows-x86_64": "f286bd5f86edd8e087d18643e52be371388c0ee2d32a4f78be2f81cdadd541f3"
+      }
+    },
     "0.9.507": {
       "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.507\n- Source commit: 6cae1f36210232071c2ba418b486c7eb3b091b9c\n\nSHA-256:\n\n```\n549ec59b164cd726714bf5ce330aee14ff3ca030a6b50e852800bff695f037a8  herdr-linux-x86_64\n032da2e5d4c6496c7999f3dbf3b7f231429406677026f9a73f07c5905786d5a3  herdr-linux-aarch64\n2065dda41bdfe3e06552333404414221b51182aa81e06b22b5736ace853f1b54  herdr-macos-x86_64\n6bd05dcf6b2dd3876e5d77ab23da004c82cda1189f168a58a2a22d3926fd7074  herdr-macos-aarch64\n7b4060e731fe1b82d4285fc5f5bc11032337ffc2d9881e68169fedeedd928ff6  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.506 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/31\n* test: make the download tests hold on macos, windows, and busybox runners by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/33\n* feat: follow the remote directory in ssh and container panes by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/32\n* test: drive the opencode tui plugin tests with a fake clock by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/35\n* feat: announce agents started in ssh and container panes by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/34\n* chore: prepare v0.9.507 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/36\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.506...v0.9.507",
       "protocol": 22,
