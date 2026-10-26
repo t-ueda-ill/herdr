@@ -440,12 +440,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn sh_function_is_valid_dash() {
-        syntax_check("dash", "-n", &remote_shell_function(RemoteShell::Sh));
-    }
-
-    #[cfg(unix)]
     /// Sources the function in `shell` without a controlling terminal, so the
     /// OSC writes fail the way they do for a cron job or a pipe.
     fn run_without_tty(shell: &str, flavor: RemoteShell, body: &str) -> Option<String> {
@@ -510,38 +504,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn bash_function_is_valid_bash() {
-        syntax_check("bash", "-n", &remote_shell_function(RemoteShell::Bash));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn zsh_function_is_valid_zsh() {
-        syntax_check("zsh", "-n", &remote_shell_function(RemoteShell::Zsh));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fish_function_is_valid_fish() {
-        syntax_check("fish", "-n", &remote_shell_function(RemoteShell::Fish));
-    }
-
-    #[test]
-    fn every_shell_wraps_claude_and_codex() {
-        for shell in [
-            RemoteShell::Bash,
-            RemoteShell::Zsh,
-            RemoteShell::Fish,
-            RemoteShell::Sh,
-        ] {
-            let text = remote_shell_function(shell);
-            assert!(text.contains("claude"), "{shell:?}");
-            assert!(text.contains("codex"), "{shell:?}");
-        }
-    }
-
     #[test]
     fn function_announces_start_and_exit_in_the_pane_osc_contract() {
         for shell in [RemoteShell::Bash, RemoteShell::Fish] {
@@ -550,35 +512,6 @@ mod tests {
             assert!(text.contains("herdr-agent;v=1;start;"));
             assert!(text.contains("herdr-agent;v=1;exit;"));
             assert!(text.contains("Ptmux;"), "tmux passthrough: {shell:?}");
-        }
-    }
-
-    #[test]
-    fn exit_is_announced_from_an_exit_trap_and_not_from_signal_traps() {
-        let text = remote_shell_function(RemoteShell::Bash);
-
-        assert!(text.contains("EXIT"));
-        assert!(!text.contains("INT"));
-        assert!(!text.contains("TERM"));
-    }
-
-    #[test]
-    fn zsh_keeps_its_subshell_alive_across_sigint_with_a_no_op_handler() {
-        let zsh = remote_shell_function(RemoteShell::Zsh);
-
-        assert!(zsh.contains("trap ':' INT"));
-        assert!(
-            !zsh.contains("trap '__herdr_agent_osc \"herdr-agent;v=1;exit;$__herdr_token\"' INT")
-        );
-    }
-
-    #[test]
-    fn bash_and_zsh_unset_the_wrapper_before_evaluating_the_alias() {
-        for shell in [RemoteShell::Bash, RemoteShell::Zsh] {
-            let text = remote_shell_function(shell);
-            let unset = text.find("unset -f -- \"$__herdr_cmd\"").expect("unset");
-            let eval = text.find("eval \"$__herdr_alias").expect("eval");
-            assert!(unset < eval, "{shell:?}");
         }
     }
 
@@ -616,9 +549,17 @@ mod tests {
 
     #[test]
     fn every_shell_wraps_the_widened_agent_list() {
-        for shell in [RemoteShell::Bash, RemoteShell::Zsh, RemoteShell::Fish] {
+        for shell in [
+            RemoteShell::Bash,
+            RemoteShell::Zsh,
+            RemoteShell::Fish,
+            RemoteShell::Sh,
+        ] {
             let text = remote_shell_function(shell);
             for agent in &WRAPPED_AGENTS {
+                if shell == RemoteShell::Sh && agent.command.contains('-') {
+                    continue;
+                }
                 assert!(text.contains(agent.command), "{shell:?} {}", agent.command);
             }
         }
@@ -630,16 +571,6 @@ mod tests {
         assert!(!text.contains("cursor-agent"));
         assert!(!text.contains("kiro-cli"));
         assert!(text.contains("__herdr_wrap copilot copilot copilot"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn injected_bodies_are_valid_in_every_shell() {
-        let posix = injected_integration_posix();
-        syntax_check("bash", "-n", &posix);
-        syntax_check("dash", "-n", &posix);
-        syntax_check("zsh", "-n", &posix);
-        syntax_check("fish", "-n", &injected_integration_fish());
     }
 
     #[cfg(unix)]

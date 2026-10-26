@@ -666,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn spec_offers_container_option_on_shell_creating_commands() {
+    fn spec_offers_shell_location_options_on_shell_creating_commands() {
         let cmd = super::command();
         for path in [
             &["workspace", "create"][..],
@@ -674,38 +674,18 @@ mod tests {
             &["pane", "split"],
         ] {
             let command = command_path(&cmd, path);
-            assert!(
-                has_option(command, "container"),
-                "herdr {} should accept --container",
-                path.join(" ")
-            );
-            assert!(
-                option_arg(command, "container").get_help().is_some(),
-                "herdr {} --container needs help text",
-                path.join(" ")
-            );
-        }
-    }
-
-    #[test]
-    fn spec_offers_ssh_option_on_shell_creating_commands() {
-        let cmd = super::command();
-        for path in [
-            &["workspace", "create"][..],
-            &["tab", "create"],
-            &["pane", "split"],
-        ] {
-            let command = command_path(&cmd, path);
-            assert!(
-                has_option(command, "ssh"),
-                "herdr {} should accept --ssh",
-                path.join(" ")
-            );
-            assert!(
-                option_arg(command, "ssh").get_help().is_some(),
-                "herdr {} --ssh needs help text",
-                path.join(" ")
-            );
+            for option in ["container", "ssh"] {
+                assert!(
+                    has_option(command, option),
+                    "herdr {} should accept --{option}",
+                    path.join(" ")
+                );
+                assert!(
+                    option_arg(command, option).get_help().is_some(),
+                    "herdr {} --{option} needs help text",
+                    path.join(" ")
+                );
+            }
         }
     }
 

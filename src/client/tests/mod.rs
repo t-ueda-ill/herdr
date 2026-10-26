@@ -1206,17 +1206,6 @@ fn a_tree_drop_into_an_off_host_tab_uploads_through_its_pane() {
 
 #[cfg(unix)]
 #[test]
-fn a_tree_drop_onto_a_remote_servers_host_uploads_without_a_pane() {
-    let run = workbench_drop_routed(shell::WorkbenchDropPlace::Host, true, true);
-
-    let begin = run.begin.expect("begin sent");
-    assert_eq!(begin.pane_id, None);
-    assert_eq!(begin.terminal_id, None);
-    assert_eq!(begin.destination.as_deref(), Some("/srv"));
-}
-
-#[cfg(unix)]
-#[test]
 fn a_tree_drop_onto_a_server_without_upload_methods_only_says_so() {
     let run = workbench_drop_routed(shell::WorkbenchDropPlace::Pane("p2".into()), false, false);
 

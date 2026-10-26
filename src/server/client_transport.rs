@@ -2529,67 +2529,42 @@ mod tests {
             .expect("read thread result");
     }
 
-    #[test]
-    fn an_oversized_or_malformed_download_control_closes_the_connection() {
-        for (label, data) in [
-            (
-                "client-read-download-big",
-                "x".repeat(crate::server::client_commands::MAX_ENDPOINT_COMMAND_BYTES + 1),
-            ),
-            ("client-read-download-bad", "not json".to_owned()),
-        ] {
-            let (mut client_stream, server_stream, _path) = local_stream_pair(label);
-            let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-            let should_quit = Arc::new(AtomicBool::new(false));
-            let read_quit = should_quit.clone();
-            let handle = std::thread::spawn(move || {
-                client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
-            });
-
-            protocol::write_message(&mut client_stream, &download_control(data)).unwrap();
-
-            assert!(matches!(
-                recv_server_event(&mut server_event_rx, label),
-                ServerEvent::ClientDisconnected { client_id: 7 }
-            ));
-            drop(client_stream);
-            should_quit.store(true, Ordering::Release);
-            handle
-                .join()
-                .expect("read thread join")
-                .expect("read thread result");
-        }
-    }
+    type Control = fn(String) -> ClientMessage;
 
     #[test]
-    fn an_oversized_or_malformed_upload_control_closes_the_connection() {
-        for (label, data) in [
-            (
-                "client-read-upload-big",
-                "x".repeat(crate::server::client_commands::MAX_ENDPOINT_COMMAND_BYTES + 1),
-            ),
-            ("client-read-upload-bad", "not json".to_owned()),
-        ] {
-            let (mut client_stream, server_stream, _path) = local_stream_pair(label);
-            let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-            let should_quit = Arc::new(AtomicBool::new(false));
-            let read_quit = should_quit.clone();
-            let handle = std::thread::spawn(move || {
-                client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
-            });
+    fn an_oversized_or_malformed_transfer_control_closes_the_connection() {
+        let lanes: [(&str, Control); 2] =
+            [("upload", upload_control), ("download", download_control)];
+        for (lane, control) in lanes {
+            for (kind, data) in [
+                (
+                    "big",
+                    "x".repeat(crate::server::client_commands::MAX_ENDPOINT_COMMAND_BYTES + 1),
+                ),
+                ("bad", "not json".to_owned()),
+            ] {
+                let label = format!("client-read-{lane}-{kind}");
+                let (mut client_stream, server_stream, _path) = local_stream_pair(&label);
+                let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+                let should_quit = Arc::new(AtomicBool::new(false));
+                let read_quit = should_quit.clone();
+                let handle = std::thread::spawn(move || {
+                    client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+                });
 
-            protocol::write_message(&mut client_stream, &upload_control(data)).unwrap();
+                protocol::write_message(&mut client_stream, &control(data)).unwrap();
 
-            assert!(matches!(
-                recv_server_event(&mut server_event_rx, label),
-                ServerEvent::ClientDisconnected { client_id: 7 }
-            ));
-            drop(client_stream);
-            should_quit.store(true, Ordering::Release);
-            handle
-                .join()
-                .expect("read thread join")
-                .expect("read thread result");
+                assert!(matches!(
+                    recv_server_event(&mut server_event_rx, &label),
+                    ServerEvent::ClientDisconnected { client_id: 7 }
+                ));
+                drop(client_stream);
+                should_quit.store(true, Ordering::Release);
+                handle
+                    .join()
+                    .expect("read thread join")
+                    .expect("read thread result");
+            }
         }
     }
 

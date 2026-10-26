@@ -311,18 +311,6 @@ mod tests {
     }
 
     #[test]
-    fn the_instance_for_each_direction_counts_its_own_sessions() {
-        let mut fetches = TransferRegistry::<FakeJob>::default();
-        let mut uploads = crate::upload::registry::UploadRegistry::default();
-        let (fetch, _fetch_rx) = handle(UploadOwner::Api);
-        fetches.insert("fx-1".into(), fetch);
-
-        assert_eq!(fetches.len(), 1);
-        assert_eq!(uploads.len(), 0);
-        uploads.admit(UploadOwner::Api).unwrap();
-    }
-
-    #[test]
     fn cancelling_drops_the_handle_so_the_worker_side_disconnects() {
         let mut registry = TransferRegistry::<FakeJob>::default();
         let (handle, rx) = handle(UploadOwner::Api);

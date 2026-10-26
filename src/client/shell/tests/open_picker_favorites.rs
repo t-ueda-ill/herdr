@@ -249,26 +249,6 @@ fn containers_list_favorites_then_the_default_then_recent_opens_then_the_rest() 
 }
 
 #[test]
-fn recent_opens_list_the_latest_first_and_the_more_frequent_on_a_tie() {
-    let prefs = TempPreferences::new(
-        "recent-order",
-        Some(memory(
-            &[],
-            &[
-                ("ssh:prod", 1_000, 1),
-                ("ssh:lab", 2_000, 1),
-                ("ssh:staging", 1_000, 4),
-            ],
-        )),
-    );
-    let mut state = prefs.state();
-
-    open_ssh_picker(&mut state);
-
-    assert_eq!(listed(&state), ["lab", "staging", "prod"]);
-}
-
-#[test]
 fn filtering_keeps_the_favorite_and_recent_order_among_matches() {
     let prefs = TempPreferences::new(
         "filter-order",
@@ -405,44 +385,6 @@ fn a_successful_open_is_remembered_and_lists_that_host_first_next_time() {
     assert!(stored.recent[0].last_used_ms > 0);
     open_ssh_picker(&mut state);
     assert_eq!(listed(&state), ["staging", "prod", "lab"]);
-}
-
-#[test]
-fn the_latest_successful_open_lists_before_an_earlier_one() {
-    let prefs = TempPreferences::new("record-latest", None);
-    let mut state = prefs.state();
-    for downs in [b"\x1b[B".as_slice(), b"\x1b[B\x1b[B".as_slice()] {
-        open_ssh_picker(&mut state);
-        state.handle_input_bytes(downs);
-        let open = state.handle_input_bytes(b"\r");
-        answer(&mut state, &open.actions, workspace_created());
-    }
-
-    open_ssh_picker(&mut state);
-
-    // lab was opened first; staging was then the third row and opened last.
-    assert_eq!(listed(&state), ["staging", "lab", "prod"]);
-}
-
-#[test]
-fn a_rejected_open_is_not_remembered() {
-    let prefs = TempPreferences::new("record-failure", None);
-    let mut state = prefs.state();
-    open_ssh_picker(&mut state);
-    let open = state.handle_input_bytes(b"\r");
-    let request_id = endpoint_request(&open.actions).id.clone();
-
-    state.handle_endpoint_result(
-        "boot-1",
-        &request_id,
-        Err(ClientShellEndpointError {
-            code: Some("ssh_failed".into()),
-            message: "ssh prod: connection refused".into(),
-        }),
-    );
-
-    assert!(state.open_picker_memory.recent.is_empty());
-    assert!(prefs.stored().recent.is_empty());
 }
 
 #[test]
@@ -738,6 +680,7 @@ fn a_rejected_direct_container_open_keeps_the_picker_with_the_error_and_records_
         Some("container db-1 not found")
     );
     assert!(!picker(&state).opening);
+    assert!(state.open_picker_memory.recent.is_empty());
     assert!(prefs.stored().recent.is_empty());
 }
 

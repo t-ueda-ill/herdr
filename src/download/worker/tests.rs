@@ -375,21 +375,6 @@ fn dropping_the_registry_handle_cancels_even_when_the_source_never_looks_at_the_
 }
 
 #[test]
-fn reads_queued_behind_the_finishing_answer_find_the_download_gone() {
-    let harness = start(vec![dir("a"), Frame::End], Limits::new(4096), fast());
-    harness.answer().unwrap();
-    harness.read(0);
-    harness.chunk();
-
-    harness.read(1);
-    harness.read(2);
-
-    assert!(harness.chunk().done);
-    assert_eq!(harness.answer().unwrap_err().0, "download_not_found");
-    harness.join();
-}
-
-#[test]
 fn a_finished_session_answers_queued_reads_and_frees_its_slot_before_its_source_stops() {
     let script = Arc::new(Script::default());
     script

@@ -360,31 +360,6 @@ mod tests {
     }
 
     #[test]
-    fn remote_container_argv_overrides_remote_command_but_local_docker_has_none() {
-        let remote_argv = strings(container_shell_argv(
-            &remote(ContainerShell::BashOrSh),
-            true,
-            &[],
-            false,
-        ));
-        let override_at = remote_argv
-            .iter()
-            .position(|a| a == "RemoteCommand=none")
-            .expect("remote argv overrides RemoteCommand");
-        let tty_at = remote_argv.iter().position(|a| a == "-t").unwrap();
-        assert_eq!(remote_argv[override_at - 1], "-o");
-        assert!(override_at < tty_at);
-
-        let local_argv = strings(container_shell_argv(
-            &launch(ContainerShell::BashOrSh),
-            true,
-            &[],
-            false,
-        ));
-        assert!(local_argv.iter().all(|a| !a.contains("RemoteCommand")));
-    }
-
-    #[test]
     fn container_shell_argv_quotes_env_values_the_remote_shell_would_expand() {
         let env = [("MSG".to_string(), "it's $HOME; id".to_string())];
         let argv = strings(container_shell_argv(

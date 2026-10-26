@@ -79,25 +79,26 @@ fn a_path_in_a_walk_error_is_shown_without_control_characters() {
 }
 
 #[test]
-fn a_stream_word_before_the_estimate_is_refused() {
-    let mut bytes = START.to_vec();
-    bytes.extend_from_slice(b"end\0");
-
-    assert_eq!(code(parse(&bytes)), "download_failed");
-}
-
-#[test]
-fn a_walk_word_after_the_estimate_is_refused() {
-    assert_eq!(code(parse(&stream(&[b"big\0"]))), "download_failed");
-    assert_eq!(
-        code(parse(&stream(&[b"est\x001\x001\0"]))),
-        "download_failed"
-    );
-}
-
-#[test]
-fn an_unknown_word_is_refused() {
-    assert_eq!(code(parse(&stream(&[b"x\0a\0b\0"]))), "download_failed");
+fn words_out_of_place_fail_the_download() {
+    let mut unterminated_file = stream(&[]);
+    unterminated_file.extend_from_slice(format!("f\0a\0{META}\0hello").as_bytes());
+    unterminated_file.extend_from_slice(b"end\0");
+    let mut end_before_estimate = START.to_vec();
+    end_before_estimate.extend_from_slice(b"end\0");
+    for (label, bytes) in [
+        ("stream word before the estimate", end_before_estimate),
+        ("walk word after the estimate", stream(&[b"big\0"])),
+        ("second estimate", stream(&[b"est\x001\x001\0"])),
+        ("unknown word", stream(&[b"x\0a\0b\0"])),
+        ("file without its trailer", unterminated_file),
+        ("trailer without a file", stream(&[b"e\x000\0x\0"])),
+        (
+            "entry after the end",
+            stream(&[b"end\0", b"d\0a\x000 755 - t\0"]),
+        ),
+    ] {
+        assert_eq!(code(parse(&bytes)), "download_failed", "{label}");
+    }
 }
 
 #[test]
@@ -217,28 +218,6 @@ fn a_trailer_with_a_nonzero_status_or_other_attributes_marks_the_file_changed() 
             "{status} {meta2}: {frames:?}"
         );
     }
-}
-
-#[test]
-fn a_file_must_be_followed_by_its_trailer() {
-    let mut bytes = stream(&[]);
-    bytes.extend_from_slice(format!("f\0a\0{META}\0hello").as_bytes());
-    bytes.extend_from_slice(b"end\0");
-
-    assert_eq!(code(parse(&bytes)), "download_failed");
-}
-
-#[test]
-fn a_trailer_without_a_file_is_refused() {
-    assert_eq!(code(parse(&stream(&[b"e\x000\0x\0"]))), "download_failed");
-}
-
-#[test]
-fn nothing_may_follow_the_end() {
-    assert_eq!(
-        code(parse(&stream(&[b"end\0", b"d\0a\x000 755 - t\0"]))),
-        "download_failed"
-    );
 }
 
 #[test]

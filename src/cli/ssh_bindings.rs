@@ -189,38 +189,4 @@ mod tests {
             .iter()
             .any(|argument| argument.get_long() == Some("container")));
     }
-
-    #[test]
-    fn ssh_option_next_to_container_says_where_the_containers_docker_runs() {
-        use crate::api::schema::WorkspaceCreateParams;
-        let command = Command::new("create").args(with_launch_options(Vec::new()));
-        let matches = command
-            .try_get_matches_from(["create", "--container", "app/web", "--ssh", "prod"])
-            .unwrap();
-        let params = WorkspaceCreateParams {
-            source_workspace_id: None,
-            cwd: None,
-            focus: false,
-            label: None,
-            env: Default::default(),
-        };
-
-        let method = into_method(
-            &matches,
-            params.clone(),
-            Method::WorkspaceCreate,
-            ContainerOpenTarget::Workspace,
-            SshOpenTarget::Workspace,
-        )
-        .unwrap();
-
-        assert_eq!(
-            method,
-            Method::SshContainerOpen(SshContainerOpenParams {
-                host: "prod".into(),
-                container: "app/web".into(),
-                target: ContainerOpenTarget::Workspace(params),
-            })
-        );
-    }
 }

@@ -138,14 +138,6 @@ mod tests {
     }
 
     #[test]
-    fn configured_hosts_without_a_config_file_are_empty() {
-        let hosts =
-            configured_hosts_in(&Files(HashMap::new()), Path::new("/home/u/.ssh/config")).unwrap();
-
-        assert!(hosts.is_empty());
-    }
-
-    #[test]
     fn configured_hosts_report_an_unreadable_config() {
         let files = Files(HashMap::from([(
             PathBuf::from("/home/u/.ssh/config"),

@@ -393,13 +393,11 @@ fn every_local_shell_passes_a_full_upload_through_the_remote_sink() {
 }
 
 /// Live check against a real container, for maintainers:
-/// `HERDR_TEST_DOCKER_CONTAINER=<id> cargo nextest run real_container`.
+/// `HERDR_TEST_DOCKER_CONTAINER=<id> cargo nextest run --run-ignored all real_container`.
 #[test]
+#[ignore = "requires HERDR_TEST_DOCKER_CONTAINER naming a running container"]
 fn a_real_container_receives_a_tree_through_docker_exec() {
-    let Ok(id) = std::env::var("HERDR_TEST_DOCKER_CONTAINER") else {
-        eprintln!("skipping: HERDR_TEST_DOCKER_CONTAINER is not set");
-        return;
-    };
+    let id = std::env::var("HERDR_TEST_DOCKER_CONTAINER").expect("HERDR_TEST_DOCKER_CONTAINER");
     let env = PaneEnvironment::Container(Box::new(ContainerLaunch {
         reference: ContainerRef::Name(id.clone()),
         canonical: id.clone(),

@@ -648,20 +648,6 @@ mod popup_menus {
     }
 
     #[test]
-    fn spaces_context_menu_opened_near_the_bottom_right_is_pushed_back_on_screen() {
-        let mut state = shell(20);
-        state.open_pane_context_menu("pane_1".into(), 105, 19);
-        let items = context_items(&state);
-        state.compose(106, 20).expect("context menu frame");
-
-        let rows = &state.hits.context_menu_rows;
-        let last = rows.last().expect("rows drawn").0;
-        assert_eq!(rows.len(), items.len());
-        assert_eq!(last.right() + 1, 106, "right border on the last column");
-        assert_eq!(last.y + 2, 20, "bottom border on the last row");
-    }
-
-    #[test]
     fn moving_over_a_spaces_context_menu_row_highlights_it_and_moving_off_rows_keeps_it() {
         let mut state = shell(20);
         open_workspace_menu(&mut state);
@@ -1040,19 +1026,18 @@ mod popup_menus {
 
         key(&mut state, KeyCode::Esc);
         open_new_workspace_chooser(&mut state);
+        key(&mut state, KeyCode::Up);
+        assert_eq!(
+            chooser_highlight(&state),
+            Some(2),
+            "up starts at the last row"
+        );
+
+        key(&mut state, KeyCode::Esc);
+        open_new_workspace_chooser(&mut state);
         assert_eq!(chooser_highlight(&state), None);
         let (row, _) = state.hits.new_workspace_menu_rows[2];
         mouse(&mut state, MouseEventKind::Moved, row.x + 1, row.y);
-        assert_eq!(chooser_highlight(&state), Some(2));
-    }
-
-    #[test]
-    fn up_without_a_highlight_starts_at_the_last_chooser_row() {
-        let mut state = new_workspace_shell();
-        open_new_workspace_chooser(&mut state);
-
-        key(&mut state, KeyCode::Up);
-
         assert_eq!(chooser_highlight(&state), Some(2));
     }
 

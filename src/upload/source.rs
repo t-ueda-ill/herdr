@@ -511,6 +511,7 @@ mod tests {
             scan_limited(std::slice::from_ref(&root), DuplicateNames::Reject, 1),
             Err(ScanError::TooManyEntries(1))
         );
+        assert!(scan_limited(std::slice::from_ref(&root), DuplicateNames::Reject, 2).is_ok());
         assert!(matches!(
             scan_limited(&[dir.join("missing")], DuplicateNames::Reject, 1),
             Err(ScanError::Other(_))
@@ -528,19 +529,6 @@ mod tests {
 
         assert_eq!(rels(&scan), ["t"]);
         assert_eq!(scan.warnings.len(), 1);
-    }
-
-    #[test]
-    fn a_walk_stops_once_it_passes_the_entry_limit() {
-        let dir = TempDir::new("scan-limit");
-        let root = dir.join("t");
-        std::fs::create_dir(&root).unwrap();
-        for index in 0..5 {
-            std::fs::write(root.join(format!("f{index}")), b"").unwrap();
-        }
-
-        assert!(scan(std::slice::from_ref(&root), DuplicateNames::Reject, 3).is_err());
-        assert!(scan(&[root], DuplicateNames::Reject, 6).is_ok());
     }
 
     #[test]

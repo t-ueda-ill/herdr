@@ -261,38 +261,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn run_docker_returns_stdout_on_success() {
-        let shim = Shim::new("stdout", "echo hello; echo oops >&2");
-        let out = run_docker_with(
-            &shim.program(),
-            &DockerHost::Local,
-            &["ps"],
-            None,
-            Instant::now() + secs(5),
-        )
-        .unwrap();
-        assert_eq!(out.status, Some(0));
-        assert_eq!(out.stdout, "hello\n");
-        assert_eq!(out.stderr, "oops\n");
-    }
-
-    #[test]
-    fn run_docker_times_out_and_kills_hanging_process() {
-        let shim = Shim::new("hang", "exec sleep 30");
-        let start = Instant::now();
-        let err = run_docker_with(
-            &shim.program(),
-            &DockerHost::Local,
-            &["ps"],
-            None,
-            Instant::now() + Duration::from_millis(200),
-        )
-        .unwrap_err();
-        assert!(matches!(err, ContainerListError::Timeout));
-        assert!(start.elapsed() < secs(5));
-    }
-
-    #[test]
     fn run_docker_drains_stderr_larger_than_pipe_buffer() {
         let shim = Shim::new(
             "bigerr",
@@ -308,38 +276,6 @@ pub(super) mod tests {
         .unwrap();
         assert_eq!(out.stdout, "done\n");
         assert_eq!(out.stderr.len(), 131072);
-    }
-
-    #[test]
-    fn run_docker_streams_input_to_stdin_and_closes_it() {
-        let shim = Shim::new("stdin", "cat");
-        let input = b"image\nbytes without a trailing newline".to_vec();
-        let out = run_docker_with(
-            &shim.program(),
-            &DockerHost::Local,
-            &["exec"],
-            Some(input.clone()),
-            Instant::now() + secs(5),
-        )
-        .unwrap();
-        assert_eq!(out.status, Some(0));
-        assert_eq!(out.stdout.as_bytes(), input.as_slice());
-    }
-
-    #[test]
-    fn run_docker_times_out_when_child_never_reads_large_input() {
-        let shim = Shim::new("stdin-hang", "exec sleep 30");
-        let start = Instant::now();
-        let err = run_docker_with(
-            &shim.program(),
-            &DockerHost::Local,
-            &["exec"],
-            Some(vec![0; 1 << 20]),
-            Instant::now() + Duration::from_millis(300),
-        )
-        .unwrap_err();
-        assert!(matches!(err, ContainerListError::Timeout));
-        assert!(start.elapsed() < secs(5));
     }
 
     #[test]

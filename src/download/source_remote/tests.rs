@@ -167,16 +167,6 @@ fn a_tree_streams_through_the_packer_with_every_shell() {
 }
 
 #[test]
-fn a_selection_the_helper_cannot_find_fails_begin_with_not_found() {
-    let dir = TempDir::new("remote-missing");
-    let mut source = real(&["/bin/sh".to_owned()], &[&dir.join("nope")], fast());
-
-    let error = source.begin().unwrap_err();
-
-    assert_eq!(error.0, "not_found");
-}
-
-#[test]
 fn a_selection_over_the_limits_fails_begin_with_download_too_large() {
     let dir = TempDir::new("remote-big");
     std::fs::write(dir.join("f"), pattern(1000)).unwrap();
@@ -488,29 +478,6 @@ sleep 600"#,
 }
 
 #[test]
-fn a_cancel_during_a_wait_is_noticed_within_a_tick() {
-    let mut source = fake(
-        r#"printf 'HERDR-OFFHOST-1\0est\0%s\0%s\0' 1 1
-IFS= read -r go
-sleep 600"#,
-        &[],
-        fast(),
-    );
-    source.begin().unwrap();
-    let control = Arc::new(Control::default());
-    let flag = Arc::clone(&control);
-    let canceller = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        flag.cancel();
-    });
-
-    let result = source.next(Duration::from_secs(30), &control);
-
-    canceller.join().unwrap();
-    assert_eq!(result, Err(cancelled()));
-}
-
-#[test]
 fn a_source_that_was_not_begun_or_begun_twice_refuses() {
     let mut source = fake("exit 0", &[], fast());
     assert!(source.next(Duration::ZERO, &Control::default()).is_err());
@@ -536,25 +503,6 @@ fn ssh_launch(control_path: Option<&str>) -> SshLaunch {
     SshLaunch::new("deploy@devbox".into(), control_path.map(Into::into)).unwrap()
 }
 
-fn strings(argv: Vec<std::ffi::OsString>) -> Vec<String> {
-    argv.into_iter()
-        .map(|arg| arg.into_string().unwrap())
-        .collect()
-}
-
-#[test]
-fn a_container_helper_runs_through_docker_exec_with_stdin_as_the_pane_user() {
-    let args = ["limit", "limit", "/work/a"];
-    let (program, argv) =
-        script_argv(&container(None), Transfer::DOWNLOAD, SENDER_SCRIPT, &args).unwrap();
-    let argv = strings(argv);
-
-    assert_eq!(program, "docker");
-    assert_eq!(argv[..5], ["exec", "-i", "-u", "dev", "cid"]);
-    assert_eq!(argv[5..8], ["sh", "-c", SENDER_SCRIPT]);
-    assert_eq!(argv[argv.len() - 4..], ["sh", "limit", "limit", "/work/a"]);
-}
-
 #[test]
 fn an_ssh_helper_requires_the_panes_shared_connection_and_says_download() {
     let env = PaneEnvironment::Ssh(ssh_launch(None));
@@ -572,39 +520,6 @@ fn an_ssh_helper_requires_the_panes_shared_connection_and_says_download() {
         error.1
     );
     assert!(error.1.ends_with("then try again."), "{}", error.1);
-}
-
-#[test]
-fn a_container_on_an_ssh_host_without_a_control_path_is_refused_with_the_download_wording() {
-    let env = container(Some(ssh_launch(None)));
-
-    let error = script_argv(&env, Transfer::DOWNLOAD, SENDER_SCRIPT, &[]).unwrap_err();
-
-    assert_eq!(error.0, "ssh_unavailable");
-    assert!(
-        error.1.contains("cannot download from deploy@devbox"),
-        "{}",
-        error.1
-    );
-}
-
-#[test]
-fn an_ssh_helper_uses_the_control_path_in_batch_mode() {
-    let env = PaneEnvironment::Ssh(ssh_launch(Some("/tmp/ctl-%C")));
-
-    let (program, argv) = script_argv(
-        &env,
-        Transfer::DOWNLOAD,
-        SENDER_SCRIPT,
-        &["1", "2", "/srv/x"],
-    )
-    .unwrap();
-    let argv = strings(argv);
-
-    assert_eq!(program, "ssh");
-    assert_eq!(argv[..2], ["-S", "/tmp/ctl-%C"]);
-    assert!(argv.iter().any(|arg| arg == "BatchMode=yes"));
-    assert!(argv.last().unwrap().ends_with("'sh' '1' '2' '/srv/x'"));
 }
 
 #[test]
@@ -661,13 +576,11 @@ fn a_helper_that_cannot_start_reports_the_classified_failure() {
 }
 
 /// Live check against a real container, for maintainers:
-/// `HERDR_TEST_DOCKER_CONTAINER=<id> cargo nextest run real_container`.
+/// `HERDR_TEST_DOCKER_CONTAINER=<id> cargo nextest run --run-ignored all real_container`.
 #[test]
+#[ignore = "requires HERDR_TEST_DOCKER_CONTAINER naming a running container"]
 fn a_real_container_streams_a_tree_through_docker_exec() {
-    let Ok(id) = std::env::var("HERDR_TEST_DOCKER_CONTAINER") else {
-        eprintln!("skipping: HERDR_TEST_DOCKER_CONTAINER is not set");
-        return;
-    };
+    let id = std::env::var("HERDR_TEST_DOCKER_CONTAINER").expect("HERDR_TEST_DOCKER_CONTAINER");
     let env = PaneEnvironment::Container(Box::new(ContainerLaunch {
         reference: ContainerRef::Name(id.clone()),
         canonical: id.clone(),

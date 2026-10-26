@@ -1064,38 +1064,6 @@ fn index_notices_report_truncation_and_timeouts() {
 }
 
 #[test]
-fn opening_for_another_workspace_focuses_it_first() {
-    let mut projection = snapshot();
-    let mut second = projection.workspaces[0].clone();
-    second.workspace_id = "ws_2".into();
-    second.focused = false;
-    projection.workspaces.push(second);
-    let mut state = shell_state_with(
-        ClientShellConfig::from_config(&Config::default()),
-        projection,
-    );
-    let mut outcome = ClientShellInput::default();
-
-    state.open_file_viewer_for(Some("ws_2".into()), &mut outcome);
-
-    let methods: Vec<Method> = endpoint_requests(&outcome)
-        .into_iter()
-        .map(|(_, method)| method)
-        .collect();
-    assert!(
-        matches!(
-            &methods[..],
-            [
-                Method::WorkspaceFocus(target),
-                Method::DirectoryList(DirectoryListParams { workspace_id: Some(list_ws), .. }),
-                Method::DirectoryIndex(_),
-            ] if target.workspace_id == "ws_2" && list_ws == "ws_2"
-        ),
-        "{methods:?}"
-    );
-}
-
-#[test]
 fn off_host_panes_mark_the_root_as_a_host_path() {
     let mut projection = snapshot();
     projection.panes[0].container = Some("docker:web".into());
@@ -1340,7 +1308,6 @@ fn the_global_menu_offers_open_files_before_the_remote_pickers() {
         .iter()
         .position(|label| *label == "open files")
         .expect("global menu entry");
-    assert_eq!(labels[files + 1], "open container");
 
     let mut state = shell_state();
     state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {

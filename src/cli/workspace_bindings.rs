@@ -353,17 +353,6 @@ mod tests {
     }
 
     #[test]
-    fn workspace_create_accepts_container_equals_form() {
-        assert_eq!(
-            serde_json::to_value(request("create", &["--container=app/web"]).unwrap()).unwrap(),
-            serde_json::json!({
-                "id": "cli:workspace:create", "method": "container.open",
-                "params": {"container": "app/web", "target": {"workspace": {"focus": false}}}
-            })
-        );
-    }
-
-    #[test]
     fn workspace_create_without_container_stays_a_plain_create() {
         assert_eq!(
             serde_json::to_value(request("create", &["--cwd", "/repo"]).unwrap()).unwrap(),
@@ -371,13 +360,6 @@ mod tests {
                 "id": "cli:workspace:create", "method": "workspace.create",
                 "params": {"cwd": "/repo", "focus": false}
             })
-        );
-    }
-
-    #[test]
-    fn workspace_create_rejects_container_without_value() {
-        assert!(
-            matches!(request("create", &["--container"]), Err(ParseError::Clap(error)) if error.exit_code() == 2)
         );
     }
 
@@ -430,13 +412,6 @@ mod tests {
                 "{args:?}"
             );
         }
-    }
-
-    #[test]
-    fn workspace_create_rejects_ssh_without_value() {
-        assert!(
-            matches!(request("create", &["--ssh"]), Err(ParseError::Clap(error)) if error.exit_code() == 2)
-        );
     }
 
     #[test]

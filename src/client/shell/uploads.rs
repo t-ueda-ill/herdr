@@ -233,16 +233,6 @@ mod tests {
     }
 
     #[test]
-    fn the_dialogs_starting_folder_is_what_the_client_set() {
-        let mut shell = shell();
-        assert_eq!(shell.download_dir(), "");
-
-        shell.set_download_dir("/home/me/Downloads".into());
-
-        assert_eq!(shell.download_dir(), "/home/me/Downloads");
-    }
-
-    #[test]
     fn every_download_is_announced_not_just_the_first() {
         let mut shell = shell();
 

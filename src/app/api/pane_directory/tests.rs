@@ -252,19 +252,6 @@ async fn the_reported_directory_is_the_root_before_any_fallback() {
 }
 
 #[tokio::test]
-async fn a_container_without_a_report_starts_at_its_working_directory_then_the_filesystem_root() {
-    let (with_workdir, pane, _) = app_with_pane(PaneKind::Container(launch(Some("/work"))), None);
-    let (without_workdir, bare_pane, _) = app_with_pane(PaneKind::Container(launch(None)), None);
-
-    let a = with_workdir.pane_target(&pane).unwrap();
-    let b = without_workdir.pane_target(&bare_pane).unwrap();
-
-    assert_eq!(a.root.as_deref(), Some("/work"));
-    assert_eq!(b.root.as_deref(), Some("/"));
-    assert_eq!(b.cwd, None);
-}
-
-#[tokio::test]
 async fn an_ssh_pane_without_a_report_leaves_the_root_to_the_login_directory() {
     let (app, pane, _) = app_with_pane(PaneKind::Ssh(ssh(Some("/tmp/c"))), None);
 

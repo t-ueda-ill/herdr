@@ -208,7 +208,10 @@ mod tests {
             watcher.poll(true, None, Instant::now(), |_| started("not-an-agent")),
             OffHostClaimAction::None
         );
-        assert_eq!(watcher.seen_generation, 1);
+        watcher.poll(true, None, Instant::now(), |seen| {
+            assert_eq!(seen, 1);
+            None
+        });
     }
 
     #[test]

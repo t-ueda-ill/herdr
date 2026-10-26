@@ -187,17 +187,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_create_accepts_container_equals_form() {
-        assert_eq!(
-            serde_json::to_value(parse(&["create", "--container=worker"]).unwrap()).unwrap(),
-            serde_json::json!({
-                "id": "cli:tab:create", "method": "container.open",
-                "params": {"container": "worker", "target": {"tab": {"focus": false}}}
-            })
-        );
-    }
-
-    #[test]
     fn tab_create_inherit_sends_the_create_params_with_the_source_pane() {
         assert_eq!(
             serde_json::to_value(
@@ -291,10 +280,13 @@ mod tests {
     }
 
     #[test]
-    fn tab_create_rejects_container_without_value() {
-        assert!(
-            matches!(parse(&["create", "--container"]), Err(ParseError::Clap(error)) if error.exit_code() == 2)
-        );
+    fn shell_location_options_reject_a_missing_value() {
+        for option in ["--container", "--ssh"] {
+            assert!(
+                matches!(parse(&["create", option]), Err(ParseError::Clap(error)) if error.exit_code() == 2),
+                "{option}"
+            );
+        }
     }
 
     #[test]

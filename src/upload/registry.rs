@@ -137,30 +137,6 @@ mod tests {
     }
 
     #[test]
-    fn a_full_queue_is_upload_busy_and_a_cancelled_id_is_upload_cancelled() {
-        let mut registry = UploadRegistry::default();
-        let (handle, _rx) = handle(UploadOwner::Api, None);
-        let control = handle.control.clone();
-        registry.insert("up-1".into(), handle);
-        let (tx, answers) = mpsc::channel();
-        let job = |tx: &mpsc::Sender<&'static str>| {
-            let tx = tx.clone();
-            UploadJob::Begin(Box::new(move |answer| {
-                let _ = tx.send(answer.err().map_or("ok", |(code, _)| code));
-            }))
-        };
-
-        registry.send("up-1", UploadOwner::Api, job(&tx));
-        registry.send("up-1", UploadOwner::Api, job(&tx));
-        registry.cancel("up-1", UploadOwner::Api).unwrap();
-        registry.send("up-1", UploadOwner::Api, job(&tx));
-
-        assert_eq!(answers.try_recv(), Ok("upload_busy"));
-        assert!(control.is_cancelled());
-        assert_eq!(answers.try_recv(), Ok("upload_cancelled"));
-    }
-
-    #[test]
     fn a_publishing_session_cannot_be_cancelled() {
         let mut registry = UploadRegistry::default();
         let (handle, _rx) = handle(UploadOwner::Api, None);

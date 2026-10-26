@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn a_relative_folder_is_refused() {
-        for input in ["Downloads", "./x", "../x", "a/b"] {
+        for input in ["Downloads", "./x", "../x", "a/b", r"C:\dl"] {
             assert_eq!(
                 posix(input),
                 Err("enter an absolute folder".to_owned()),
@@ -184,10 +184,5 @@ mod tests {
                 "{input}"
             );
         }
-    }
-
-    #[test]
-    fn posix_syntax_refuses_a_drive_path() {
-        assert!(posix(r"C:\dl").is_err());
     }
 }
