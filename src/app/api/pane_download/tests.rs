@@ -258,6 +258,8 @@ async fn an_unknown_or_dead_pane_is_refused() {
 async fn paths_that_are_not_absolute_plain_and_distinctly_named_are_refused() {
     let too_many: Vec<String> = (0..1_025).map(|n| format!("/tmp/n{n}")).collect();
     let long = format!("/{}", "a".repeat(4_097));
+    let near_limit = format!("/{}", "a".repeat(4_000));
+    let over_the_total: Vec<String> = (0..70).map(|n| format!("{near_limit}{n}")).collect();
     let mut cases: Vec<Vec<&str>> = vec![
         vec![],
         vec!["relative/path"],
@@ -269,19 +271,11 @@ async fn paths_that_are_not_absolute_plain_and_distinctly_named_are_refused() {
         vec![long.as_str()],
     ];
     cases.push(too_many.iter().map(String::as_str).collect());
+    cases.push(over_the_total.iter().map(String::as_str).collect());
 
     for paths in cases {
         assert_eq!(refused(&paths), "invalid_params", "{paths:?}");
     }
-}
-
-#[tokio::test]
-async fn paths_that_total_more_than_the_limit_are_refused() {
-    let long = format!("/{}", "a".repeat(4_000));
-    let paths: Vec<String> = (0..70).map(|n| format!("{long}{n}")).collect();
-    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-
-    assert_eq!(refused(&refs), "invalid_params");
 }
 
 #[tokio::test]

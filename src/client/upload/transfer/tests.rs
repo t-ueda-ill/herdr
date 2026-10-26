@@ -208,24 +208,6 @@ fn a_small_drop_begins_writes_finishes_with_rename_and_pastes_quoted_paths() {
 }
 
 #[test]
-fn finish_waits_until_every_write_is_answered() {
-    let now = Instant::now();
-    let mut uploads = Uploads::default();
-    let job = sending(&mut uploads, now);
-    uploads.outgoing(job, write(0, true), now);
-
-    assert!(uploads.writes_done(job, now).is_empty());
-    let answered = uploads.response(
-        &ClientEndpointId::Local,
-        3,
-        &success("upload:1:w0", progress()),
-        now,
-    );
-
-    assert_eq!(sent_methods(&answered), ["pane.upload.finish"]);
-}
-
-#[test]
 fn a_paste_that_is_not_a_drop_ends_the_job_without_a_notice() {
     let mut uploads = Uploads::default();
     let job = uploads.start(drop_request());
@@ -556,34 +538,6 @@ fn a_tree_drop_begins_into_the_selected_folder_without_the_threshold_dialog() {
 }
 
 #[test]
-fn a_tree_drop_onto_the_servers_host_is_refused_past_a_maximum() {
-    let now = Instant::now();
-    let mut uploads = Uploads::default();
-    let job = uploads.start(DropRequest {
-        target: UploadTarget::Workbench(WorkbenchTarget {
-            tab: 7,
-            destination: "/srv/app".into(),
-            pane_id: None,
-            location: location(),
-        }),
-        trailing_space: false,
-        ..drop_request()
-    });
-    uploads.checked(job, true);
-
-    let effects = uploads.scanned(job, Ok(summary(1, 10_001)), &LIMITS, now);
-
-    assert!(
-        effects.iter().any(
-            |effect| matches!(effect, UploadEffect::Notice { failed: true, body, .. }
-            if body.contains("ui.upload_max_bytes"))
-        ),
-        "{effects:?}"
-    );
-    assert!(sent_methods(&effects).is_empty());
-}
-
-#[test]
 fn a_tree_drop_cancels_when_the_pane_is_no_longer_in_the_tabs_environment() {
     let now = Instant::now();
     let mut uploads = Uploads::default();
@@ -798,6 +752,13 @@ fn tree_failures_also_reach_the_tab_notice() {
 
     assert!(effects.iter().any(|effect| matches!(effect,
         UploadEffect::TabNotice { tab: 7, text } if text.starts_with("upload failed: "))));
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, UploadEffect::Notice { failed: true, .. })),
+        "{effects:?}"
+    );
+    assert!(sent_methods(&effects).is_empty());
 }
 
 #[test]

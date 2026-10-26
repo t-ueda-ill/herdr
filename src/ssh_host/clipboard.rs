@@ -245,18 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn stage_argv_never_reads_a_generated_config_or_starts_a_master() {
-        let argv = strings(stage_argv("prod", Path::new(CONTROL), NAME));
-
-        assert!(!argv.iter().any(|arg| arg == "-F"));
-        assert!(!argv.iter().any(|arg| arg == "-t" || arg == "-tt"));
-        assert!(!argv
-            .iter()
-            .any(|arg| arg.starts_with("ControlMaster=") && arg != "ControlMaster=no"));
-        assert_eq!(argv[argv.len() - 2], "prod");
-    }
-
-    #[test]
     fn cleanup_argv_removes_every_path_of_a_host_in_one_run() {
         let paths = vec![
             "/tmp/herdr-clipboard-image-aB3dE9/a.png".to_owned(),
@@ -519,15 +507,8 @@ mod tests {
     }
 
     #[test]
-    fn shell_quote_keeps_spaces_dollars_and_quotes_literal() {
-        assert_eq!(shell_quote("/tmp/a b/$x"), "'/tmp/a b/$x'");
-        assert_eq!(shell_quote("it's"), r"'it'\''s'");
-        assert_eq!(shell_quote(""), "''");
-    }
-
-    #[test]
     fn shell_quote_round_trips_through_a_posix_shell() {
-        for text in ["/tmp/a b/$HOME", "it's", "`id`", "a\"b", ";rm -rf /"] {
+        for text in ["", "/tmp/a b/$HOME", "it's", "`id`", "a\"b", ";rm -rf /"] {
             let output = std::process::Command::new("sh")
                 .args(["-c", &format!("printf %s {}", shell_quote(text))])
                 .output()

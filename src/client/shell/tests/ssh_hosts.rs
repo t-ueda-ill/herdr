@@ -287,31 +287,3 @@ fn ssh_picker_on_a_server_without_ssh_hosts_only_disables_the_action() {
         .is_some_and(|notice| notice.key.code == "ssh.hosts"));
     assert!(state.snapshot.is_some(), "the connection stays up");
 }
-
-#[test]
-fn global_menu_offers_open_ssh_host_before_detach() {
-    let snapshot = snapshot();
-    let labels: Vec<&str> = super::super::global_menu::global_menu_items(&snapshot)
-        .into_iter()
-        .map(|(label, _)| label)
-        .collect();
-
-    let ssh = labels
-        .iter()
-        .position(|label| *label == "open ssh host")
-        .expect("global menu entry");
-    assert_eq!(labels.last(), Some(&"detach"));
-    assert_eq!(ssh, labels.len() - 2);
-
-    let mut state = shell_state();
-    state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
-        highlighted: ssh,
-        scroll: 0,
-    }));
-    let prepare = state.handle_input_bytes(b"\r");
-    assert!(matches!(
-        &prepare.actions[..],
-        [ClientShellAction::Endpoint { request, .. }]
-            if matches!(request.method, crate::api::schema::Method::SshHosts(_))
-    ));
-}

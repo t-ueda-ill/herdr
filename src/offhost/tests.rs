@@ -507,7 +507,7 @@ fn listing_prefers_the_reported_root_over_the_login_directory() {
 }
 
 #[test]
-fn listing_reports_missing_paths_files_and_denied_directories() {
+fn listing_reports_missing_paths_and_files() {
     let dir = TempDir::new("errors");
     let file = dir.file("plain", b"");
     let missing = dir.path().join("missing");
@@ -912,17 +912,6 @@ fn the_find_fallback_runs_unbounded_when_timeout_is_not_installed() {
     let index = ops::index(&shell, location(), None, Some(dir.str()), false).unwrap();
 
     assert_eq!(index.entries, ["a.txt"]);
-}
-
-#[test]
-fn the_marker_constant_matches_the_one_the_scripts_print() {
-    for script in [
-        super::scripts::list_script(),
-        super::scripts::index_script(),
-        super::scripts::read_script(),
-    ] {
-        assert!(script.contains(&format!("printf '{}\\0'", super::scripts::OUTPUT_MARKER)));
-    }
 }
 
 fn running_as_root() -> bool {

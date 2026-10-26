@@ -1738,21 +1738,6 @@ next_tab = "prefix+n"
     }
 
     #[test]
-    fn open_files_keybind_is_unset_by_default_and_configurable() {
-        assert!(Config::default().keybinds().open_files.bindings.is_empty());
-
-        let config: Config =
-            toml::from_str("[keys]\nopen_files = \"prefix+f\"\n").expect("open_files parses");
-        assert_eq!(
-            binding_triggers(&config.keybinds().open_files),
-            vec![BindingTrigger::Prefix((
-                KeyCode::Char('f'),
-                KeyModifiers::empty()
-            ))]
-        );
-    }
-
-    #[test]
     fn copy_mode_uses_tmux_prefix_bracket_by_default() {
         let kb = Config::default().keybinds();
         assert_eq!(

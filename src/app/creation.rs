@@ -509,21 +509,18 @@ mod launch_cwd_tests {
     }
 
     #[tokio::test]
-    async fn cold_restored_ssh_pane_inherits_the_host_shell_cwd() {
-        let cwd = launch_cwd(
-            |id| TerminalState::new(id, "/original".into()).with_ssh(ssh()),
-            Some((false, false, "/changed")),
-        );
-        assert_eq!(cwd, Some(PathBuf::from("/changed")));
-    }
-
-    #[tokio::test]
-    async fn cold_restored_container_pane_inherits_the_host_shell_cwd() {
-        let cwd = launch_cwd(
-            |id| TerminalState::new(id, "/original".into()).with_container(container()),
-            Some((false, false, "/changed")),
-        );
-        assert_eq!(cwd, Some(PathBuf::from("/changed")));
+    async fn cold_restored_off_host_pane_inherits_the_host_shell_cwd() {
+        let off_host: [fn(TerminalState) -> TerminalState; 2] = [
+            |terminal| terminal.with_container(container()),
+            |terminal| terminal.with_ssh(ssh()),
+        ];
+        for off_host in off_host {
+            let cwd = launch_cwd(
+                |id| off_host(TerminalState::new(id, "/original".into())),
+                Some((false, false, "/changed")),
+            );
+            assert_eq!(cwd, Some(PathBuf::from("/changed")));
+        }
     }
 
     #[tokio::test]

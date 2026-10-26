@@ -427,26 +427,6 @@ async fn a_pane_whose_shell_moved_off_host_makes_the_upload_stale() {
 }
 
 #[tokio::test]
-async fn a_client_that_disconnects_loses_its_uploads() {
-    let (mut app, pane_id) = app_with(Kind::Host, None);
-    let dest = TempDir::new("app-owner-gone");
-    let begin = started(
-        &mut app,
-        UploadOrigin::ShellClient(9),
-        begin_params(Some(&pane_id), Some(dest.str()), &["a"]),
-    );
-
-    app.upload_sessions.abort_owner(UploadOwner::Client(9));
-    let response = answered(&send(
-        &mut app,
-        UploadOrigin::ShellClient(9),
-        write_file(&begin.upload_id, "a", b"x"),
-    ));
-
-    assert_eq!(error_code(&response), "upload_cancelled");
-}
-
-#[tokio::test]
 async fn other_methods_are_left_to_the_caller() {
     let mut app = test_app();
     let (tx, _rx) = mpsc::channel();

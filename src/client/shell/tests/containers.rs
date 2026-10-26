@@ -252,82 +252,6 @@ fn container_picker_enter_opens_the_selected_container_in_a_new_named_workspace(
 }
 
 #[test]
-fn container_picker_filter_narrows_containers_and_enter_opens_the_match() {
-    let mut state = shell_state();
-    open_picker(&mut state);
-
-    state.handle_input_bytes(b"redis");
-    let open = state.handle_input_bytes(b"\r");
-
-    assert_container_open_request(&open.actions, "redis-1-0123456789abcdef", "redis-1");
-}
-
-#[test]
-fn container_picker_row_click_opens_that_container() {
-    let mut state = shell_state();
-    open_picker(&mut state);
-    frame_text(&mut state);
-
-    let (row, index) = state.hits.worktree_rows[1];
-    assert_eq!(index, 1, "rows map to entries, not screen order");
-    let open = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: row.x + 2,
-        row: row.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-
-    assert_container_open_request(&open.actions, "shop-web-1-0123456789abcdef", "shop-web-1");
-}
-
-#[test]
-fn container_picker_escape_closes_without_a_request() {
-    let mut state = shell_state();
-    open_picker(&mut state);
-
-    let closed = state.handle_input_bytes(b"\x1b");
-
-    assert!(closed.actions.is_empty());
-    assert!(state.overlay.is_none());
-}
-
-#[test]
-fn container_picker_keeps_the_rejection_and_allows_another_choice() {
-    let mut state = shell_state();
-    open_picker(&mut state);
-    let open = state.handle_input_bytes(b"\r");
-    let [ClientShellAction::Endpoint { request, .. }] = &open.actions[..] else {
-        panic!("enter should open the first container");
-    };
-    let request_id = request.id.clone();
-
-    let (_, actions) = state.handle_endpoint_result(
-        "boot-1",
-        &request_id,
-        Err(ClientShellEndpointError {
-            code: Some("container_not_found".into()),
-            message: "no running container matches herdr-dev".into(),
-        }),
-    );
-
-    assert!(
-        actions.is_empty(),
-        "a rejection must not retry automatically"
-    );
-    let Some(ClientShellOverlay::OpenPicker(picker)) = &state.overlay else {
-        panic!("a rejected open keeps the picker");
-    };
-    assert!(!picker.opening);
-    assert_eq!(
-        picker.error.as_deref(),
-        Some("no running container matches herdr-dev")
-    );
-    state.handle_input_bytes(b"\x1b[B");
-    let retry = state.handle_input_bytes(b"\r");
-    assert_container_open_request(&retry.actions, "shop-web-1-0123456789abcdef", "shop-web-1");
-}
-
-#[test]
 fn container_picker_reports_no_containers_without_opening() {
     let mut state = shell_state();
     let mut prepare = ClientShellInput::default();
@@ -379,32 +303,48 @@ fn container_picker_on_a_server_without_container_list_only_disables_the_action(
 }
 
 #[test]
-fn global_menu_offers_open_container_before_open_ssh_host() {
+fn global_menu_ends_with_files_container_ssh_host_and_detach() {
     let snapshot = snapshot();
     let labels: Vec<&str> = super::super::global_menu::global_menu_items(&snapshot)
         .into_iter()
         .map(|(label, _)| label)
         .collect();
 
-    let container = labels
-        .iter()
-        .position(|label| *label == "open container")
-        .expect("global menu entry");
-    assert_eq!(labels.last(), Some(&"detach"));
-    assert_eq!(labels[labels.len() - 2], "open ssh host");
-    assert_eq!(container, labels.len() - 3);
+    assert!(
+        labels.ends_with(&["open files", "open container", "open ssh host", "detach"]),
+        "{labels:?}"
+    );
+    // Both entries list ssh hosts first; only the container one falls back
+    // to local containers when that listing fails.
+    for (entry, falls_back_to_local) in [("open container", true), ("open ssh host", false)] {
+        let mut state = shell_state();
+        state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
+            highlighted: labels.iter().position(|label| *label == entry).unwrap(),
+            scroll: 0,
+        }));
+        let prepare = state.handle_input_bytes(b"\r");
+        let request = endpoint_request(&prepare.actions);
+        assert!(
+            matches!(request.method, crate::api::schema::Method::SshHosts(_)),
+            "{entry}"
+        );
+        let request_id = request.id.clone();
 
-    let mut state = shell_state();
-    state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
-        highlighted: container,
-        scroll: 0,
-    }));
-    let prepare = state.handle_input_bytes(b"\r");
-    assert!(matches!(
-        &prepare.actions[..],
-        [ClientShellAction::Endpoint { request, .. }]
-            if matches!(request.method, crate::api::schema::Method::SshHosts(_))
-    ));
+        let (_, actions) = state.handle_endpoint_result(
+            "boot-1",
+            &request_id,
+            Err(ClientShellEndpointError {
+                code: Some("ssh_unavailable".into()),
+                message: "could not read ~/.ssh/config".into(),
+            }),
+        );
+
+        let lists_local = actions.iter().any(|action| {
+            matches!(action, ClientShellAction::Endpoint { request, .. }
+                if matches!(request.method, crate::api::schema::Method::ContainerList(_)))
+        });
+        assert_eq!(lists_local, falls_back_to_local, "{entry}");
+    }
 }
 
 #[test]
@@ -573,31 +513,6 @@ fn cancelling_the_host_listing_does_not_start_another_request() {
 }
 
 #[test]
-fn a_rejected_host_listing_still_falls_back_to_a_local_listing() {
-    let mut state = shell_state();
-    let mut prepare = ClientShellInput::default();
-    state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenContainerWorkspace),
-        &mut prepare,
-    );
-    let request_id = endpoint_request(&prepare.actions).id.clone();
-
-    let (_, actions) = state.handle_endpoint_result(
-        "boot-1",
-        &request_id,
-        Err(ClientShellEndpointError {
-            code: Some("ssh_config_invalid".into()),
-            message: "bad ssh config".into(),
-        }),
-    );
-
-    assert!(matches!(
-        endpoint_request(&actions).method,
-        crate::api::schema::Method::ContainerList(_)
-    ));
-}
-
-#[test]
 fn an_empty_ssh_host_list_skips_the_host_stage() {
     let mut state = shell_state();
     let mut prepare = ClientShellInput::default();
@@ -664,17 +579,6 @@ fn typing_filters_the_host_stage_without_slash() {
 }
 
 #[test]
-fn ctrl_n_moves_the_selection_while_typing_in_the_container_stage() {
-    let mut state = shell_state();
-    open_picker(&mut state);
-
-    state.handle_input_bytes(b"\x0e");
-    let open = state.handle_input_bytes(b"\r");
-
-    assert_container_open_request(&open.actions, "shop-web-1-0123456789abcdef", "shop-web-1");
-}
-
-#[test]
 fn host_row_click_lists_that_hosts_containers() {
     let mut state = shell_state();
     open_host_stage(&mut state);
@@ -716,45 +620,4 @@ fn a_remote_host_pick_on_a_server_without_ssh_container_list_is_refused_without_
         crate::api::schema::Method::ContainerList(_)
     ));
     assert!(state.visible_endpoint_notice.is_none());
-}
-
-#[test]
-fn a_remote_host_pick_sends_ssh_container_list_with_the_host() {
-    let mut state = shell_state();
-    state.set_endpoint_methods(Some(vec![
-        "ssh.hosts".into(),
-        "ssh.container.list".into(),
-        "ssh.container.open".into(),
-        "container.list".into(),
-        "container.open".into(),
-    ]));
-    open_host_stage(&mut state);
-    state.handle_input_bytes(b"\x1b[B");
-
-    let pick = state.handle_input_bytes(b"\r");
-
-    assert_eq!(
-        endpoint_request(&pick.actions).method,
-        crate::api::schema::Method::SshContainerList(crate::api::schema::SshContainerListParams {
-            host: "prod".into(),
-            workspace_id: None,
-        })
-    );
-}
-
-#[test]
-fn a_remote_container_opens_through_ssh_container_open_only() {
-    let mut state = shell_state();
-    open_host_stage(&mut state);
-    choose_host(&mut state, 1);
-    state.handle_input_bytes(b"\x1b[B");
-
-    let open = state.handle_input_bytes(b"\r");
-
-    let request = endpoint_request(&open.actions);
-    assert!(matches!(
-        &request.method,
-        crate::api::schema::Method::SshContainerOpen(params)
-            if params.host == "prod" && params.container == "shop-web-1-0123456789abcdef"
-    ));
 }

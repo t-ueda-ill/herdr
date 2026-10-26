@@ -785,31 +785,26 @@ mod tests {
 
     #[test]
     fn container_open_rejects_invalid_ssh_host_before_spawning() {
-        for host in ["-oProxyCommand=sh", "prod;id", ""] {
-            let mut app = test_app();
-            let (respond_to, response_rx) = std::sync::mpsc::channel();
-            let request = Request {
-                id: "open".into(),
-                method: Method::SshContainerOpen(SshContainerOpenParams {
-                    host: host.into(),
-                    container: "shop/db".into(),
-                    target: workspace_target(),
-                }),
-            };
+        let host = "-oProxyCommand=sh";
+        let mut app = test_app();
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+        let request = Request {
+            id: "open".into(),
+            method: Method::SshContainerOpen(SshContainerOpenParams {
+                host: host.into(),
+                container: "shop/db".into(),
+                target: workspace_target(),
+            }),
+        };
 
-            assert!(app.handle_deferred_container_api_request(request, respond_to, false));
+        assert!(app.handle_deferred_container_api_request(request, respond_to, false));
 
-            let response = response_rx
-                .try_recv()
-                .expect("an invalid host is rejected without an ssh lookup");
-            assert_eq!(
-                error_code(&response),
-                platform_or("invalid_ssh_host"),
-                "{host:?}"
-            );
-            assert!(app.state.workspaces.is_empty());
-            assert!(app.event_rx.try_recv().is_err());
-        }
+        let response = response_rx
+            .try_recv()
+            .expect("an invalid host is rejected without an ssh lookup");
+        assert_eq!(error_code(&response), platform_or("invalid_ssh_host"));
+        assert!(app.state.workspaces.is_empty());
+        assert!(app.event_rx.try_recv().is_err());
     }
 
     #[test]

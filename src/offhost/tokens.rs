@@ -208,16 +208,6 @@ mod tests {
     }
 
     #[test]
-    fn a_token_split_across_feeds_is_assembled() {
-        let mut reader = TokenReader::<Probe>::default();
-        let mut items = reader.feed(b"HERDR-OFFHOST-1\0o").unwrap();
-        items.extend(reader.feed(b"ne\0va").unwrap());
-        items.extend(reader.feed(b"lue\0").unwrap());
-
-        assert_eq!(items, [token(&["one", "value"])]);
-    }
-
-    #[test]
     fn an_unknown_keyword_is_malformed() {
         let mut reader = TokenReader::<Probe>::default();
 
@@ -304,7 +294,18 @@ mod tests {
             items.extend(reader.feed(std::slice::from_ref(byte)).unwrap());
         }
         assert_eq!(joined(items), whole, "one byte at a time");
-        assert_eq!(whole.len(), 7);
+        assert_eq!(
+            whole,
+            [
+                token(&["one", "a"]),
+                token(&["f", "512"]),
+                Item::Body(body),
+                token(&["z"]),
+                token(&["f", "3"]),
+                Item::Body(b"abc".to_vec()),
+                token(&["one", "b"]),
+            ]
+        );
     }
 
     #[test]

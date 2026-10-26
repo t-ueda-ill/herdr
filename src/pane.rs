@@ -6273,14 +6273,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn ssh_pane_accepts_reported_cwd_without_host_directory() {
-        let remote_cwd = std::path::PathBuf::from("/herdr-remote-only/home/me");
-        assert!(!remote_cwd.exists(), "test path must be absent on the host");
-        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
-        let (events, mut event_rx) = mpsc::channel(4);
-        runtime.in_ssh = true;
+    type SetOffHost = fn(&mut PaneRuntime);
 
+    #[tokio::test]
+    async fn off_host_panes_accept_reported_cwd_without_host_directory() {
+        let remote_cwd = std::path::PathBuf::from("/herdr-off-host-only/work");
+        assert!(!remote_cwd.exists(), "test path must be absent on the host");
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let (events, _event_rx) = mpsc::channel(4);
         publish_reported_cwd(
             runtime.pane_id,
             remote_cwd.clone(),
@@ -6288,125 +6288,87 @@ mod tests {
             runtime.shell_runs_off_host(),
             &events,
         );
-
-        assert_eq!(runtime.cwd(), Some(remote_cwd.clone()));
-        match event_rx.try_recv() {
-            Ok(AppEvent::TerminalCwdReported { cwd, .. }) => assert_eq!(cwd, remote_cwd),
-            other => panic!("expected a remote cwd report, got {other:?}"),
-        }
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn ssh_pane_cwd_ignores_host_process_cwd() {
-        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
-        runtime
-            .child_pid
-            .store(std::process::id(), Ordering::Release);
-        runtime.in_ssh = true;
-
-        assert_eq!(runtime.cwd(), None);
-        assert_eq!(runtime.follow_cwd(), None);
-        assert_eq!(runtime.foreground_cwd(), None);
-
-        let remote_cwd = std::path::PathBuf::from("/home/me/app");
-        *runtime.reported_cwd.lock().unwrap() = Some(remote_cwd.clone());
-        assert_eq!(runtime.cwd(), Some(remote_cwd.clone()));
-        assert_eq!(runtime.follow_cwd(), Some(remote_cwd.clone()));
-        assert_eq!(runtime.foreground_cwd(), Some(remote_cwd));
-    }
-
-    #[tokio::test]
-    async fn ssh_pane_persistence_cwd_never_falls_back_to_reported_remote_path() {
-        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
-        runtime.cwd_process_exited.store(true, Ordering::Release);
-        *runtime.reported_cwd.lock().unwrap() = Some("/home/me/app".into());
-        runtime.in_ssh = true;
-
-        assert_eq!(runtime.cwd_for_persistence(), None);
-
-        let host_cwd = std::env::temp_dir();
-        *runtime.persistence_cwd.lock().unwrap() = Some(host_cwd.clone());
-        assert_eq!(runtime.cwd_for_persistence(), Some(host_cwd));
-    }
-
-    #[tokio::test]
-    async fn container_pane_accepts_reported_cwd_without_host_directory() {
-        let container_cwd = std::path::PathBuf::from("/herdr-container-only/work");
-        assert!(
-            !container_cwd.exists(),
-            "test path must be absent on the host"
-        );
-        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
-        let (events, mut event_rx) = mpsc::channel(4);
-
-        publish_reported_cwd(
-            runtime.pane_id,
-            container_cwd.clone(),
-            &runtime.reported_cwd,
-            runtime.in_container,
-            &events,
-        );
         assert_eq!(*runtime.reported_cwd.lock().unwrap(), None);
 
-        runtime.in_container = true;
-        publish_reported_cwd(
-            runtime.pane_id,
-            container_cwd.clone(),
-            &runtime.reported_cwd,
-            runtime.in_container,
-            &events,
-        );
+        let off_host: [(&str, SetOffHost); 2] = [
+            ("container", |runtime| runtime.in_container = true),
+            ("ssh", |runtime| runtime.in_ssh = true),
+        ];
+        for (kind, set_off_host) in off_host {
+            let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+            let (events, mut event_rx) = mpsc::channel(4);
+            set_off_host(&mut runtime);
 
-        assert_eq!(runtime.cwd(), Some(container_cwd.clone()));
-        match event_rx.try_recv() {
-            Ok(AppEvent::TerminalCwdReported { cwd, .. }) => assert_eq!(cwd, container_cwd),
-            other => panic!("expected a container cwd report, got {other:?}"),
+            publish_reported_cwd(
+                runtime.pane_id,
+                remote_cwd.clone(),
+                &runtime.reported_cwd,
+                runtime.shell_runs_off_host(),
+                &events,
+            );
+
+            assert_eq!(runtime.cwd(), Some(remote_cwd.clone()), "{kind}");
+            match event_rx.try_recv() {
+                Ok(AppEvent::TerminalCwdReported { cwd, .. }) => assert_eq!(cwd, remote_cwd),
+                other => panic!("expected a {kind} cwd report, got {other:?}"),
+            }
         }
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn container_pane_cwd_ignores_host_process_cwd() {
-        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
-        runtime
-            .child_pid
-            .store(std::process::id(), Ordering::Release);
-        assert!(
-            runtime.cwd().is_some(),
-            "host panes read the docker CLI process cwd"
-        );
+    async fn off_host_pane_cwd_ignores_host_process_cwd() {
+        let off_host: [(&str, SetOffHost); 2] = [
+            ("container", |runtime| runtime.in_container = true),
+            ("ssh", |runtime| runtime.in_ssh = true),
+        ];
+        for (kind, set_off_host) in off_host {
+            let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+            runtime
+                .child_pid
+                .store(std::process::id(), Ordering::Release);
+            assert!(
+                runtime.cwd().is_some(),
+                "host panes read the docker or ssh CLI process cwd"
+            );
 
-        runtime.in_container = true;
-        assert_eq!(runtime.cwd(), None);
-        assert_eq!(runtime.follow_cwd(), None);
-        assert_eq!(runtime.foreground_cwd(), None);
+            set_off_host(&mut runtime);
+            assert_eq!(runtime.cwd(), None, "{kind}");
+            assert_eq!(runtime.follow_cwd(), None, "{kind}");
+            assert_eq!(runtime.foreground_cwd(), None, "{kind}");
 
-        let container_cwd = std::path::PathBuf::from("/work/app");
-        *runtime.reported_cwd.lock().unwrap() = Some(container_cwd.clone());
-        assert_eq!(runtime.cwd(), Some(container_cwd.clone()));
-        assert_eq!(runtime.follow_cwd(), Some(container_cwd.clone()));
-        assert_eq!(runtime.foreground_cwd(), Some(container_cwd));
+            let remote_cwd = std::path::PathBuf::from("/work/app");
+            *runtime.reported_cwd.lock().unwrap() = Some(remote_cwd.clone());
+            assert_eq!(runtime.cwd(), Some(remote_cwd.clone()), "{kind}");
+            assert_eq!(runtime.follow_cwd(), Some(remote_cwd.clone()), "{kind}");
+            assert_eq!(runtime.foreground_cwd(), Some(remote_cwd), "{kind}");
+        }
     }
 
     #[tokio::test]
-    async fn container_pane_persistence_cwd_never_falls_back_to_reported_container_path() {
-        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
-        runtime.cwd_process_exited.store(true, Ordering::Release);
-        let container_cwd = std::path::PathBuf::from("/work/app");
-        *runtime.reported_cwd.lock().unwrap() = Some(container_cwd.clone());
-        assert_eq!(
-            runtime.cwd_for_persistence(),
-            Some(container_cwd),
-            "host panes keep the reported cwd fallback"
-        );
+    async fn off_host_pane_persistence_cwd_never_falls_back_to_reported_remote_path() {
+        let off_host: [(&str, SetOffHost); 2] = [
+            ("container", |runtime| runtime.in_container = true),
+            ("ssh", |runtime| runtime.in_ssh = true),
+        ];
+        for (kind, set_off_host) in off_host {
+            let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+            runtime.cwd_process_exited.store(true, Ordering::Release);
+            let remote_cwd = std::path::PathBuf::from("/work/app");
+            *runtime.reported_cwd.lock().unwrap() = Some(remote_cwd.clone());
+            assert_eq!(
+                runtime.cwd_for_persistence(),
+                Some(remote_cwd),
+                "host panes keep the reported cwd fallback"
+            );
 
-        runtime.in_container = true;
-        assert_eq!(runtime.cwd_for_persistence(), None);
+            set_off_host(&mut runtime);
+            assert_eq!(runtime.cwd_for_persistence(), None, "{kind}");
 
-        let host_cwd = std::env::temp_dir();
-        *runtime.persistence_cwd.lock().unwrap() = Some(host_cwd.clone());
-        assert_eq!(runtime.cwd_for_persistence(), Some(host_cwd));
+            let host_cwd = std::env::temp_dir();
+            *runtime.persistence_cwd.lock().unwrap() = Some(host_cwd.clone());
+            assert_eq!(runtime.cwd_for_persistence(), Some(host_cwd), "{kind}");
+        }
     }
 
     #[cfg(unix)]

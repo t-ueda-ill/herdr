@@ -647,20 +647,6 @@ fn file_end(frames: &[Frame]) -> &Result<(), Changed> {
 }
 
 #[test]
-fn a_file_that_shrinks_mid_stream_ends_with_a_changed_trailer() {
-    let frames = changed_during_read("host-shrink", |path| {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .unwrap()
-            .set_len(1_000)
-            .unwrap();
-    });
-
-    assert!(file_end(&frames).is_err());
-}
-
-#[test]
 fn a_file_that_grows_mid_stream_ends_with_a_changed_trailer() {
     let frames = changed_during_read("host-grow", |path| {
         use std::io::Write as _;

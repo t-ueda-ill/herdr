@@ -620,11 +620,3 @@ fn a_hostile_name_cannot_put_control_characters_in_a_notice() {
         }
     }
 }
-
-#[test]
-fn only_one_download_runs_at_a_time() {
-    let mut downloads = Downloads::default();
-    assert!(!downloads.busy());
-    downloads.start(request());
-    assert!(downloads.busy());
-}

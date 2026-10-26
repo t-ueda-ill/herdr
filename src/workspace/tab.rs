@@ -635,21 +635,27 @@ mod tests {
     }
 
     #[test]
-    fn host_cwd_for_pane_uses_launch_cwd_for_container_terminals() {
-        let workspace = crate::workspace::Workspace::test_new("host-cwd");
-        let tab = &workspace.tabs[0];
-        let terminal_id = tab.terminal_id(tab.root_pane).cloned().unwrap();
-        let mut terminals = HashMap::new();
-        terminals.insert(
-            terminal_id.clone(),
-            TerminalState::new(terminal_id, PathBuf::from("/host")).with_container(launch()),
-        );
-        let runtimes = TerminalRuntimeRegistry::new();
+    fn host_cwd_for_pane_uses_launch_cwd_for_off_host_terminals() {
+        let off_host: [fn(TerminalState) -> TerminalState; 2] = [
+            |terminal| terminal.with_container(launch()),
+            |terminal| terminal.with_ssh(ssh_launch()),
+        ];
+        for off_host in off_host {
+            let workspace = crate::workspace::Workspace::test_new("host-cwd");
+            let tab = &workspace.tabs[0];
+            let terminal_id = tab.terminal_id(tab.root_pane).cloned().unwrap();
+            let mut terminals = HashMap::new();
+            terminals.insert(
+                terminal_id.clone(),
+                off_host(TerminalState::new(terminal_id, PathBuf::from("/host"))),
+            );
+            let runtimes = TerminalRuntimeRegistry::new();
 
-        assert_eq!(
-            tab.host_cwd_for_pane(tab.root_pane, &terminals, &runtimes),
-            Some(PathBuf::from("/host"))
-        );
+            assert_eq!(
+                tab.host_cwd_for_pane(tab.root_pane, &terminals, &runtimes),
+                Some(PathBuf::from("/host"))
+            );
+        }
     }
 
     fn ssh_launch() -> crate::ssh_host::SshLaunch {
@@ -673,24 +679,6 @@ mod tests {
         assert_eq!(terminal.ssh, Some(launch));
         assert_eq!(terminal.container, None);
         assert_eq!(terminal.cwd, PathBuf::from("/host"));
-    }
-
-    #[test]
-    fn host_cwd_for_pane_uses_launch_cwd_for_ssh_terminals() {
-        let workspace = crate::workspace::Workspace::test_new("host-cwd");
-        let tab = &workspace.tabs[0];
-        let terminal_id = tab.terminal_id(tab.root_pane).cloned().unwrap();
-        let mut terminals = HashMap::new();
-        terminals.insert(
-            terminal_id.clone(),
-            TerminalState::new(terminal_id, PathBuf::from("/host")).with_ssh(ssh_launch()),
-        );
-        let runtimes = TerminalRuntimeRegistry::new();
-
-        assert_eq!(
-            tab.host_cwd_for_pane(tab.root_pane, &terminals, &runtimes),
-            Some(PathBuf::from("/host"))
-        );
     }
 
     fn runtime_with_reported_cwd(
@@ -720,21 +708,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_cwd_for_pane_follows_host_shell_after_cold_restore_of_ssh_pane() {
-        let cwd = host_cwd_with_runtime(
-            |id| TerminalState::new(id, PathBuf::from("/original")).with_ssh(ssh_launch()),
-            runtime_with_reported_cwd(false, false, "/changed"),
-        );
-        assert_eq!(cwd, Some(PathBuf::from("/changed")));
-    }
-
-    #[tokio::test]
-    async fn host_cwd_for_pane_follows_host_shell_after_cold_restore_of_container_pane() {
-        let cwd = host_cwd_with_runtime(
-            |id| TerminalState::new(id, PathBuf::from("/original")).with_container(launch()),
-            runtime_with_reported_cwd(false, false, "/changed"),
-        );
-        assert_eq!(cwd, Some(PathBuf::from("/changed")));
+    async fn host_cwd_for_pane_follows_host_shell_after_cold_restore_of_off_host_pane() {
+        let off_host: [fn(TerminalState) -> TerminalState; 2] = [
+            |terminal| terminal.with_container(launch()),
+            |terminal| terminal.with_ssh(ssh_launch()),
+        ];
+        for off_host in off_host {
+            let cwd = host_cwd_with_runtime(
+                |id| off_host(TerminalState::new(id, PathBuf::from("/original"))),
+                runtime_with_reported_cwd(false, false, "/changed"),
+            );
+            assert_eq!(cwd, Some(PathBuf::from("/changed")));
+        }
     }
 
     #[tokio::test]

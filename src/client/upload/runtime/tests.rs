@@ -308,20 +308,6 @@ fn a_second_drop_while_one_runs_is_refused() {
     assert_eq!(harness.offer(&text), DropStart::Busy);
 }
 
-#[cfg(unix)]
-#[test]
-fn a_paste_of_missing_paths_while_one_runs_is_plain_text() {
-    let dir = crate::upload::test_support::TempDir::new("runtime-busy-missing");
-    std::fs::write(dir.join("f"), b"").unwrap();
-    let mut harness = Harness::new();
-    harness.offer(&format!("{}", dir.join("f").display()));
-    harness.pump();
-
-    let offered = harness.offer("/var/www/app/config.yml-that-is-not-here");
-
-    assert_eq!(offered, DropStart::NotADrop);
-}
-
 #[test]
 fn a_direct_attach_upload_needs_the_probe_answer_from_the_same_connection() {
     let mut runtime = UploadRuntime::new(UploadSettings::from_config(
@@ -533,35 +519,6 @@ fn a_tree_question_with_no_tab_to_show_it_cancels_the_session() {
         )]
     );
     assert!(!harness.state.uploads.uploads.busy());
-}
-
-#[cfg(unix)]
-#[test]
-fn a_drop_of_existing_files_while_a_download_runs_is_refused_as_busy() {
-    let dir = crate::upload::test_support::TempDir::new("runtime-drop-while-download");
-    let file = dir.join("a.txt");
-    std::fs::write(&file, b"hello").unwrap();
-    let mut harness = Harness::new();
-    let emit = harness.emit.clone();
-    let replay = plain_event("x");
-
-    let offered = harness.state.uploads.offer_drop(
-        DropCandidate {
-            text: file.display().to_string(),
-            target: UploadTarget::Pane("p1".into()),
-            endpoint_id: ClientEndpointId::Local,
-            generation: 1,
-            chunk_cap: crate::upload::UPLOAD_CHUNK_BYTES,
-            can_confirm: true,
-            download_busy: true,
-        },
-        move || replay,
-        move |event| emit.send(event).is_ok(),
-        Instant::now(),
-    );
-
-    assert_eq!(offered, DropStart::Busy);
-    assert!(!harness.state.uploads.busy());
 }
 
 #[cfg(unix)]

@@ -1212,17 +1212,6 @@ mod offhost {
     }
 
     #[test]
-    fn host_tabs_keep_polling_every_second_through_file_read() {
-        let mut state = state();
-        state.investigation_mut().unwrap().last_poll = std::time::Instant::now();
-
-        assert!(tick(&mut state, 0).is_empty());
-        let due = tick(&mut state, 2);
-
-        assert!(matches!(&due[..], [(_, Method::FileRead(_))]), "{due:?}");
-    }
-
-    #[test]
     fn off_host_polling_waits_while_any_endpoint_request_is_pending() {
         let mut state = offhost_state();
         with_loaded_preview(&mut state);
@@ -2387,6 +2376,7 @@ mod offhost {
             if via_menu {
                 let mut outcome = ClientShellInput::default();
                 state.investigation_menu_action(REFRESH_FILES, &mut outcome);
+                assert!(state.investigation().unwrap().notice.is_empty());
             } else {
                 press(&mut state, KeyCode::F(5), M::empty());
             }
@@ -2420,6 +2410,7 @@ mod offhost {
     fn host_tabs_poll_listings_through_directory_list_every_second() {
         let mut state = state();
 
+        assert!(tick(&mut state, 0).is_empty());
         let document = tick(&mut state, 2);
         assert!(
             matches!(&document[..], [(_, Method::FileRead(_))]),
@@ -2498,23 +2489,6 @@ mod offhost {
 
             assert!(state.investigation().unwrap().browser.refresh.index_due);
         }
-    }
-
-    #[test]
-    fn the_refresh_menu_entry_still_works_inside_an_environment() {
-        let mut state = refreshable_state();
-        let mut outcome = ClientShellInput::default();
-
-        state.investigation_menu_action(REFRESH_FILES, &mut outcome);
-
-        assert!(state.investigation().unwrap().notice.is_empty());
-        assert!(!state
-            .investigation()
-            .unwrap()
-            .browser
-            .refresh
-            .queue
-            .is_empty());
     }
 
     fn refresh_error(code: &str) -> Result<ResponseResult, ClientShellEndpointError> {
@@ -4463,19 +4437,14 @@ mod help_open {
     }
 
     #[test]
-    fn escape_closes_help_and_leaves_the_files_selection() {
-        let mut state = with_help(false);
-        let before = state.investigation().unwrap().browser.selected;
-        press(&mut state, KeyCode::Esc, M::empty());
-        assert!(state.overlay.is_none());
-        assert_eq!(state.investigation().unwrap().browser.selected, before);
-    }
-
-    #[test]
-    fn question_mark_closes_help() {
-        let mut state = with_help(false);
-        press(&mut state, KeyCode::Char('?'), M::SHIFT);
-        assert!(state.overlay.is_none());
+    fn escape_or_question_mark_closes_help_and_leaves_the_files_selection() {
+        for (key, modifiers) in [(KeyCode::Esc, M::empty()), (KeyCode::Char('?'), M::SHIFT)] {
+            let mut state = with_help(false);
+            let before = state.investigation().unwrap().browser.selected;
+            press(&mut state, key, modifiers);
+            assert!(state.overlay.is_none(), "{key:?}");
+            assert_eq!(state.investigation().unwrap().browser.selected, before);
+        }
     }
 
     #[test]
@@ -4792,13 +4761,6 @@ mod split {
         })
     }
 
-    fn open_files(state: &mut ClientShellState) {
-        state.record_binding(
-            crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenFiles),
-            &mut ClientShellInput::default(),
-        );
-    }
-
     fn mouse(
         state: &mut ClientShellState,
         kind: MouseEventKind,
@@ -5041,20 +5003,6 @@ mod split {
             KeyCode::Char('x'),
             M::empty()
         )));
-    }
-
-    #[test]
-    fn open_files_focuses_a_region_shown_beside_a_focused_terminal_before_hiding_it() {
-        let mut state = terminal_focused();
-
-        open_files(&mut state);
-        assert!(state.workbench.visible && state.workbench.files_focused);
-
-        open_files(&mut state);
-        assert!(!state.workbench.visible && !state.workbench.files_focused);
-
-        open_files(&mut state);
-        assert!(state.workbench.visible && state.workbench.files_focused);
     }
 
     #[test]
@@ -5730,7 +5678,7 @@ mod files_menu {
     }
 
     #[test]
-    fn the_title_line_shows_the_menu_button_without_the_f10_hint() {
+    fn the_title_line_ends_with_the_menu_button() {
         let mut state = composed();
         let frame = state.compose(COLS, ROWS).expect("composed split");
         let title = state.investigation_hits.title;
@@ -5740,7 +5688,6 @@ mod files_menu {
             .map(|cell| cell.symbol.as_str())
             .collect();
 
-        assert!(!row.contains("F10"), "{row}");
         let button = menu_button(&state);
         assert_eq!(button.width, 3);
         assert_eq!(button.right(), title.right());
@@ -5854,26 +5801,6 @@ mod files_menu {
         assert_eq!(
             menu(&state),
             Some((MenuTarget::Tree, MenuPlacement::Header))
-        );
-    }
-
-    #[test]
-    fn f10_still_opens_the_menu_of_the_selection() {
-        let mut state = composed();
-        let tab = state.investigation_mut().unwrap();
-        tab.focus = Focus::Results;
-        tab.browser.selected = tab
-            .browser
-            .rows
-            .iter()
-            .position(|row| row.entry.as_ref().is_some_and(|entry| !entry.is_dir))
-            .expect("file row");
-
-        press(&mut state, KeyCode::F(10), M::empty());
-
-        assert_eq!(
-            menu(&state),
-            Some((MenuTarget::File, MenuPlacement::Selection))
         );
     }
 

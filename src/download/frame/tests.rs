@@ -537,16 +537,6 @@ fn a_path_outside_the_requested_names_is_a_failure_not_a_skip() {
 }
 
 #[test]
-fn a_child_before_its_parent_is_a_failure() {
-    let result = answers(
-        &mut packer(&["d"]),
-        vec![dir("d"), dir("d/a/b"), Frame::End],
-    );
-
-    assert_eq!(code(result), "download_failed");
-}
-
-#[test]
 fn structure_violations_by_the_source_are_failures() {
     let cases: Vec<Vec<Frame>> = vec![
         vec![data(b"x")],
@@ -554,6 +544,7 @@ fn structure_violations_by_the_source_are_failures() {
         vec![file("f", 1), Frame::End],
         vec![file("f", 1), dir("f/x")],
         vec![file("f", 1), skipped("f/x", SkipReason::Link)],
+        vec![dir("f"), dir("f/a/b"), Frame::End],
     ];
     for frames in cases {
         let result = answers(&mut packer(&["f"]), frames);

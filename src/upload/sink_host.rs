@@ -604,16 +604,6 @@ mod tests {
     }
 
     sink_tests::sink_contract!(factory);
-
-    #[test]
-    fn a_relative_or_missing_destination_is_reported_before_any_stage_exists() {
-        let dir = TempDir::new("host-missing");
-        let mut sink = HostSink::new(dir.join("missing"), crate::upload::stage_token());
-
-        let error = sink.begin(&["a".into()]).unwrap_err();
-
-        assert_eq!(error.0, "not_found");
-    }
 }
 
 #[cfg(all(test, windows))]

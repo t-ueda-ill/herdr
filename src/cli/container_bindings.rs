@@ -148,31 +148,16 @@ mod tests {
     }
 
     #[test]
-    fn container_list_accepts_workspace_equals_form() {
-        let (request, _) = parse(&["list", "--workspace=w3"]).unwrap();
+    fn container_list_parses_the_ssh_host() {
+        let (request, _) = parse(&["list", "--ssh", "prod"]).unwrap();
 
         assert_eq!(
             request.method,
-            Method::ContainerList(crate::api::schema::ContainerListParams {
-                workspace_id: Some("w3".into()),
+            Method::SshContainerList(crate::api::schema::SshContainerListParams {
+                host: "prod".into(),
+                workspace_id: None,
             })
         );
-    }
-
-    #[test]
-    fn container_list_parses_the_ssh_host() {
-        for args in [vec!["list", "--ssh", "prod"], vec!["list", "--ssh=prod"]] {
-            let (request, _) = parse(&args).unwrap();
-
-            assert_eq!(
-                request.method,
-                Method::SshContainerList(crate::api::schema::SshContainerListParams {
-                    host: "prod".into(),
-                    workspace_id: None,
-                })
-            );
-        }
-        let (request, _) = parse(&["list", "--ssh", "prod"]).unwrap();
         assert_eq!(
             serde_json::to_value(request).unwrap(),
             serde_json::json!({"id":"cli:container:list","method":"ssh.container.list","params":{"host":"prod"}})

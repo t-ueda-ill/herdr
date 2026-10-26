@@ -255,26 +255,58 @@ async fn a_download_requested_while_the_server_hands_off_is_cancelled() {
 #[tokio::test]
 async fn aborting_transfers_stops_downloads_and_uploads() {
     let mut server = test_headless_server();
-    let _control_rx = connect_shell_client(&mut server, 6);
+    let control_rx = connect_shell_client(&mut server, 6);
     let (_dir, path) = one_file();
+    let dest = TempDir::new("headless-abort-upload");
+    let owner = crate::upload::registry::UploadOwner::Client(6);
     server.handle_server_event(ServerEvent::ClientTransferRequest {
         client_id: 6,
         lane: TransferLane::Download,
         request: download_begin(&path),
     });
     deliver_transfer_response(&mut server).await;
+    let data = sent_control(&control_rx, DOWNLOAD_RESPONSE_KIND).expect("download response");
+    let success: api::schema::SuccessResponse = serde_json::from_str(&data).unwrap();
+    let api::schema::ResponseResult::PaneDownloadStarted(download) = success.result else {
+        panic!("{data}")
+    };
+    server.handle_server_event(ServerEvent::ClientTransferRequest {
+        client_id: 6,
+        lane: TransferLane::Upload,
+        request: begin(dest.str()),
+    });
+    deliver_transfer_response(&mut server).await;
+    let data = sent_control(&control_rx, UPLOAD_RESPONSE_KIND).expect("upload response");
+    let success: api::schema::SuccessResponse = serde_json::from_str(&data).unwrap();
+    let api::schema::ResponseResult::PaneUploadStarted(upload) = success.result else {
+        panic!("{data}")
+    };
+    assert!(server
+        .app
+        .download_sessions
+        .get(&download.download_id, owner)
+        .is_ok());
+    assert!(server
+        .app
+        .upload_sessions
+        .get(&upload.upload_id, owner)
+        .is_ok());
 
     server.abort_transfers(Duration::ZERO);
 
-    let after = server
+    let download_after = server
         .app
         .download_sessions
-        .get("dl-any", crate::upload::registry::UploadOwner::Client(6));
-    assert!(after.is_err());
-    let mut ids = Vec::new();
-    // The registry forgets aborted sessions, so a second abort finds none.
-    ids.extend(server.app.download_sessions.abort_all());
-    assert!(ids.is_empty());
+        .get(&download.download_id, owner);
+    let upload_after = server.app.upload_sessions.get(&upload.upload_id, owner);
+    assert_eq!(
+        download_after.err().map(|(code, _)| code),
+        Some("download_cancelled")
+    );
+    assert_eq!(
+        upload_after.err().map(|(code, _)| code),
+        Some("upload_cancelled")
+    );
     shutdown_test_runtimes(&mut server);
 }
 

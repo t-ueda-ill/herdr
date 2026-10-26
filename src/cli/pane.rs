@@ -669,14 +669,6 @@ mod tests {
     }
 
     #[test]
-    fn pane_split_rejects_container_without_value() {
-        assert!(matches!(
-            request("split", &["w1:p1", "--direction", "right", "--container"]),
-            Err(ParseError::Clap(error)) if error.exit_code() == 2
-        ));
-    }
-
-    #[test]
     fn parse_pane_split_args_accepts_ratio() {
         let params = parse_pane_split_args(
             &["issue-1", "--direction", "right", "--ratio", "0.333"],

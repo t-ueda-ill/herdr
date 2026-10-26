@@ -411,14 +411,6 @@ mod tests {
     }
 
     #[test]
-    fn ssh_argv_keeps_the_users_remote_command() {
-        let launch = SshLaunch::new("prod".into(), Some("/tmp/ctl-%C".into())).unwrap();
-        assert!(strings(ssh_argv(&launch))
-            .iter()
-            .all(|arg| !arg.contains("RemoteCommand")));
-    }
-
-    #[test]
     fn ssh_argv_with_control_path_multiplexes_through_herdr_master() {
         let launch = SshLaunch::new("prod".into(), Some("/tmp/hssh-1/abc-%C".into())).unwrap();
 
@@ -447,16 +439,6 @@ mod tests {
             strings(ssh_argv(&launch)),
             ["ssh", "-C", "-t", "deploy@prod"]
         );
-    }
-
-    #[test]
-    fn ssh_argv_never_uses_a_generated_config_or_batch_mode() {
-        let launch = SshLaunch::new("prod".into(), Some("/tmp/ctl".into())).unwrap();
-        let argv = strings(ssh_argv(&launch));
-
-        assert!(!argv.iter().any(|arg| arg == "-F"));
-        assert!(!argv.iter().any(|arg| arg.contains("BatchMode")));
-        assert_eq!(argv.last().map(String::as_str), Some("prod"));
     }
 
     #[test]

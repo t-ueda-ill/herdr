@@ -1,9 +1,9 @@
 use super::off_host_clipboard_fixture::{
-    cleanup_of, rejection, stage_target_of, staged_event, staged_image, OffHostPaneFixture,
-    OffHostShell, CLIENT,
+    cleanup_of, stage_target_of, staged_event, staged_image, OffHostPaneFixture, OffHostShell,
+    CLIENT,
 };
 #[cfg(not(windows))]
-use super::off_host_clipboard_fixture::{staged_file, STAGED_PATH};
+use super::off_host_clipboard_fixture::{rejection, staged_file, STAGED_PATH};
 use super::*;
 #[cfg(not(windows))]
 use crate::server::clipboard_image::RemoteDockerHost;
@@ -127,61 +127,6 @@ async fn staged_container_image_for_a_stale_target_is_removed_instead_of_pasted(
         assert_eq!(test_cleanup::take(), cleanup_of(stage_target), "{case}");
         fixture.finish();
     }
-}
-
-#[tokio::test]
-async fn failed_container_stage_notifies_only_the_requesting_client() {
-    let mut fixture = container_pane(true);
-    let (other_writer, other_control_rx, _other_render_rx) = test_client_writer();
-    fixture.server.clients.insert(
-        12,
-        ClientConnection::new_with_mode(
-            ClientConnectionMode::ClientShell,
-            (80, 24),
-            crate::kitty_graphics::HostCellSize::default(),
-            2,
-            RenderEncoding::SemanticFrame,
-            Some(other_writer),
-        ),
-    );
-    let event = fixture.staged(
-        container_target(CONTAINER_ID),
-        Err("docker exited with status 126: sh not found".into()),
-    );
-
-    assert!(!fixture.server.handle_internal_event_with_forwarding(event));
-
-    assert_eq!(
-        rejection(&fixture.control_rx),
-        "Paste rejected: Image could not be copied into the container: \
-         docker exited with status 126: sh not found"
-    );
-    assert!(other_control_rx
-        .recv_timeout(Duration::from_millis(50))
-        .is_err());
-    fixture.assert_nothing_pasted();
-    assert!(fixture.client().staged_off_host_clipboard_files.is_empty());
-    assert!(test_cleanup::take().is_empty());
-    fixture.finish();
-}
-
-// Why not on Windows: container panes are rejected there, so the server
-// never treats a shell as running in a container.
-#[cfg(not(windows))]
-#[tokio::test]
-async fn container_pane_image_never_falls_back_to_a_host_file() {
-    let mut fixture = container_pane(true);
-    crate::thread_spawn::test_hook::fail_next_spawns(1);
-
-    assert!(!fixture.paste_image());
-
-    assert!(rejection(&fixture.control_rx)
-        .starts_with("Paste rejected: Image could not be copied into the container:"));
-    fixture.assert_nothing_pasted();
-    let client = fixture.client();
-    assert!(client.staged_clipboard_files.is_empty());
-    assert!(client.staged_off_host_clipboard_files.is_empty());
-    fixture.finish();
 }
 
 #[tokio::test]

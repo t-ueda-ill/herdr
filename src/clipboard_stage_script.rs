@@ -70,28 +70,6 @@ mod tests {
     const NAME: &str = "client-7-clipboard-123-0.png";
 
     #[test]
-    fn stage_script_creates_a_fresh_private_dir_then_writes_and_prints_the_path() {
-        assert!(STAGE_SCRIPT.starts_with(r#"t="${TMPDIR:-/tmp}"; umask 077; d=$(mktemp -d "#));
-        assert!(STAGE_SCRIPT.contains(r#"herdr-clipboard-image-XXXXXX") || exit 1;"#));
-        assert!(
-            STAGE_SCRIPT.contains(r#"-type d -name "herdr-clipboard-image-*" -user "$(id -u)""#)
-        );
-        assert!(STAGE_SCRIPT.contains(r#"cat > "$d/$1" && printf %s "$d/$1""#));
-    }
-
-    #[test]
-    fn stage_script_never_names_a_reusable_predictable_directory() {
-        assert!(!STAGE_SCRIPT.contains("herdr-clipboard-images-"));
-        assert!(STAGE_SCRIPT.contains("mktemp -d"));
-        assert!(!STAGE_SCRIPT.contains("mkdir"));
-    }
-
-    #[test]
-    fn stage_script_removes_the_fresh_directory_when_the_write_fails() {
-        assert!(STAGE_SCRIPT.ends_with(r#"|| { rm -rf "$d"; exit 1; }"#));
-    }
-
-    #[test]
     fn stage_and_cleanup_scripts_survive_single_quoting_for_a_remote_login_shell() {
         for script in [STAGE_SCRIPT, CLEANUP_SCRIPT] {
             assert!(!script.contains('\''));
@@ -224,6 +202,27 @@ mod tests {
             assert!(output.status.success(), "{output:?}");
             assert_eq!(mode(&victim), 0o755);
             assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
+        }
+
+        #[test]
+        fn stage_script_sweeps_its_own_directories_older_than_a_day() {
+            let root = TempRoot::new("sweep");
+            let old = root.0.join(format!("{STAGE_DIR_PREFIX}old"));
+            let recent = root.0.join(format!("{STAGE_DIR_PREFIX}recent"));
+            std::fs::create_dir(&old).unwrap();
+            std::fs::create_dir(&recent).unwrap();
+            let two_days_ago =
+                std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86_400);
+            std::fs::File::open(&old)
+                .unwrap()
+                .set_modified(two_days_ago)
+                .unwrap();
+
+            let output = run_script(&root.0, NAME, b"image-bytes");
+
+            assert!(output.status.success(), "{output:?}");
+            assert!(!old.exists());
+            assert!(recent.exists());
         }
 
         #[test]

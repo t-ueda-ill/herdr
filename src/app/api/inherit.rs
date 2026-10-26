@@ -509,6 +509,7 @@ mod tests {
         let host_pane = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
         app.state.workspaces[0].tabs[0].layout.focus_pane(host_pane);
         app.state.ensure_test_terminals();
+        let before = app.state.terminals.len();
 
         let response = app.handle_tab_create_inherit("req".into(), tab_params(Some(ssh_pane)));
 
@@ -519,6 +520,12 @@ mod tests {
         if is_success(&response) {
             assert_eq!(created.len(), 1, "{response}");
             assert_eq!(created[0].ssh.as_ref(), Some(&launch));
+        } else {
+            assert_eq!(
+                app.state.terminals.len(),
+                before,
+                "no host fallback: {response}"
+            );
         }
         shutdown_test_runtimes(&mut app);
     }
