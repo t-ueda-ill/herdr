@@ -1168,6 +1168,7 @@ impl App {
             Method::FilesCancel(_)
             | Method::FilesPlan(_)
             | Method::FileRead(_)
+            | Method::FileStat(_)
             | Method::FilesSearch(_)
             | Method::FilesReplace(_)
             | Method::FilesOperate(_)
@@ -1176,7 +1177,9 @@ impl App {
             | Method::PaneDirectoryList(_)
             | Method::PaneDirectoryIndex(_)
             | Method::PaneDirectoryOpenEditor(_)
-            | Method::PaneFileRead(_) => {
+            | Method::PaneDirectoryOpenFile(_)
+            | Method::PaneFileRead(_)
+            | Method::PaneFileStat(_) => {
                 return responses::encode_error(
                     request.id,
                     "invalid_request",
@@ -1297,6 +1300,9 @@ impl App {
             }
             Method::PaneOpenEditor(params) => {
                 return self.handle_pane_open_editor(request.id, params);
+            }
+            Method::PaneOpenFile(params) => {
+                return self.handle_pane_open_file(request.id, params);
             }
             Method::PaneSelectionRead(params) => {
                 return self.handle_pane_selection_read(request.id, params);

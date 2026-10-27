@@ -71,6 +71,16 @@ fn globs(source: &str) -> Result<Vec<Regex>> {
         .collect()
 }
 
+const CONTEXT_LINES: usize = 2;
+const MAX_CONTEXT_CHARS: usize = 200;
+// Why not every match: the response would grow by up to four lines per hit,
+// and only the selected hit's context is ever shown.
+const MAX_CONTEXT_MATCHES: usize = 1_000;
+
+fn clip(line: &str, chars: usize) -> String {
+    line.chars().take(chars).collect()
+}
+
 pub(crate) fn search(params: FilesSearchParams, latest: &AtomicU64) -> Result<ResponseResult> {
     let root = absolute(&params.root)?;
     if !root.is_dir() {
@@ -233,23 +243,37 @@ pub(crate) fn search(params: FilesSearchParams, latest: &AtomicU64) -> Result<Re
                     break;
                 }
                 let line_number = line_starts.partition_point(|offset| *offset <= found.start());
-                let line_start = line_starts[line_number.saturating_sub(1)];
-                let line_end = line_starts
-                    .get(line_number)
-                    .map_or(text.len(), |i| i.saturating_sub(1));
+                let line_text = |number: usize| {
+                    let start = line_starts[number - 1];
+                    let end = line_starts
+                        .get(number)
+                        .map_or(text.len(), |i| i.saturating_sub(1));
+                    text[start..end].trim_end_matches('\r')
+                };
+                // A final newline opens no further line.
+                let last_line = if text.ends_with('\n') {
+                    line_starts.len() - 1
+                } else {
+                    line_starts.len()
+                };
+                let context = (matches.len() < MAX_CONTEXT_MATCHES).then(|| FileMatchContext {
+                    before: (line_number.saturating_sub(CONTEXT_LINES).max(1)..line_number)
+                        .map(|number| clip(line_text(number), MAX_CONTEXT_CHARS))
+                        .collect(),
+                    after: (line_number + 1..=(line_number + CONTEXT_LINES).min(last_line))
+                        .map(|number| clip(line_text(number), MAX_CONTEXT_CHARS))
+                        .collect(),
+                });
                 matches.push(FileMatch {
                     path: crate::platform::file_path_display(&path),
                     revision: version.clone(),
                     start: found.start(),
                     end: found.end(),
                     line: line_number,
-                    text: text[line_start..line_end]
-                        .trim_end_matches('\r')
-                        .chars()
-                        .take(400)
-                        .collect(),
+                    text: clip(line_text(line_number), 400),
                     matched: found.as_str().into(),
                     replacement: None,
+                    context,
                 });
                 if matches.len() >= MAX_MATCHES {
                     truncated = true;

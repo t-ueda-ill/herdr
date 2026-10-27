@@ -370,6 +370,52 @@ status_indicators = "symbols"
 
 The symbols are static, so this option does not enable spinner animation.
 
+### Files details
+
+The details band below the files list shows facts about the selection. Each kind of selection has its own template under `[ui.files.details]`. These are the defaults:
+
+```toml
+[ui.files.details]
+file = "{name}\n{size} · {mtime} · {mode} {owner}"
+directory = "{name}/\n{children} · {mtime} · {mode} {owner}"
+multi = "{count} selected · {total_size}"
+match = "{path}:{line}\n{context}"
+max_lines = 8
+```
+
+| Template | Shown for |
+| --- | --- |
+| `file` | A selected file. |
+| `directory` | A selected directory. With `..` or nothing selected, it describes the listed folder. |
+| `multi` | One or more marked entries. |
+| `match` | A selected content search hit. |
+
+| Token | Value |
+| --- | --- |
+| `{name}` | Entry name. |
+| `{path}` | Path. |
+| `{kind}` | `file`, `directory`, `symlink`, or `other`. |
+| `{size}` | Size in binary units, for example `12.3 KiB`. |
+| `{size_bytes}` | Size in bytes. |
+| `{mtime}` | Modification time as local `YYYY-MM-DD HH:MM`. |
+| `{mtime_iso}` | Modification time as UTC RFC 3339. |
+| `{hidden}` | `hidden` for a dotfile, otherwise empty. |
+| `{ignored}` | `ignored` for a Git-ignored entry, otherwise empty. |
+| `{link_target}` | Symlink target. |
+| `{mode}` | Permissions such as `rwxr-xr-x`, with `s`/`S`/`t`/`T` for setuid, setgid, and sticky bits. Empty on Windows. |
+| `{owner}` | Owner name, or the numeric uid in SSH and container panes. Empty on Windows. |
+| `{children}` | Direct entries, `.git` excluded, for example `12 items`. Counting stops at `10000+ items`. |
+| `{count}` | Number of marked entries, folders included. Only in `multi`. |
+| `{total_size}` | Total size of the marked files. Folders are not walked. Only in `multi`. |
+| `{line}` | Line number of the hit. Only in `match`. |
+| `{context}` | The hit with up to two lines before and after it, in `grep -C` style: `11-text`, `12:hit`, `13-text`. Fewer lines when the band is too short, so the hit stays visible. Only in `match`. |
+
+`\n` starts a new line. Write `{{` and `}}` for literal braces. A literal of spaces and punctuation next to an empty token is dropped, so `{size} · {mtime}` reads as just the size when the time is unknown; one left between two values stays once, and a prefix such as `→ {link_target}` stays while its token has a value. A line whose tokens are all empty is dropped, and an empty template hides the band for that kind. A template that does not parse falls back to its default with a config diagnostic.
+
+The band is as tall as its rendered lines, up to `max_lines` and never more than a third of the files body. It hides when the list would keep fewer than five rows. **toggle details** in the files menu hides or shows it per client.
+
+These settings are read by the client, like the other `[ui]` presentation settings.
+
 ### Sidebar row layouts
 
 The expanded desktop sidebar renders each inner array in `rows` as one line. These are the complete default layouts:

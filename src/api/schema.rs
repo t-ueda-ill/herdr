@@ -170,11 +170,15 @@ operations::define_operations! {
     DirectoryList(DirectoryListParams) => "directory.list", false, true;
     DirectoryIndex(DirectoryIndexParams) => "directory.index", false, true;
     PaneOpenEditor(PaneOpenEditorParams) => "pane.open_editor", true, true;
+    PaneOpenFile(PaneOpenFileParams) => "pane.open_file", true, true;
     FileRead(FileReadParams) => "file.read", false, true;
     PaneDirectoryList(PaneDirectoryListParams) => "pane.directory.list", false, true;
     PaneDirectoryIndex(PaneDirectoryIndexParams) => "pane.directory.index", false, true;
     PaneDirectoryOpenEditor(PaneDirectoryOpenEditorParams) => "pane.directory.open_editor", false, true;
     PaneFileRead(PaneFileReadParams) => "pane.file.read", false, true;
+    PaneDirectoryOpenFile(PaneDirectoryOpenFileParams) => "pane.directory.open_file", false, true;
+    PaneFileStat(PaneFileStatParams) => "pane.file.stat", false, true;
+    FileStat(FileStatParams) => "files.stat", false, true;
     FilesCancel(FilesCancelParams) => "files.cancel", false, true;
     FilesSearch(FilesSearchParams) => "files.search", false, true;
     FilesReplace(FilesReplaceParams) => "files.replace", false, true;
@@ -204,6 +208,8 @@ impl Method {
                 | Self::PaneDirectoryList(_)
                 | Self::PaneDirectoryIndex(_)
                 | Self::PaneFileRead(_)
+                | Self::PaneFileStat(_)
+                | Self::FileStat(_)
                 | Self::FilesSearch(_)
                 | Self::FilesPlan(_)
                 | Self::FilesReplace(_)

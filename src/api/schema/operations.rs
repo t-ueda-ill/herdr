@@ -195,6 +195,7 @@ mod tests {
             "pane.clear",
             "pane.edit_scrollback",
             "pane.open_editor",
+            "pane.open_file",
             "pane.focus",
             "pane.input.set",
             "pane.rename",

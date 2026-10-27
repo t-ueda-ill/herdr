@@ -1,33 +1,25 @@
 use super::*;
 #[test]
-fn document_selection_preserves_utf8_and_defers_external_changes() {
-    let mut doc = Document::new("/a".into());
-    doc.update("a日本\r\n👨‍👩‍👧\n".into(), "one".into());
-    doc.motion(KeyCode::Right, false, 10);
-    doc.motion(KeyCode::Right, true, 10);
-    assert_eq!(&doc.text[doc.range().unwrap()], "日");
-    doc.update("other".into(), "two".into());
-    assert!(doc.pending.is_some());
-    assert_eq!(doc.revision, "one");
-    doc.clear_selection();
-    assert_eq!(doc.text, "other");
-    assert_eq!(doc.revision, "two");
+fn saved_investigations_write_the_retired_preview_keys_empty_and_never_content() {
+    let saved = SavedInvestigation::default();
+    let json: serde_json::Value = serde_json::to_value(&saved).unwrap();
+    assert_eq!(json["files"], serde_json::json!([]));
+    assert_eq!(json["active_file"], serde_json::Value::Null);
+    assert_eq!(json["horizontal"], serde_json::json!(false));
+    let text = json.to_string();
+    assert!(!text.contains("revision"));
+    assert!(!text.contains("clipboard"));
+    assert!(!text.contains("undo"));
 }
 #[test]
-fn saved_document_does_not_contain_content_clipboard_or_undo() {
-    let saved = SavedInvestigation {
-        files: vec![SavedDocument {
-            path: "/a".into(),
-            cursor: 3,
-            scroll: 1,
-            horizontal: 0,
-        }],
-        ..Default::default()
-    };
-    let json = serde_json::to_string(&saved).unwrap();
-    assert!(!json.contains("revision"));
-    assert!(!json.contains("clipboard"));
-    assert!(!json.contains("undo"));
+fn saved_investigations_without_the_retired_preview_keys_still_load() {
+    let saved: SavedInvestigation = serde_json::from_value(serde_json::json!({
+        "endpoint": "local", "workspace": null, "root": "/r", "query": "",
+        "include": "", "exclude": "", "regex": false, "case_sensitive": false,
+        "whole_word": false, "ignored": false, "content_search": false
+    }))
+    .unwrap();
+    assert_eq!(saved.root, "/r");
 }
 
 fn state() -> ClientShellState {
@@ -67,10 +59,7 @@ fn state() -> ClientShellState {
         }),
     );
     browser.rebuild(false);
-    let mut investigation = Investigation::new(browser, ClientEndpointId::Local, "boot-1".into());
-    let mut document = Document::new("/repo/a.txt".into());
-    document.update("hello\n".into(), "old".into());
-    investigation.preview = Some(document);
+    let investigation = Investigation::new(browser, ClientEndpointId::Local, "boot-1".into());
     state.workbench.tabs.push(investigation);
     state.workbench.active = Some(0);
     state.workbench.visible = true;
@@ -89,6 +78,16 @@ fn press(
         crate::input::TerminalKey::new(code, modifiers),
     )])
 }
+fn sent_methods(outcome: &ClientShellInput) -> Vec<crate::api::schema::Method> {
+    outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(request.method.clone()),
+            _ => None,
+        })
+        .collect()
+}
 fn assert_no_terminal_input(outcome: &ClientShellInput) {
     assert!(!outcome.requests.iter().any(|r| matches!(
         r,
@@ -99,15 +98,15 @@ fn assert_no_terminal_input(outcome: &ClientShellInput) {
 fn investigation_enter_space_typing_and_paste_never_reach_terminal() {
     use crossterm::event::KeyModifiers as M;
     let mut state = state();
-    assert_no_terminal_input(&press(&mut state, KeyCode::Char(' '), M::empty()));
-    assert_eq!(state.investigation().unwrap().focus, Focus::Body);
+    let space = press(&mut state, KeyCode::Char(' '), M::empty());
+    assert_no_terminal_input(&space);
+    assert_eq!(sent_methods(&space).len(), 1);
     assert_no_terminal_input(&press(&mut state, KeyCode::Char('x'), M::empty()));
     assert_no_terminal_input(&state.handle_raw_events(vec![
         crate::raw_input::RawInputEvent::Paste("must not execute".into()),
     ]));
     press(&mut state, KeyCode::Esc, M::empty());
     assert_no_terminal_input(&press(&mut state, KeyCode::Enter, M::empty()));
-    assert_eq!(state.investigation().unwrap().documents.len(), 1);
     assert_eq!(state.snapshot.as_ref().unwrap().tabs.len(), 1);
     assert_eq!(
         state.snapshot.as_ref().unwrap().focused_tab_id.as_deref(),
@@ -115,7 +114,7 @@ fn investigation_enter_space_typing_and_paste_never_reach_terminal() {
     );
 }
 #[test]
-fn investigation_search_spaces_and_file_close_are_client_local() {
+fn investigation_search_spaces_are_client_local() {
     use crossterm::event::KeyModifiers as M;
     let mut state = state();
     press(&mut state, KeyCode::Char('f'), M::CONTROL | M::SHIFT);
@@ -124,14 +123,11 @@ fn investigation_search_spaces_and_file_close_are_client_local() {
     ]));
     assert_eq!(state.investigation().unwrap().query.as_str(), "hello world");
     press(&mut state, KeyCode::Esc, M::empty());
-    let outcome = press(&mut state, KeyCode::Char('w'), M::CONTROL);
-    assert_no_terminal_input(&outcome);
-    assert!(outcome.actions.is_empty());
     assert_eq!(state.snapshot.as_ref().unwrap().tabs.len(), 1);
 }
 #[test]
-fn investigation_ignores_superseded_search_and_read_responses() {
-    use crate::api::schema::{FileDocument, ResponseResult};
+fn investigation_ignores_superseded_search_and_stat_responses() {
+    use crate::api::schema::{FileStat, ResponseResult};
     let mut state = state();
     state.investigation_mut().unwrap().search_generation = 3;
     let mut outcome = ClientShellInput::default();
@@ -149,34 +145,26 @@ fn investigation_ignores_superseded_search_and_read_responses() {
         &mut outcome,
     );
     assert!(!state.investigation().unwrap().search_ready);
-    state
-        .investigation_mut()
-        .unwrap()
-        .preview
-        .as_mut()
-        .unwrap()
-        .request_generation = 4;
+    let tab = state.investigation_mut().unwrap();
+    tab.stat.subject = Some("/repo/a.txt".into());
+    tab.stat.generation = 4;
+    tab.stat.pending = true;
     state.handle_investigation_result(
-        FileRequest::Read {
+        FileRequest::Stat {
             id: 1,
-            path: "/repo/a.txt".into(),
-            generation: 2,
-            prepare: false,
+            generation: 3,
         },
-        Ok(ResponseResult::FileDocument {
-            document: FileDocument {
+        Ok(ResponseResult::FileStat {
+            stat: FileStat {
                 path: "/repo/a.txt".into(),
-                text: "stale".into(),
-                revision: "stale".into(),
-                unchanged: false,
+                size: Some(99),
+                ..FileStat::default()
             },
         }),
         &mut outcome,
     );
-    assert_eq!(
-        state.investigation().unwrap().document().unwrap().text,
-        "hello\n"
-    );
+    assert!(state.investigation().unwrap().stat.stat.is_none());
+    assert!(state.investigation().unwrap().stat.pending);
 }
 #[test]
 fn investigation_outer_tab_navigation_never_changes_terminal_identity() {
@@ -202,11 +190,9 @@ fn investigation_reopened_replace_preview_rejects_prior_prepare_generation() {
     tab.prepare_pending = 1;
     tab.dialog = Some(Dialog::Replace { scroll: 0 });
     state.handle_investigation_result(
-        FileRequest::Read {
+        FileRequest::Prepare {
             id: 1,
-            path: "/repo/a.txt".into(),
             generation: 1,
-            prepare: true,
         },
         Ok(ResponseResult::FileDocument {
             document: FileDocument {
@@ -222,26 +208,25 @@ fn investigation_reopened_replace_preview_rejects_prior_prepare_generation() {
     assert!(state.investigation().unwrap().plan.is_empty());
 }
 #[test]
-fn investigation_search_jump_clamps_cached_utf8_cursor_and_render_fits_small_screens() {
-    use crate::api::schema::FileMatch;
+fn investigation_render_with_the_details_band_fits_small_screens() {
+    use crate::api::schema::{FileMatch, FileMatchContext};
     let mut state = state();
     let tab = state.investigation_mut().unwrap();
-    let mut document = Document::new("/repo/a.txt".into());
-    document.update("あx\n".into(), "old".into());
-    tab.documents.push(document);
     tab.content_search = true;
     tab.matches.push(FileMatch {
         path: "/repo/a.txt".into(),
         revision: "new".into(),
         start: 1,
         end: 2,
-        line: 1,
-        text: "xx".into(),
+        line: 2,
+        text: "あx".into(),
         matched: "x".into(),
         replacement: None,
+        context: Some(FileMatchContext {
+            before: vec!["before".into()],
+            after: vec!["after".into()],
+        }),
     });
-    state.request_investigation_preview(false, true, &mut ClientShellInput::default());
-    assert_eq!(state.investigation().unwrap().document().unwrap().cursor, 0);
     for (cols, rows) in [(160, 48), (100, 30), (60, 20), (20, 10), (8, 4)] {
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         let layout = state.layout(cols, rows);
@@ -255,7 +240,6 @@ fn investigation_copy_mode_input_is_captured_and_server_restart_invalidates_muta
     let mut state = state();
     state.mode = ClientShellMode::Copy;
     assert_no_terminal_input(&press(&mut state, KeyCode::Char(' '), M::empty()));
-    assert_eq!(state.investigation().unwrap().focus, Focus::Body);
     state.investigation_mut().unwrap().undo.push(FileChange {
         path: "/repo/a.txt".into(),
         revision: "old".into(),
@@ -267,28 +251,9 @@ fn investigation_copy_mode_input_is_captured_and_server_restart_invalidates_muta
     assert_eq!(state.workbench.tabs[0].boot, "boot-1");
 }
 #[test]
-fn investigation_document_copy_excludes_line_numbers_and_keeps_original_newlines() {
-    use crossterm::event::KeyModifiers as M;
-    let mut state = state();
-    let tab = state.investigation_mut().unwrap();
-    tab.focus = Focus::Body;
-    let doc = tab.document_mut().unwrap();
-    doc.update("one\r\n日本語\r\n".into(), "crlf".into());
-    doc.anchor = Some(0);
-    doc.cursor = doc.text.len();
-    let result = press(&mut state, KeyCode::Char('c'), M::CONTROL);
-    assert_no_terminal_input(&result);
-    assert!(result.actions.iter().any(|a|matches!(a,ClientShellAction::ClipboardWrite(bytes) if bytes=="one\r\n日本語\r\n".as_bytes())));
-}
-#[test]
 fn investigation_frame_snapshot() {
     let mut state = state();
     state.set_pane_surface(crate::client::shell::tests::surface());
-    let tab = state.investigation_mut().unwrap();
-    tab.preview.as_mut().unwrap().update(
-        "pub fn greet(name: &str) {\n    println!(\"Hello, {name}\");\n}\n".into(),
-        "demo".into(),
-    );
     let frame = state.compose(120, 32).expect("composed investigation");
     if let Some(path) = std::env::var_os("HERDR_WORKBENCH_SNAPSHOT") {
         let rows: Vec<_> = frame
@@ -302,54 +267,6 @@ fn investigation_frame_snapshot() {
     assert!(!state.investigation_hits.tabs.is_empty());
 }
 
-#[test]
-fn investigation_cached_preview_jump_and_restored_scroll_survive_read() {
-    use crate::api::schema::{FileDocument, FileMatch, ResponseResult};
-    let mut state = state();
-    let tab = state.investigation_mut().unwrap();
-    tab.preview
-        .as_mut()
-        .unwrap()
-        .update("あx\n".into(), "old".into());
-    tab.content_search = true;
-    tab.matches.push(FileMatch {
-        path: "/repo/a.txt".into(),
-        revision: "new".into(),
-        start: 1,
-        end: 2,
-        line: 1,
-        text: "xx".into(),
-        matched: "x".into(),
-        replacement: None,
-    });
-    state.request_investigation_preview(false, true, &mut ClientShellInput::default());
-    let document = state.investigation().unwrap().document().unwrap();
-    assert!(document.text.is_char_boundary(document.cursor));
-    let tab = state.investigation_mut().unwrap();
-    let document = tab.preview.as_mut().unwrap();
-    document.loaded = false;
-    document.restored_scroll = true;
-    document.scroll = 3;
-    document.request_generation = 7;
-    state.handle_investigation_result(
-        FileRequest::Read {
-            id: 1,
-            path: "/repo/a.txt".into(),
-            generation: 7,
-            prepare: false,
-        },
-        Ok(ResponseResult::FileDocument {
-            document: FileDocument {
-                path: "/repo/a.txt".into(),
-                text: "1\n2\n3\n4\n5\n".into(),
-                revision: "new".into(),
-                unchanged: false,
-            },
-        }),
-        &mut ClientShellInput::default(),
-    );
-    assert_eq!(state.investigation().unwrap().document().unwrap().scroll, 3);
-}
 #[test]
 fn investigation_fast_editor_returns_after_authoritative_missing_pane() {
     let mut state = state();
@@ -790,8 +707,8 @@ fn persisted_investigations_keep_the_newest_fifty_per_endpoint() {
 mod offhost {
     use super::*;
     use crate::api::schema::{
-        DirectoryEntry, DirectoryEntryKind, FileDocument, Method, PaneDirectoryListing,
-        PaneFileContent, PaneLocation, PaneLocationKind, ResponseResult,
+        DirectoryEntry, DirectoryEntryKind, FileStat, Method, PaneDirectoryListing, PaneFileStatus,
+        PaneLocation, PaneLocationKind, ResponseResult,
     };
     use crate::client::shell::file_viewer::FileLocation;
     use crate::protocol::ClientShellPane;
@@ -850,7 +767,6 @@ mod offhost {
         let tab = state.investigation_mut().unwrap();
         tab.browser.location = Some(container());
         tab.browser.root = Some("/work".into());
-        tab.preview = None;
         state
     }
 
@@ -918,11 +834,33 @@ mod offhost {
         requests(&outcome)
     }
 
-    fn with_loaded_preview(state: &mut ClientShellState) {
+    /// Lists `/work` with `a.txt` and selects that file.
+    fn with_selected_file(state: &mut ClientShellState) {
         let tab = state.investigation_mut().unwrap();
-        let mut document = Document::new("/work/a.txt".into());
-        document.update("hello\n".into(), "cksum:1:6".into());
-        tab.preview = Some(document);
+        tab.browser.directories.insert(
+            "/work".into(),
+            crate::client::shell::file_viewer::model::DirectoryState::Loaded(
+                crate::client::shell::file_viewer::model::DirectoryListing {
+                    canonical: "/work".into(),
+                    entries: vec![entry("a.txt", DirectoryEntryKind::File)],
+                    truncated: false,
+                    omitted: None,
+                    unlistable: None,
+                    git_error: None,
+                },
+            ),
+        );
+        tab.browser.rebuild(false);
+        tab.browser.selected = tab
+            .browser
+            .rows
+            .iter()
+            .position(|row| {
+                row.entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.path == "/work/a.txt")
+            })
+            .unwrap();
     }
 
     #[test]
@@ -1071,10 +1009,10 @@ mod offhost {
     #[test]
     fn a_tab_without_a_pane_stops_polling_and_resumes_when_one_returns() {
         let mut state = offhost_state();
-        with_loaded_preview(&mut state);
         set_panes(&mut state, &[("pane_9", None, None)]);
         let mut outcome = ClientShellInput::default();
         state.request_file_viewer_listing("/work/src".into(), &mut outcome);
+        assert!(tick(&mut state, 1).is_empty(), "the selection settles");
 
         assert!(tick(&mut state, 6).is_empty());
         assert_eq!(
@@ -1102,75 +1040,60 @@ mod offhost {
     }
 
     #[test]
-    fn selecting_a_file_reads_it_through_pane_file_read_without_poll() {
+    fn a_settled_selection_asks_pane_file_stat_through_the_focused_pane() {
         let mut state = offhost_state();
-        let tab = state.investigation_mut().unwrap();
-        tab.preview = Some(Document::new("/work/a.txt".into()));
-        let mut outcome = ClientShellInput::default();
-        let tab = state.investigation_mut().unwrap();
-        tab.browser.directories.insert(
-            "/work".into(),
-            crate::client::shell::file_viewer::model::DirectoryState::Loaded(
-                crate::client::shell::file_viewer::model::DirectoryListing {
-                    canonical: "/work".into(),
-                    entries: vec![entry("a.txt", DirectoryEntryKind::File)],
-                    truncated: false,
-                    omitted: None,
-                    unlistable: None,
-                    git_error: None,
-                },
-            ),
+        with_selected_file(&mut state);
+
+        assert!(
+            tick(&mut state, 1).is_empty(),
+            "waits for the selection to rest"
         );
-        tab.browser.rebuild(false);
-        tab.preview = None;
+        let due = tick(&mut state, 2);
 
-        state.request_investigation_preview(false, false, &mut outcome);
-
-        let [(_, Method::PaneFileRead(read))] = &requests(&outcome)[..] else {
-            panic!("{:?}", requests(&outcome));
+        let [(_, Method::PaneFileStat(stat))] = &due[..] else {
+            panic!("{due:?}");
         };
-        assert_eq!(read.path, "/work/a.txt");
-        assert!(!read.poll);
-        assert_eq!(read.revision, None);
-        assert_eq!(read.pane_id, "pane_1");
+        assert_eq!(stat.path, "/work/a.txt");
+        assert_eq!(stat.pane_id, "pane_1");
+        assert!(tick(&mut state, 3).is_empty(), "one stat per selection");
     }
 
     #[test]
-    fn a_pane_file_answer_loads_the_document_like_a_host_answer() {
+    fn a_pane_file_stat_answer_fills_the_details_like_a_host_answer() {
         let mut state = offhost_state();
+        with_selected_file(&mut state);
         let tab = state.investigation_mut().unwrap();
-        let mut document = Document::new("/work/a.txt".into());
-        document.request_generation = 5;
-        tab.preview = Some(document);
-        let mut outcome = ClientShellInput::default();
+        tab.stat.subject = Some("/work/a.txt".into());
+        tab.stat.generation = 5;
+        tab.stat.pending = true;
 
         state.handle_investigation_result(
-            FileRequest::Read {
+            FileRequest::Stat {
                 id: 1,
-                path: "/work/a.txt".into(),
                 generation: 5,
-                prepare: false,
             },
-            Ok(ResponseResult::PaneFileDocument(PaneFileContent {
+            Ok(ResponseResult::PaneFileStat(PaneFileStatus {
                 location: PaneLocation {
                     kind: PaneLocationKind::Container,
                     ssh_host: Some("devbox".into()),
                     container: Some("app".into()),
                 },
-                document: FileDocument {
+                stat: FileStat {
                     path: "/work/a.txt".into(),
-                    text: "remote\n".into(),
-                    revision: "cksum:9:7".into(),
-                    unchanged: false,
+                    size: Some(7),
+                    mode: Some(0o644),
+                    owner: Some("1000".into()),
+                    ..FileStat::default()
                 },
             })),
-            &mut outcome,
+            &mut ClientShellInput::default(),
         );
 
-        assert_eq!(
-            state.investigation().unwrap().document().unwrap().text,
-            "remote\n"
-        );
+        let tab = state.investigation().unwrap();
+        assert_eq!(tab.stat.stat.as_ref().and_then(|stat| stat.size), Some(7));
+        assert!(!tab.stat.pending);
+        let lines = super::super::details::details_lines(tab, &state.config.files_details, 8);
+        assert_eq!(lines, ["a.txt", "7 B · rw-r--r-- 1000"]);
     }
 
     #[test]
@@ -1196,55 +1119,28 @@ mod offhost {
     }
 
     #[test]
-    fn off_host_polls_every_five_seconds_with_poll_set() {
+    fn off_host_stat_waits_while_any_endpoint_request_is_pending() {
         let mut state = offhost_state();
-        with_loaded_preview(&mut state);
-        state.investigation_mut().unwrap().last_poll = std::time::Instant::now();
-
-        assert!(tick(&mut state, 4).is_empty());
-        let due = tick(&mut state, 6);
-
-        let [(_, Method::PaneFileRead(read))] = &due[..] else {
-            panic!("{due:?}");
-        };
-        assert!(read.poll);
-        assert_eq!(read.revision.as_deref(), Some("cksum:1:6"));
-    }
-
-    #[test]
-    fn off_host_polling_waits_while_any_endpoint_request_is_pending() {
-        let mut state = offhost_state();
-        with_loaded_preview(&mut state);
-        state.investigation_mut().unwrap().last_poll = std::time::Instant::now();
+        with_selected_file(&mut state);
         let mut outcome = ClientShellInput::default();
         state.request_file_viewer_listing("/work/src".into(), &mut outcome);
         let (list_id, _) = requests(&outcome).remove(0);
+        assert!(tick(&mut state, 1).is_empty());
 
-        assert!(tick(&mut state, 6).is_empty());
+        assert!(tick(&mut state, 2).is_empty());
 
         answer(&mut state, &list_id, Ok(pane_listing("/work/src")));
         assert!(matches!(
-            &tick(&mut state, 7)[..],
-            [(_, Method::PaneFileRead(_))]
+            &tick(&mut state, 3)[..],
+            [(_, Method::PaneFileStat(_))]
         ));
-    }
-
-    #[test]
-    fn off_host_polling_skips_a_tick_while_the_previous_read_is_pending() {
-        let mut state = offhost_state();
-        with_loaded_preview(&mut state);
-        let tab = state.investigation_mut().unwrap();
-        tab.last_poll = std::time::Instant::now();
-        tab.pending_reads.insert("/work/a.txt".into());
-
-        assert!(tick(&mut state, 6).is_empty());
     }
 
     #[test]
     fn content_search_replace_and_file_operations_only_say_they_are_unavailable() {
         use crossterm::event::KeyModifiers as M;
         let mut state = offhost_state();
-        with_loaded_preview(&mut state);
+        with_selected_file(&mut state);
         for label in HOST_ONLY {
             let mut outcome = ClientShellInput::default();
             state.investigation_menu_action(label, &mut outcome);
@@ -1607,9 +1503,7 @@ mod offhost {
     #[test]
     fn the_send_menu_names_the_focused_pane_of_the_location_not_a_stored_one() {
         let mut state = offhost_state();
-        with_loaded_preview(&mut state);
-        let tab = state.investigation_mut().unwrap();
-        tab.focus = Focus::Body;
+        with_selected_file(&mut state);
         let mut outcome = ClientShellInput::default();
 
         state.investigation_menu_action(SEND_PATH, &mut outcome);
@@ -1623,8 +1517,7 @@ mod offhost {
     #[test]
     fn the_editor_opens_in_the_focused_pane_and_tracks_the_overlay_pane_it_answers_with() {
         let mut state = offhost_state();
-        with_loaded_preview(&mut state);
-        state.investigation_mut().unwrap().focus = Focus::Body;
+        with_selected_file(&mut state);
         let mut outcome = ClientShellInput::default();
 
         state.investigation_menu_action(EDIT_FILE, &mut outcome);
@@ -1647,10 +1540,37 @@ mod offhost {
     }
 
     #[test]
+    fn view_on_a_server_with_open_file_asks_the_pager_in_the_focused_pane() {
+        let mut state = offhost_state();
+        state.set_endpoint_methods(Some(vec!["pane.directory.open_file".into()]));
+        with_selected_file(&mut state);
+        let mut outcome = ClientShellInput::default();
+
+        state.investigation_menu_action(VIEW_FILE, &mut outcome);
+
+        let [(_, Method::PaneDirectoryOpenFile(open))] = &requests(&outcome)[..] else {
+            panic!("{:?}", requests(&outcome));
+        };
+        assert_eq!(
+            (
+                open.pane_id.as_str(),
+                open.path.as_str(),
+                open.line,
+                open.mode
+            ),
+            (
+                "pane_1",
+                "/work/a.txt",
+                None,
+                crate::api::schema::OpenFileMode::Pager
+            )
+        );
+    }
+
+    #[test]
     fn an_editor_answer_without_a_pane_is_reported_and_keeps_the_tab() {
         let mut state = offhost_state();
-        with_loaded_preview(&mut state);
-        state.investigation_mut().unwrap().focus = Focus::Body;
+        with_selected_file(&mut state);
         let mut outcome = ClientShellInput::default();
         state.investigation_menu_action(EDIT_FILE, &mut outcome);
         let (id, _) = requests(&outcome).remove(0);
@@ -1989,13 +1909,17 @@ mod offhost {
         };
         browser.rebuild(false);
         select(&mut state, "/work/src/main.rs");
-        // The selected file is already previewed and its poll is far off, so
-        // an answer starts no read of its own and only listings are on the wire.
+        // The selected file's facts are already known, so an answer starts
+        // no stat of its own and only listings are on the wire.
         let tab = state.investigation_mut().unwrap();
-        let mut document = Document::new("/work/src/main.rs".into());
-        document.update("fn main() {}\n".into(), "cksum:1:1".into());
-        tab.preview = Some(document);
-        tab.last_poll = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        tab.stat = StatState {
+            subject: Some("/work/src/main.rs".into()),
+            stat: Some(crate::api::schema::FileStat {
+                path: "/work/src/main.rs".into(),
+                ..Default::default()
+            }),
+            ..StatState::default()
+        };
         state
     }
 
@@ -2334,7 +2258,7 @@ mod offhost {
                             dir_listing(&path, &SRC_ENTRIES)
                         }
                     }
-                    Method::PaneFileRead(_) => {
+                    Method::PaneFileStat(_) => {
                         sent.push(method);
                         answer(
                             state,
@@ -2372,7 +2296,6 @@ mod offhost {
         use crossterm::event::KeyModifiers as M;
         for via_menu in [false, true] {
             let mut state = refreshable_state();
-            state.investigation_mut().unwrap().last_poll = std::time::Instant::now();
             if via_menu {
                 let mut outcome = ClientShellInput::default();
                 state.investigation_menu_action(REFRESH_FILES, &mut outcome);
@@ -2381,7 +2304,7 @@ mod offhost {
                 press(&mut state, KeyCode::F(5), M::empty());
             }
             let tab = state.investigation().unwrap();
-            assert!(tab.last_poll.elapsed() >= std::time::Duration::from_secs(9));
+            assert!(tab.stat.due.is_some());
             assert!(
                 matches!(
                     tab.browser.directories.get("/work"),
@@ -2393,8 +2316,8 @@ mod offhost {
             let sent = drain_manual_refresh(&mut state);
 
             assert!(
-                matches!(sent[0], Method::PaneFileRead(_)),
-                "the open document is read at once"
+                matches!(sent[0], Method::PaneFileStat(_)),
+                "the details are asked again at once"
             );
             let paths: Vec<_> = sent.iter().filter_map(list_path).collect();
             assert_eq!(paths, ["/work", "/work/src"]);
@@ -2411,11 +2334,8 @@ mod offhost {
         let mut state = state();
 
         assert!(tick(&mut state, 0).is_empty());
-        let document = tick(&mut state, 2);
-        assert!(
-            matches!(&document[..], [(_, Method::FileRead(_))]),
-            "{document:?}"
-        );
+        let stat = tick(&mut state, 2);
+        assert!(matches!(&stat[..], [(_, Method::FileStat(_))]), "{stat:?}");
         let listing = tick(&mut state, 2);
         let [(_, method)] = &listing[..] else {
             panic!("{listing:?}");
@@ -2608,64 +2528,22 @@ mod offhost {
     }
 
     #[test]
-    fn a_background_refresh_answer_leaves_a_scrolled_pinned_document_and_a_selection_alone() {
+    fn a_background_refresh_answer_leaves_the_selection_and_the_details_alone() {
         let mut state = refreshable_state();
-        let text = "a\nb\nc\nd\ne\nf\n";
-        let tab = state.investigation_mut().unwrap();
-        let mut pinned = Document::new("/work/src/main.rs".into());
-        pinned.update(text.into(), "cksum:1:1".into());
-        pinned.cursor = 10;
-        pinned.scroll = 0;
-        tab.documents.push(pinned);
-        tab.active_file = Some(0);
-        tab.focus = Focus::Body;
         let mut grown = ROOT_ENTRIES.to_vec();
         grown.push(("new.txt", DirectoryEntryKind::File));
 
         let (id, _) = tick(&mut state, 6).remove(0);
         answer(&mut state, &id, Ok(dir_listing("/work", &ROOT_ENTRIES)));
-        assert_eq!(state.investigation().unwrap().documents[0].scroll, 0);
         let (id, _) = tick(&mut state, 12).remove(0);
         answer(&mut state, &id, Ok(dir_listing("/work/src", &SRC_ENTRIES)));
         let (id, _) = tick(&mut state, 18).remove(0);
         answer(&mut state, &id, Ok(dir_listing("/work", &grown)));
-        assert_eq!(state.investigation().unwrap().documents[0].scroll, 0);
 
-        // The unpinned preview keeps its selection through the same answers.
-        let mut state = refreshable_state();
-        let tab = state.investigation_mut().unwrap();
-        let preview = tab.preview.as_mut().unwrap();
-        preview.update(text.into(), "cksum:1:2".into());
-        preview.anchor = Some(0);
-        preview.cursor = 4;
-        let (id, _) = tick(&mut state, 6).remove(0);
-        answer(&mut state, &id, Ok(dir_listing("/work", &ROOT_ENTRIES)));
-        assert_eq!(
-            state
-                .investigation()
-                .unwrap()
-                .preview
-                .as_ref()
-                .unwrap()
-                .anchor,
-            Some(0)
-        );
-        let (id, _) = tick(&mut state, 12).remove(0);
-        let more = [
-            ("main.rs", DirectoryEntryKind::File),
-            ("lib.rs", DirectoryEntryKind::File),
-        ];
-        answer(&mut state, &id, Ok(dir_listing("/work/src", &more)));
-        assert_eq!(
-            state
-                .investigation()
-                .unwrap()
-                .preview
-                .as_ref()
-                .unwrap()
-                .anchor,
-            Some(0)
-        );
+        assert_eq!(selected_path(&state).as_deref(), Some("/work/src/main.rs"));
+        let tab = state.investigation().unwrap();
+        assert!(tab.stat.stat.is_some());
+        assert!(tab.stat.due.is_none());
     }
 
     #[test]
@@ -2947,7 +2825,6 @@ mod download {
         let mut state = state();
         let tab = state.investigation_mut().unwrap();
         tab.browser.rows.clear();
-        tab.preview = None;
 
         open(&mut state);
 
@@ -3912,17 +3789,17 @@ mod hover {
     }
 
     #[test]
-    fn right_clicking_the_preview_opens_the_preview_menu() {
+    fn right_clicking_the_details_opens_the_details_menu() {
         let mut state = composed();
-        let body = state.investigation_hits.body;
+        let details = state.investigation_hits.details;
+        assert!(details.height > 0, "the band is drawn");
 
-        click(&mut state, MouseButton::Right, body.x + 8, body.y);
+        click(&mut state, MouseButton::Right, details.x + 8, details.y);
         state.compose(120, 32).expect("composed menu");
 
-        assert_eq!(state.investigation().unwrap().focus, Focus::Body);
         assert_eq!(
             shown_labels(&state),
-            MenuTarget::Preview.labels(false, FilesPresentation::Full, FilesDock::Left)
+            MenuTarget::Details.labels(false, FilesPresentation::Full, FilesDock::Left)
         );
     }
 
@@ -3970,23 +3847,6 @@ mod hover {
         );
         let first = menu_rect(&state, 0);
         assert_eq!((first.x, first.y), (row.x + 1, row.bottom() + 1));
-    }
-
-    #[test]
-    fn f10_on_the_focused_preview_opens_the_preview_menu() {
-        let mut state = composed();
-        state.investigation_mut().unwrap().focus = Focus::Body;
-
-        press(&mut state, KeyCode::F(10), M::empty());
-
-        assert!(matches!(
-            state.investigation().unwrap().dialog,
-            Some(Dialog::Menu {
-                target: MenuTarget::Preview,
-                anchor: MenuPlacement::Selection,
-                ..
-            })
-        ));
     }
 
     #[test]
@@ -4134,7 +3994,7 @@ mod hover {
     }
 
     fn select_label(state: &mut ClientShellState, label: &str) -> usize {
-        let index = MenuTarget::Preview
+        let index = MenuTarget::Search
             .labels(false, FilesPresentation::Full, FilesDock::Left)
             .iter()
             .position(|item| *item == label)
@@ -4150,37 +4010,35 @@ mod hover {
     #[test]
     fn enter_runs_the_selected_workbench_menu_item_and_closes_the_menu() {
         let mut state = composed();
-        let horizontal = state.investigation().unwrap().horizontal;
-        open_menu(&mut state, MenuTarget::Preview);
-        select_label(&mut state, TOGGLE_SPLIT_DIRECTION);
+        let regex = state.investigation().unwrap().regex;
+        open_menu(&mut state, MenuTarget::Search);
+        select_label(&mut state, TOGGLE_REGEX);
         state.compose(120, 32).expect("composed menu");
 
         let outcome = press(&mut state, KeyCode::Enter, M::empty());
 
         let tab = state.investigation().unwrap();
         assert!(tab.dialog.is_none());
-        assert_eq!(tab.horizontal, !horizontal);
+        assert_eq!(tab.regex, !regex);
         assert!(outcome.actions.is_empty());
     }
 
     #[test]
     fn clicking_a_workbench_menu_row_runs_that_item_and_closes_the_menu() {
         let mut state = composed();
-        let horizontal = state.investigation().unwrap().horizontal;
-        open_menu(&mut state, MenuTarget::Preview);
+        open_menu(&mut state, MenuTarget::Tree);
         state.compose(120, 32).expect("composed menu");
-        let index = MenuTarget::Preview
+        let index = MenuTarget::Tree
             .labels(false, FilesPresentation::Full, FilesDock::Left)
             .iter()
-            .position(|item| *item == TOGGLE_SPLIT_DIRECTION)
+            .position(|item| *item == TOGGLE_DETAILS)
             .expect("listed");
         let rect = menu_rect(&state, index);
 
         click(&mut state, MouseButton::Left, rect.x + 1, rect.y);
 
-        let tab = state.investigation().unwrap();
-        assert!(tab.dialog.is_none());
-        assert_eq!(tab.horizontal, !horizontal);
+        assert!(state.investigation().unwrap().dialog.is_none());
+        assert!(state.workbench.hide_details);
     }
 
     fn input_text(state: &ClientShellState) -> Option<String> {
@@ -4219,7 +4077,7 @@ mod hover {
             MenuTarget::Directory,
             MenuTarget::Tree,
             MenuTarget::Search,
-            MenuTarget::Preview,
+            MenuTarget::Details,
         ] {
             for content_search in [false, true] {
                 for presentation in [FilesPresentation::Split, FilesPresentation::Full] {
@@ -4298,19 +4156,15 @@ mod hover {
     }
 
     #[test]
-    fn right_clicking_a_file_row_previews_that_file() {
+    fn right_clicking_a_file_row_selects_it_for_the_details_and_opens_its_menu() {
         let mut state = composed();
-        state.investigation_mut().unwrap().preview = None;
         let file = row_where(&state, |is_dir| !is_dir);
         let row = row_rect(&state, file);
 
         click(&mut state, MouseButton::Right, row.x + 1, row.y);
 
         let tab = state.investigation().unwrap();
-        assert_eq!(
-            tab.document().map(|document| document.path.as_str()),
-            Some("/repo/a.txt")
-        );
+        assert_eq!(tab.details_subject().as_deref(), Some("/repo/a.txt"));
         assert!(tab.dialog.is_some());
     }
 
@@ -4329,6 +4183,7 @@ mod hover {
             text: "hello".into(),
             matched: "h".into(),
             replacement: None,
+            context: None,
         });
         tab.focus = Focus::Include;
         state.compose(120, 32).expect("composed search");
@@ -5075,13 +4930,7 @@ mod split {
         let mut state = terminal_focused();
         let pane = state.hits.panes[0].inner_rect;
         let files = state.layout(COLS, ROWS).files_region.unwrap();
-        let cursor_before = state
-            .investigation()
-            .unwrap()
-            .preview
-            .as_ref()
-            .unwrap()
-            .cursor;
+        let selected_before = state.investigation().unwrap().browser.selected;
 
         mouse(
             &mut state,
@@ -5114,14 +4963,14 @@ mod split {
         assert!(state.selection.as_ref().is_none_or(|s| s.is_finalized()));
         assert!(!state.workbench.files_focused);
         let tab = state.investigation().unwrap();
-        assert_eq!(tab.preview.as_ref().unwrap().cursor, cursor_before);
+        assert_eq!(tab.browser.selected, selected_before);
     }
 
     #[test]
     fn a_drag_begun_in_the_files_region_never_reaches_the_terminals() {
         let mut state = composed();
         let pane = state.hits.panes[0].inner_rect;
-        let body = state.investigation_hits.body;
+        let body = state.investigation_hits.details;
         assert!(!body.is_empty());
 
         mouse(
@@ -5861,5 +5710,348 @@ mod files_menu {
             state.chrome_drag,
             Some(crate::client::shell::ClientChromeDrag::FilesDivider)
         ));
+    }
+}
+
+mod details {
+    use super::*;
+    use crate::api::schema::{
+        FileMatch, FileMatchContext, FileStat, Method, OpenFileMode, ResponseResult,
+    };
+    use crossterm::event::KeyModifiers as M;
+
+    /// `state()` with `/repo/a.txt` selected.
+    fn with_file_selected() -> ClientShellState {
+        let mut state = state();
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.selected = tab
+            .browser
+            .rows
+            .iter()
+            .position(|row| {
+                row.entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.path == "/repo/a.txt")
+            })
+            .unwrap();
+        state
+    }
+
+    fn lines(state: &ClientShellState) -> Vec<String> {
+        super::super::details::details_lines(
+            state.investigation().unwrap(),
+            &state.config.files_details,
+            8,
+        )
+    }
+
+    fn a_match() -> FileMatch {
+        FileMatch {
+            path: "/repo/a.txt".into(),
+            revision: "r".into(),
+            start: 0,
+            end: 1,
+            line: 12,
+            text: "hit".into(),
+            matched: "h".into(),
+            replacement: None,
+            context: Some(FileMatchContext {
+                before: vec!["above".into()],
+                after: vec!["below".into()],
+            }),
+        }
+    }
+
+    #[test]
+    fn enter_opens_the_editor_and_space_the_pager_where_the_server_offers_pane_open_file() {
+        for (code, mode) in [
+            (KeyCode::Enter, OpenFileMode::Editor),
+            (KeyCode::Char(' '), OpenFileMode::Pager),
+        ] {
+            let mut state = with_file_selected();
+            state.set_endpoint_methods(Some(vec!["pane.open_file".into()]));
+
+            let sent = sent_methods(&press(&mut state, code, M::empty()));
+
+            let [Method::PaneOpenFile(open)] = &sent[..] else {
+                panic!("{sent:?}");
+            };
+            assert_eq!(open.path, "/repo/a.txt");
+            assert_eq!(open.line, None);
+            assert_eq!(open.mode, mode);
+        }
+    }
+
+    #[test]
+    fn a_search_hit_opens_at_its_line() {
+        let mut state = with_file_selected();
+        state.set_endpoint_methods(Some(vec!["pane.open_file".into()]));
+        let tab = state.investigation_mut().unwrap();
+        tab.content_search = true;
+        tab.focus = Focus::Results;
+        tab.matches.push(a_match());
+
+        let sent = sent_methods(&press(&mut state, KeyCode::Char(' '), M::empty()));
+
+        let [Method::PaneOpenFile(open)] = &sent[..] else {
+            panic!("{sent:?}");
+        };
+        assert_eq!(open.line.map(|line| line.get()), Some(12));
+        assert_eq!(open.mode, OpenFileMode::Pager);
+    }
+
+    #[test]
+    fn a_server_without_pane_open_file_gets_the_editor_without_a_line() {
+        let mut state = with_file_selected();
+        state.set_endpoint_methods(Some(vec!["pane.open_editor".into()]));
+
+        let sent = sent_methods(&press(&mut state, KeyCode::Char(' '), M::empty()));
+
+        let [Method::PaneOpenEditor(open)] = &sent[..] else {
+            panic!("{sent:?}");
+        };
+        assert_eq!(open.path, "/repo/a.txt");
+    }
+
+    #[test]
+    fn a_file_shows_what_the_listing_knows_at_once_and_the_stat_when_it_arrives() {
+        let mut state = with_file_selected();
+        state.tick_investigation(std::time::Instant::now(), &mut ClientShellInput::default());
+
+        assert_eq!(lines(&state), ["a.txt", "6 B"]);
+
+        let generation = state.investigation().unwrap().stat.generation;
+        state.handle_investigation_result(
+            FileRequest::Stat { id: 1, generation },
+            Ok(ResponseResult::FileStat {
+                stat: FileStat {
+                    path: "/repo/a.txt".into(),
+                    size: Some(6),
+                    mode: Some(0o640),
+                    owner: Some("me".into()),
+                    ..FileStat::default()
+                },
+            }),
+            &mut ClientShellInput::default(),
+        );
+
+        assert_eq!(lines(&state), ["a.txt", "6 B · rw-r----- me"]);
+    }
+
+    #[test]
+    fn the_parent_row_describes_the_listed_folder_with_the_directory_template() {
+        let mut state = state();
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.selected = tab
+            .browser
+            .rows
+            .iter()
+            .position(|row| row.parent_link)
+            .unwrap();
+
+        assert_eq!(
+            state.investigation().unwrap().details_subject().as_deref(),
+            Some("/repo")
+        );
+        assert_eq!(lines(&state), ["repo/", "1 item"]);
+    }
+
+    #[test]
+    fn marked_entries_sum_up_with_the_multi_template_and_ask_no_stat() {
+        let mut state = with_file_selected();
+        let tab = state.investigation_mut().unwrap();
+        tab.selected_files.insert("/repo/a.txt".into());
+
+        assert_eq!(lines(&state), ["1 selected · 6 B"]);
+        let mut outcome = ClientShellInput::default();
+        let later = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        state.tick_investigation(std::time::Instant::now(), &mut outcome);
+        state.tick_investigation(later, &mut outcome);
+        assert!(!sent_methods(&outcome)
+            .iter()
+            .any(|method| matches!(method, Method::FileStat(_))));
+    }
+
+    #[test]
+    fn a_search_hit_shows_its_place_and_the_lines_around_it() {
+        let mut state = with_file_selected();
+        let tab = state.investigation_mut().unwrap();
+        tab.content_search = true;
+        tab.matches.push(a_match());
+
+        assert_eq!(
+            lines(&state),
+            ["/repo/a.txt:12", "11-above", "12:hit", "13-below"]
+        );
+    }
+
+    #[test]
+    fn a_newer_mtime_in_the_listing_asks_for_the_stat_again() {
+        let mut state = with_file_selected();
+        let tab = state.investigation_mut().unwrap();
+        tab.stat = StatState {
+            subject: Some("/repo/a.txt".into()),
+            stat: Some(FileStat {
+                path: "/repo/a.txt".into(),
+                mtime: Some(1_000),
+                ..FileStat::default()
+            }),
+            ..StatState::default()
+        };
+        if let Some(crate::client::shell::file_viewer::model::DirectoryState::Loaded(listing)) =
+            tab.browser.directories.get_mut("/repo")
+        {
+            listing.entries[0].mtime = Some(2_000);
+        }
+        let mut outcome = ClientShellInput::default();
+
+        state.tick_investigation(
+            std::time::Instant::now() + std::time::Duration::from_millis(10),
+            &mut outcome,
+        );
+
+        assert!(sent_methods(&outcome)
+            .iter()
+            .any(|method| matches!(method, Method::FileStat(stat) if stat.path == "/repo/a.txt")));
+    }
+
+    #[test]
+    fn toggling_details_hides_the_band_and_asks_no_stat() {
+        let mut state = with_file_selected();
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        state.compose(120, 32).expect("composed with details");
+        assert!(state.investigation_hits.details.height > 0);
+
+        state.investigation_menu_action(TOGGLE_DETAILS, &mut ClientShellInput::default());
+        state.compose(120, 32).expect("composed without details");
+
+        assert!(state.workbench.hide_details);
+        assert_eq!(state.investigation_hits.details.height, 0);
+        let mut outcome = ClientShellInput::default();
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        state.tick_investigation(later, &mut outcome);
+        state.tick_investigation(later, &mut outcome);
+        assert!(!sent_methods(&outcome)
+            .iter()
+            .any(|method| matches!(method, Method::FileStat(_))));
+    }
+
+    #[test]
+    fn a_closed_editor_and_a_failed_stat_raise_no_toast() {
+        let mut state = with_file_selected();
+        let id = state.investigation().unwrap().id;
+        state.workbench.editor = Some(EditorReturn {
+            id,
+            pane: "pane_editor".into(),
+            due: std::time::Instant::now(),
+            awaiting: false,
+        });
+        let mut outcome = ClientShellInput::default();
+        state.tick_investigation(std::time::Instant::now(), &mut outcome);
+        state.tick_investigation(
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            &mut outcome,
+        );
+        let sent_id = |pick: fn(&Method) -> bool| {
+            outcome
+                .actions
+                .iter()
+                .find_map(|action| match action {
+                    ClientShellAction::Endpoint { request, .. } if pick(&request.method) => {
+                        Some(request.id.clone())
+                    }
+                    _ => None,
+                })
+                .expect("sent")
+        };
+        let stat_id = sent_id(|method| matches!(method, Method::FileStat(_)));
+        let editor_id = sent_id(|method| matches!(method, Method::PaneGet(_)));
+        let gone = |code: &str| {
+            Err(ClientShellEndpointError {
+                code: Some(code.into()),
+                message: "gone".into(),
+            })
+        };
+
+        state.handle_endpoint_result("boot-1", &stat_id, gone("file_error"));
+        state.handle_endpoint_result("boot-1", &editor_id, gone("pane_not_found"));
+
+        assert!(state.visible_endpoint_notice.is_none());
+        assert!(state.workbench.editor.is_none());
+    }
+
+    #[test]
+    fn an_open_whose_answer_was_dropped_does_not_block_the_next_one() {
+        let mut state = with_file_selected();
+        state.set_endpoint_methods(Some(vec!["pane.open_file".into()]));
+        press(&mut state, KeyCode::Enter, M::empty());
+        assert!(state.workbench.editor_opening);
+        state.pending_requests.clear();
+
+        state.tick_investigation(std::time::Instant::now(), &mut ClientShellInput::default());
+        let sent = sent_methods(&press(&mut state, KeyCode::Enter, M::empty()));
+
+        assert!(matches!(&sent[..], [Method::PaneOpenFile(_)]), "{sent:?}");
+    }
+
+    #[test]
+    fn a_server_without_files_stat_gets_no_stat_and_shows_no_notice() {
+        let mut state = with_file_selected();
+        state.set_endpoint_methods(Some(vec!["directory.list".into()]));
+        let mut outcome = ClientShellInput::default();
+
+        state.tick_investigation(std::time::Instant::now(), &mut outcome);
+        state.tick_investigation(
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            &mut outcome,
+        );
+
+        assert!(!sent_methods(&outcome)
+            .iter()
+            .any(|method| matches!(method, Method::FileStat(_))));
+        assert!(state.visible_endpoint_notice.is_none());
+        assert_eq!(lines(&state), ["a.txt", "6 B"]);
+    }
+
+    #[test]
+    fn a_short_band_narrows_the_context_so_the_hit_line_still_shows() {
+        let mut state = with_file_selected();
+        let tab = state.investigation_mut().unwrap();
+        tab.content_search = true;
+        tab.matches.push(FileMatch {
+            context: Some(FileMatchContext {
+                before: vec!["a".into(), "b".into()],
+                after: vec!["c".into(), "d".into()],
+            }),
+            ..a_match()
+        });
+
+        let narrow = super::super::details::details_lines(
+            state.investigation().unwrap(),
+            &state.config.files_details,
+            3,
+        );
+
+        assert_eq!(narrow, ["/repo/a.txt:12", "12:hit"]);
+    }
+
+    #[test]
+    fn a_file_name_with_a_newline_stays_on_one_line() {
+        let mut state = with_file_selected();
+        let tab = state.investigation_mut().unwrap();
+        tab.stat = StatState {
+            subject: Some("/repo/a.txt".into()),
+            stat: Some(FileStat {
+                path: "/repo/a.txt".into(),
+                link_target: Some("x\ny".into()),
+                ..FileStat::default()
+            }),
+            ..StatState::default()
+        };
+        let mut details = crate::config::UiFilesConfig::default().details;
+        details.file = "{link_target}".into();
+        state.config.files_details = crate::config::DetailsTemplates::from_config(&details);
+
+        assert_eq!(lines(&state), ["xy"]);
     }
 }

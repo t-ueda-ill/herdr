@@ -17,7 +17,7 @@ pub(crate) fn supported_client_shell_method_names() -> &'static [&'static str] {
 }
 
 /// Advertised only where `crate::platform::FILE_VIEWER_SUPPORTED` holds.
-const FILE_VIEWER_METHODS: [&str; 9] = [
+const FILE_VIEWER_METHODS: [&str; 10] = [
     "directory.index",
     "directory.list",
     "file.read",
@@ -26,8 +26,12 @@ const FILE_VIEWER_METHODS: [&str; 9] = [
     "files.plan",
     "files.replace",
     "files.search",
+    "files.stat",
     "pane.open_editor",
 ];
+
+/// Advertised only where `crate::platform::FILE_OPEN_AT_LINE_SUPPORTED` holds.
+const FILE_OPEN_AT_LINE_METHODS: [&str; 1] = ["pane.open_file"];
 
 /// Advertised only where `crate::platform::OFFHOST_FILE_VIEWER_SUPPORTED` holds.
 const OFFHOST_FILE_VIEWER_METHODS: [&str; 4] = [
@@ -36,6 +40,10 @@ const OFFHOST_FILE_VIEWER_METHODS: [&str; 4] = [
     "pane.directory.open_editor",
     "pane.file.read",
 ];
+
+/// Advertised with the off-host file viewer. Why not in
+/// `OFFHOST_FILE_VIEWER_METHODS`: that list is also the frozen off-host shape set.
+const OFFHOST_DETAILS_METHODS: [&str; 2] = ["pane.directory.open_file", "pane.file.stat"];
 
 /// What the endpoint welcome advertises. Why not shrink
 /// `supported_client_shell_method_names` instead: method shapes are frozen on
@@ -46,6 +54,7 @@ pub(crate) fn advertised_client_shell_method_names() -> &'static [&'static str] 
         advertised_method_names(
             crate::platform::FILE_VIEWER_SUPPORTED,
             crate::platform::OFFHOST_FILE_VIEWER_SUPPORTED,
+            crate::platform::FILE_OPEN_AT_LINE_SUPPORTED,
         )
     });
     &NAMES
@@ -54,12 +63,18 @@ pub(crate) fn advertised_client_shell_method_names() -> &'static [&'static str] 
 fn advertised_method_names(
     file_viewer_supported: bool,
     offhost_supported: bool,
+    open_at_line_supported: bool,
 ) -> Vec<&'static str> {
     supported_client_shell_method_names()
         .iter()
         .copied()
         .filter(|method| file_viewer_supported || !FILE_VIEWER_METHODS.contains(method))
-        .filter(|method| offhost_supported || !OFFHOST_FILE_VIEWER_METHODS.contains(method))
+        .filter(|method| {
+            offhost_supported
+                || !(OFFHOST_FILE_VIEWER_METHODS.contains(method)
+                    || OFFHOST_DETAILS_METHODS.contains(method))
+        })
+        .filter(|method| open_at_line_supported || !FILE_OPEN_AT_LINE_METHODS.contains(method))
         .collect()
 }
 
@@ -333,6 +348,24 @@ mod tests {
             actual.remove("pane.split_inherit").as_deref(),
             Some("c6e80d06334735f7d7fcfcb21bff1228b9b23c856a71ca6e3c40eedb8c09c374")
         );
+        let details: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-method-shapes-files-details.json"
+        )))
+        .expect("files details endpoint method shape fixture");
+        let mut details_actual = BTreeMap::new();
+        for method in FILE_OPEN_AT_LINE_METHODS
+            .iter()
+            .chain(&OFFHOST_DETAILS_METHODS)
+            .chain(&["files.stat"])
+        {
+            details_actual.insert(
+                (*method).to_owned(),
+                actual.remove(*method).expect("files details method"),
+            );
+        }
+        assert_eq!(details_actual, details, "files details method shapes");
+
         let file_viewer: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/endpoint-method-shapes-file-viewer.json"
@@ -470,9 +503,9 @@ mod tests {
     fn hosts_without_the_file_viewer_leave_its_methods_unadvertised() {
         let supported = supported_client_shell_method_names();
 
-        let without: Vec<&str> = advertised_method_names(false, true);
+        let without: Vec<&str> = advertised_method_names(false, true, true);
 
-        assert_eq!(advertised_method_names(true, true), supported);
+        assert_eq!(advertised_method_names(true, true, true), supported);
         let dropped: Vec<&str> = supported
             .iter()
             .copied()
@@ -489,6 +522,7 @@ mod tests {
                 "files.plan",
                 "files.replace",
                 "files.search",
+                "files.stat",
                 "pane.open_editor"
             ]
         );
@@ -498,19 +532,44 @@ mod tests {
     fn hosts_without_off_host_panes_leave_the_pane_directory_methods_unadvertised() {
         let supported = supported_client_shell_method_names();
 
-        let without = advertised_method_names(true, false);
+        let without = advertised_method_names(true, false, true);
 
         let dropped: Vec<&str> = supported
             .iter()
             .copied()
             .filter(|method| !without.contains(method))
             .collect();
-        assert_eq!(dropped, OFFHOST_FILE_VIEWER_METHODS);
+        assert_eq!(
+            dropped,
+            [
+                "pane.directory.index",
+                "pane.directory.list",
+                "pane.directory.open_editor",
+                "pane.directory.open_file",
+                "pane.file.read",
+                "pane.file.stat"
+            ]
+        );
         assert_eq!(
             crate::platform::OFFHOST_FILE_VIEWER_SUPPORTED,
             cfg!(unix),
             "only Unix servers can run ssh and container panes"
         );
+    }
+
+    #[test]
+    fn hosts_that_cannot_open_at_a_line_leave_pane_open_file_unadvertised() {
+        let supported = supported_client_shell_method_names();
+
+        let without = advertised_method_names(true, true, false);
+
+        let dropped: Vec<&str> = supported
+            .iter()
+            .copied()
+            .filter(|method| !without.contains(method))
+            .collect();
+        assert_eq!(dropped, ["pane.open_file"]);
+        assert_eq!(crate::platform::FILE_OPEN_AT_LINE_SUPPORTED, cfg!(unix));
     }
 
     #[test]

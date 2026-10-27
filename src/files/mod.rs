@@ -1,6 +1,7 @@
 //! Host filesystem service. All calls run on bounded workers, never in render/layout.
 mod mutations;
 mod search;
+mod stat;
 #[cfg(test)]
 mod tests;
 
@@ -70,3 +71,4 @@ pub(crate) fn read_document(params: FileReadParams) -> Result<ResponseResult> {
 }
 pub(crate) use mutations::{operate, plan, replace};
 pub(crate) use search::search;
+pub(crate) use stat::{stat, CHILDREN_LIMIT};

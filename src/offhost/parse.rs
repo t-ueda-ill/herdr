@@ -416,3 +416,140 @@ pub(crate) fn parse_read(output: &[u8]) -> Result<ParsedRead, ParseFailure> {
         _ => Err(ParseFailure::Malformed("unknown read record")),
     }
 }
+
+/// What `stat_script` found; every field the environment could not give is `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedStat {
+    pub(crate) kind: DirectoryEntryKind,
+    pub(crate) mode: Option<u32>,
+    pub(crate) uid: Option<String>,
+    pub(crate) size: Option<u64>,
+    pub(crate) mtime_seconds: Option<u64>,
+    pub(crate) link_target: Option<String>,
+    pub(crate) children: Option<u64>,
+    pub(crate) children_limited: bool,
+}
+
+pub(crate) fn parse_stat(output: &[u8]) -> Result<ParsedStat, ParseFailure> {
+    let all = tokens(after_marker(output)?);
+    let mut iter = all.iter().copied();
+    let first = iter
+        .next()
+        .ok_or(ParseFailure::Malformed("empty script output"))?;
+    if let Some(status) = status_of(first) {
+        return Err(ParseFailure::Script(status));
+    }
+    if first != b"ok" {
+        return Err(ParseFailure::Malformed("missing status record"));
+    }
+    let mut next = || {
+        iter.next()
+            .ok_or(ParseFailure::Malformed("short stat record"))
+    };
+    let kind = match next()? {
+        b"l" => DirectoryEntryKind::Symlink,
+        b"d" => DirectoryEntryKind::Dir,
+        b"f" => DirectoryEntryKind::File,
+        _ => DirectoryEntryKind::Other,
+    };
+    let line = String::from_utf8_lossy(next()?).into_owned();
+    let number = |token: &[u8]| std::str::from_utf8(token).ok()?.parse::<u64>().ok();
+    let mtime_seconds = number(next()?);
+    let link_target = Some(next()?)
+        .filter(|token| !token.is_empty())
+        .and_then(text);
+    let children = number(next()?);
+    let children_limited = next()? == b"1";
+    // `mode links uid gid size …`; a device shows `major, minor` for size.
+    let mut fields = line.split_whitespace();
+    let mode = fields.next().and_then(mode_bits);
+    let uid = fields
+        .nth(1)
+        .filter(|uid| uid.bytes().all(|byte| byte.is_ascii_digit()))
+        .map(str::to_owned);
+    let size = (kind == DirectoryEntryKind::File)
+        .then(|| fields.nth(1).and_then(|size| size.parse().ok()))
+        .flatten();
+    Ok(ParsedStat {
+        kind,
+        mode,
+        uid,
+        size,
+        mtime_seconds,
+        link_target,
+        children,
+        children_limited,
+    })
+}
+
+/// `-rwsr-x--T` to `0o4750`. macOS appends `@`/`+` and GNU appends `.`/`+`
+/// after the ten mode characters, so only those are read.
+fn mode_bits(field: &str) -> Option<u32> {
+    let chars: Vec<char> = field.chars().take(10).collect();
+    if chars.len() != 10 {
+        return None;
+    }
+    let mut mode = 0;
+    for (index, ch) in chars[1..].iter().enumerate() {
+        let bit = 1 << (8 - index);
+        let execute = index % 3 == 2;
+        match (ch, execute) {
+            ('-', _) => {}
+            ('r', false) if index % 3 == 0 => mode |= bit,
+            ('w', false) if index % 3 == 1 => mode |= bit,
+            ('x', true) => mode |= bit,
+            ('s', true) | ('t', true) => mode |= bit | special_bit(index),
+            ('S', true) | ('T', true) => mode |= special_bit(index),
+            _ => return None,
+        }
+    }
+    Some(mode)
+}
+
+/// setuid, setgid or sticky, by which execute column carries it.
+fn special_bit(index: usize) -> u32 {
+    match index {
+        2 => 0o4000,
+        5 => 0o2000,
+        _ => 0o1000,
+    }
+}
+
+#[cfg(test)]
+mod stat_tests {
+    use super::*;
+
+    fn record(line: &str, kind: &str) -> Vec<u8> {
+        format!("HERDR-OFFHOST-1\0ok\0{kind}\0{line}\0\0\0\0\0").into_bytes()
+    }
+
+    #[test]
+    fn mode_columns_carry_setuid_setgid_and_sticky_and_ignore_platform_suffixes() {
+        for (line, mode) in [
+            ("-rw-r--r--  1 1000 1000 5 Oct 27 14:21 /a", 0o644),
+            ("-rwsr-x--T@ 1 1000 1000 5 Oct 27 14:21 /a", 0o5750),
+            ("drwxrwsrwt+ 2 0 0 4096 Oct 27 14:21 /a", 0o3777),
+            ("-rwSr-Sr-x. 1 0 0 5 Oct 27 14:21 /a", 0o6645),
+        ] {
+            let parsed = parse_stat(&record(line, "f")).unwrap();
+            assert_eq!(parsed.mode, Some(mode), "{line}");
+            assert_eq!(
+                parsed.uid.as_deref(),
+                Some(line.split_whitespace().nth(2).unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn a_device_has_no_size_and_unreadable_ls_output_leaves_fields_empty() {
+        let device =
+            parse_stat(&record("crw-rw-rw- 1 0 0 1, 3 Oct 27 14:21 /dev/null", "o")).unwrap();
+        let garbled = parse_stat(&record("ls: cannot access", "f")).unwrap();
+
+        assert_eq!(device.size, None);
+        assert_eq!(device.mode, Some(0o666));
+        assert_eq!(garbled.mode, None);
+        assert_eq!(garbled.uid, None);
+        assert_eq!(garbled.size, None);
+    }
+}

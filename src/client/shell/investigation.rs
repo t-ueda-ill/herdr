@@ -1,4 +1,5 @@
 //! Client-owned investigation tabs. Server terminal identities are never repurposed.
+mod details;
 mod drops;
 mod input;
 mod model;

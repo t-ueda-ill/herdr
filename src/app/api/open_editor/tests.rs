@@ -180,3 +180,100 @@ async fn open_editor_zooms_an_overlay_pane_that_closes_back_to_the_previous_focu
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+static OPENED: Mutex<Option<(PathBuf, Option<u32>, crate::api::schema::OpenFileMode)>> =
+    Mutex::new(None);
+
+fn recording_opener(
+    path: &Path,
+    line: Option<std::num::NonZeroU32>,
+    mode: crate::api::schema::OpenFileMode,
+) -> std::io::Result<Vec<String>> {
+    *OPENED.lock().unwrap() = Some((path.to_path_buf(), line.map(|line| line.get()), mode));
+    Ok(vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()])
+}
+
+fn open_params(
+    path: &Path,
+    line: Option<u32>,
+    mode: crate::api::schema::OpenFileMode,
+) -> crate::api::schema::PaneOpenFileParams {
+    crate::api::schema::PaneOpenFileParams {
+        path: path.display().to_string(),
+        line: line.and_then(std::num::NonZeroU32::new),
+        mode,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn open_file_passes_the_line_and_mode_and_opens_an_overlay() {
+    use crate::api::schema::OpenFileMode;
+    let (mut app, focused, _, _) = app_with_two_panes();
+    let (dir, file) = file_in_temp_dir("open-file");
+
+    let response = app.handle_pane_open_file_with(
+        "open".into(),
+        open_params(&file, Some(7), OpenFileMode::Pager),
+        recording_opener,
+    );
+
+    let success: SuccessResponse = serde_json::from_str(&response)
+        .unwrap_or_else(|err| panic!("expected success ({err}): {response}"));
+    let ResponseResult::PaneInfo { pane } = success.result else {
+        panic!("expected pane info: {response}");
+    };
+    assert_eq!(
+        *OPENED.lock().unwrap(),
+        Some((file.clone(), Some(7), OpenFileMode::Pager))
+    );
+    let (_, overlay) = app.parse_pane_id(&pane.pane_id).unwrap();
+    assert_eq!(app.overlay_panes[&overlay].previous_focus, focused);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn open_file_needs_an_existing_file_only_for_the_pager() {
+    use crate::api::schema::OpenFileMode;
+    let (mut app, _, _, _) = app_with_two_panes();
+    let (dir, _) = file_in_temp_dir("open-missing");
+    let missing = dir.join("missing.md");
+
+    let pager = app.handle_pane_open_file_with(
+        "open".into(),
+        open_params(&missing, None, OpenFileMode::Pager),
+        recording_opener,
+    );
+    let directory = app.handle_pane_open_file_with(
+        "open".into(),
+        open_params(&dir, None, OpenFileMode::Editor),
+        recording_opener,
+    );
+
+    assert_eq!(error_code(&pager), "not_found");
+    assert_eq!(error_code(&directory), "invalid_params");
+    assert!(app.overlay_panes.is_empty());
+    let editor = app.handle_pane_open_file_with(
+        "open".into(),
+        open_params(&missing, None, OpenFileMode::Editor),
+        recording_opener,
+    );
+    assert!(
+        serde_json::from_str::<SuccessResponse>(&editor).is_ok(),
+        "{editor}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn open_file_rejects_line_zero_as_invalid_params() {
+    let decoded = serde_json::from_value::<crate::api::schema::PaneOpenFileParams>(
+        serde_json::json!({"path": "/a", "line": 0}),
+    );
+    assert!(decoded.is_err());
+    let defaulted = serde_json::from_value::<crate::api::schema::PaneOpenFileParams>(
+        serde_json::json!({"path": "/a"}),
+    )
+    .unwrap();
+    assert_eq!(defaulted.mode, crate::api::schema::OpenFileMode::Editor);
+}

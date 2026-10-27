@@ -90,7 +90,8 @@ pub struct WorkspaceRepoRoot {
     pub(crate) repo_root: Option<std::path::PathBuf>,
 }
 
-/// What `pane.directory.open_editor` learned about its path off the app thread.
+/// What `pane.directory.open_editor` or `pane.directory.open_file` learned
+/// about its path off the app thread.
 /// The overlay is spawned only after the pane is looked up again: it may have
 /// lost focus or died while the probe ran.
 #[derive(Debug)]
@@ -98,6 +99,8 @@ pub struct PaneEditorProbeResult {
     pub(crate) id: String,
     pub(crate) pane_id: String,
     pub(crate) path: String,
+    pub(crate) line: Option<std::num::NonZeroU32>,
+    pub(crate) mode: crate::api::schema::OpenFileMode,
     /// The environment the probe ran in; a pane that moved elsewhere is stale.
     pub(crate) environment: crate::offhost::PaneEnvironment,
     pub(crate) cwd: Option<String>,

@@ -2,8 +2,6 @@ use super::super::render::menu_widget;
 use super::*;
 use crate::api::schema::*;
 use crossterm::event::{KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 impl ClientShellState {
     pub(in crate::client::shell) fn insert_investigation_text(&mut self, text: &str) -> bool {
@@ -102,50 +100,21 @@ impl ClientShellState {
                     tab.focus = Focus::Replacement;
                     return;
                 }
-                KeyCode::Char('w') => {
-                    if let Some(index) = tab.active_file.take() {
-                        tab.documents.remove(index);
-                        tab.active_file = index
-                            .checked_sub(1)
-                            .or_else(|| (!tab.documents.is_empty()).then_some(0));
-                    } else {
-                        tab.preview = None;
-                    }
-                    self.persist_chrome_preferences(outcome);
-                    return;
-                }
-                KeyCode::PageUp | KeyCode::PageDown => {
-                    if !tab.documents.is_empty() {
-                        let current = tab.active_file.unwrap_or(0);
-                        let delta = if code == KeyCode::PageUp { -1 } else { 1 };
-                        tab.active_file = Some(
-                            (current as isize + delta).rem_euclid(tab.documents.len() as isize)
-                                as usize,
-                        );
-                        tab.focus = Focus::Body;
-                        self.persist_chrome_preferences(outcome);
-                    }
-                    return;
-                }
                 _ => {}
             }
         }
         if code == KeyCode::Tab || code == KeyCode::BackTab {
-            let mut order = if tab.content_search {
+            let order = if tab.content_search {
                 vec![
                     Focus::Query,
                     Focus::Include,
                     Focus::Exclude,
                     Focus::Replacement,
                     Focus::Results,
-                    Focus::Body,
                 ]
             } else {
-                vec![Focus::Paths, Focus::Results, Focus::Body]
+                vec![Focus::Paths, Focus::Results]
             };
-            if tab.focus == Focus::Find {
-                order.push(Focus::Find);
-            }
             let current = order.iter().position(|f| *f == tab.focus).unwrap_or(0);
             let delta = if code == KeyCode::BackTab || shift {
                 -1
@@ -163,49 +132,20 @@ impl ClientShellState {
         }
         if matches!(
             tab.focus,
-            Focus::Paths
-                | Focus::Query
-                | Focus::Include
-                | Focus::Exclude
-                | Focus::Replacement
-                | Focus::Find
+            Focus::Paths | Focus::Query | Focus::Include | Focus::Exclude | Focus::Replacement
         ) {
             if code == KeyCode::Esc {
-                tab.focus = if tab.focus == Focus::Find {
-                    Focus::Body
-                } else {
-                    Focus::Results
-                };
+                tab.focus = Focus::Results;
                 return;
             }
             if code == KeyCode::Enter {
-                if tab.focus == Focus::Find {
-                    let query = tab.find.to_string();
-                    if let Some(document) = tab.document_mut() {
-                        if !query.is_empty() {
-                            let start = document.cursor.saturating_add(1).min(document.text.len());
-                            let start = (start..=document.text.len())
-                                .find(|i| document.text.is_char_boundary(*i))
-                                .unwrap_or(document.text.len());
-                            let found = document.text[start..]
-                                .find(&query)
-                                .map(|i| start + i)
-                                .or_else(|| document.text[..start].find(&query));
-                            if let Some(offset) = found {
-                                document.cursor = offset + query.len();
-                                document.anchor = Some(offset);
-                                document.scroll = document.line().saturating_sub(3);
-                            }
-                        }
-                    }
-                } else if tab.focus == Focus::Replacement {
+                if tab.focus == Focus::Replacement {
                     self.investigation_prepare_replace(outcome);
                 } else {
                     if matches!(tab.focus, Focus::Query | Focus::Include | Focus::Exclude) {
                         tab.schedule_search();
                     }
                     tab.focus = Focus::Results;
-                    self.request_investigation_preview(false, false, outcome);
                 }
                 return;
             }
@@ -227,54 +167,6 @@ impl ClientShellState {
                         tab.schedule_search();
                     }
                 }
-            }
-            return;
-        }
-        if tab.focus == Focus::Body {
-            if ctrl && code == KeyCode::Char('f') {
-                tab.focus = Focus::Find;
-                return;
-            }
-            let page = usize::from(self.investigation_hits.body.height);
-            let width = usize::from(self.investigation_hits.body.width.saturating_sub(7));
-            let Some(tab) = self.investigation_mut() else {
-                return;
-            };
-            if let Some(document) = tab.document_mut() {
-                match code {
-                    KeyCode::Char('c') if ctrl => {
-                        if let Some(range) = document.range() {
-                            outcome.actions.push(ClientShellAction::ClipboardWrite(
-                                document.text[range].as_bytes().to_vec(),
-                            ));
-                        }
-                    }
-                    KeyCode::Char('a') if ctrl => {
-                        document.anchor = Some(0);
-                        document.cursor = document.text.len();
-                    }
-                    KeyCode::Esc => {
-                        if document.anchor.is_some() {
-                            document.clear_selection();
-                        } else {
-                            tab.focus = Focus::Results;
-                        }
-                    }
-                    KeyCode::Up
-                    | KeyCode::Down
-                    | KeyCode::Left
-                    | KeyCode::Right
-                    | KeyCode::PageUp
-                    | KeyCode::PageDown
-                    | KeyCode::Home
-                    | KeyCode::End => {
-                        document.motion(code, shift, page);
-                        document.reveal_column(width);
-                    }
-                    _ => {}
-                }
-            } else if code == KeyCode::Esc {
-                tab.focus = Focus::Results;
             }
             return;
         }
@@ -340,7 +232,12 @@ impl ClientShellState {
                         self.set_file_viewer_expanded(path, None, outcome);
                     }
                 } else {
-                    self.request_investigation_preview(code == KeyCode::Enter, true, outcome);
+                    let mode = if code == KeyCode::Enter {
+                        OpenFileMode::Editor
+                    } else {
+                        OpenFileMode::Pager
+                    };
+                    self.investigation_open_file(mode, outcome);
                 }
             }
             KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
@@ -370,7 +267,6 @@ impl ClientShellState {
                         }
                     }
                 }
-                self.request_investigation_preview(false, false, outcome);
             }
             KeyCode::Insert => {
                 if tab.content_search {
@@ -630,7 +526,7 @@ impl ClientShellState {
         }
         if files_drag && !contains(region, point) {
             // Why swallowed rather than clamped into the region: the drag
-            // only moves the preview cursor, and the terminals beneath must
+            // means nothing in the files list, and the terminals beneath must
             // not see a drag or release they never saw pressed.
             return true;
         }
@@ -662,9 +558,9 @@ impl ClientShellState {
         let FilesPlacement {
             presentation, dock, ..
         } = self.workbench.placement;
-        // Sidebar and tab strip remain live; only the document/list surface captures input.
+        // Sidebar and tab strip remain live; only the list and details capture input.
         let menu_rows = self.investigation_hits.menu.len();
-        let area = self.investigation_hits.body;
+        let area = self.investigation_hits.details;
         let list = self.investigation_hits.list;
         let field = self
             .investigation_hits
@@ -675,18 +571,6 @@ impl ClientShellState {
         let row = self
             .investigation_hits
             .rows
-            .iter()
-            .find(|(r, _)| contains(*r, point))
-            .map(|(_, i)| *i);
-        let close = self
-            .investigation_hits
-            .file_close
-            .iter()
-            .find(|(r, _)| contains(*r, point))
-            .map(|(_, i)| *i);
-        let file = self
-            .investigation_hits
-            .files
             .iter()
             .find(|(r, _)| contains(*r, point))
             .map(|(_, i)| *i);
@@ -784,21 +668,6 @@ impl ClientShellState {
             tab.hovered = None;
         }
         if let Some(index) =
-            close.filter(|_| matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)))
-        {
-            if index < tab.documents.len() {
-                tab.documents.remove(index);
-                tab.active_file = if tab.documents.is_empty() {
-                    None
-                } else {
-                    Some(index.min(tab.documents.len() - 1))
-                };
-            }
-            self.persist_chrome_preferences(outcome);
-            outcome.repaint = true;
-            return true;
-        }
-        if let Some(index) =
             button.filter(|_| matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)))
         {
             match index {
@@ -812,18 +681,6 @@ impl ClientShellState {
         }
         if title && mouse.kind == MouseEventKind::Down(MouseButton::Right) {
             open_files_menu(tab, mouse);
-            outcome.repaint = true;
-            return true;
-        }
-        if let Some(index) =
-            file.filter(|_| matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)))
-        {
-            if index == usize::MAX {
-                tab.active_file = None;
-            } else {
-                tab.active_file = Some(index);
-            }
-            tab.focus = Focus::Body;
             outcome.repaint = true;
             return true;
         }
@@ -851,58 +708,16 @@ impl ClientShellState {
             return true;
         }
         if contains(area, point) {
-            match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left)
-                | MouseEventKind::Drag(MouseButton::Left) => {
-                    tab.focus = Focus::Body;
-                    if let Some(document) = tab.document_mut() {
-                        let line = document.scroll + usize::from(mouse.row - area.y);
-                        let column = usize::from(mouse.column.saturating_sub(area.x + 7))
-                            + document.horizontal;
-                        let text =
-                            document.line_text(line.min(document.lines.len().saturating_sub(1)));
-                        let mut width = 0;
-                        let mut cluster = 0;
-                        for value in text.graphemes(true) {
-                            let size = if value == "\t" {
-                                4 - width % 4
-                            } else {
-                                UnicodeWidthStr::width(value)
-                            };
-                            if width + size > column {
-                                break;
-                            }
-                            width += size;
-                            cluster += 1;
-                        }
-                        document.jump(line, cluster);
-                        if matches!(mouse.kind, MouseEventKind::Down(_)) {
-                            document.anchor = Some(document.cursor);
-                        }
-                    }
-                }
-                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                    if let Some(document) = tab.document_mut() {
-                        document.scroll = if mouse.kind == MouseEventKind::ScrollUp {
-                            document.scroll.saturating_sub(3)
-                        } else {
-                            (document.scroll + 3).min(document.lines.len().saturating_sub(1))
-                        };
-                    }
-                }
-                MouseEventKind::Down(MouseButton::Right) => {
-                    tab.focus = Focus::Body;
-                    tab.dialog = Some(Dialog::menu(
-                        MenuTarget::Preview,
-                        MenuPlacement::Pointer {
-                            x: mouse.column,
-                            y: mouse.row,
-                        },
-                    ))
-                }
-                _ => {}
+            if mouse.kind == MouseEventKind::Down(MouseButton::Right) {
+                tab.dialog = Some(Dialog::menu(
+                    MenuTarget::Details,
+                    MenuPlacement::Pointer {
+                        x: mouse.column,
+                        y: mouse.row,
+                    },
+                ));
+                outcome.repaint = true;
             }
-            outcome.repaint = true;
             return true;
         }
         if contains(list, point) {
@@ -957,8 +772,8 @@ impl ClientShellState {
                                 let path = entry.path.clone();
                                 self.set_file_viewer_expanded(path, None, outcome);
                             }
-                        } else {
-                            self.request_investigation_preview(double, double, outcome);
+                        } else if double {
+                            self.investigation_open_file(OpenFileMode::Editor, outcome);
                         }
                     }
                 }
@@ -979,11 +794,6 @@ impl ClientShellState {
                             y: mouse.row,
                         },
                     ));
-                    // As a left click would, so the preview shows what the
-                    // menu acts on; folders and `..` have no preview.
-                    if row.is_some() {
-                        self.request_investigation_preview(false, false, outcome);
-                    }
                 }
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                     let delta = if mouse.kind == MouseEventKind::ScrollUp {
@@ -999,7 +809,6 @@ impl ClientShellState {
                     } else {
                         tab.browser.move_selection(delta);
                     }
-                    self.request_investigation_preview(false, false, outcome);
                 }
                 _ => {}
             }
@@ -1010,7 +819,7 @@ impl ClientShellState {
             return false;
         }
         // Docked, the pane surface around the region holds terminals: an
-        // event on the title, file bar or footer must not fall through to
+        // event on the title or footer must not fall through to
         // their handlers, and a right-click there opens the workbench menu.
         if mouse.kind == MouseEventKind::Down(MouseButton::Right) {
             let target = if tab.content_search {
@@ -1070,12 +879,11 @@ fn select_for_menu(tab: &mut Investigation, index: usize) {
 
 impl ClientShellState {
     fn investigation_key(&self, key: &crate::input::TerminalKey) -> crate::input::TerminalKey {
+        // Why `pin` and `read`: the names users configured when Enter pinned
+        // a preview and Space read one; they now open the editor and pager.
         let bindings = [
             ("pin", KeyCode::Enter, M::empty()),
             ("read", KeyCode::Char(' '), M::empty()),
-            ("next_file", KeyCode::PageDown, M::CONTROL),
-            ("previous_file", KeyCode::PageUp, M::CONTROL),
-            ("close_file", KeyCode::Char('w'), M::CONTROL),
             ("find_files", KeyCode::Char('p'), M::CONTROL),
             ("search", KeyCode::Char('f'), M::CONTROL | M::SHIFT),
             ("replace", KeyCode::Char('h'), M::CONTROL),

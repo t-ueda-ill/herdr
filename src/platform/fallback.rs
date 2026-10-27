@@ -145,6 +145,10 @@ pub(crate) fn local_datetime() -> Option<time::PrimitiveDateTime> {
     None
 }
 
+pub(crate) fn local_datetime_at(_seconds: i64) -> Option<time::PrimitiveDateTime> {
+    None
+}
+
 pub(crate) fn status_commands_supported() -> bool {
     false
 }
@@ -327,6 +331,27 @@ pub(crate) fn create_symlink(_target: &str, _link: &std::path::Path) -> std::io:
         std::io::ErrorKind::Unsupported,
         "symlinks are unavailable",
     ))
+}
+
+/// Not advertised here: Windows editors and `more` take no common line
+/// argument, so clients fall back to `pane.open_editor`.
+pub(crate) fn file_open_argv(
+    _path: &std::path::Path,
+    _line: Option<std::num::NonZeroU32>,
+    _mode: crate::api::schema::OpenFileMode,
+) -> std::io::Result<Vec<String>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening at a line is not supported on this platform",
+    ))
+}
+
+pub(crate) fn display_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
+pub(crate) fn owner_name(_metadata: &std::fs::Metadata) -> Option<String> {
+    None
 }
 
 #[cfg(not(unix))]

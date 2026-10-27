@@ -44,6 +44,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) file_viewer_show_hidden: bool,
     pub(super) file_viewer_show_ignored: bool,
     pub(super) file_workbench_keys: std::collections::BTreeMap<String, String>,
+    pub(super) files_details: crate::config::DetailsTemplates,
     pub(super) mouse_capture: bool,
     pub(super) mouse_scroll_lines: usize,
     pub(super) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
@@ -1483,6 +1484,7 @@ impl ClientShellState {
                     .files_placement
                     .map(investigation::FilesPlacement::restore)
                     .unwrap_or_default(),
+                hide_details: preferences.hide_files_details.unwrap_or(false),
                 ..Default::default()
             },
             investigation_hits: investigation::Hits::default(),

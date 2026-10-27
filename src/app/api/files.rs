@@ -95,6 +95,7 @@ impl App {
                 let result = match request.method {
                     Method::FilesPlan(params) => crate::files::plan(params),
                     Method::FileRead(params) => crate::files::read_document(params),
+                    Method::FileStat(params) => crate::files::stat(params),
                     Method::FilesSearch(params) => match latest {
                         Some(latest) => crate::files::search(params, &latest),
                         None => Err(crate::files::failure("missing search generation")),

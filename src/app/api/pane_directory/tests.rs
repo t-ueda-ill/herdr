@@ -299,6 +299,8 @@ fn probed(
             id: "req".into(),
             pane_id: pane_id.into(),
             path: "/work/a.rs".into(),
+            line: None,
+            mode: crate::api::schema::OpenFileMode::Editor,
             environment,
             cwd: Some("/work".into()),
             probe,

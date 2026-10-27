@@ -81,6 +81,7 @@ impl ClientShellState {
             open_picker: (!self.open_picker_memory.is_empty())
                 .then(|| self.open_picker_memory.clone()),
             files_placement: self.workbench.placement.save(),
+            hide_files_details: self.workbench.hide_details.then_some(true),
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);
@@ -170,6 +171,7 @@ impl ClientShellConfig {
             file_viewer_show_hidden: config.ui.file_viewer_show_hidden,
             file_viewer_show_ignored: config.ui.file_viewer_show_ignored,
             file_workbench_keys: config.ui.file_workbench_keys.clone(),
+            files_details: crate::config::DetailsTemplates::from_config(&config.ui.files.details),
             mouse_capture: config.ui.mouse_capture,
             mouse_scroll_lines: config.ui.mouse_scroll_lines(),
             right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
@@ -364,6 +366,7 @@ impl ClientShellConfig {
             } else {
                 let ui = &config.ui;
                 diagnostics.extend(ui.sound.diagnostics());
+                diagnostics.extend(crate::config::files_details_diagnostics(&ui.files.details));
                 self.sidebar_width = ui.sidebar_width;
                 self.sidebar_min_width = ui.sidebar_min_width;
                 self.sidebar_max_width = ui.sidebar_max_width;
@@ -388,6 +391,8 @@ impl ClientShellConfig {
                 self.file_viewer_show_hidden = ui.file_viewer_show_hidden;
                 self.file_viewer_show_ignored = ui.file_viewer_show_ignored;
                 self.file_workbench_keys = ui.file_workbench_keys.clone();
+                self.files_details =
+                    crate::config::DetailsTemplates::from_config(&ui.files.details);
                 self.mouse_capture = ui.mouse_capture;
                 self.mouse_scroll_lines = ui.mouse_scroll_lines();
                 self.right_click_passthrough_modifiers = ui.right_click_passthrough_modifiers();

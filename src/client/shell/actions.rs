@@ -564,10 +564,11 @@ impl ClientShellState {
                 self.pending_workspace_highlight = None;
             }
             let code = error.code.as_deref().unwrap_or("invalid_response");
-            let shown_inline = matches!(
-                &pending.kind,
-                PendingEndpointKind::FileViewer(request) if request.reports_errors_inline(code)
-            );
+            let shown_inline = match &pending.kind {
+                PendingEndpointKind::FileViewer(request) => request.reports_errors_inline(code),
+                PendingEndpointKind::Investigation(request) => request.reports_errors_inline(code),
+                _ => false,
+            };
             if !shown_inline
                 && !matches!(
                     code,

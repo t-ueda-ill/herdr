@@ -494,6 +494,30 @@ impl ClientFileViewerOverlay {
         true
     }
 
+    /// What the listing of `path`'s folder says about it, if that folder is loaded.
+    pub(in crate::client::shell) fn entry_for_path(&self, path: &str) -> Option<&DirectoryEntry> {
+        let parent = self.parent_path(path)?;
+        let name = path.get(parent.len()..)?.trim_start_matches(['/', '\\']);
+        match self.directories.get(parent)? {
+            DirectoryState::Loaded(listing) => {
+                listing.entries.iter().find(|entry| entry.name == name)
+            }
+            _ => None,
+        }
+    }
+
+    /// Entries in `path`'s listing, hidden and unnamed ones included, if it is loaded.
+    pub(in crate::client::shell) fn listed_entry_count(&self, path: &str) -> Option<u64> {
+        match self.directories.get(path)? {
+            DirectoryState::Loaded(listing) => Some(
+                listing.entries.len() as u64
+                    + listing.omitted.unwrap_or(0)
+                    + listing.unlistable.unwrap_or(0),
+            ),
+            _ => None,
+        }
+    }
+
     pub(in crate::client::shell) fn selected_entry(&self) -> Option<&FileViewerEntry> {
         self.rows
             .get(self.selected)

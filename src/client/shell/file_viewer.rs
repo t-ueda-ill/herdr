@@ -17,9 +17,9 @@ pub(super) use model::{ClientFileViewerOverlay, FileViewerButton};
 
 use super::*;
 use crate::api::schema::{
-    DirectoryIndexParams, DirectoryListParams, FileReadParams, Method, PaneDirectoryIndexParams,
-    PaneDirectoryListParams, PaneDirectoryOpenEditorParams, PaneFileReadParams,
-    PaneOpenEditorParams, ResponseResult, WorkspaceTarget,
+    DirectoryIndexParams, DirectoryListParams, FileReadParams, FileStatParams, Method,
+    PaneDirectoryIndexParams, PaneDirectoryListParams, PaneDirectoryOpenEditorParams,
+    PaneFileReadParams, PaneFileStatParams, PaneOpenEditorParams, ResponseResult, WorkspaceTarget,
 };
 
 const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(350);
@@ -366,6 +366,7 @@ impl ClientShellState {
             Method::PaneDirectoryList(params) => Some(params.pane_id.clone()),
             Method::PaneDirectoryIndex(params) => Some(params.pane_id.clone()),
             Method::PaneFileRead(params) => Some(params.pane_id.clone()),
+            Method::PaneFileStat(params) => Some(params.pane_id.clone()),
             _ => None,
         }
     }
@@ -465,6 +466,22 @@ impl ClientShellState {
             revision,
             poll,
         }))
+    }
+
+    pub(super) fn file_stat_method(
+        &self,
+        workspace_id: &Option<String>,
+        location: &Option<FileLocation>,
+        path: String,
+        preferred: Option<&str>,
+    ) -> Result<Method, String> {
+        let Some(location) = location else {
+            return Ok(Method::FileStat(FileStatParams { path }));
+        };
+        let pane_id = self
+            .file_location_pane(workspace_id.as_deref(), location, preferred)
+            .ok_or_else(|| Self::no_pane_notice(location))?;
+        Ok(Method::PaneFileStat(PaneFileStatParams { pane_id, path }))
     }
 
     /// The focused pane when paths may go there; otherwise the notice that
@@ -1714,6 +1731,7 @@ pub(super) fn offhost_result_as_host(result: ResponseResult) -> ResponseResult {
         ResponseResult::PaneFileDocument(content) => ResponseResult::FileDocument {
             document: content.document,
         },
+        ResponseResult::PaneFileStat(status) => ResponseResult::FileStat { stat: status.stat },
         other => other,
     }
 }

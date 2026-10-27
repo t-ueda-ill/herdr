@@ -1,6 +1,6 @@
-//! `pane.directory.list`, `pane.directory.index`, `pane.file.read` and
-//! `pane.directory.open_editor`: the file viewer for panes whose shell runs in
-//! a container or over ssh.
+//! `pane.directory.list`, `pane.directory.index`, `pane.file.read`,
+//! `pane.file.stat`, `pane.directory.open_editor` and `pane.directory.open_file`:
+//! the file viewer for panes whose shell runs in a container or over ssh.
 //!
 //! The app thread only resolves the target pane to a captured
 //! [`PaneEnvironment`]; docker and ssh run on a worker that answers the request
@@ -9,7 +9,9 @@
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use crate::api::schema::{Method, PaneDirectoryOpenEditorParams, Request, ResponseResult};
+use crate::api::schema::{
+    Method, OpenFileMode, PaneDirectoryOpenFileParams, Request, ResponseResult,
+};
 use crate::app::App;
 use crate::events::{AppEvent, PaneEditorProbeResult};
 use crate::offhost::exec::{EnvironmentRunner, Programs};
@@ -33,6 +35,9 @@ enum PaneRead {
         path: String,
         revision: Option<String>,
         poll: bool,
+    },
+    Stat {
+        path: String,
     },
 }
 
@@ -74,6 +79,9 @@ impl PaneReadJob {
             PaneRead::File { path, revision, .. } => {
                 ops::read(&runner, location, path, revision.as_deref())
                     .map(ResponseResult::PaneFileDocument)
+            }
+            PaneRead::Stat { path } => {
+                ops::stat(&runner, location, path).map(ResponseResult::PaneFileStat)
             }
         };
         match result {
@@ -137,7 +145,18 @@ impl App {
                     respond_to,
                 );
             }
+            Method::PaneFileStat(params) => {
+                self.start_pane_read(
+                    id,
+                    &params.pane_id,
+                    PaneRead::Stat { path: params.path },
+                    respond_to,
+                );
+            }
             Method::PaneDirectoryOpenEditor(params) => {
+                self.start_pane_editor_probe(id, params.into(), respond_to);
+            }
+            Method::PaneDirectoryOpenFile(params) => {
                 self.start_pane_editor_probe(id, params, respond_to);
             }
             _ => return false,
@@ -164,7 +183,8 @@ impl App {
                     | PaneRead::Index {
                         path: Some(path), ..
                     }
-                    | PaneRead::File { path, .. } => ops::validate_path(path)?,
+                    | PaneRead::File { path, .. }
+                    | PaneRead::Stat { path } => ops::validate_path(path)?,
                     _ => {}
                 }
                 Ok(target)
@@ -255,7 +275,7 @@ impl App {
     fn start_pane_editor_probe(
         &mut self,
         id: String,
-        params: PaneDirectoryOpenEditorParams,
+        params: PaneDirectoryOpenFileParams,
         respond_to: Sender<String>,
     ) {
         let captured = ensure_platform_supported()
@@ -276,6 +296,8 @@ impl App {
             id,
             pane_id: params.pane_id,
             path: params.path,
+            line: params.line,
+            mode: params.mode,
             target,
             respond_to,
             _permit: permit,
@@ -288,12 +310,14 @@ impl App {
                     env: &job.target.environment,
                     deadline,
                 };
-                let probe = ops::probe_editable(&runner, &job.path);
+                let probe = ops::probe_openable(&runner, &job.path, job.mode);
                 let _ = event_tx.blocking_send(AppEvent::PaneEditorProbed(Box::new(
                     PaneEditorProbeResult {
                         id: job.id,
                         pane_id: job.pane_id,
                         path: job.path,
+                        line: job.line,
+                        mode: job.mode,
                         environment: job.target.environment,
                         cwd: job.target.cwd,
                         probe,
@@ -360,6 +384,8 @@ impl App {
             id,
             pane_id,
             path,
+            line,
+            mode,
             environment,
             cwd,
             probe,
@@ -375,9 +401,21 @@ impl App {
                 ));
             }
             let login = crate::pane::current_target_uses_login_shell(self.state.shell_mode);
-            let mut argv =
-                crate::offhost::editor::editor_argv(&environment, cwd.as_deref(), login, &path);
-            // `editor_argv` always starts with the bare program name.
+            // Why not always `open_argv`: `pane.directory.open_editor` keeps
+            // the exact command it has always run.
+            let mut argv = if line.is_none() && mode == OpenFileMode::Editor {
+                crate::offhost::editor::editor_argv(&environment, cwd.as_deref(), login, &path)
+            } else {
+                crate::offhost::editor::open_argv(
+                    &environment,
+                    cwd.as_deref(),
+                    login,
+                    &path,
+                    line,
+                    mode,
+                )
+            };
+            // Both argv builders start with the bare program name.
             if let Some(program) = argv.first_mut() {
                 let replacement = match program.as_str() {
                     "docker" => Some(programs.docker),
@@ -404,6 +442,8 @@ struct EditorProbeJob {
     id: String,
     pane_id: String,
     path: String,
+    line: Option<std::num::NonZeroU32>,
+    mode: OpenFileMode,
     target: PaneTarget,
     respond_to: Sender<String>,
     _permit: tokio::sync::OwnedSemaphorePermit,

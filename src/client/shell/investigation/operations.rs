@@ -165,7 +165,7 @@ impl ClientShellState {
                     sources: Vec::new(),
                 });
             }
-            TOGGLE_SPLIT_DIRECTION => tab.horizontal = !tab.horizontal,
+            TOGGLE_DETAILS => self.workbench.hide_details = !self.workbench.hide_details,
             COPY_PATH => {
                 if let Some(path) = tab.paths().first() {
                     outcome
@@ -186,7 +186,8 @@ impl ClientShellState {
                     }
                 }
             }
-            EDIT_FILE => self.investigation_open_editor(outcome),
+            EDIT_FILE => self.investigation_open_file(OpenFileMode::Editor, outcome),
+            VIEW_FILE => self.investigation_open_file(OpenFileMode::Pager, outcome),
             COPY_FILES | CUT_FILES if tab.paths().is_empty() => {
                 tab.notice = "select a file or folder first".into();
             }
@@ -546,37 +547,39 @@ impl ClientShellState {
             }
         }
     }
-    fn investigation_open_editor(&mut self, outcome: &mut ClientShellInput) {
+    /// Opens the selected file, or a match at its line, over the focused pane.
+    pub(in crate::client::shell) fn investigation_open_file(
+        &mut self,
+        mode: OpenFileMode,
+        outcome: &mut ClientShellInput,
+    ) {
         if self.workbench.editor_opening {
             return;
         }
         let Some(tab) = self.investigation() else {
             return;
         };
-        let Some((path, _)) = tab.target() else {
+        let Some((path, line)) = tab.target() else {
             return;
         };
         let id = tab.id;
-        let method = if tab.browser.location.is_some() {
+        let workspace_id = tab.browser.workspace_id.clone();
+        let offhost_pane = if tab.browser.location.is_some() {
             // Only the focused pane can host the overlay, and it must be in the
             // tab's location: the editor opens there.
-            let pane_id = match self.file_viewer_send_target() {
-                Ok(pane_id) => pane_id,
+            match self.file_viewer_send_target() {
+                Ok(pane_id) => Some(pane_id),
                 Err(notice) => {
                     if let Some(tab) = self.investigation_mut() {
                         tab.notice = notice;
                     }
                     return;
                 }
-            };
-            Method::PaneDirectoryOpenEditor(PaneDirectoryOpenEditorParams { pane_id, path })
+            }
         } else {
-            Method::PaneOpenEditor(PaneOpenEditorParams {
-                workspace_id: tab.browser.workspace_id.clone(),
-                pane_id: self.focused_pane_id(),
-                path,
-            })
+            None
         };
+        let method = self.open_file_method(offhost_pane, workspace_id, path, line, mode);
         self.workbench.editor_opening = true;
         let sent = self.push_endpoint_method_with_kind(
             method,

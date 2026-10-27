@@ -14,6 +14,8 @@ HOT_PATH_SOURCES = (
 # Drawn every frame; listings and search results are prepared when they change.
 FILE_VIEWER_RENDER_SOURCES = (
     PROJECT_ROOT / "src" / "client" / "shell" / "file_viewer_overlay.rs",
+    PROJECT_ROOT / "src" / "client" / "shell" / "investigation" / "render.rs",
+    PROJECT_ROOT / "src" / "client" / "shell" / "investigation" / "details.rs",
 )
 FILE_VIEWER_RENDER_FORBIDDEN_CALLS = (
     (re.compile(r"\bstd::fs\b|\bfs::"), "filesystem access"),

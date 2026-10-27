@@ -1090,6 +1090,15 @@ pub(crate) fn local_datetime() -> Option<time::PrimitiveDateTime> {
     if unsafe { libc::time(&mut timestamp) } == -1 {
         return None;
     }
+    local_datetime_of(timestamp)
+}
+
+/// Local wall-clock time of `seconds` since the Unix epoch.
+pub(crate) fn local_datetime_at(seconds: i64) -> Option<time::PrimitiveDateTime> {
+    local_datetime_of(libc::time_t::try_from(seconds).ok()?)
+}
+
+fn local_datetime_of(timestamp: libc::time_t) -> Option<time::PrimitiveDateTime> {
     let mut local: libc::tm = unsafe { std::mem::zeroed() };
     if unsafe { libc::localtime_s(&mut local, &timestamp) } != 0 {
         return None;
@@ -3556,6 +3565,29 @@ pub(crate) fn open_regular_nofollow(
         index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
     };
     Ok((file, identity))
+}
+
+/// Not advertised here: Windows editors and `more` take no common line
+/// argument, so clients fall back to `pane.open_editor`.
+pub(crate) fn file_open_argv(
+    _path: &std::path::Path,
+    _line: Option<std::num::NonZeroU32>,
+    _mode: crate::api::schema::OpenFileMode,
+) -> std::io::Result<Vec<String>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening at a line is not supported on this platform",
+    ))
+}
+
+/// Windows has no Unix permission bits to show.
+pub(crate) fn display_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
+/// Windows files have no Unix owner to show.
+pub(crate) fn owner_name(_metadata: &std::fs::Metadata) -> Option<String> {
+    None
 }
 
 /// Windows has no rwx bits; uploads send what a Unix receiver expects.
