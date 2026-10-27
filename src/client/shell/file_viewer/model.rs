@@ -506,6 +506,43 @@ impl ClientFileViewerOverlay {
         }
     }
 
+    /// Total size of the files among `paths`, folders adding nothing. `None`
+    /// when any of them is not in a loaded listing or has no size (off-host
+    /// listings carry none), so an unknown total never reads as a small one.
+    /// Each listing is scanned once whatever the number of paths.
+    pub(in crate::client::shell) fn total_file_size<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a String>,
+    ) -> Option<u64> {
+        let mut by_parent: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for path in paths {
+            let parent = self.parent_path(path)?;
+            let name = path.get(parent.len()..)?.trim_start_matches(['/', '\\']);
+            by_parent.entry(parent).or_default().insert(name);
+        }
+        let mut total = 0u64;
+        for (parent, names) in by_parent {
+            let DirectoryState::Loaded(listing) = self.directories.get(parent)? else {
+                return None;
+            };
+            let mut found = 0;
+            for entry in listing
+                .entries
+                .iter()
+                .filter(|e| names.contains(e.name.as_str()))
+            {
+                found += 1;
+                if entry.kind == DirectoryEntryKind::File {
+                    total = total.saturating_add(entry.size?);
+                }
+            }
+            if found != names.len() {
+                return None;
+            }
+        }
+        Some(total)
+    }
+
     /// Entries in `path`'s listing, hidden and unnamed ones included, if it is loaded.
     pub(in crate::client::shell) fn listed_entry_count(&self, path: &str) -> Option<u64> {
         match self.directories.get(path)? {

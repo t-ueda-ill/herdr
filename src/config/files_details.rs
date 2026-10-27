@@ -7,7 +7,7 @@ use super::window_title::{parse_template_parts, TemplatePart};
 pub(crate) const DEFAULT_FILE_TEMPLATE: &str = "{name}\n{size} · {mtime} · {mode} {owner}";
 pub(crate) const DEFAULT_DIRECTORY_TEMPLATE: &str =
     "{name}/\n{children} · {mtime} · {mode} {owner}";
-pub(crate) const DEFAULT_MULTI_TEMPLATE: &str = "{count} selected · {total_size}";
+pub(crate) const DEFAULT_MULTI_TEMPLATE: &str = "{count} · {total_size}";
 pub(crate) const DEFAULT_MATCH_TEMPLATE: &str = "{path}:{line}\n{context}";
 pub(crate) const DEFAULT_MAX_LINES: u16 = 8;
 
@@ -69,7 +69,7 @@ pub enum DetailsToken {
     Owner,
     /// `12 items`.
     Children,
-    /// Marked entries.
+    /// `3 selected`.
     Count,
     /// Size of the marked files; directories are not walked.
     TotalSize,

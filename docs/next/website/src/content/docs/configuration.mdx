@@ -378,7 +378,7 @@ The details band below the files list shows facts about the selection. Each kind
 [ui.files.details]
 file = "{name}\n{size} · {mtime} · {mode} {owner}"
 directory = "{name}/\n{children} · {mtime} · {mode} {owner}"
-multi = "{count} selected · {total_size}"
+multi = "{count} · {total_size}"
 match = "{path}:{line}\n{context}"
 max_lines = 8
 ```
@@ -405,8 +405,8 @@ max_lines = 8
 | `{mode}` | Permissions such as `rwxr-xr-x`, with `s`/`S`/`t`/`T` for setuid, setgid, and sticky bits. Empty on Windows. |
 | `{owner}` | Owner name, or the numeric uid in SSH and container panes. Empty on Windows. |
 | `{children}` | Direct entries, `.git` excluded, for example `12 items`. Counting stops at `10000+ items`. |
-| `{count}` | Number of marked entries, folders included. Only in `multi`. |
-| `{total_size}` | Total size of the marked files. Folders are not walked. Only in `multi`. |
+| `{count}` | Marked entries, folders included, as `3 selected`. Only in `multi`. |
+| `{total_size}` | Total size of the marked files. Folders are not walked. Empty when any marked file's size is unknown, as in SSH and container tabs. Only in `multi`. |
 | `{line}` | Line number of the hit. Only in `match`. |
 | `{context}` | The hit with up to two lines before and after it, in `grep -C` style: `11-text`, `12:hit`, `13-text`. Fewer lines when the band is too short, so the hit stays visible. Only in `match`. |
 

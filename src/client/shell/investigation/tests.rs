@@ -6054,4 +6054,96 @@ mod details {
 
         assert_eq!(lines(&state), ["xy"]);
     }
+
+    #[test]
+    fn content_search_describes_the_hit_even_with_tree_entries_marked() {
+        let mut state = with_file_selected();
+        let tab = state.investigation_mut().unwrap();
+        tab.selected_files.insert("/repo/a.txt".into());
+        tab.content_search = true;
+        tab.matches.push(a_match());
+
+        assert_eq!(
+            state.investigation().unwrap().details_subject().as_deref(),
+            Some("/repo/a.txt")
+        );
+        assert_eq!(lines(&state)[0], "/repo/a.txt:12");
+    }
+
+    #[test]
+    fn a_one_row_band_shows_the_hit_line() {
+        let mut state = with_file_selected();
+        let tab = state.investigation_mut().unwrap();
+        tab.content_search = true;
+        tab.matches.push(a_match());
+
+        let one = super::super::details::details_lines(
+            state.investigation().unwrap(),
+            &state.config.files_details,
+            1,
+        );
+
+        assert_eq!(one, ["12:hit"]);
+    }
+
+    #[test]
+    fn the_listed_folder_counts_from_its_current_listing_over_an_older_stat() {
+        let mut state = state();
+        let tab = state.investigation_mut().unwrap();
+        tab.browser.selected = tab
+            .browser
+            .rows
+            .iter()
+            .position(|row| row.parent_link)
+            .unwrap();
+        tab.stat = StatState {
+            subject: Some("/repo".into()),
+            stat: Some(FileStat {
+                path: "/repo".into(),
+                children: Some(7),
+                ..FileStat::default()
+            }),
+            ..StatState::default()
+        };
+
+        assert_eq!(lines(&state), ["repo/", "1 item"]);
+    }
+
+    #[test]
+    fn an_unknown_size_among_marked_files_leaves_the_total_empty() {
+        let mut state = with_file_selected();
+        let tab = state.investigation_mut().unwrap();
+        tab.selected_files.insert("/repo/a.txt".into());
+        assert_eq!(lines(&state), ["1 selected · 6 B"]);
+
+        if let Some(crate::client::shell::file_viewer::model::DirectoryState::Loaded(listing)) =
+            state
+                .investigation_mut()
+                .unwrap()
+                .browser
+                .directories
+                .get_mut("/repo")
+        {
+            listing.entries[0].size = None;
+        }
+        assert_eq!(lines(&state), ["1 selected"]);
+
+        let tab = state.investigation_mut().unwrap();
+        tab.selected_files.insert("/elsewhere/b.txt".into());
+        listing_size(&mut state, Some(6));
+        assert_eq!(lines(&state), ["2 selected"]);
+    }
+
+    fn listing_size(state: &mut ClientShellState, size: Option<u64>) {
+        if let Some(crate::client::shell::file_viewer::model::DirectoryState::Loaded(listing)) =
+            state
+                .investigation_mut()
+                .unwrap()
+                .browser
+                .directories
+                .get_mut("/repo")
+        {
+            listing.entries[0].size = size;
+        }
+    }
 }

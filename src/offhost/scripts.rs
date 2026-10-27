@@ -248,8 +248,8 @@ pub(crate) const STAT_CHILDREN_LIMIT: u64 = crate::files::CHILDREN_LIMIT;
 /// Why `stat` still runs for mtime: `ls` dates have no year or no time.
 /// Why `ls -f | head` for the count: unsorted and cut short, it stops near the
 /// limit in a huge directory where a glob would read and sort every name.
-/// BusyBox has no `-f`, so it falls back to sorted `ls -a`. A name holding a
-/// newline counts twice.
+/// BusyBox has no `-f`, so it counts with a glob there. A name holding a
+/// newline counts twice with `ls`.
 pub(crate) fn stat_script() -> String {
     let limit = STAT_CHILDREN_LIMIT;
     // `.`, `..` and `.git` may come first, and one more line proves the limit.
@@ -266,8 +266,20 @@ if [ -L "$1" ]; then kind=l; elif [ -d "$1" ]; then kind=d; elif [ -f "$1" ]; th
 n=; full=
 if [ -d "$1" ] && [ -r "$1" ]; then
   # Decided first: `head` ends `ls -f` with SIGPIPE, which must not run the fallback.
-  if ls -fd / >/dev/null 2>&1; then unsorted=-f; else unsorted=-a; fi
-  n=$(ls "$unsorted" "$1" 2>/dev/null | head -n {cap} | grep -F -v -x -e . -e .. -e .git | wc -l | tr -d ' ')
+  if ls -fd / >/dev/null 2>&1; then
+    n=$(ls -f "$1" 2>/dev/null | head -n {cap} | grep -F -v -x -e . -e .. -e .git | wc -l | tr -d ' ')
+  else
+    # BusyBox `ls` stats every name and lists nothing in a folder it cannot
+    # search, while a glob only reads names. A pattern left unexpanded is
+    # itself, so only that case needs the existence check.
+    n=0
+    for f in "$1"/.[!.]* "$1"/..?* "$1"/*; do
+      case "$f" in "$1/.[!.]*"|"$1/..?*"|"$1/*") [ -e "$f" ] || [ -L "$f" ] || continue ;; esac
+      case "${{f##*/}}" in .git) continue ;; esac
+      n=$((n + 1))
+      [ "$n" -gt {limit} ] && break
+    done
+  fi
   if [ "$n" -gt {limit} ]; then n={limit}; full=1; fi
 fi
 line=$(LC_ALL=C ls -ldn "$1" 2>/dev/null)

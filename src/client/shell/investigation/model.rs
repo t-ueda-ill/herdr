@@ -319,17 +319,17 @@ impl Investigation {
         }
     }
     /// The path the details describe: the selected match, entry, or the
-    /// listed root on `..` and notices. `None` while entries are marked,
+    /// listed root on `..` and notices. `None` while tree entries are marked,
     /// which the details sum up from the listing instead.
     pub fn details_subject(&self) -> Option<String> {
-        if !self.selected_files.is_empty() {
-            return None;
-        }
         if self.content_search {
             return self
                 .matches
                 .get(self.selected_match)
                 .map(|m| m.path.clone());
+        }
+        if !self.selected_files.is_empty() {
+            return None;
         }
         self.browser
             .selected_entry()

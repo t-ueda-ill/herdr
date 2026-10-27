@@ -1121,7 +1121,7 @@
         {
           "key": "ui.files.details.multi",
           "type": "string",
-          "default": "\"{count} selected · {total_size}\"",
+          "default": "\"{count} · {total_size}\"",
           "description": "Details band lines while entries are marked. Tokens: {count}, {total_size} (marked files only; folders are not walked). Empty hides the band while marking."
         },
         {

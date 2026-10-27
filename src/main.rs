@@ -390,7 +390,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # [ui.files.details]
 # file = "{name}\n{size} · {mtime} · {mode} {owner}"
 # directory = "{name}/\n{children} · {mtime} · {mode} {owner}"
-# multi = "{count} selected · {total_size}"
+# multi = "{count} · {total_size}"
 # match = "{path}:{line}\n{context}"
 # max_lines = 8
 

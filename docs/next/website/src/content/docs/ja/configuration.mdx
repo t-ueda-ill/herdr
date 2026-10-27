@@ -374,7 +374,7 @@ files タブの一覧の下にある詳細欄には、選択中の項目の情�
 [ui.files.details]
 file = "{name}\n{size} · {mtime} · {mode} {owner}"
 directory = "{name}/\n{children} · {mtime} · {mode} {owner}"
-multi = "{count} selected · {total_size}"
+multi = "{count} · {total_size}"
 match = "{path}:{line}\n{context}"
 max_lines = 8
 ```
@@ -401,8 +401,8 @@ max_lines = 8
 | `{mode}` | `rwxr-xr-x` のようなパーミッション。setuid、setgid、sticky ビットは `s`/`S`/`t`/`T` で表します。Windows では空。 |
 | `{owner}` | 所有者名。SSH ペインとコンテナペインでは数値の uid。Windows では空。 |
 | `{children}` | 直下のエントリ数(`.git` を除く)。例: `12 items`。数え上げは `10000+ items` で止まります。 |
-| `{count}` | マークしたエントリの数(フォルダを含む)。`multi` でのみ使えます。 |
-| `{total_size}` | マークしたファイルの合計サイズ。フォルダの中身は数えません。`multi` でのみ使えます。 |
+| `{count}` | マークしたエントリの数(フォルダを含む)を `3 selected` の形で表したもの。`multi` でのみ使えます。 |
+| `{total_size}` | マークしたファイルの合計サイズ。フォルダの中身は数えません。SSH やコンテナのタブのように、サイズが分からないファイルが含まれるときは空になります。`multi` でのみ使えます。 |
 | `{line}` | ヒットした行の番号。`match` でのみ使えます。 |
 | `{context}` | ヒット行と前後最大 2 行を `grep -C` 形式で並べたもの: `11-text`、`12:hit`、`13-text`。詳細欄が低いときはヒット行が見えるよう前後の行を減らします。`match` でのみ使えます。 |
 

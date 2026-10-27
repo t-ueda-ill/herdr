@@ -20,7 +20,9 @@ pub(super) fn details_lines(
     templates: &DetailsTemplates,
     rows: usize,
 ) -> Vec<String> {
-    if !tab.selected_files.is_empty() {
+    // Why content search first: marks made in the tree stay while searching,
+    // and the band must describe the selected hit.
+    if !tab.content_search && !tab.selected_files.is_empty() {
         return templates
             .multi
             .render(|token| clean(&multi_value(tab, token)));
@@ -36,10 +38,17 @@ pub(super) fn details_lines(
                 match_value(found, token, radius).unwrap_or_else(|| clean(&value(&subject, token)))
             });
             if lines.len() <= rows {
-                break;
+                return lines;
             }
         }
-        return lines;
+        // Still too tall: keep the rows that end at the hit itself.
+        let hit = format!("{}:{}", found.line, clean(&found.text));
+        let end = lines
+            .iter()
+            .position(|line| *line == hit)
+            .map_or(lines.len(), |index| index + 1);
+        let start = end.saturating_sub(rows);
+        return lines[start..end].to_vec();
     }
     let Some(path) = tab.details_subject() else {
         return Vec::new();
@@ -105,11 +114,13 @@ fn value(subject: &Subject<'_>, token: DetailsToken) -> String {
             .map(mode_string)
             .unwrap_or_default(),
         DetailsToken::Owner => stat.and_then(|stat| stat.owner.clone()).unwrap_or_default(),
-        DetailsToken::Children => match stat.and_then(|stat| stat.children) {
-            Some(count) => items(count, stat.is_some_and(|stat| stat.children_limited)),
-            None => subject
-                .listed_children
-                .map(|count| items(count, false))
+        // The listing first: polling keeps it current, while the stat is
+        // asked again only when the folder's own entry changes.
+        DetailsToken::Children => match subject.listed_children {
+            Some(count) => items(count, false),
+            None => stat
+                .and_then(|stat| stat.children)
+                .map(|count| items(count, stat.is_some_and(|stat| stat.children_limited)))
                 .unwrap_or_default(),
         },
         DetailsToken::Count
@@ -129,15 +140,12 @@ fn match_value(found: &FileMatch, token: DetailsToken, radius: usize) -> Option<
 
 fn multi_value(tab: &Investigation, token: DetailsToken) -> String {
     match token {
-        DetailsToken::Count => tab.selected_files.len().to_string(),
-        DetailsToken::TotalSize => human_size(
-            tab.selected_files
-                .iter()
-                .filter_map(|path| tab.browser.entry_for_path(path))
-                .filter(|entry| entry.kind == DirectoryEntryKind::File)
-                .filter_map(|entry| entry.size)
-                .sum(),
-        ),
+        DetailsToken::Count => format!("{} selected", tab.selected_files.len()),
+        DetailsToken::TotalSize => tab
+            .browser
+            .total_file_size(&tab.selected_files)
+            .map(human_size)
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
