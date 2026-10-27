@@ -721,7 +721,7 @@ impl ClientShellState {
     /// Drags the line between the docked files region and the terminals.
     ///
     /// Why before the workbench handler: a drag crossing into the files
-    /// region would otherwise select preview text instead of resizing.
+    /// region would otherwise move the list selection instead of resizing.
     fn handle_files_divider_mouse(
         &mut self,
         mouse: MouseEvent,

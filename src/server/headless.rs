@@ -3361,6 +3361,7 @@ impl HeadlessServer {
             api::schema::Method::FilesCancel(_)
                 | api::schema::Method::FilesPlan(_)
                 | api::schema::Method::FileRead(_)
+                | api::schema::Method::FileStat(_)
                 | api::schema::Method::FilesSearch(_)
                 | api::schema::Method::FilesReplace(_)
                 | api::schema::Method::FilesOperate(_)
@@ -3383,7 +3384,9 @@ impl HeadlessServer {
             api::schema::Method::PaneDirectoryList(_)
                 | api::schema::Method::PaneDirectoryIndex(_)
                 | api::schema::Method::PaneDirectoryOpenEditor(_)
+                | api::schema::Method::PaneDirectoryOpenFile(_)
                 | api::schema::Method::PaneFileRead(_)
+                | api::schema::Method::PaneFileStat(_)
         ) {
             self.app
                 .handle_deferred_pane_directory_api_request(msg.request, msg.respond_to);

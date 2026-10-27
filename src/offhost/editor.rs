@@ -56,6 +56,97 @@ fi
 exec sh -c "$0" sh "$3"
 "#;
 
+/// The body of [`OPEN_SCRIPT`], as a literal so the ssh variant can prefix it.
+macro_rules! open_script_body {
+    () => {
+        r#"open_file=$1; open_line=$2; open_mode=$3
+takes_line() {
+  case "${1##*/}" in
+    vi|less|more) "$1" --version </dev/null >/dev/null 2>&1 ;;
+    vim|nvim|view|nano|emacs|emacsclient|micro|kak|joe|mg|ne|most) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+at_line() { [ -n "$open_line" ] && takes_line "$1"; }
+if [ "$open_mode" = pager ]; then
+  open_pager=$PAGER
+  if [ -z "$open_pager" ]; then
+    if command -v less >/dev/null 2>&1; then open_pager=less
+    elif command -v more >/dev/null 2>&1; then open_pager=more
+    else open_pager=cat; fi
+  fi
+  open_program=${open_pager%% *}
+  open_wait=1
+  case "${open_program##*/}" in
+    less)
+      open_wait=
+      if "$open_program" --version </dev/null >/dev/null 2>&1; then open_pager="$open_pager -+F"; fi ;;
+  esac
+  if at_line "$open_program"; then eval "$open_pager \"+\$open_line\" \"\$open_file\""
+  else eval "$open_pager \"\$open_file\""; fi
+  if [ -n "$open_wait" ]; then printf '\n[press Enter] '; read open_line || :; fi
+else
+  open_editor=${EDITOR:-vi}
+  if at_line "${open_editor%% *}"; then eval "$open_editor \"+\$open_line\" \"\$open_file\""
+  else eval "$open_editor \"\$open_file\""; fi
+fi"#
+    };
+}
+
+/// Run by a POSIX shell with the file as `$1`, the line as `$2` (may be
+/// empty) and `editor` or `pager` as `$3`. The pager falls back from `PAGER`
+/// to `less`, `more`, then `cat`. The overlay closes as soon as its process
+/// exits, so every pager but `less` is followed by a wait for Enter: `more`
+/// and `cat` end at the last line. GNU `less` gets `-+F` so a `LESS=-F` from
+/// the user's profile does not quit on a short file; BusyBox `less` never
+/// quits by itself.
+/// Why `+N` only for named programs: `cat`, `code` and BusyBox's `vi`, `less`
+/// and `more` would open a file called `+N`. BusyBox applets refuse
+/// `--version`, which tells them from the ones that take a line.
+pub(crate) const OPEN_SCRIPT: &str = open_script_body!();
+
+/// [`OPEN_SCRIPT`] after entering the directory in `$1`.
+const SSH_OPEN_INNER_SCRIPT: &str = concat!(
+    "[ -n \"$1\" ] && cd -- \"$1\" 2>/dev/null; shift\n",
+    open_script_body!()
+);
+
+/// [`SSH_WRAPPER`] for [`SSH_OPEN_INNER_SCRIPT`]: four arguments, and the
+/// login environment's `PAGER` as well as `EDITOR`.
+const SSH_OPEN_WRAPPER: &str = r#"
+case "${SHELL##*/}" in
+  sh|bash|zsh|dash|ash|ksh|mksh|yash)
+    exec "$SHELL" -l -c "$0" sh "$1" "$2" "$3" "$4" ;;
+esac
+if [ -n "$SHELL" ]; then
+  EDITOR=$("$SHELL" -l -c 'printf "%s" "$EDITOR"' </dev/null 2>/dev/null)
+  PAGER=$("$SHELL" -l -c 'printf "%s" "$PAGER"' </dev/null 2>/dev/null)
+  export EDITOR PAGER
+fi
+exec sh -c "$0" sh "$1" "$2" "$3" "$4"
+"#;
+
+/// [`CONTAINER_FALLBACK_WRAPPER`] for [`OPEN_SCRIPT`]: `$3` file, `$4` line,
+/// `$5` mode, and the shell's `PAGER` as well as `EDITOR`.
+const CONTAINER_OPEN_FALLBACK_WRAPPER: &str = r#"
+if [ "$2" = 1 ]; then flag=-l; else flag=; fi
+reported=$("$1" $flag -c 'printf "%s" "$EDITOR"' </dev/null 2>/dev/null)
+if [ -n "$reported" ]; then EDITOR=$reported; export EDITOR; fi
+reported=$("$1" $flag -c 'printf "%s" "$PAGER"' </dev/null 2>/dev/null)
+if [ -n "$reported" ]; then PAGER=$reported; export PAGER; fi
+exec sh -c "$0" sh "$3" "$4" "$5"
+"#;
+
+/// The scripts one kind of overlay runs, by transport.
+struct Opener<'a> {
+    script: &'a str,
+    ssh_inner: &'a str,
+    ssh_wrapper: &'a str,
+    container_wrapper: &'a str,
+    /// Positional arguments after the directory (ssh) or the shell (fallback).
+    args: Vec<&'a str>,
+}
+
 /// Shells whose `-c` accepts the POSIX scripts above.
 fn is_sh_family(shell: &str) -> bool {
     let name = shell.rsplit('/').next().unwrap_or(shell);
@@ -77,6 +168,55 @@ pub(crate) fn editor_argv(
     login: bool,
     path: &str,
 ) -> Vec<String> {
+    overlay_argv(
+        env,
+        cwd,
+        login,
+        Opener {
+            script: EDITOR_SCRIPT,
+            ssh_inner: SSH_INNER_SCRIPT,
+            ssh_wrapper: SSH_WRAPPER,
+            container_wrapper: CONTAINER_FALLBACK_WRAPPER,
+            args: vec![path],
+        },
+    )
+}
+
+/// Like [`editor_argv`], at `line` and in the editor or the pager.
+pub(crate) fn open_argv(
+    env: &PaneEnvironment,
+    cwd: Option<&str>,
+    login: bool,
+    path: &str,
+    line: Option<std::num::NonZeroU32>,
+    mode: crate::api::schema::OpenFileMode,
+) -> Vec<String> {
+    let line = line.map(|line| line.to_string()).unwrap_or_default();
+    let mode = match mode {
+        crate::api::schema::OpenFileMode::Editor => "editor",
+        crate::api::schema::OpenFileMode::Pager => "pager",
+    };
+    overlay_argv(
+        env,
+        cwd,
+        login,
+        Opener {
+            script: OPEN_SCRIPT,
+            ssh_inner: SSH_OPEN_INNER_SCRIPT,
+            ssh_wrapper: SSH_OPEN_WRAPPER,
+            container_wrapper: CONTAINER_OPEN_FALLBACK_WRAPPER,
+            args: vec![path, &line, mode],
+        },
+    )
+}
+
+fn overlay_argv(
+    env: &PaneEnvironment,
+    cwd: Option<&str>,
+    login: bool,
+    opener: Opener<'_>,
+) -> Vec<String> {
+    let args = || opener.args.iter().map(|arg| (*arg).to_owned());
     match env {
         PaneEnvironment::Container(launch) => {
             let mut docker = vec!["exec".to_owned(), "-it".to_owned()];
@@ -94,23 +234,20 @@ pub(crate) fn editor_argv(
                 ContainerShell::Explicit(shell) if is_sh_family(shell) => {
                     docker.push(shell.clone());
                     docker.extend(login.then(|| "-l".to_owned()));
-                    docker.extend(strs(&["-c", EDITOR_SCRIPT, "sh", path]));
+                    docker.extend(strs(&["-c", opener.script, "sh"]));
+                    docker.extend(args());
                 }
                 // Why a wrapper: a fish label's `-c` cannot run the POSIX script.
                 ContainerShell::Explicit(shell) => {
-                    docker.extend(strs(&[
-                        "sh",
-                        "-c",
-                        CONTAINER_FALLBACK_WRAPPER,
-                        EDITOR_SCRIPT,
-                    ]));
+                    docker.extend(strs(&["sh", "-c", opener.container_wrapper, opener.script]));
                     docker.extend([shell.clone(), if login { "1" } else { "0" }.to_owned()]);
-                    docker.push(path.to_owned());
+                    docker.extend(args());
                 }
                 ContainerShell::BashOrSh => {
                     docker.extend(strs(&["sh", "-c", BASH_OR_SH_PROBE, "sh"]));
                     docker.extend(login.then(|| "-l".to_owned()));
-                    docker.extend(strs(&["-c", EDITOR_SCRIPT, "sh", path]));
+                    docker.extend(strs(&["-c", opener.script, "sh"]));
+                    docker.extend(args());
                 }
             }
             match &launch.ssh {
@@ -127,19 +264,14 @@ pub(crate) fn editor_argv(
             }
         }
         PaneEnvironment::Ssh(launch) => {
-            // `sh -c WRAPPER INNER CWD FILE`: `$0` of the wrapper is the inner script.
-            let command = [
-                "sh",
-                "-c",
-                SSH_WRAPPER,
-                SSH_INNER_SCRIPT,
-                cwd.unwrap_or(""),
-                path,
-            ]
-            .into_iter()
-            .map(shell_quote)
-            .collect::<Vec<_>>()
-            .join(" ");
+            // `sh -c WRAPPER INNER CWD ARGS…`: `$0` of the wrapper is the inner script.
+            let command = ["sh", "-c", opener.ssh_wrapper, opener.ssh_inner]
+                .into_iter()
+                .chain([cwd.unwrap_or("")])
+                .chain(opener.args.iter().copied())
+                .map(shell_quote)
+                .collect::<Vec<_>>()
+                .join(" ");
             lossy(ssh_command_argv(launch, command.into()))
         }
     }
@@ -458,5 +590,172 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tools);
 
         assert_eq!(out, "FISH-EDITOR|/f|");
+    }
+
+    /// Fake `vim` and `less` that print `NAME|arg|…`, and accept `--version`.
+    #[cfg(unix)]
+    fn fake_tools(name: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let tools = std::env::temp_dir().join(format!("herdr-open-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&tools).unwrap();
+        for tool in ["vim", "less"] {
+            let path = tools.join(tool);
+            std::fs::write(
+                &path,
+                format!("#!/bin/sh\nprintf '{tool}|'; printf '%s|' \"$@\"\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        tools
+    }
+
+    /// Runs `open_argv`'s ssh command string like the account's login shell.
+    #[cfg(unix)]
+    fn run_remote_open(
+        shell: &str,
+        vars: &[(&str, &str)],
+        line: Option<u32>,
+        mode: crate::api::schema::OpenFileMode,
+    ) -> String {
+        let argv = open_argv(
+            &PaneEnvironment::Ssh(ssh()),
+            None,
+            false,
+            "/a b/$(id)'x",
+            line.and_then(std::num::NonZeroU32::new),
+            mode,
+        );
+        let tools = fake_tools("ssh");
+        let path = format!(
+            "{}:{}",
+            tools.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(argv.last().unwrap())
+            .env("SHELL", shell)
+            .env("PATH", path)
+            .env_remove("EDITOR")
+            .env_remove("PAGER");
+        for (key, value) in vars {
+            command.env(key, value);
+        }
+        String::from_utf8_lossy(&command.output().unwrap().stdout).into_owned()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssh_open_passes_the_line_to_the_editor_or_pager_and_the_path_as_one_argument() {
+        use crate::api::schema::OpenFileMode;
+        // Absolute: a login shell's profile may reset PATH (Debian does for root).
+        let tools = fake_tools("ssh");
+        let vim = tools.join("vim").display().to_string();
+        let less = tools.join("less").display().to_string();
+
+        let editor = run_remote_open(
+            "/bin/sh",
+            &[("EDITOR", &vim)],
+            Some(9),
+            OpenFileMode::Editor,
+        );
+        let pager = run_remote_open("/bin/sh", &[("PAGER", &less)], None, OpenFileMode::Pager);
+        let unknown = run_remote_open(
+            "/bin/sh",
+            &[("EDITOR", "printf '%s|' ED")],
+            Some(9),
+            OpenFileMode::Editor,
+        );
+
+        assert_eq!(editor, "vim|+9|/a b/$(id)'x|");
+        assert_eq!(pager, "less|-+F|/a b/$(id)'x|");
+        assert_eq!(unknown, "ED|/a b/$(id)'x|");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssh_open_reads_pager_from_a_non_posix_login_shell() {
+        let tools = std::env::temp_dir().join(format!("herdr-fish-open-{}", std::process::id()));
+        std::fs::create_dir_all(&tools).unwrap();
+        let fish = tools.join("fish");
+        std::fs::write(
+            &fish,
+            "#!/bin/sh\ncase \"$*\" in *PAGER*) printf '%s' less ;; *EDITOR*) ;; *) echo fish-ran-script; exit 1 ;; esac\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fish, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let out = run_remote_open(
+            fish.to_str().unwrap(),
+            &[],
+            Some(3),
+            crate::api::schema::OpenFileMode::Pager,
+        );
+        let _ = std::fs::remove_dir_all(&tools);
+
+        assert_eq!(out, "less|-+F|+3|/a b/$(id)'x|");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn container_open_asks_a_non_posix_shell_for_pager_and_keeps_the_arguments_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let tools = std::env::temp_dir().join(format!("herdr-cfish-open-{}", std::process::id()));
+        std::fs::create_dir_all(&tools).unwrap();
+        let fish = tools.join("fish");
+        std::fs::write(
+            &fish,
+            "#!/bin/sh\ncase \"$*\" in \"-l -c \"*PAGER*) printf '%s' less ;; \"-l -c \"*EDITOR*) ;; *) echo fish-ran-script; exit 1 ;; esac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fish, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let argv = open_argv(
+            &container(
+                ContainerShell::Explicit(fish.to_str().unwrap().into()),
+                None,
+            ),
+            None,
+            true,
+            "/a b",
+            std::num::NonZeroU32::new(4),
+            crate::api::schema::OpenFileMode::Pager,
+        );
+        let inside = &argv[argv.iter().position(|arg| arg == "cid").unwrap() + 1..];
+        let fakes = fake_tools("container");
+        let output = std::process::Command::new(&inside[0])
+            .args(&inside[1..])
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    fakes.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env_remove("PAGER")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&tools);
+
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "less|-+F|+4|/a b|");
+    }
+
+    #[test]
+    fn open_without_a_line_or_with_the_editor_keeps_the_editor_argv_shape() {
+        let env = container(ContainerShell::Explicit("bash".into()), None);
+        let open = open_argv(
+            &env,
+            Some("/w"),
+            false,
+            "/f",
+            None,
+            crate::api::schema::OpenFileMode::Editor,
+        );
+
+        assert_eq!(&open[open.len() - 3..], ["/f", "", "editor"]);
+        assert!(open.contains(&OPEN_SCRIPT.to_owned()));
     }
 }

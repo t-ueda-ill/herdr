@@ -55,6 +55,38 @@ cli_params! {
     }
 }
 
+/// How `pane.open_file` shows the file. Append-closed: a new mode needs a new method.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenFileMode {
+    /// `$EDITOR`, which may create a missing file.
+    #[default]
+    Editor,
+    /// `$PAGER`, then `less`, `more`, or `cat`. The file must exist.
+    Pager,
+}
+
+// Why not extend `PaneOpenEditorParams`: its shape is frozen, and an older
+// server would ignore `line` and `mode` yet still report success.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneOpenFileParams {
+    /// Workspace whose focused pane is the target when `pane_id` is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Pane the editor or pager overlays. It must be the focused pane of the active workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    /// Absolute path of the file to open. Directories are rejected.
+    pub path: String,
+    /// 1-based line to start at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<std::num::NonZeroU32>,
+    #[serde(default)]
+    pub mode: OpenFileMode,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DirectoryEntryKind {

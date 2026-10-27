@@ -1,15 +1,21 @@
-//! `pane.open_editor`: the file viewer's "edit" action, run like
-//! `pane.edit_scrollback` but on a user file instead of a scrollback dump.
+//! `pane.open_editor` and `pane.open_file`: the file viewer's "edit" and
+//! "view" actions, run like `pane.edit_scrollback` but on a user file instead
+//! of a scrollback dump.
 
 use std::path::Path;
 
-use crate::api::schema::{PaneOpenEditorParams, ResponseResult};
+use crate::api::schema::{OpenFileMode, PaneOpenEditorParams, PaneOpenFileParams, ResponseResult};
 use crate::app::App;
 
 use super::directory::requested_path;
 use super::responses::{encode_error, encode_success};
 
 type EditorArgv = fn(&Path) -> std::io::Result<Vec<String>>;
+type OpenArgv = fn(
+    &Path,
+    Option<std::num::NonZeroU32>,
+    crate::api::schema::OpenFileMode,
+) -> std::io::Result<Vec<String>>;
 
 impl App {
     pub(super) fn handle_pane_open_editor(
@@ -26,11 +32,62 @@ impl App {
         params: PaneOpenEditorParams,
         editor_argv: EditorArgv,
     ) -> String {
-        let path = match requested_path(&params.path) {
+        self.open_overlay_on_file(
+            id,
+            params.workspace_id.as_deref(),
+            params.pane_id.as_deref(),
+            &params.path,
+            false,
+            editor_argv,
+        )
+    }
+
+    pub(super) fn handle_pane_open_file(
+        &mut self,
+        id: String,
+        params: PaneOpenFileParams,
+    ) -> String {
+        self.handle_pane_open_file_with(id, params, crate::platform::file_open_argv)
+    }
+
+    fn handle_pane_open_file_with(
+        &mut self,
+        id: String,
+        params: PaneOpenFileParams,
+        open_argv: OpenArgv,
+    ) -> String {
+        let PaneOpenFileParams {
+            workspace_id,
+            pane_id,
+            path,
+            line,
+            mode,
+        } = params;
+        self.open_overlay_on_file(
+            id,
+            workspace_id.as_deref(),
+            pane_id.as_deref(),
+            &path,
+            mode == OpenFileMode::Pager,
+            |path| open_argv(path, line, mode),
+        )
+    }
+
+    /// `must_exist`: a pager has nothing to show for a missing file, while an
+    /// editor creates it on save.
+    fn open_overlay_on_file(
+        &mut self,
+        id: String,
+        workspace_id: Option<&str>,
+        pane_id: Option<&str>,
+        path: &str,
+        must_exist: bool,
+        argv: impl FnOnce(&Path) -> std::io::Result<Vec<String>>,
+    ) -> String {
+        let path = match requested_path(path) {
             Ok(path) => path,
             Err((code, message)) => return encode_error(id, code, message),
         };
-        // Why not require the file to exist: editors create a missing file on save.
         if path.is_dir() {
             return encode_error(
                 id,
@@ -38,9 +95,10 @@ impl App {
                 format!("path is a directory: {}", path.display()),
             );
         }
-        let (ws_idx, pane_id) = match self
-            .directory_target(params.workspace_id.as_deref(), params.pane_id.as_deref())
-        {
+        if must_exist && !path.exists() {
+            return encode_error(id, "not_found", format!("not found: {}", path.display()));
+        }
+        let (ws_idx, pane_id) = match self.directory_target(workspace_id, pane_id) {
             Ok((Some(ws_idx), Some(pane_id))) => (ws_idx, pane_id),
             Ok(_) => return encode_error(id, "pane_not_found", "no focused pane"),
             Err((code, message)) => return encode_error(id, code, message),
@@ -62,7 +120,7 @@ impl App {
         if !self.pane_is_live(ws_idx, pane_id) {
             return encode_error(id, "pane_not_live", "the focused pane has no running shell");
         }
-        let argv = match editor_argv(&path) {
+        let argv = match argv(&path) {
             Ok(argv) => argv,
             Err(err) if err.kind() == std::io::ErrorKind::Unsupported => {
                 return encode_error(id, "platform_unsupported", err.to_string());

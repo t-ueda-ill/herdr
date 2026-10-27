@@ -8689,6 +8689,16 @@ async fn pane_directory_requests_are_routed_to_the_deferred_handler_without_a_re
             poll: true,
         }),
         api::schema::Method::PaneDirectoryOpenEditor(api::schema::PaneDirectoryOpenEditorParams {
+            pane_id: public_id.clone(),
+            path: "/etc/hosts".into(),
+        }),
+        api::schema::Method::PaneDirectoryOpenFile(api::schema::PaneDirectoryOpenFileParams {
+            pane_id: public_id.clone(),
+            path: "/etc/hosts".into(),
+            line: None,
+            mode: api::schema::OpenFileMode::Pager,
+        }),
+        api::schema::Method::PaneFileStat(api::schema::PaneFileStatParams {
             pane_id: public_id,
             path: "/etc/hosts".into(),
         }),
@@ -8726,7 +8736,17 @@ fn the_deferred_editor_request_claims_geometry_and_reconciles_like_the_host_edit
             path: "/f".into(),
         });
 
-    for method in [&host, &off_host] {
+    let host_at_line =
+        api::schema::Method::PaneOpenFile(api::schema::PaneOpenFileParams::default());
+    let off_host_at_line =
+        api::schema::Method::PaneDirectoryOpenFile(api::schema::PaneDirectoryOpenFileParams {
+            pane_id: "w1:p1".into(),
+            path: "/f".into(),
+            line: None,
+            mode: api::schema::OpenFileMode::Editor,
+        });
+
+    for method in [&host, &off_host, &host_at_line, &off_host_at_line] {
         assert!(HeadlessServer::shell_locations_may_need_reconcile(method));
         assert!(HeadlessServer::shell_endpoint_claims_geometry(method));
         assert!(HeadlessServer::public_request_may_change_geometry(method));

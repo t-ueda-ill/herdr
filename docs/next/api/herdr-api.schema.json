@@ -2347,6 +2347,18 @@
           ],
           "type": "object"
         },
+        "FileStatParams": {
+          "properties": {
+            "path": {
+              "description": "Absolute path of the file or directory.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
         "FilesCancelParams": {
           "properties": {
             "generation": {
@@ -2702,6 +2714,21 @@
           ],
           "type": "string"
         },
+        "OpenFileMode": {
+          "description": "How `pane.open_file` shows the file. Append-closed: a new mode needs a new method.",
+          "oneOf": [
+            {
+              "const": "editor",
+              "description": "`$EDITOR`, which may create a missing file.",
+              "type": "string"
+            },
+            {
+              "const": "pager",
+              "description": "`$PAGER`, then `less`, `more`, or `cat`. The file must exist.",
+              "type": "string"
+            }
+          ]
+        },
         "OutputMatch": {
           "oneOf": [
             {
@@ -2940,6 +2967,35 @@
           ],
           "type": "object"
         },
+        "PaneDirectoryOpenFileParams": {
+          "properties": {
+            "line": {
+              "description": "1-based line to start at.",
+              "format": "uint32",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/schemas/request/$defs/OpenFileMode",
+              "default": "editor"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "path": {
+              "description": "Absolute path of the file inside the pane's environment. Directories are rejected.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "path"
+          ],
+          "type": "object"
+        },
         "PaneDownloadBeginParams": {
           "description": "Without `pane_id` the source is the server's own filesystem.",
           "properties": {
@@ -3031,6 +3087,22 @@
                 "string",
                 "null"
               ]
+            }
+          },
+          "required": [
+            "pane_id",
+            "path"
+          ],
+          "type": "object"
+        },
+        "PaneFileStatParams": {
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "path": {
+              "description": "Absolute path inside the pane's environment.",
+              "type": "string"
             }
           },
           "required": [
@@ -3266,6 +3338,45 @@
             },
             "path": {
               "description": "Absolute path of the file to edit. Directories are rejected.",
+              "type": "string"
+            },
+            "workspace_id": {
+              "description": "Workspace whose focused pane is the target when `pane_id` is absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "PaneOpenFileParams": {
+          "properties": {
+            "line": {
+              "description": "1-based line to start at.",
+              "format": "uint32",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/schemas/request/$defs/OpenFileMode",
+              "default": "editor"
+            },
+            "pane_id": {
+              "description": "Pane the editor or pager overlays. It must be the focused pane of the active workspace.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "Absolute path of the file to open. Directories are rejected.",
               "type": "string"
             },
             "workspace_id": {
@@ -7321,6 +7432,22 @@
         {
           "properties": {
             "method": {
+              "const": "pane.open_file",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneOpenFileParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "file.read",
               "type": "string"
             },
@@ -7390,6 +7517,54 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneFileReadParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.directory.open_file",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneDirectoryOpenFileParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.file.stat",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneFileStatParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "files.stat",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FileStatParams"
             }
           },
           "required": [
@@ -8914,6 +9089,17 @@
         },
         "FileMatch": {
           "properties": {
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/FileMatchContext"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Up to two lines on each side of `line`, as they were when searched.\nAbsent from servers that predate it."
+            },
             "end": {
               "format": "uint",
               "minimum": 0,
@@ -8960,6 +9146,29 @@
           ],
           "type": "object"
         },
+        "FileMatchContext": {
+          "properties": {
+            "after": {
+              "description": "Lines after the hit, nearest first.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "before": {
+              "description": "Lines before the hit, oldest first.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "before",
+            "after"
+          ],
+          "type": "object"
+        },
         "FileOutcome": {
           "properties": {
             "destination": {
@@ -8980,6 +9189,82 @@
             "revision": {
               "type": [
                 "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "FileStat": {
+          "description": "Facts about one path that a directory listing does not carry.",
+          "properties": {
+            "children": {
+              "description": "Entries directly inside a directory, `.git` excluded. Counting stops at `children_limit`.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "children_limited": {
+              "description": "`children` reached the counting limit, so the directory holds at least that many.",
+              "type": "boolean"
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/DirectoryEntryKind"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "link_target": {
+              "description": "Where a symlink points, as stored in the link.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mode": {
+              "description": "Permission bits, including setuid, setgid and sticky (`st_mode & 0o7777`).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "mtime": {
+              "description": "Modification time in milliseconds since the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "owner": {
+              "description": "Owner name, or the numeric uid when the name cannot be resolved.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "size": {
+              "description": "Size in bytes of a regular file.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
                 "null"
               ]
             }
@@ -9570,6 +9855,22 @@
           "required": [
             "location",
             "document"
+          ],
+          "type": "object"
+        },
+        "PaneFileStatus": {
+          "description": "Body of a `pane.file.stat` result.",
+          "properties": {
+            "location": {
+              "$ref": "#/schemas/success_response/$defs/PaneLocation"
+            },
+            "stat": {
+              "$ref": "#/schemas/success_response/$defs/FileStat"
+            }
+          },
+          "required": [
+            "location",
+            "stat"
           ],
           "type": "object"
         },
@@ -12578,6 +12879,35 @@
               "properties": {
                 "type": {
                   "const": "pane_file_document",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "stat": {
+                  "$ref": "#/schemas/success_response/$defs/FileStat"
+                },
+                "type": {
+                  "const": "file_stat",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "stat"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/success_response/$defs/PaneFileStatus",
+              "properties": {
+                "type": {
+                  "const": "pane_file_stat",
                   "type": "string"
                 }
               },

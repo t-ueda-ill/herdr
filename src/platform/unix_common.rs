@@ -538,6 +538,15 @@ pub(crate) fn local_datetime() -> Option<time::PrimitiveDateTime> {
     if unsafe { libc::time(&mut timestamp) } == -1 {
         return None;
     }
+    local_datetime_of(timestamp)
+}
+
+/// Local wall-clock time of `seconds` since the Unix epoch.
+pub(crate) fn local_datetime_at(seconds: i64) -> Option<time::PrimitiveDateTime> {
+    local_datetime_of(libc::time_t::try_from(seconds).ok()?)
+}
+
+fn local_datetime_of(timestamp: libc::time_t) -> Option<time::PrimitiveDateTime> {
     let mut local: libc::tm = unsafe { std::mem::zeroed() };
     if unsafe { libc::localtime_r(&timestamp, &mut local) }.is_null() {
         return None;
@@ -661,6 +670,69 @@ pub(crate) fn open_regular_nofollow(
 pub(crate) fn permission_bits(metadata: &std::fs::Metadata) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     metadata.permissions().mode() & 0o777
+}
+
+/// Opens a user file in the editor or the pager, at `line` when given. The
+/// script is the one off-host panes run, so both sides fall back alike.
+pub(crate) fn file_open_argv(
+    path: &std::path::Path,
+    line: Option<std::num::NonZeroU32>,
+    mode: crate::api::schema::OpenFileMode,
+) -> std::io::Result<Vec<String>> {
+    let mode = match mode {
+        crate::api::schema::OpenFileMode::Editor => "editor",
+        crate::api::schema::OpenFileMode::Pager => "pager",
+    };
+    Ok(vec![
+        "/bin/sh".to_owned(),
+        "-c".to_owned(),
+        crate::offhost::editor::OPEN_SCRIPT.to_owned(),
+        "sh".to_owned(),
+        path.display().to_string(),
+        line.map(|line| line.to_string()).unwrap_or_default(),
+        mode.to_owned(),
+    ])
+}
+
+/// Permission bits for display, including setuid, setgid and sticky.
+pub(crate) fn display_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode() & 0o7777)
+}
+
+/// Owner name of `metadata`, or the numeric uid when no account matches.
+pub(crate) fn owner_name(metadata: &std::fs::Metadata) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let uid = metadata.uid();
+    Some(user_name(uid).unwrap_or_else(|| uid.to_string()))
+}
+
+// Why not `getpwuid`: it returns a static buffer, and up to eight filesystem
+// workers run at once.
+fn user_name(uid: u32) -> Option<String> {
+    let mut buffer = vec![0u8; 1024];
+    loop {
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                &mut entry,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        if status == libc::ERANGE && buffer.len() < 1 << 20 {
+            buffer.resize(buffer.len() * 2, 0);
+            continue;
+        }
+        if status != 0 || found.is_null() || entry.pw_name.is_null() {
+            return None;
+        }
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
+        return Some(name.to_string_lossy().into_owned());
+    }
 }
 
 pub(crate) fn set_permission_bits(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
@@ -1041,5 +1113,182 @@ mod open_regular_nofollow_tests {
         let flags = unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), libc::F_GETFL) };
         assert_eq!(flags & libc::O_NONBLOCK, 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod file_open_tests {
+    use super::file_open_argv;
+    use crate::api::schema::OpenFileMode;
+    use std::num::NonZeroU32;
+
+    struct Dir(std::path::PathBuf);
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn dir(name: &str) -> Dir {
+        let path =
+            std::env::temp_dir().join(format!("herdr-file-open-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        Dir(path)
+    }
+
+    /// A stand-in program that prints its arguments, one per line.
+    fn tool(dir: &Dir, name: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.0.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\nprintf '{name}:%s\\n' \"$@\"\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn run(
+        argv: &[String],
+        path_env: &std::path::Path,
+        vars: &[(&str, &str)],
+        stdin: &[u8],
+    ) -> String {
+        use std::io::Write;
+        let mut command = std::process::Command::new(&argv[0]);
+        command
+            .args(&argv[1..])
+            .env("PATH", path_env)
+            .env_remove("PAGER")
+            .env_remove("EDITOR")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        for (key, value) in vars {
+            command.env(key, value);
+        }
+        let mut child = command.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(stdin).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// A stand-in that refuses `--version`, like a BusyBox applet.
+    fn busybox_tool(dir: &Dir, name: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.0.join(name);
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\n[ \"$1\" = --version ] && exit 1\nprintf '{name}:%s\\n' \"$@\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn the_editor_and_a_configured_pager_get_the_line_before_the_quoted_path() {
+        let tools = dir("configured");
+        tool(&tools, "vim");
+        tool(&tools, "most");
+        let file = tools.0.join("it's a file.txt");
+        std::fs::write(&file, "text").unwrap();
+        let line = NonZeroU32::new(12);
+
+        let editor = run(
+            &file_open_argv(&file, line, OpenFileMode::Editor).unwrap(),
+            &tools.0,
+            &[("EDITOR", "vim -u NONE")],
+            b"",
+        );
+        let pager = run(
+            &file_open_argv(&file, line, OpenFileMode::Pager).unwrap(),
+            &tools.0,
+            &[("PAGER", "most")],
+            b"",
+        );
+        let no_line = run(
+            &file_open_argv(&file, None, OpenFileMode::Editor).unwrap(),
+            &tools.0,
+            &[("EDITOR", "vim")],
+            b"",
+        );
+
+        assert_eq!(
+            editor,
+            format!("vim:-u\nvim:NONE\nvim:+12\nvim:{}\n", file.display())
+        );
+        // A pager other than `less` may end at the last line, so Enter closes it.
+        assert_eq!(
+            pager,
+            format!("most:+12\nmost:{}\n\n[press Enter] ", file.display())
+        );
+        assert_eq!(no_line, format!("vim:{}\n", file.display()));
+    }
+
+    #[test]
+    fn programs_that_would_read_the_line_as_a_file_name_get_only_the_path() {
+        let tools = dir("no-line");
+        tool(&tools, "code");
+        busybox_tool(&tools, "vi");
+        busybox_tool(&tools, "less");
+        let file = tools.0.join("a.txt");
+        std::fs::write(&file, "text").unwrap();
+        let line = NonZeroU32::new(5);
+        let shown = file.display();
+
+        let code = run(
+            &file_open_argv(&file, line, OpenFileMode::Editor).unwrap(),
+            &tools.0,
+            &[("EDITOR", "code --wait")],
+            b"",
+        );
+        let busybox_vi = run(
+            &file_open_argv(&file, line, OpenFileMode::Editor).unwrap(),
+            &tools.0,
+            &[],
+            b"",
+        );
+        let busybox_less = run(
+            &file_open_argv(&file, line, OpenFileMode::Pager).unwrap(),
+            &tools.0,
+            &[],
+            b"",
+        );
+
+        assert_eq!(code, format!("code:--wait\ncode:{shown}\n"));
+        assert_eq!(busybox_vi, format!("vi:{shown}\n"));
+        assert_eq!(busybox_less, format!("less:{shown}\n"));
+    }
+
+    #[test]
+    fn without_pager_the_pager_falls_back_to_less_then_more_then_cat() {
+        let less = dir("less");
+        tool(&less, "less");
+        tool(&less, "more");
+        let more = dir("more");
+        tool(&more, "more");
+        let none = dir("none");
+        let file = less.0.join("a.txt");
+        std::fs::write(&file, "body\n").unwrap();
+        let argv = file_open_argv(&file, NonZeroU32::new(3), OpenFileMode::Pager).unwrap();
+        let shown = file.display();
+
+        assert_eq!(
+            run(&argv, &less.0, &[], b""),
+            format!("less:-+F\nless:+3\nless:{shown}\n")
+        );
+        assert_eq!(
+            run(&argv, &more.0, &[], b""),
+            format!("more:+3\nmore:{shown}\n\n[press Enter] ")
+        );
+        let cat_path = String::from_utf8(
+            std::process::Command::new("/bin/sh")
+                .args(["-c", "command -v cat"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(cat_path.trim(), none.0.join("cat")).unwrap();
+        let cat = run(&argv, &none.0, &[], b"\n");
+        assert!(cat.starts_with("body\n"), "{cat}");
+        assert!(!cat.contains("+3"), "{cat}");
     }
 }

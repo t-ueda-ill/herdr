@@ -74,6 +74,43 @@ pub struct PaneDirectoryOpenEditorParams {
     pub path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneDirectoryOpenFileParams {
+    pub pane_id: String,
+    /// Absolute path of the file inside the pane's environment. Directories are rejected.
+    pub path: String,
+    /// 1-based line to start at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<std::num::NonZeroU32>,
+    #[serde(default)]
+    pub mode: super::directory::OpenFileMode,
+}
+
+impl From<PaneDirectoryOpenEditorParams> for PaneDirectoryOpenFileParams {
+    fn from(params: PaneDirectoryOpenEditorParams) -> Self {
+        Self {
+            pane_id: params.pane_id,
+            path: params.path,
+            line: None,
+            mode: super::directory::OpenFileMode::Editor,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneFileStatParams {
+    pub pane_id: String,
+    /// Absolute path inside the pane's environment.
+    pub path: String,
+}
+
+/// Body of a `pane.file.stat` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneFileStatus {
+    pub location: PaneLocation,
+    pub stat: super::files::FileStat,
+}
+
 /// Body of a `pane.directory.list` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneDirectoryListing {

@@ -2,15 +2,16 @@
 //! `pane.directory.index`, and `pane.file.read`, independent of transport.
 
 use crate::api::schema::{
-    FileDocument, PaneDirectoryIndexing, PaneDirectoryListing, PaneFileContent, PaneLocation,
+    FileDocument, FileStat, PaneDirectoryIndexing, PaneDirectoryListing, PaneFileContent,
+    PaneFileStatus, PaneLocation,
 };
 
 use super::exec::ExecError;
 use super::parse::{
-    parse_index, parse_listing, parse_read, ParseFailure, ParsedRead, ScriptStatus,
+    parse_index, parse_listing, parse_read, parse_stat, ParseFailure, ParsedRead, ScriptStatus,
     MAX_INDEX_ENTRIES, MAX_LIST_ENTRIES,
 };
-use super::scripts::{index_script, list_script, read_script};
+use super::scripts::{index_script, list_script, read_script, stat_script};
 
 /// API error code and message, as `encode_error` takes them.
 pub(crate) type Failure = (&'static str, String);
@@ -178,21 +179,62 @@ pub(crate) fn read(
     Ok(PaneFileContent { location, document })
 }
 
-/// Refuses a directory, the only thing an editor cannot open. A missing path
-/// passes: editors create the file on save, as on the host.
-pub(crate) fn probe_editable(runner: &dyn ScriptRunner, path: &str) -> Result<(), Failure> {
+pub(crate) fn stat(
+    runner: &dyn ScriptRunner,
+    location: PaneLocation,
+    path: &str,
+) -> Result<PaneFileStatus, Failure> {
+    validate_path(path)?;
     let output = runner
-        .run(PROBE_SCRIPT, &[path])
+        .run(&stat_script(), &[path])
+        .map_err(|err| err.failure())?;
+    let parsed = parse_stat(&output).map_err(|failure| script_failure(failure, path))?;
+    Ok(PaneFileStatus {
+        location,
+        stat: FileStat {
+            path: path.to_owned(),
+            kind: Some(parsed.kind),
+            size: parsed.size,
+            mtime: parsed
+                .mtime_seconds
+                .and_then(|seconds| seconds.checked_mul(1000)),
+            mode: parsed.mode,
+            // Why the uid: resolving names inside the environment costs a
+            // process, and BusyBox `ls -l` cuts names at eight characters.
+            owner: parsed.uid,
+            children: parsed.children,
+            children_limited: parsed.children_limited,
+            link_target: parsed.link_target,
+        },
+    })
+}
+
+/// Refuses a directory, which neither an editor nor a pager can open, and a
+/// missing file for the pager: only an editor can create one. A path behind
+/// an unsearchable folder passes, so the program reports the real error.
+pub(crate) fn probe_openable(
+    runner: &dyn ScriptRunner,
+    path: &str,
+    mode: crate::api::schema::OpenFileMode,
+) -> Result<(), Failure> {
+    let output = runner
+        .run(PROBE_OPEN_SCRIPT, &[path])
         .map_err(|err| err.failure())?;
     let output =
         super::parse::after_marker(&output).map_err(|failure| script_failure(failure, path))?;
     if output.starts_with(b"dir\0") {
         return Err(("invalid_params", format!("path is a directory: {path}")));
     }
+    if mode == crate::api::schema::OpenFileMode::Pager && output.starts_with(b"missing\0") {
+        return Err(("not_found", format!("not found: {path}")));
+    }
     Ok(())
 }
 
-const PROBE_SCRIPT: &str = r#"
+const PROBE_OPEN_SCRIPT: &str = r#"
 printf 'HERDR-OFFHOST-1\0'
-if [ -d "$1" ]; then printf 'dir\0'; else printf 'other\0'; fi
+parent=${1%/*}
+if [ -d "$1" ]; then printf 'dir\0'
+elif [ -e "$1" ] || { [ -d "${parent:-/}" ] && [ ! -x "${parent:-/}" ]; }; then printf 'other\0'
+else printf 'missing\0'; fi
 "#;

@@ -553,6 +553,50 @@ impl ClientShellState {
         }
     }
 
+    /// Opens a file at a line in the editor or the pager when the server can,
+    /// else in the editor at the top. `offhost_pane` is the off-host pane the
+    /// file lives behind; `None` is the host.
+    pub(super) fn open_file_method(
+        &self,
+        offhost_pane: Option<String>,
+        workspace_id: Option<String>,
+        path: String,
+        line: Option<std::num::NonZeroU32>,
+        mode: crate::api::schema::OpenFileMode,
+    ) -> crate::api::schema::Method {
+        use crate::api::schema::{
+            Method, PaneDirectoryOpenEditorParams, PaneDirectoryOpenFileParams,
+            PaneOpenEditorParams, PaneOpenFileParams,
+        };
+        match offhost_pane {
+            Some(pane_id) if self.endpoint_advertises_method("pane.directory.open_file") => {
+                Method::PaneDirectoryOpenFile(PaneDirectoryOpenFileParams {
+                    pane_id,
+                    path,
+                    line,
+                    mode,
+                })
+            }
+            Some(pane_id) => {
+                Method::PaneDirectoryOpenEditor(PaneDirectoryOpenEditorParams { pane_id, path })
+            }
+            None if self.endpoint_advertises_method("pane.open_file") => {
+                Method::PaneOpenFile(PaneOpenFileParams {
+                    workspace_id,
+                    pane_id: self.focused_pane_id(),
+                    path,
+                    line,
+                    mode,
+                })
+            }
+            None => Method::PaneOpenEditor(PaneOpenEditorParams {
+                workspace_id,
+                pane_id: self.focused_pane_id(),
+                path,
+            }),
+        }
+    }
+
     /// Whether the shell a new tab in `tab_id` would inherit runs in a
     /// container or over ssh now. `ClientShellPane` carries the live location,
     /// unlike `PaneInfo`.

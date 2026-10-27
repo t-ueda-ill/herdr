@@ -100,7 +100,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | コンテナ | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH ホスト | `ssh.open`, `ssh.hosts` |
-| ファイル | `directory.list`、`directory.index`、`pane.open_editor`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.file.read`、`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel`、`pane.download.begin`、`pane.download.read`、`pane.download.cancel` |
+| ファイル | `directory.list`、`directory.index`、`files.stat`、`pane.open_editor`、`pane.open_file`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.directory.open_file`、`pane.file.read`、`pane.file.stat`、`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel`、`pane.download.begin`、`pane.download.read`、`pane.download.cancel` |
 | タブ | `tab.create`、`tab.create_inherit`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | ペイン | `pane.split`、`pane.split_inherit`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
@@ -467,23 +467,48 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 
 `pane.open_editor` は必須の絶対パス `path` でファイルを受け取り、ペインのシェル環境の `${EDITOR:-vi}` を対象ペインの上のズームしたオーバーレイペインで起動します。結果はエディタペインの `pane_info` です。エディタが終了するとオーバーレイが閉じ、元のフォーカスとズームに戻ります。存在しないファイルは、エディタが保存したときにだけ作られます。
 
-`pane.directory.list`、`pane.directory.index`、`pane.file.read`、`pane.directory.open_editor` は、ペインのシェルが SSH 越しやコンテナ内（SSH 先のコンテナを含む）で動いているときに、そのシェルから見えるファイルシステムに対して同じ操作を行います。上のメソッドは「このホストのファイルシステム」を意味し、形状も固定されているため、別のメソッドとして用意しています。`pane_id` は必須で、生きている off-host のペインを指さなければなりません。ホストのペインには `invalid_params` を返します。`path` はペインの環境内の POSIX 絶対パスで、`..` は含められません。サーバーはそこで固定の POSIX `sh` スクリプト（BusyBox で足ります）を、対話なしの接続（`BatchMode`）で実行します。`ssh_unavailable` はプロンプトなしでホストに接続できないこと、`container_unavailable` と `container_not_found` は docker がコンテナを扱えないこと、`offhost_shell_unavailable` はその環境に `sh` がないことを表します。
+`pane.open_file` は同じ対象の決め方でファイルを開き、省略可能なパラメーターを 2 つ受け取ります。`line`（1 以上）を指定すると、受け付けることが分かっているプログラム（`vi`、`vim`、`nvim`、`nano`、`emacs`、`less`、`more` など。BusyBox のアプレットは除く）には `+line` を渡してその行から開きます。それ以外のプログラムではファイルの先頭から開きます。`mode` は `editor`（既定）か `pager` です。`pager` は `$PAGER`、なければ `less`、なければ `more`、なければ `cat` を実行します。`less` 以外のページャは終了後に `[press Enter]` で入力を待ち、GNU の `less` には `-+F` を付けます。`pager` では、存在しないファイルに `not_found` を返します。どちらのモードでも、ディレクトリには `invalid_params` を返します。結果はオーバーレイペインの `pane_info` です。Windows のサーバーはこのメソッドを提示しません。提示されていないとき、クライアントは `pane.open_editor` にフォールバックし、行指定なしでエディタを開きます。
 
-どの結果にも `location`（`{ "kind": "ssh" | "container", "ssh_host"?, "container"? }`）が付きます。`ssh_host` はエイリアス、`container` は正規名です。`pane.directory.list` は `directory_list` から `pane_id` を除いた形の `pane_directory_list` を返します。`root` は、`path` を指定したときもペインの作業ディレクトリです（シェルが OSC 7 で報告した cwd、なければコンテナの作業ディレクトリ、なければ SSH のログインディレクトリ、なければ `/`）。`size` と `mtime` は省略し、`.git` は返さず、git がリポジトリを拒否したときの `git_error` は `untrusted repository` です。`pane.directory.index` は `pane_directory_index` を返し、`repo_root` 以下の追跡中・未追跡のファイルを並べます。`repo_root` は常にあり、git がなければ検索したディレクトリです（最大 50,000 件、無視されるファイルも含みます）。`pane.file.read` は `file.read` と同じ `document` を持つ `pane_file_document` を返します。`revision` は `cksum` のダイジェストで、ファイルのものと同じ `revision` を渡すと内容なしの `unchanged` を返します。`poll: true` はバックグラウンドの更新を表し、通常の期限（ローカルのコンテナは 5 秒、SSH 経由は 20 秒）の代わりに 5 秒の期限になります。`pane.directory.open_editor` は、`pane.open_editor` と同様に、ペインと同じシェルとログインモードでエディタをズームしたオーバーレイとして起動し、エディタペインの `pane_info` を返します。対象はアクティブなワークスペースのフォーカス中のペインでなければなりません。
+```json
+{ "id": "req_3", "method": "pane.open_file", "params": { "path": "/home/me/app/src/main.rs", "line": 42, "mode": "pager" } }
+```
+
+`files.stat` は必須の絶対パス `path` を受け取り、一覧には含まれない情報をそのパス 1 件について返します。結果の type は `file_stat` で、`stat` オブジェクトを持ちます。
+
+```json
+{
+  "id": "req_4",
+  "result": {
+    "type": "file_stat",
+    "stat": { "path": "/home/me/app/src", "kind": "dir", "mtime": 1767225600000, "mode": 493, "owner": "me", "children": 12 }
+  }
+}
+```
+
+`kind` は `directory.list` と同じ値で、パスそのものの種類です。シンボリックリンクは `symlink` になり、リンクに書かれた先を `link_target` に入れます。`size` は通常のファイルにだけ付き、`mtime` は Unix エポックからのミリ秒、`mode` は `st_mode & 0o7777`（setuid、setgid、スティッキービットを含む）です。`owner` はアカウント名で、該当するアカウントがなければ数値の uid です。`children` はディレクトリ（またはリンクの先のディレクトリ）の直下のエントリ数で、`.git` は数えません。10,000 件で数えるのをやめ、そのときは `children_limited` を `true` にします（それ以外では省略します）。`path` 以外のフィールドはすべて省略されることがあり、Windows のサーバーは `mode` と `owner` を返しません。相対パスや読み取れない `path` には `file_error` を返します。
+
+`files.search` の各マッチには、省略可能な `context`（`{ "before": [...], "after": [...] }`）が付くことがあります。ヒットした行の前後それぞれ最大 2 行を、検索した時点の内容で 1 行 200 文字までに切って入れます。付くのは最初の 1,000 件のマッチだけで、古いサーバーは送りません。
+
+`pane.directory.list`、`pane.directory.index`、`pane.file.read`、`pane.file.stat`、`pane.directory.open_editor`、`pane.directory.open_file` は、ペインのシェルが SSH 越しやコンテナ内（SSH 先のコンテナを含む）で動いているときに、そのシェルから見えるファイルシステムに対して同じ操作を行います。上のメソッドは「このホストのファイルシステム」を意味し、形状も固定されているため、別のメソッドとして用意しています。`pane_id` は必須で、生きている off-host のペインを指さなければなりません。ホストのペインには `invalid_params` を返します。`path` はペインの環境内の POSIX 絶対パスで、`..` は含められません。サーバーはそこで固定の POSIX `sh` スクリプト（BusyBox で足ります）を、対話なしの接続（`BatchMode`）で実行します。`ssh_unavailable` はプロンプトなしでホストに接続できないこと、`container_unavailable` と `container_not_found` は docker がコンテナを扱えないこと、`offhost_shell_unavailable` はその環境に `sh` がないことを表します。
+
+どの結果にも `location`（`{ "kind": "ssh" | "container", "ssh_host"?, "container"? }`）が付きます。`ssh_host` はエイリアス、`container` は正規名です。`pane.directory.list` は `directory_list` から `pane_id` を除いた形の `pane_directory_list` を返します。`root` は、`path` を指定したときもペインの作業ディレクトリです（シェルが OSC 7 で報告した cwd、なければコンテナの作業ディレクトリ、なければ SSH のログインディレクトリ、なければ `/`）。`size` と `mtime` は引き続き省略し、`.git` は返さず、git がリポジトリを拒否したときの `git_error` は `untrusted repository` です。`pane.directory.index` は `pane_directory_index` を返し、`repo_root` 以下の追跡中・未追跡のファイルを並べます。`repo_root` は常にあり、git がなければ検索したディレクトリです（最大 50,000 件、無視されるファイルも含みます）。`pane.file.read` は `file.read` と同じ `document` を持つ `pane_file_document` を返します。`revision` は `cksum` のダイジェストで、ファイルのものと同じ `revision` を渡すと内容なしの `unchanged` を返します。`poll: true` はバックグラウンドの更新を表し、通常の期限（ローカルのコンテナは 5 秒、SSH 経由は 20 秒）の代わりに 5 秒の期限になります。`pane.directory.open_editor` は、`pane.open_editor` と同様に、ペインと同じシェルとログインモードでエディタをズームしたオーバーレイとして起動し、エディタペインの `pane_info` を返します。対象はアクティブなワークスペースのフォーカス中のペインでなければなりません。
+
+`pane.file.stat` は、`location` と、`files.stat` と同じ `stat` を持つ `pane_file_stat` を返します。値は `ls -ldn` で読み取り、`children` は並べ替えない `ls` の出力を上限で打ち切って数えます。`owner` は常に数値の uid で、`mtime` はその環境に `stat` コマンドがあるときだけ付きます。読み取れないディレクトリでは `children` を省略します。`path` が存在しなければ `not_found`、検索権限のないフォルダの中にあれば `permission_denied` を返します。そのようなパスでも `pane.directory.open_file` はプログラムを起動し、エラーはプログラム自身が表示します。`pane.directory.open_file` は off-host のペイン向けの `pane.open_file` です。`pane_id`、`path` と、省略可能な `line`、`mode` を受け取り、ログイン環境の `EDITOR` と `PAGER` を使い、`pane_info` を返します。この 2 つは Unix のサーバーだけが提示します。`pane.directory.open_file` が提示されていないとき、クライアントは `pane.directory.open_editor` にフォールバックします。
 
 エラー:
 
 | コード | 意味 |
 | --- | --- |
-| `invalid_params` | `path` が相対パス、`pane.open_editor` にディレクトリが渡された、または `pane_id` が `workspace_id` に属さない |
-| `not_found` | `directory.list` または `directory.index` の `path` が存在しない |
+| `invalid_params` | `path` が相対パス、`pane.open_editor` または `pane.open_file` にディレクトリが渡された、または `pane_id` が `workspace_id` に属さない |
+| `not_found` | `directory.list` または `directory.index` の `path` が存在しない、または `mode: "pager"` で開くファイルが存在しない |
 | `not_a_directory` | `directory.list` にファイルが渡された |
 | `permission_denied` | ディレクトリを読み取れない |
 | `directory_read_failed` | その他のファイルシステムのエラー |
 | `directory_busy` | すでに 8 件のディレクトリ読み取りが実行中。少し待って再試行する |
-| `workspace_not_found`、`pane_not_found` | 対象が存在しない、または `pane.open_editor` でフォーカス中のペインがない |
-| `stale_pane_target` | `pane.open_editor` の対象が、アクティブなワークスペースのフォーカス中のペインではない |
-| `pane_not_live` | `pane.open_editor` の対象ペインで動いているシェルがない（復元に失敗した場合など） |
+| `file_error` | `files.stat` に相対パスが渡された、または `path` を読み取れなかった |
+| `workspace_not_found`、`pane_not_found` | 対象が存在しない、または `pane.open_editor` または `pane.open_file` でフォーカス中のペインがない |
+| `stale_pane_target` | `pane.open_editor` または `pane.open_file` の対象が、アクティブなワークスペースのフォーカス中のペインではない |
+| `pane_not_live` | `pane.open_editor` または `pane.open_file` の対象ペインで動いているシェルがない（復元に失敗した場合など） |
 | `editor_failed` | エディタのペインを起動できなかった |
 | `platform_unsupported` | サーバーが Windows 上で動作している。この場合、これらのメソッドは TUI クライアントにも提示されない |
 

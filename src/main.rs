@@ -381,6 +381,19 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # row_gap = 0
 # rows = [["state_icon", "workspace"], ["branch", "git_status"]]
 
+# Lines shown below the files list for the selection. \n starts a new line.
+# Tokens: {name}, {path}, {kind}, {size}, {size_bytes}, {mtime}, {mtime_iso},
+# {hidden}, {ignored}, {link_target}, {mode}, {owner}, {children}, {count},
+# {total_size}, {line}, and {context}; {{ and }} are literal braces.
+# Spaces and punctuation beside an empty token are dropped, and so is a line
+# whose tokens are all empty. An empty template hides the band for that kind.
+# [ui.files.details]
+# file = "{name}\n{size} · {mtime} · {mode} {owner}"
+# directory = "{name}/\n{children} · {mtime} · {mode} {owner}"
+# multi = "{count} · {total_size}"
+# match = "{path}:{line}\n{context}"
+# max_lines = 8
+
 # Background notification popup delivery
 [ui.toast]
 # off = disable pop-up notifications
@@ -853,6 +866,22 @@ mod tests {
         ] {
             assert_eq!(DEFAULT_CONFIG.matches(line).count(), 1, "{line}");
         }
+    }
+
+    #[test]
+    fn default_config_documents_the_files_details_defaults() {
+        let start = DEFAULT_CONFIG
+            .find("# [ui.files.details]")
+            .expect("details block");
+        let block: String = DEFAULT_CONFIG[start..]
+            .lines()
+            .take_while(|line| line.starts_with("# "))
+            .map(|line| format!("{}\n", &line[2..]))
+            .collect();
+
+        let parsed: config::Config = toml::from_str(&block).expect("documented details parse");
+
+        assert_eq!(parsed.ui.files, config::UiFilesConfig::default());
     }
 
     #[test]

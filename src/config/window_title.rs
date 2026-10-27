@@ -44,10 +44,63 @@ impl WindowTitleToken {
     }
 }
 
+/// A piece of a `{token}` format string.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WindowTitlePart {
+pub enum TemplatePart<T> {
     Literal(String),
-    Token(WindowTitleToken),
+    Token(T),
+}
+
+pub type WindowTitlePart = TemplatePart<WindowTitleToken>;
+
+/// Splits a `{token}` format into literals and tokens. `{{` and `}}` are
+/// literal braces and token names are trimmed.
+pub(crate) fn parse_template_parts<T>(
+    template: &str,
+    token: impl Fn(&str) -> Option<T>,
+) -> Result<Vec<TemplatePart<T>>, String> {
+    let mut parts = Vec::new();
+    let mut literal = String::new();
+    let mut chars = template.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                literal.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                literal.push('}');
+            }
+            '{' => {
+                let mut name = String::new();
+                let mut closed = false;
+                for ch in chars.by_ref() {
+                    if ch == '}' {
+                        closed = true;
+                        break;
+                    }
+                    name.push(ch);
+                }
+                if !closed {
+                    return Err("has an unclosed '{'".to_string());
+                }
+                let Some(token) = token(name.trim()) else {
+                    return Err(format!("has unknown token '{{{name}}}'"));
+                };
+                if !literal.is_empty() {
+                    parts.push(TemplatePart::Literal(std::mem::take(&mut literal)));
+                }
+                parts.push(TemplatePart::Token(token));
+            }
+            '}' => return Err("has an unmatched '}'".to_string()),
+            _ => literal.push(ch),
+        }
+    }
+    if !literal.is_empty() {
+        parts.push(TemplatePart::Literal(literal));
+    }
+    Ok(parts)
 }
 
 /// Parsed `ui.window_title` format string.
@@ -64,48 +117,7 @@ impl WindowTitleTemplate {
             return Ok(None);
         }
 
-        let mut parts = Vec::new();
-        let mut literal = String::new();
-        let mut chars = template.chars().peekable();
-        while let Some(ch) = chars.next() {
-            match ch {
-                '{' if chars.peek() == Some(&'{') => {
-                    chars.next();
-                    literal.push('{');
-                }
-                '}' if chars.peek() == Some(&'}') => {
-                    chars.next();
-                    literal.push('}');
-                }
-                '{' => {
-                    let mut name = String::new();
-                    let mut closed = false;
-                    for ch in chars.by_ref() {
-                        if ch == '}' {
-                            closed = true;
-                            break;
-                        }
-                        name.push(ch);
-                    }
-                    if !closed {
-                        return Err("has an unclosed '{'".to_string());
-                    }
-                    let Some(token) = WindowTitleToken::parse(name.trim()) else {
-                        return Err(format!("has unknown token '{{{name}}}'"));
-                    };
-                    if !literal.is_empty() {
-                        parts.push(WindowTitlePart::Literal(std::mem::take(&mut literal)));
-                    }
-                    parts.push(WindowTitlePart::Token(token));
-                }
-                '}' => return Err("has an unmatched '}'".to_string()),
-                _ => literal.push(ch),
-            }
-        }
-        if !literal.is_empty() {
-            parts.push(WindowTitlePart::Literal(literal));
-        }
-
+        let parts = parse_template_parts(template, WindowTitleToken::parse)?;
         Ok((!parts.is_empty()).then_some(Self { parts }))
     }
 

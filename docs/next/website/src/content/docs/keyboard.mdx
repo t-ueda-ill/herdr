@@ -103,31 +103,27 @@ The files tab opens beside the terminals, docked on the left at first; a workspa
 Click either side to give it the keys. `Esc` in the file list with nothing selected gives the keys back to the terminal and leaves the files shown.
 `keys.open_files` gives the keys to a files tab shown beside a focused terminal, hides one that has them, and otherwise reopens the last files tab in that workspace. In full screen it switches between the files tab and the last terminal.
 The files root stays fixed when a terminal changes directory; use the files menu to change the root or create another files tab.
-The top tab strip switches between terminals and files tabs, and the second strip holds pinned files.
-The list/results and document default to top/bottom; `toggle split direction` in the document's menu switches to left/right.
-The right-click menu opens at the pointer and lists the actions for what was clicked: a file, a folder, empty space in the tree, the search fields and results, or the document. `F10` opens the same menu at the selected row for the selection: the selected file or folder, or the document while it has the keys. Below, `F10` → an item means that item in the menu of the target it acts on.
-The files menu holds the actions for the whole files tab: creating and pasting at the root, refreshing, showing ignored files, changing the root, opening or closing a files tab, and the placement. It opens from the `≡` button in the title line, `Shift+F10`, a right-click on the title line, on a files tab in the top strip, or on empty space in the tree.
+The top tab strip switches between terminals and files tabs.
+The right-click menu opens at the pointer and lists the actions for what was clicked: a file, a folder, empty space in the tree, the search fields and results, or the details band. `F10` opens the same menu at the selected row for the selection: the selected file, folder or content search match. Below, `F10` → an item means that item in the menu of the target it acts on.
+The files menu holds the actions for the whole files tab: creating and pasting at the root, refreshing, showing ignored files, showing the details band, changing the root, opening or closing a files tab, and the placement. It opens from the `≡` button in the title line, `Shift+F10`, a right-click on the title line, on a files tab in the top strip, or on empty space in the tree.
 
 | Key | Action |
 | --- | --- |
-| Up / Down, mouse click | Select and preview |
-| Enter, double-click | Pin the file and focus its contents; expand a directory |
-| Space | Focus the preview without pinning |
-| Esc | Clear a document selection/search, then return to the list |
-| Tab / Shift+Tab | Move between fields, results and contents |
-| Ctrl+PageUp / Ctrl+PageDown | Switch pinned file tabs |
-| Ctrl+W | Close the current file tab |
+| Up / Down, mouse click | Select |
+| Enter, double-click | Open the file in `$EDITOR`, at the line of a content search match; expand a directory |
+| Space | Open the file in the pager; expand a directory |
+| Esc | Leave a field, clear marked files, then give the keys back to the terminal |
+| Tab / Shift+Tab | Move between fields and results |
 | Ctrl+P | Find files by fuzzy name/path |
 | Ctrl+Shift+F | Search file contents |
 | Ctrl+H | Open the replacement field |
-| Ctrl+F | Find text inside the displayed document |
 | Ctrl+E | Open the selected file in an external editor |
-| Ctrl+C | Copy selected text in the document, or files in the list |
+| Ctrl+C | Copy the selected files |
 | Ctrl+X / Ctrl+V | Cut files / choose a paste destination |
-| Shift+arrows / Shift+click | Select a range of files or text |
+| Shift+arrows / Shift+click | Select a range of files |
 | Ctrl+click / Insert | Toggle an individual file or search match |
 | F2 / Delete | Rename / confirm deletion to trash |
-| F5 | Refresh the folder listings, the path index and the open document now |
+| F5 | Refresh the folder listings, the path index and the details now |
 | F10, right-click | Actions for the selection, or for what was clicked |
 | Shift+F10, `≡` | The files menu |
 
@@ -136,7 +132,6 @@ Separate globs with commas; `**/*.rs` includes Rust files at the root and in sub
 Case sensitivity, whole words and ignored files have separate controls.
 Hidden files are included; `.git`, binary/non-UTF-8 files and symbolic links are excluded from content searches.
 Searches cover at most 50,000 files and 10,000 matches, with a 15-second budget; narrow the conditions when results are limited.
-Text previews support UTF-8 files up to 8 MiB and copy original text without line numbers.
 
 Use Insert or Ctrl+click to exclude individual matches from replacement, or `F10` → `toggle matches in current file` for a whole file.
 Enter in the replacement field opens a difference preview; Ctrl+Enter or its apply button writes the selected changes.
@@ -161,22 +156,24 @@ The client sends the files and the server publishes them at once, whichever file
 
 `F10` → `download…` saves the selected files and folders (several at once, folders recursively) on the machine running this client, not on the server's machine, and only on the machine of the client that asked. A dialog opens with the folder to save into: `~/Downloads` (the XDG download folder on Linux, the Downloads known folder on Windows), editable like any input; `~` and a path of this machine's own style are accepted. Selecting two items with the same last name, or names that differ only in case, is refused before anything starts. Everything is assembled in a hidden `.herdr-upload-*` folder inside the destination and published at once, so a failed or cancelled download leaves nothing behind; a name that already exists becomes `name (1).ext`. A symbolic link you select is followed and its target is saved, links inside a folder stay links, and FIFOs, sockets and devices are skipped. Entries that cannot be read, or whose names this machine cannot store, are skipped with a warning in the notice. A file that changes while it is read fails the whole download. The progress card in the top-right corner is shared with uploads (one transfer runs at a time) and cancels the download until saving starts. A download is refused above 16 GiB or 100,000 items; see [Downloading files](/docs/persistence-remote/#downloading-files).
 
-The menus of a file and of the document hold `copy path` and `send path to terminal…`; a folder's menu holds `copy path`.
+The menus of a file, of a content search match and of the details band hold `copy path`, `send path to terminal…`, `edit file` and `view file`; a folder's menu holds `copy path`.
 Path sending displays the destination pane and sends quoted text with no newline, while keeping the files tab open.
-External editing uses `$EDITOR` (Unix default `vi`, Windows default `notepad.exe`), then returns to the files tab.
-A files tab opened from a pane whose shell runs over SSH or inside a container browses that environment's filesystem instead of the Herdr server's, using the same tree, path search and preview, and `edit file` opens the editor there. It is bound to the environment (an SSH alias, or a container with its SSH host), not to a pane: requests go through a live pane of the same workspace running there, the focused one first. When none is left, the tab stays and shows `no pane running in <location>` until one returns. The `open_files` action reopens the tab matching the focused pane's environment, or opens a new one. A reopened tab moves its root to the pane's current directory when that is known and differs; the root does not follow the pane while the tab stays shown. The location prefixes the tab label and the path in the title: `app@devbox:work` and `files · app@devbox:/work` for a container behind an SSH host, `app:work` for a local container, `devbox:proj` for an SSH pane.
-Content search, replacement and the file operations (copy, cut, paste, rename, create, trash and delete) keep their menu items and keys but only show `not available inside <location>` in such a tab; dropping files onto the list still uploads into that environment, and `download…` works in it too, reading through a live pane of the tab's environment. The preview and the listings of expanded folders refresh every 5 seconds instead of every second, one request at a time, and not while another request is running. Path sending and `copy path` use the path as the environment sees it, and sending only goes to the focused pane when it runs in the tab's own environment, host tabs included (`terminal destination is not in <location>` otherwise). Panes that were restored without a running shell count as host panes. Server versions without `pane.directory.*` keep listing the host's directory for such a pane and label it `host:`. Nested environments (an `ssh` or `docker exec` typed inside the pane) are not followed.
-Roots, pinned files, positions, search conditions, orientation, and each workspace's split or full-screen choice with its dock and size restore from local client preferences; contents/results reload and clipboard/undo do not restore.
+`edit file` (Enter) uses `$EDITOR` (Unix default `vi`, Windows default `notepad.exe`) and `view file` (Space) uses `$PAGER`, else `less`, else `more`, else `cat`. Every pager but `less` is followed by a `[press Enter]` prompt so a short file stays on screen, and `less` gets `-+F` so `LESS=-F` does not quit at once. Both open over the focused pane, start at the matching line for a content search match when the program takes a `+line` argument, and return to the files tab. Servers without `pane.open_file` (`pane.directory.open_file` in an SSH or container tab), including Windows servers, open the editor for both, at the top of the file.
+
+The details band below the list shows facts about the selection: name, size, modification time, permissions and owner for a file; the number of items for a folder (the listed folder for `..` or no selection); the count and total size while files are marked; the path, line and surrounding lines for a content search match. It takes as many lines as it shows, at most 8 by default and a third of the files tab, and hides when the list would keep fewer than 5 rows. `toggle details` in the files menu hides or shows it; this choice is saved per client. The facts are read again about 150 ms after the selection stops moving, when the listing shows a newer modification time, after `F5`, and after the editor or pager closes. Change what each line shows with templates; see [Files details](/docs/configuration/#files-details).
+A files tab opened from a pane whose shell runs over SSH or inside a container browses that environment's filesystem instead of the Herdr server's, using the same tree, path search and details band, and `edit file` and `view file` open the editor and pager there, as set in that environment's login shell. It is bound to the environment (an SSH alias, or a container with its SSH host), not to a pane: requests go through a live pane of the same workspace running there, the focused one first. When none is left, the tab stays and shows `no pane running in <location>` until one returns. The `open_files` action reopens the tab matching the focused pane's environment, or opens a new one. A reopened tab moves its root to the pane's current directory when that is known and differs; the root does not follow the pane while the tab stays shown. The location prefixes the tab label and the path in the title: `app@devbox:work` and `files · app@devbox:/work` for a container behind an SSH host, `app:work` for a local container, `devbox:proj` for an SSH pane.
+Content search, replacement and the file operations (copy, cut, paste, rename, create, trash and delete) keep their menu items and keys but only show `not available inside <location>` in such a tab; dropping files onto the list still uploads into that environment, and `download…` works in it too, reading through a live pane of the tab's environment. The listings of expanded folders refresh every 5 seconds instead of every second, one request at a time, and not while another request is running. Path sending and `copy path` use the path as the environment sees it, and sending only goes to the focused pane when it runs in the tab's own environment, host tabs included (`terminal destination is not in <location>` otherwise). Panes that were restored without a running shell count as host panes. Server versions without `pane.directory.*` keep listing the host's directory for such a pane and label it `host:`. Nested environments (an `ssh` or `docker exec` typed inside the pane) are not followed.
+Roots, search conditions, and each workspace's split or full-screen choice with its dock and size restore from local client preferences; listings/results reload and clipboard/undo do not restore.
 Moving the root: a `..` row tops the tree whenever the root has a parent. `Enter` or a double click on it raises the root one level and selects the folder you came from, like `Backspace`. `open as root` in a folder's menu makes that folder the new root, also inside an SSH or container tab. `change root` in the menu of empty tree space, or of the `..` row, takes a typed path. The `..` row is never sent, copied or operated on.
 
-External changes refresh the current document, with updates held while text is selected. Every second (every 5 seconds in an SSH or container tab) the root and the shown expanded folders are listed again one after another, without collapsing or reloading the tree, and the path index is requested again, at most every 10 seconds (30 in an SSH or container tab), when a folder gains or loses entries. `F5`, `refresh files` in the menu of empty tree space, or the `[F5 refresh]` button starts that sweep immediately, including the index, and reads the open document now. Content search results are refreshed with `refresh content search` in the menu of the content search fields and results.
+Every second (every 5 seconds in an SSH or container tab) the root and the shown expanded folders are listed again one after another, without collapsing or reloading the tree, and the path index is requested again, at most every 10 seconds (30 in an SSH or container tab), when a folder gains or loses entries. `F5`, `refresh files` in the menu of empty tree space, or the `[F5 refresh]` button starts that sweep immediately, including the index, and reads the details again. Content search results are refreshed with `refresh content search` in the menu of the content search fields and results.
 
 Override files tab shortcuts separately from terminal bindings:
 
 ```toml
 [ui.file_workbench_keys]
-next_file = "alt+right"
-previous_file = "alt+left"
+refresh = "ctrl+r"
+edit = "alt+e"
 ```
 
 Servers that do not advertise `file.read` retain the legacy path picker, including Enter/Space path sending.

@@ -330,6 +330,10 @@ pub enum ResponseResult {
     PaneDirectoryList(super::pane_directory::PaneDirectoryListing),
     PaneDirectoryIndex(super::pane_directory::PaneDirectoryIndexing),
     PaneFileDocument(super::pane_directory::PaneFileContent),
+    FileStat {
+        stat: super::files::FileStat,
+    },
+    PaneFileStat(super::pane_directory::PaneFileStatus),
     FileSearch {
         matches: Vec<super::files::FileMatch>,
         truncated: bool,

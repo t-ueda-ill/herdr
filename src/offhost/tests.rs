@@ -783,7 +783,9 @@ fn output_before_the_scripts_marker_is_ignored() {
     assert_eq!(names(&listing), ["a.txt"]);
     assert_eq!(index.entries, ["a.txt"]);
     assert_eq!(content.document.text, "hello");
-    assert!(ops::probe_editable(&shell, dir.str()).is_err());
+    assert!(
+        ops::probe_openable(&shell, dir.str(), crate::api::schema::OpenFileMode::Editor).is_err()
+    );
 }
 
 #[test]
@@ -1006,4 +1008,141 @@ fn a_failing_git_ls_files_marks_the_index_truncated() {
     let index = index(&shell, repo.str());
 
     assert!(index.truncated);
+}
+
+fn stat(
+    shell: &LocalShell,
+    path: &Path,
+) -> Result<crate::api::schema::FileStat, (&'static str, String)> {
+    ops::stat(shell, location(), path.to_str().unwrap()).map(|status| status.stat)
+}
+
+#[test]
+fn stat_reports_mode_uid_size_and_mtime_of_a_file() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    for shell in shells() {
+        let dir = TempDir::new("stat-file");
+        let file = dir.file("odd name *", b"hello");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o4751)).unwrap();
+        let metadata = std::fs::metadata(&file).unwrap();
+
+        let stat = stat(&shell, &file).unwrap();
+
+        assert_eq!(stat.kind, Some(DirectoryEntryKind::File));
+        assert_eq!(stat.mode, Some(0o4751));
+        assert_eq!(stat.owner, Some(metadata.uid().to_string()));
+        assert_eq!(stat.size, Some(5));
+        assert_eq!(
+            stat.mtime,
+            Some(u64::try_from(metadata.mtime()).unwrap() * 1000)
+        );
+        assert_eq!(stat.children, None);
+        assert_eq!(stat.link_target, None);
+    }
+}
+
+#[test]
+fn stat_counts_a_directory_without_git_and_reads_a_link_target() {
+    for shell in shells() {
+        let dir = TempDir::new("stat-dir");
+        dir.dir(".git");
+        dir.dir("sub");
+        dir.file(".hidden", b"");
+        dir.file("..dots", b"");
+        dir.file("a", b"");
+        std::os::unix::fs::symlink("sub", dir.path().join("link")).unwrap();
+
+        let directory = stat(&shell, dir.path()).unwrap();
+        let link = stat(&shell, &dir.path().join("link")).unwrap();
+
+        assert_eq!(directory.kind, Some(DirectoryEntryKind::Dir));
+        assert_eq!(directory.children, Some(5));
+        assert!(!directory.children_limited);
+        assert_eq!(directory.size, None);
+        assert_eq!(link.kind, Some(DirectoryEntryKind::Symlink));
+        assert_eq!(link.link_target.as_deref(), Some("sub"));
+        // A link to a directory counts what it reaches, like the host.
+        assert_eq!(link.children, Some(0));
+    }
+}
+
+#[test]
+fn stat_of_a_missing_path_is_not_found_and_a_hostile_path_stays_data() {
+    for shell in shells() {
+        let dir = TempDir::new("stat-missing");
+        let hostile = dir.file("$(touch pwned)", b"");
+
+        let missing = stat(&shell, &dir.path().join("missing"));
+        let hostile = stat(&shell, &hostile).unwrap();
+
+        assert_eq!(missing.unwrap_err().0, "not_found");
+        assert_eq!(hostile.kind, Some(DirectoryEntryKind::File));
+        assert!(!dir.path().join("pwned").exists());
+    }
+}
+
+#[test]
+fn stat_leaves_out_what_the_environment_cannot_give() {
+    let dir = TempDir::new("stat-no-tools");
+    let file = dir.file("a", b"abc");
+    let empty_path = dir.dir("empty-path");
+    let mut shell = LocalShell::sh();
+    shell.only_path = Some(empty_path);
+
+    let stat = stat(&shell, &file).unwrap();
+
+    assert_eq!(stat.kind, Some(DirectoryEntryKind::File));
+    assert_eq!(stat.mode, None);
+    assert_eq!(stat.size, None);
+    assert_eq!(stat.mtime, None);
+}
+
+#[test]
+fn probe_openable_refuses_directories_and_a_missing_file_only_for_the_pager() {
+    use crate::api::schema::OpenFileMode;
+    let dir = TempDir::new("probe-open");
+    let shell = LocalShell::sh();
+    let missing = dir.path().join("missing");
+    let missing = missing.to_str().unwrap();
+
+    assert_eq!(
+        ops::probe_openable(&shell, dir.str(), OpenFileMode::Editor)
+            .unwrap_err()
+            .0,
+        "invalid_params"
+    );
+    assert!(ops::probe_openable(&shell, missing, OpenFileMode::Editor).is_ok());
+    assert_eq!(
+        ops::probe_openable(&shell, missing, OpenFileMode::Pager)
+            .unwrap_err()
+            .0,
+        "not_found"
+    );
+}
+
+#[test]
+fn stat_counts_a_readable_unsearchable_directory_and_names_a_hidden_path_denied() {
+    use std::os::unix::fs::PermissionsExt;
+    // Root reads and searches everything, so the permissions prove nothing.
+    if running_as_root() {
+        return;
+    }
+    for shell in shells() {
+        let dir = TempDir::new("stat-perm");
+        let listed = dir.dir("listed");
+        dir.file("listed/a", b"");
+        dir.file("listed/b", b"");
+        let closed = dir.dir("closed");
+        dir.file("closed/x", b"");
+        std::fs::set_permissions(&listed, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let counted = stat(&shell, &listed);
+        let hidden = stat(&shell, &closed.join("x"));
+
+        std::fs::set_permissions(&listed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(counted.unwrap().children, Some(2));
+        assert_eq!(hidden.unwrap_err().0, "permission_denied");
+    }
 }

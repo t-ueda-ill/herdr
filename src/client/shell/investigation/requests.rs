@@ -8,6 +8,8 @@ const OFFHOST_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// change: a busy tree would re-run the server's `git ls-files` back to back.
 const HOST_INDEX_INTERVAL: Duration = Duration::from_secs(10);
 const OFFHOST_INDEX_INTERVAL: Duration = Duration::from_secs(30);
+/// How long the selection rests before the details ask for `files.stat`.
+const STAT_SETTLE: Duration = Duration::from_millis(150);
 
 /// Back-dates a tab's last poll so the next tick refreshes it whatever its interval.
 pub(super) fn due_poll_time() -> Instant {
@@ -17,113 +19,6 @@ pub(super) fn due_poll_time() -> Instant {
 }
 
 impl ClientShellState {
-    pub(in crate::client::shell) fn request_investigation_preview(
-        &mut self,
-        pin: bool,
-        focus: bool,
-        outcome: &mut ClientShellInput,
-    ) {
-        let Some(tab) = self.investigation_mut() else {
-            return;
-        };
-        let Some((path, offset)) = tab.target() else {
-            return;
-        };
-        if let Some(index) = tab.documents.iter().position(|d| d.path == path) {
-            tab.active_file = Some(index);
-            if offset > 0 {
-                tab.documents[index].cursor = offset.min(tab.documents[index].text.len());
-                while !tab.documents[index]
-                    .text
-                    .is_char_boundary(tab.documents[index].cursor)
-                {
-                    tab.documents[index].cursor -= 1;
-                }
-                tab.documents[index].scroll = tab.documents[index].line().saturating_sub(3);
-            }
-        } else {
-            if tab.preview.as_ref().is_none_or(|d| d.path != path) {
-                tab.preview = Some(Document::new(path.clone()));
-            }
-            tab.active_file = None;
-            if let Some(document) = tab.preview.as_mut() {
-                document.clear_selection();
-                document.cursor = if document.loaded {
-                    offset.min(document.text.len())
-                } else {
-                    offset
-                };
-                if document.loaded {
-                    while !document.text.is_char_boundary(document.cursor) {
-                        document.cursor -= 1;
-                    }
-                }
-            }
-            if pin {
-                if let Some(document) = tab.preview.take() {
-                    tab.documents.push(document);
-                    tab.active_file = Some(tab.documents.len() - 1);
-                }
-            }
-        }
-        if focus {
-            tab.focus = Focus::Body;
-        }
-        tab.preview_generation = tab.preview_generation.wrapping_add(1);
-        if tab.document().is_some_and(|d| d.loaded) {
-            self.persist_chrome_preferences(outcome);
-            return;
-        }
-        let (id, generation) = (tab.id, tab.preview_generation);
-        let (workspace, location, preferred) = (
-            tab.browser.workspace_id.clone(),
-            tab.browser.location.clone(),
-            tab.browser.location_pane.clone(),
-        );
-        if let Some(d) = tab.document_mut() {
-            d.request_generation = generation;
-        }
-        tab.pending_reads.insert(path.clone());
-        let method = self.file_read_method(
-            &workspace,
-            &location,
-            path.clone(),
-            None,
-            false,
-            preferred.as_deref(),
-        );
-        let sent = match method {
-            Ok(method) => {
-                let pane = Self::method_location_pane(&method);
-                let sent = self.push_endpoint_method_with_kind(
-                    method,
-                    PendingEndpointKind::Investigation(FileRequest::Read {
-                        id,
-                        path,
-                        generation,
-                        prepare: false,
-                    }),
-                    outcome,
-                );
-                if sent {
-                    self.remember_location_pane(pane);
-                }
-                sent
-            }
-            Err(notice) => {
-                if let Some(tab) = self.investigation_mut() {
-                    tab.notice = notice;
-                }
-                false
-            }
-        };
-        if !sent {
-            if let Some(tab) = self.investigation_mut() {
-                tab.pending_reads.clear();
-            }
-        }
-        self.persist_chrome_preferences(outcome);
-    }
     pub(in crate::client::shell) fn handle_file_viewer_endpoint_result(
         &mut self,
         request: FileViewerRequest,
@@ -154,15 +49,12 @@ impl ClientShellState {
         self.workbench.dispatch = index;
         let repaint = self.handle_file_viewer_endpoint_result_inner(request, result, outcome);
         self.workbench.dispatch = None;
-        // Why not for every answer: a background refresh would otherwise snap
-        // a scrolled document back to its cursor, drop a text selection and
-        // rewrite the preferences on each poll. Only a moved selection needs
-        // the preview to follow.
+        // Why not for every answer: a background refresh would rewrite the
+        // preferences on each poll.
         if background && selected_path(self) == before {
             return repaint;
         }
         if self.investigation_active() {
-            self.request_investigation_preview(false, false, outcome);
             self.persist_chrome_preferences(outcome);
         }
         repaint
@@ -175,7 +67,8 @@ impl ClientShellState {
     ) {
         let result = result.map(super::super::file_viewer::offhost_result_as_host);
         let id = match &request {
-            FileRequest::Read { id, .. }
+            FileRequest::Prepare { id, .. }
+            | FileRequest::Stat { id, .. }
             | FileRequest::Search { id, .. }
             | FileRequest::Replace { id, .. }
             | FileRequest::Plan { id, .. }
@@ -183,6 +76,11 @@ impl ClientShellState {
             | FileRequest::Editor { id, .. }
             | FileRequest::EditorCheck { id, .. } => *id,
         };
+        if matches!(request, FileRequest::Editor { .. }) {
+            // Cleared before the tab lookup: a tab closed meanwhile would
+            // otherwise leave every later open refused.
+            self.workbench.editor_opening = false;
+        }
         let Some(index) = self
             .workbench
             .tabs
@@ -193,73 +91,43 @@ impl ClientShellState {
         };
         let tab = &mut self.workbench.tabs[index];
         match request {
-            FileRequest::Read {
-                path,
-                generation,
-                prepare,
-                ..
-            } => {
-                if prepare && generation != tab.prepare_generation {
+            FileRequest::Prepare { generation, .. } => {
+                if generation != tab.prepare_generation {
                     return;
                 }
-                if !prepare {
-                    tab.pending_reads.remove(&path);
-                }
-                if prepare {
-                    tab.prepare_pending = tab.prepare_pending.saturating_sub(1);
-                    match result {
-                        Ok(ResponseResult::FileDocument { document }) => {
-                            if let Err(error) = super::operations::prepare_document(tab, document) {
-                                tab.notice = error;
-                                tab.plan.clear();
-                                tab.prepare_queue.clear();
-                                tab.dialog = None;
-                            }
-                        }
-                        Err(error) => {
-                            tab.notice = error.message;
+                tab.prepare_pending = tab.prepare_pending.saturating_sub(1);
+                match result {
+                    Ok(ResponseResult::FileDocument { document }) => {
+                        if let Err(error) = super::operations::prepare_document(tab, document) {
+                            tab.notice = error;
                             tab.plan.clear();
                             tab.prepare_queue.clear();
                             tab.dialog = None;
                         }
-                        _ => {
-                            tab.notice = "unexpected file response".into();
-                            tab.dialog = None;
-                        }
                     }
+                    Err(error) => {
+                        tab.notice = error.message;
+                        tab.plan.clear();
+                        tab.prepare_queue.clear();
+                        tab.dialog = None;
+                    }
+                    _ => {
+                        tab.notice = "unexpected file response".into();
+                        tab.dialog = None;
+                    }
+                }
+            }
+            FileRequest::Stat { generation, .. } => {
+                if generation != tab.stat.generation {
                     return;
                 }
-                let document = tab
-                    .documents
-                    .iter_mut()
-                    .find(|d| d.path == path && d.request_generation == generation)
-                    .or_else(|| {
-                        tab.preview
-                            .as_mut()
-                            .filter(|d| d.path == path && generation == d.request_generation)
-                    });
-                if let Some(document) = document {
-                    match result {
-                        Ok(ResponseResult::FileDocument { document: loaded }) => {
-                            if !loaded.unchanged {
-                                let changed =
-                                    document.loaded && document.revision != loaded.revision;
-                                if changed && tab.content_search {
-                                    tab.search_ready = false;
-                                    tab.notice =
-                                        "file changed; rerun the content search before replacing"
-                                            .into();
-                                }
-                                let first_load = !document.loaded;
-                                document.update(loaded.text, loaded.revision);
-                                if first_load && !document.restored_scroll {
-                                    document.scroll = document.line().saturating_sub(3);
-                                }
-                                document.restored_scroll = false;
-                            }
-                        }
-                        Err(error) => tab.notice = error.message,
-                        _ => tab.notice = "unexpected file response".into(),
+                tab.stat.pending = false;
+                // Why no notice on failure: the details just show what the
+                // listing knows, and a vanished file is already visible there.
+                if let Ok(ResponseResult::FileStat { stat }) = result {
+                    if tab.stat.subject.as_deref() == Some(stat.path.as_str()) {
+                        tab.stat.stat = Some(stat);
+                        outcome.repaint = true;
                     }
                 }
             }
@@ -296,9 +164,6 @@ impl ClientShellState {
                                 format!(" · {} skipped/errors: {}", warnings.len(), warnings[0])
                             }
                         );
-                        if Some(index) == self.workbench.active && self.workbench.visible {
-                            self.request_investigation_preview(false, false, outcome);
-                        }
                     }
                     Err(error) => {
                         tab.notice = error.message;
@@ -350,7 +215,8 @@ impl ClientShellState {
                         tab.plan.clear();
                         tab.prepare_queue.clear();
                         tab.dialog = None;
-                        tab.last_poll = due_poll_time();
+                        tab.last_list_poll = due_poll_time();
+                        tab.stat.refresh();
                     }
                     Err(error) => tab.notice = error.message,
                     _ => tab.notice = "unexpected replacement response".into(),
@@ -440,7 +306,9 @@ impl ClientShellState {
                 match result {
                     Err(error) if error.code.as_deref() == Some("pane_not_found") => {
                         self.workbench.editor = None;
-                        tab.last_poll = due_poll_time();
+                        // What the editor saved shows at once.
+                        tab.last_list_poll = due_poll_time();
+                        tab.stat.refresh();
                         self.show_files(index);
                     }
                     _ => {
@@ -477,6 +345,18 @@ impl ClientShellState {
         self.persist_chrome_preferences(outcome);
     }
     pub(crate) fn tick_investigation(&mut self, now: Instant, outcome: &mut ClientShellInput) {
+        // A reconnect or an endpoint switch drops the pending open unanswered,
+        // which would leave every later open refused.
+        if self.workbench.editor_opening
+            && !self.pending_requests.values().any(|pending| {
+                matches!(
+                    pending.kind,
+                    PendingEndpointKind::Investigation(FileRequest::Editor { .. })
+                )
+            })
+        {
+            self.workbench.editor_opening = false;
+        }
         self.reconcile_investigation_boot(outcome);
         self.refresh_after_upload(outcome);
         let editor_request = self
@@ -551,101 +431,98 @@ impl ClientShellState {
                 outcome.repaint = true;
             }
         }
-        let document_sent = self.poll_investigation_document(now, outcome);
-        self.poll_investigation_listing(now, document_sent, outcome);
+        let stat_sent = self.poll_investigation_stat(now, outcome);
+        self.poll_investigation_listing(now, stat_sent, outcome);
     }
-    /// Returns whether a read went out, so the listing poll does not start a
-    /// second request in the same tick.
-    fn poll_investigation_document(
+    /// Asks for `files.stat` of what the details describe once the selection
+    /// has rested, and again when the listing shows the entry changed.
+    /// Returns whether a request went out, so the listing poll does not start
+    /// a second one in the same tick.
+    fn poll_investigation_stat(&mut self, now: Instant, outcome: &mut ClientShellInput) -> bool {
+        if self.workbench.hide_details {
+            return false;
+        }
+        let busy = !self.pending_requests.is_empty();
+        let Some(tab) = self.investigation_mut() else {
+            return false;
+        };
+        let subject = tab.details_subject();
+        if subject != tab.stat.subject {
+            tab.stat = StatState {
+                due: subject.as_ref().map(|_| now + STAT_SETTLE),
+                generation: tab.stat.generation.wrapping_add(1),
+                subject,
+                ..StatState::default()
+            };
+            return false;
+        }
+        let (Some(path), Some(stat)) = (tab.stat.subject.as_deref(), tab.stat.stat.as_ref()) else {
+            return self.send_investigation_stat(now, busy, outcome);
+        };
+        let listed = tab
+            .browser
+            .entry_for_path(path)
+            .and_then(|entry| entry.mtime);
+        if listed.is_some() && listed != stat.mtime && !tab.stat.pending && tab.stat.due.is_none() {
+            tab.stat.refresh();
+        }
+        self.send_investigation_stat(now, busy, outcome)
+    }
+    fn send_investigation_stat(
         &mut self,
         now: Instant,
+        busy: bool,
         outcome: &mut ClientShellInput,
     ) -> bool {
         let Some(tab) = self.investigation_mut() else {
             return false;
         };
-        // Off-host reads cross ssh or docker, so they are rarer; and one is
-        // never started behind another request, which the endpoint would
-        // refuse as busy and starve the user's own actions.
-        let offhost = tab.browser.location.is_some();
-        let interval = if offhost {
-            OFFHOST_POLL_INTERVAL
-        } else {
-            HOST_POLL_INTERVAL
-        };
-        if now.duration_since(tab.last_poll) < interval {
+        if tab.stat.pending || tab.stat.due.is_none_or(|due| due > now) {
             return false;
         }
-        if offhost && !self.pending_requests.is_empty() {
+        // Off-host the endpoint takes one request at a time.
+        if tab.browser.location.is_some() && busy {
             return false;
         }
-        let Some(tab) = self.investigation_mut() else {
+        let Some(path) = tab.stat.subject.clone() else {
             return false;
         };
-        tab.last_poll = now;
+        tab.stat.due = None;
+        let (id, generation) = (tab.id, tab.stat.generation);
         let (workspace, location, preferred) = (
             tab.browser.workspace_id.clone(),
             tab.browser.location.clone(),
             tab.browser.location_pane.clone(),
         );
-        let Some(document) = tab
-            .document()
-            .filter(|d| !tab.pending_reads.contains(&d.path))
-        else {
-            return false;
-        };
+        let method = match self.file_stat_method(&workspace, &location, path, preferred.as_deref())
         {
-            let path = document.path.clone();
-            let revision = document.loaded.then(|| {
-                document
-                    .pending
-                    .as_ref()
-                    .map_or_else(|| document.revision.clone(), |(_, r)| r.clone())
-            });
-            let id = tab.id;
-            tab.preview_generation = tab.preview_generation.wrapping_add(1);
-            let generation = tab.preview_generation;
-            if let Some(d) = tab.document_mut() {
-                d.request_generation = generation;
-            }
-            let method = self.file_read_method(
-                &workspace,
-                &location,
-                path.clone(),
-                revision,
-                true,
-                preferred.as_deref(),
-            );
-            let method = match method {
-                Ok(method) => method,
-                Err(notice) => {
-                    if let Some(tab) = self.investigation_mut() {
-                        tab.notice = notice;
-                    }
-                    return false;
+            Ok(method) => method,
+            Err(notice) => {
+                if let Some(tab) = self.investigation_mut() {
+                    tab.notice = notice;
                 }
-            };
-            if let Some(tab) = self.investigation_mut() {
-                tab.pending_reads.insert(path.clone());
+                return false;
             }
-            let pane = Self::method_location_pane(&method);
-            let sent = self.push_endpoint_method_with_kind(
-                method,
-                PendingEndpointKind::Investigation(FileRequest::Read {
-                    id,
-                    path,
-                    generation,
-                    prepare: false,
-                }),
-                outcome,
-            );
-            if sent {
-                self.remember_location_pane(pane);
-            } else if let Some(tab) = self.investigation_mut() {
-                tab.pending_reads.clear();
-            }
-            sent
+        };
+        // Why checked here: an older server would answer with an "update the
+        // server" notice for a request the user never made. Its details keep
+        // what the listing knows.
+        if !self.supports_endpoint_method(&method) {
+            return false;
         }
+        let pane = Self::method_location_pane(&method);
+        let sent = self.push_endpoint_method_with_kind(
+            method,
+            PendingEndpointKind::Investigation(FileRequest::Stat { id, generation }),
+            outcome,
+        );
+        if sent {
+            self.remember_location_pane(pane);
+            if let Some(tab) = self.investigation_mut() {
+                tab.stat.pending = true;
+            }
+        }
+        sent
     }
     /// Re-lists the root and the shown expanded directories in sweeps: when
     /// the interval is due a sweep queues them all, and each is asked for as
@@ -657,10 +534,10 @@ impl ClientShellState {
     fn poll_investigation_listing(
         &mut self,
         now: Instant,
-        document_sent: bool,
+        stat_sent: bool,
         outcome: &mut ClientShellInput,
     ) {
-        if document_sent {
+        if stat_sent {
             return;
         }
         let Some(tab) = self.investigation() else {
@@ -751,7 +628,7 @@ impl ClientShellState {
         }
     }
     /// Starts a sweep now, asks for the index whatever its rate limit, and
-    /// reads the open document at once. Why not `schedule_search`: it would
+    /// the details' facts at once. Why not `schedule_search`: it would
     /// discard the search results and replacement plan; `refresh content
     /// search` in the menu does that on purpose.
     pub(in crate::client::shell) fn refresh_investigation_files(&mut self) {
@@ -763,7 +640,7 @@ impl ClientShellState {
         tab.browser.refresh.index_due = true;
         tab.browser.refresh.index_forced = true;
         tab.last_list_poll = Instant::now();
-        tab.last_poll = due_poll_time();
+        tab.stat.refresh();
     }
     /// Resumes a tab that stopped for lack of a pane in its location, once one
     /// is running again: the stopped listings are requested again, one per tick.
@@ -880,7 +757,6 @@ impl ClientShellState {
         let Some(tab) = self.workbench.tabs.last_mut() else {
             return;
         };
-        tab.horizontal = saved.horizontal;
         if !workspace_has_tab {
             tab.placement = saved.placement;
         }
@@ -892,19 +768,6 @@ impl ClientShellState {
         tab.case_sensitive = saved.case_sensitive;
         tab.whole_word = saved.whole_word;
         tab.ignored = saved.ignored;
-        tab.documents = saved
-            .files
-            .into_iter()
-            .map(|s| {
-                let mut d = Document::new(s.path);
-                d.cursor = s.cursor;
-                d.scroll = s.scroll;
-                d.horizontal = s.horizontal;
-                d.restored_scroll = true;
-                d
-            })
-            .collect();
-        tab.active_file = saved.active_file.filter(|i| *i < tab.documents.len());
         tab.schedule_search();
         self.workbench.active = previous.0;
         self.workbench.visible = previous.1;
@@ -955,12 +818,7 @@ impl ClientShellState {
             let sent = method.is_ok_and(|method| {
                 self.push_endpoint_method_with_kind(
                     method,
-                    PendingEndpointKind::Investigation(FileRequest::Read {
-                        id,
-                        path,
-                        generation,
-                        prepare: true,
-                    }),
+                    PendingEndpointKind::Investigation(FileRequest::Prepare { id, generation }),
                     outcome,
                 )
             });
@@ -988,6 +846,7 @@ impl ClientShellState {
         else {
             return;
         };
+
         for tab in self.workbench.tabs.iter_mut().filter(|t| {
             t.endpoint == self.active_endpoint_id
                 && (t.boot != boot || t.connection_generation != self.active_snapshot_generation)
@@ -1000,14 +859,12 @@ impl ClientShellState {
             tab.prepare_queue.clear();
             tab.prepare_pending = 0;
             tab.prepare_generation = tab.prepare_generation.wrapping_add(1);
-            tab.pending_reads.clear();
             tab.operation_pending = false;
             tab.searching = false;
             tab.schedule_search();
-            for document in tab.documents.iter_mut().chain(tab.preview.iter_mut()) {
-                document.revision.clear();
-            }
-            tab.last_poll = due_poll_time();
+            tab.stat.pending = false;
+            tab.stat.refresh();
+            tab.last_list_poll = due_poll_time();
             tab.notice = "server reconnected; file state reloading".into();
             outcome.repaint = true;
         }

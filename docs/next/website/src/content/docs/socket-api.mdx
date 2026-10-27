@@ -104,7 +104,7 @@ Raw socket method names use dot notation:
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Container | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH hosts | `ssh.open`, `ssh.hosts` |
-| Files | `directory.list`, `directory.index`, `pane.open_editor`, `pane.directory.list`, `pane.directory.index`, `pane.directory.open_editor`, `pane.file.read`, `pane.upload.begin`, `pane.upload.write`, `pane.upload.finish`, `pane.upload.cancel`, `pane.download.begin`, `pane.download.read`, `pane.download.cancel` |
+| Files | `directory.list`, `directory.index`, `files.stat`, `pane.open_editor`, `pane.open_file`, `pane.directory.list`, `pane.directory.index`, `pane.directory.open_editor`, `pane.directory.open_file`, `pane.file.read`, `pane.file.stat`, `pane.upload.begin`, `pane.upload.write`, `pane.upload.finish`, `pane.upload.cancel`, `pane.download.begin`, `pane.download.read`, `pane.download.cancel` |
 | Tab | `tab.create`, `tab.create_inherit`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
 | Pane | `pane.split`, `pane.split_inherit`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
@@ -542,23 +542,48 @@ The Git calls of one request share a 5-second deadline. When Git is missing, ref
 
 `pane.open_editor` takes a required absolute `path` to a file and runs `${EDITOR:-vi}` from the pane's shell environment in a zoomed overlay pane over the target. The result is `pane_info` for the editor pane. When the editor exits, the overlay closes and the previous focus and zoom return. A missing file is created only if the editor saves it.
 
-`pane.directory.list`, `pane.directory.index`, `pane.file.read` and `pane.directory.open_editor` do the same for the filesystem a pane's shell sees when that shell runs over SSH or inside a container (including a container behind an SSH host). They exist beside the methods above because those mean "this host's filesystem" and their shapes are fixed. `pane_id` is required and must name a live off-host pane; a host pane gets `invalid_params`. `path` is an absolute POSIX path inside the pane's environment and may not contain `..`. The server runs a fixed POSIX `sh` script there (BusyBox is enough) over a non-interactive connection (`BatchMode`): `ssh_unavailable` means the host cannot be reached without a prompt, `container_unavailable` or `container_not_found` that docker cannot see the container, and `offhost_shell_unavailable` that the environment has no `sh`.
+`pane.open_file` opens a file the same way, with the same target rules, and adds two optional parameters: `line` (1 or more) starts at that line by passing `+line` to programs known to accept it (such as `vi`, `vim`, `nvim`, `nano`, `emacs`, `less`, and `more`, but not their BusyBox applets); others open at the top, and `mode` is `editor` (the default) or `pager`. `pager` runs `$PAGER`, else `less`, else `more`, else `cat`; every pager but `less` is followed by a `[press Enter]` prompt, and GNU `less` gets `-+F`. It answers `not_found` for a missing file. A directory is `invalid_params` in both modes. The result is `pane_info` for the overlay pane. The method is not advertised by a Windows server; a client that does not see it falls back to `pane.open_editor`, without the line and with the editor.
 
-Every result carries `location`: `{ "kind": "ssh" | "container", "ssh_host"?, "container"? }` (`ssh_host` is the alias, `container` the canonical name). `pane.directory.list` answers `pane_directory_list`, shaped like `directory_list` without `pane_id`. Its `root` is the pane's working directory (the cwd its shell reported over OSC 7, else the container's working directory, else the SSH login directory, else `/`) even when `path` is given. `size` and `mtime` are omitted, `.git` is never listed, and `git_error` is `untrusted repository` when git refuses the repository. `pane.directory.index` answers `pane_directory_index`: the tracked and untracked files below `repo_root`, which is always present and, without git, the searched directory (up to 50,000 files, ignored ones included). `pane.file.read` answers `pane_file_document` with the same `document` as `file.read`. Its `revision` is a `cksum` digest; `revision` equal to the file's answers `unchanged` without content. `poll: true` marks a background refresh with a 5-second deadline instead of the usual one (5 seconds for a local container, 20 for SSH). `pane.directory.open_editor` runs the editor in the pane's own shell and login mode as a zoomed overlay, like `pane.open_editor`, and answers `pane_info` for the editor pane; the target must be the focused pane of the active workspace.
+```json
+{ "id": "req_3", "method": "pane.open_file", "params": { "path": "/home/me/app/src/main.rs", "line": 42, "mode": "pager" } }
+```
+
+`files.stat` takes a required absolute `path` and reports what a listing leaves out for that one path. The result has type `file_stat` and a `stat` object:
+
+```json
+{
+  "id": "req_4",
+  "result": {
+    "type": "file_stat",
+    "stat": { "path": "/home/me/app/src", "kind": "dir", "mtime": 1767225600000, "mode": 493, "owner": "me", "children": 12 }
+  }
+}
+```
+
+`kind` is as in `directory.list` and describes the path itself, so a symlink reports `symlink` with its stored `link_target`. `size` is present for regular files, `mtime` is in milliseconds since the Unix epoch, and `mode` is `st_mode & 0o7777` (setuid, setgid, and sticky included). `owner` is the account name, or the numeric uid when no account matches. `children` counts the direct entries of a directory, or of the directory a link reaches, leaving out `.git`; counting stops at 10,000 and then sets `children_limited` to `true`, which is otherwise omitted. Every field except `path` is optional, and a Windows server omits `mode` and `owner`. A relative or unreadable `path` answers `file_error`.
+
+`files.search` matches may carry an optional `context`: `{ "before": [...], "after": [...] }` with up to two lines on each side of the hit, each cut to 200 characters, as they were when searched. Only the first 1,000 matches carry it, and older servers never send it.
+
+`pane.directory.list`, `pane.directory.index`, `pane.file.read`, `pane.file.stat`, `pane.directory.open_editor`, and `pane.directory.open_file` do the same for the filesystem a pane's shell sees when that shell runs over SSH or inside a container (including a container behind an SSH host). They exist beside the methods above because those mean "this host's filesystem" and their shapes are fixed. `pane_id` is required and must name a live off-host pane; a host pane gets `invalid_params`. `path` is an absolute POSIX path inside the pane's environment and may not contain `..`. The server runs a fixed POSIX `sh` script there (BusyBox is enough) over a non-interactive connection (`BatchMode`): `ssh_unavailable` means the host cannot be reached without a prompt, `container_unavailable` or `container_not_found` that docker cannot see the container, and `offhost_shell_unavailable` that the environment has no `sh`.
+
+Every result carries `location`: `{ "kind": "ssh" | "container", "ssh_host"?, "container"? }` (`ssh_host` is the alias, `container` the canonical name). `pane.directory.list` answers `pane_directory_list`, shaped like `directory_list` without `pane_id`. Its `root` is the pane's working directory (the cwd its shell reported over OSC 7, else the container's working directory, else the SSH login directory, else `/`) even when `path` is given. `size` and `mtime` are still omitted, `.git` is never listed, and `git_error` is `untrusted repository` when git refuses the repository. `pane.directory.index` answers `pane_directory_index`: the tracked and untracked files below `repo_root`, which is always present and, without git, the searched directory (up to 50,000 files, ignored ones included). `pane.file.read` answers `pane_file_document` with the same `document` as `file.read`. Its `revision` is a `cksum` digest; `revision` equal to the file's answers `unchanged` without content. `poll: true` marks a background refresh with a 5-second deadline instead of the usual one (5 seconds for a local container, 20 for SSH). `pane.directory.open_editor` runs the editor in the pane's own shell and login mode as a zoomed overlay, like `pane.open_editor`, and answers `pane_info` for the editor pane; the target must be the focused pane of the active workspace.
+
+`pane.file.stat` answers `pane_file_stat` with `location` and the same `stat` as `files.stat`, read with `ls -ldn`, and `children` is counted from an unsorted `ls` cut at the limit. Its `owner` is always the numeric uid, `mtime` is present only where the environment has a `stat` command, and `children` is omitted for a directory that cannot be read. A missing `path` answers `not_found`, and a path behind a folder that cannot be searched answers `permission_denied`. For such a path `pane.directory.open_file` still opens the program, which reports the error itself. `pane.directory.open_file` is `pane.open_file` for an off-host pane: it takes `pane_id`, `path`, and the optional `line` and `mode`, uses the login environment's `EDITOR` and `PAGER`, and answers `pane_info`. Both are advertised only by Unix servers; a client that does not see `pane.directory.open_file` falls back to `pane.directory.open_editor`.
 
 Errors:
 
 | Code | Meaning |
 | --- | --- |
-| `invalid_params` | `path` is relative, `pane.open_editor` got a directory, or `pane_id` is not in `workspace_id` |
-| `not_found` | the `path` of `directory.list` or `directory.index` does not exist |
+| `invalid_params` | `path` is relative, `pane.open_editor` or `pane.open_file` got a directory, or `pane_id` is not in `workspace_id` |
+| `not_found` | the `path` of `directory.list` or `directory.index` does not exist, or the file for `mode: "pager"` does not exist |
 | `not_a_directory` | `directory.list` got a file |
 | `permission_denied` | the directory cannot be read |
 | `directory_read_failed` | another filesystem error |
 | `directory_busy` | 8 directory reads are already running; retry shortly |
-| `workspace_not_found`, `pane_not_found` | the target does not exist, or `pane.open_editor` found no focused pane |
-| `stale_pane_target` | the `pane.open_editor` target is not the focused pane of the active workspace |
-| `pane_not_live` | the `pane.open_editor` target has no running shell, for example after a failed restore |
+| `file_error` | `files.stat` got a relative path or could not read `path` |
+| `workspace_not_found`, `pane_not_found` | the target does not exist, or `pane.open_editor` or `pane.open_file` found no focused pane |
+| `stale_pane_target` | the `pane.open_editor` or `pane.open_file` target is not the focused pane of the active workspace |
+| `pane_not_live` | the `pane.open_editor` or `pane.open_file` target has no running shell, for example after a failed restore |
 | `editor_failed` | the editor pane could not be started |
 | `platform_unsupported` | the server runs on Windows, which also leaves these methods out of what it advertises to TUI clients |
 

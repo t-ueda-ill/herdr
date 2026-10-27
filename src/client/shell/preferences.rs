@@ -38,6 +38,13 @@ pub(super) struct ClientChromePreferences {
         skip_serializing_if = "Option::is_none"
     )]
     pub(super) files_placement: Option<super::investigation::SavedFilesPlacement>,
+    /// `Some(true)` once the files details band is turned off; absent shows it.
+    #[serde(
+        default,
+        deserialize_with = "super::investigation::lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(super) hide_files_details: Option<bool>,
 }
 
 /// Favorites and successful opens of the ssh host, container host and
@@ -171,6 +178,27 @@ mod tests {
         assert_eq!(preferences.files_placement, None);
         assert_eq!(preferences.sidebar_width, Some(30));
         assert_eq!(preferences.investigations.len(), 1);
+    }
+
+    #[test]
+    fn hidden_files_details_round_trip_and_an_unreadable_value_shows_them() {
+        let stored = serde_json::to_string(&ClientChromePreferences {
+            hide_files_details: Some(true),
+            ..ClientChromePreferences::default()
+        })
+        .expect("encode preferences");
+        let restored: ClientChromePreferences =
+            serde_json::from_str(&stored).expect("decode preferences");
+        let unreadable: ClientChromePreferences =
+            serde_json::from_str(r#"{"sidebar_width":30,"hide_files_details":"yes"}"#)
+                .expect("decode preferences with an unknown value");
+
+        assert_eq!(restored.hide_files_details, Some(true));
+        assert_eq!(unreadable.hide_files_details, None);
+        assert_eq!(unreadable.sidebar_width, Some(30));
+        assert!(!serde_json::to_string(&ClientChromePreferences::default())
+            .expect("encode default preferences")
+            .contains("hide_files_details"));
     }
 
     #[test]

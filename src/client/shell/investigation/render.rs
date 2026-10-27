@@ -1,8 +1,6 @@
 use super::super::render::{display_width, menu_widget, put_text};
 use super::*;
 use crossterm::event::KeyCode;
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 fn text(b: &mut Buffer, r: Rect, value: &str, style: Style) {
     put_text(b, r.x, r.y, r.width, value, style);
@@ -190,58 +188,6 @@ impl ClientShellState {
                 .buttons
                 .push((refresh, Some(REFRESH_FILES)));
         }
-        let file_bar = line(area, 1);
-        let mut x = file_bar.x;
-        // Show a bounded neighborhood around the current file tab.
-        let first = tab.active_file.unwrap_or(0).saturating_sub(2);
-        for (i, document) in tab.documents.iter().enumerate().skip(first) {
-            if x >= file_bar.right() {
-                break;
-            }
-            let label = format!(
-                " {} × ",
-                document
-                    .path
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .unwrap_or(&document.path)
-            );
-            let rect = Rect::new(
-                x,
-                file_bar.y,
-                (display_width(&label) + 1).min(file_bar.right() - x),
-                file_bar.height,
-            );
-            let style = if tab.active_file == Some(i) {
-                selected
-            } else {
-                base.bg(p.surface0)
-            };
-            b.set_style(rect, style);
-            text(b, rect, &label, style);
-            if rect.width >= 4 {
-                let close = Rect::new(rect.right() - 2, rect.y, 1, 1);
-                text(b, close, "×", style);
-                self.investigation_hits.file_close.push((close, i));
-            }
-            self.investigation_hits.files.push((rect, i));
-            x = rect.right();
-        }
-        if let Some(document) = &tab.preview {
-            let label = format!(
-                " {} (preview)",
-                document
-                    .path
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .unwrap_or(&document.path)
-            );
-            if x < file_bar.right() {
-                let rect = Rect::new(x, file_bar.y, file_bar.right() - x, file_bar.height);
-                text(b, rect, &label, muted.add_modifier(Modifier::ITALIC));
-                self.investigation_hits.files.push((rect, usize::MAX));
-            }
-        }
         let search_height = if tab.content_search { 5 } else { 1 };
         let mut cursor = None;
         let fields: Vec<_> = if tab.content_search {
@@ -255,7 +201,7 @@ impl ClientShellState {
             vec![(Focus::Paths, "files", &tab.browser.query)]
         };
         for (offset, (focus, label, editor)) in fields.into_iter().enumerate() {
-            let rect = line(area, 2 + offset as u16);
+            let rect = line(area, 1 + offset as u16);
             text(b, rect, &format!(" {label}: "), muted);
             let field = Rect::new(
                 rect.x + 9.min(rect.width),
@@ -293,9 +239,9 @@ impl ClientShellState {
             ] {
                 let rect = Rect::new(
                     x,
-                    area.y + 6,
+                    area.y + 5,
                     display_width(&label).min(area.right().saturating_sub(x)),
-                    u16::from(area.height > 6),
+                    u16::from(area.height > 5),
                 );
                 text(b, rect, &label, base.fg(p.accent));
                 self.investigation_hits.buttons.push((rect, Some(action)));
@@ -304,33 +250,30 @@ impl ClientShellState {
         }
         let body = Rect::new(
             area.x,
-            area.y.saturating_add(2 + search_height),
+            area.y.saturating_add(1 + search_height),
             area.width,
-            area.height.saturating_sub(4 + search_height),
+            area.height.saturating_sub(3 + search_height),
         );
-        let (list, document_area) = if tab.horizontal {
-            let width = (body.width / 3).max(1);
-            (
-                Rect::new(body.x, body.y, width, body.height),
-                Rect::new(
-                    body.x.saturating_add(width),
-                    body.y,
-                    body.width.saturating_sub(width),
-                    body.height,
-                ),
-            )
+        let max_lines = self.config.files_details.max_lines;
+        let details = if self.workbench.hide_details {
+            Vec::new()
         } else {
-            let height = (body.height / 3).max(1).min(body.height);
-            (
-                Rect::new(body.x, body.y, body.width, height),
-                Rect::new(
-                    body.x,
-                    body.y.saturating_add(height),
-                    body.width,
-                    body.height.saturating_sub(height),
-                ),
-            )
+            let rows = usize::from(max_lines.min(body.height / 3));
+            super::details::details_lines(tab, &self.config.files_details, rows)
         };
+        let band = details_band_height(details.len(), max_lines, body.height);
+        let list = Rect::new(body.x, body.y, body.width, body.height - band);
+        let band_area = Rect::new(body.x, list.bottom(), body.width, band);
+        self.investigation_hits.details = band_area;
+        b.set_style(band_area, base.bg(p.surface0));
+        for (offset, value) in details.iter().take(usize::from(band)).enumerate() {
+            text(
+                b,
+                line(band_area, offset as u16),
+                &format!(" {value}"),
+                base.bg(p.surface0),
+            );
+        }
         self.investigation_hits.list = list;
         let row_count = if tab.content_search {
             tab.matches.len()
@@ -405,104 +348,6 @@ impl ClientShellState {
                 muted,
             );
         }
-        let header = line(document_area, 0);
-        let document = tab.document();
-        text(
-            b,
-            header,
-            &document.map_or_else(
-                || " select a file to preview".into(),
-                |d| {
-                    format!(
-                        " {}{}",
-                        d.path,
-                        if d.pending.is_some() {
-                            " · file changed (selection held)"
-                        } else {
-                            ""
-                        }
-                    )
-                },
-            ),
-            base.fg(p.accent),
-        );
-        let content = Rect::new(
-            document_area.x,
-            document_area.y.saturating_add(1),
-            document_area.width,
-            document_area.height.saturating_sub(1),
-        );
-        self.investigation_hits.body = content;
-        if let Some(document) = document {
-            if !document.loaded {
-                text(b, line(content, 0), " loading…", muted);
-            } else {
-                let range = document.range();
-                for (offset, line_index) in (document.scroll..document.lines.len())
-                    .take(content.height as usize)
-                    .enumerate()
-                {
-                    let rect = line(content, offset as u16);
-                    text(b, rect, &format!("{:>5} │", line_index + 1), muted);
-                    let mut column = 0usize;
-                    for (byte, value) in document.line_text(line_index).grapheme_indices(true) {
-                        let size = if value == "\t" {
-                            4 - column % 4
-                        } else {
-                            UnicodeWidthStr::width(value)
-                        };
-                        if column + size <= document.horizontal {
-                            column += size;
-                            continue;
-                        }
-                        let x = content
-                            .x
-                            .saturating_add(7)
-                            .saturating_add(column.saturating_sub(document.horizontal) as u16);
-                        if x >= content.right() {
-                            break;
-                        }
-                        let selected_byte = range
-                            .as_ref()
-                            .is_some_and(|r| r.contains(&(document.lines[line_index] + byte)));
-                        let style = if selected_byte { selected } else { base };
-                        if value == "\t" {
-                            put_text(b, x, rect.y, content.right() - x, &" ".repeat(size), style);
-                        } else if !value.chars().any(char::is_control) {
-                            put_text(b, x, rect.y, content.right() - x, value, style);
-                        }
-                        column += size;
-                    }
-                }
-                if tab.focus == Focus::Body {
-                    let line = document.line();
-                    let column = document.text[document.lines[line]..document.cursor]
-                        .graphemes(true)
-                        .fold(0, |x, v| {
-                            x + if v == "\t" {
-                                4 - x % 4
-                            } else {
-                                UnicodeWidthStr::width(v)
-                            }
-                        });
-                    let x = content
-                        .x
-                        .saturating_add(7)
-                        .saturating_add(column.saturating_sub(document.horizontal) as u16);
-                    let y = content
-                        .y
-                        .saturating_add(line.saturating_sub(document.scroll) as u16);
-                    if x < content.right() && y < content.bottom() {
-                        cursor = Some(crate::protocol::CursorState {
-                            x,
-                            y,
-                            visible: true,
-                            shape: Default::default(),
-                        });
-                    }
-                }
-            }
-        }
         let footer = line(area, area.height.saturating_sub(2));
         let notice = if tab.notice.is_empty() {
             tab.browser.notice.as_deref().unwrap_or_default()
@@ -522,18 +367,14 @@ impl ClientShellState {
                 )
             })
             .unwrap_or_default();
-        text(b,line(area,area.height.saturating_sub(1)),&format!(" Enter pin · Space read · Esc back · Tab focus · Ctrl+P files · Ctrl+Shift+F search{clipboard}"),muted);
-        if tab.focus == Focus::Find {
-            let rect = line(area, area.height.saturating_sub(2));
-            text(b, rect, " find: ", muted);
-            let rect = Rect::new(
-                rect.x + 7.min(rect.width),
-                rect.y,
-                rect.width.saturating_sub(7),
-                rect.height,
-            );
-            cursor = super::super::text_editor::render(b, rect, &tab.find, base);
-        }
+        text(
+            b,
+            line(area, area.height.saturating_sub(1)),
+            &format!(
+                " Enter edit · Space view · Esc back · Tab focus · Ctrl+P files · Ctrl+Shift+F search{clipboard}"
+            ),
+            muted,
+        );
         if let Some(dialog) = &tab.dialog {
             let labels = tab.menu_labels(presentation, dock);
             cursor = render_dialog(
@@ -612,10 +453,10 @@ fn selection_anchor(
     tab: &Investigation,
     hits: &Hits,
 ) -> menu_widget::MenuAnchor {
-    if target == MenuTarget::Preview {
+    if target == MenuTarget::Details {
         return menu_widget::MenuAnchor::TopLeft {
-            x: hits.body.x,
-            y: hits.body.y,
+            x: hits.details.x,
+            y: hits.details.y,
         };
     }
     if let Some((field, _)) = hits
@@ -847,4 +688,33 @@ fn render_dialog(
         }
     }
     None
+}
+
+/// Rows the details band takes: its lines, at most `max_lines` and a third
+/// of the body, and none when the list would keep fewer than five rows.
+fn details_band_height(lines: usize, max_lines: u16, body: u16) -> u16 {
+    const MIN_LIST_ROWS: u16 = 5;
+    let wanted = u16::try_from(lines)
+        .unwrap_or(u16::MAX)
+        .min(max_lines)
+        .min(body / 3);
+    if wanted == 0 || body.saturating_sub(wanted) < MIN_LIST_ROWS {
+        0
+    } else {
+        wanted
+    }
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::details_band_height;
+
+    #[test]
+    fn the_band_fits_its_lines_within_a_third_of_the_body_and_yields_to_a_short_list() {
+        assert_eq!(details_band_height(2, 8, 30), 2);
+        assert_eq!(details_band_height(20, 8, 60), 8);
+        assert_eq!(details_band_height(20, 8, 12), 4);
+        assert_eq!(details_band_height(2, 8, 6), 0);
+        assert_eq!(details_band_height(0, 8, 30), 0);
+    }
 }

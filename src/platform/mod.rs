@@ -235,8 +235,8 @@ pub(crate) use unix_common::{
 };
 #[cfg(unix)]
 pub(crate) use unix_common::{
-    create_symlink, metadata_identity, open_regular_nofollow, permission_bits, set_path_modified,
-    set_permission_bits, stores_file_name,
+    create_symlink, display_mode, file_open_argv, metadata_identity, open_regular_nofollow,
+    owner_name, permission_bits, set_path_modified, set_permission_bits, stores_file_name,
 };
 
 #[cfg(not(any(unix, windows)))]
@@ -493,6 +493,10 @@ pub(crate) const FILE_VIEWER_SUPPORTED: bool =
 /// Windows servers cannot run those panes, so advertising the methods there
 /// would only invite requests that always fail.
 pub(crate) const OFFHOST_FILE_VIEWER_SUPPORTED: bool = cfg!(unix);
+
+/// `pane.open_file`: editors and pagers that take `+line`, run through `sh`.
+/// Windows clients fall back to `pane.open_editor`.
+pub(crate) const FILE_OPEN_AT_LINE_SUPPORTED: bool = cfg!(unix);
 
 #[cfg(unix)]
 mod remote_bridge;

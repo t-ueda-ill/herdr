@@ -1028,7 +1028,7 @@
           "key": "ui.file_workbench_keys",
           "type": "table",
           "default": "{}",
-          "description": "Files tab key overrides by action name. Example: [ui.file_workbench_keys] next_file = \"alt+right\". Actions: pin, read, next_file, previous_file, close_file, find_files, search, replace, edit, copy, cut, paste, select_all, rename, delete, actions, files_menu, refresh."
+          "description": "Files tab key overrides by action name. Example: [ui.file_workbench_keys] pin = \"alt+enter\". Actions: pin (open the selection in $EDITOR), read (open it in the pager), find_files, search, replace, edit, copy, cut, paste, select_all, rename, delete, actions, files_menu, refresh."
         },
         {
           "key": "ui.pane_borders",
@@ -1105,6 +1105,36 @@
           "type": "string",
           "default": "\"{hostname}: {workspace}\"",
           "description": "Title Herdr writes to the terminal it runs in. Tokens: {hostname}, {workspace}, {tab}, {pane}, {terminal_title}. Empty leaves the outer title alone."
+        },
+        {
+          "key": "ui.files.details.file",
+          "type": "string",
+          "default": "\"{name}\\n{size} · {mtime} · {mode} {owner}\"",
+          "description": "Details band lines for a selected file. Tokens: {name}, {path}, {kind}, {size}, {size_bytes}, {mtime}, {mtime_iso}, {hidden}, {ignored}, {link_target}, {mode}, {owner}. \\n starts a new line; a line whose tokens are all empty is dropped. Empty hides the band for files; an invalid template falls back to its default with a config diagnostic."
+        },
+        {
+          "key": "ui.files.details.directory",
+          "type": "string",
+          "default": "\"{name}/\\n{children} · {mtime} · {mode} {owner}\"",
+          "description": "Details band lines for a selected directory, .., or nothing selected (the listed folder). Same tokens as file, plus {children}. Empty hides the band for directories."
+        },
+        {
+          "key": "ui.files.details.multi",
+          "type": "string",
+          "default": "\"{count} · {total_size}\"",
+          "description": "Details band lines while entries are marked. Tokens: {count}, {total_size} (marked files only; folders are not walked). Empty hides the band while marking."
+        },
+        {
+          "key": "ui.files.details.match",
+          "type": "string",
+          "default": "\"{path}:{line}\\n{context}\"",
+          "description": "Details band lines for a selected content search hit. Same tokens as file, plus {line} and {context} (grep -C style lines around the hit). Empty hides the band for matches."
+        },
+        {
+          "key": "ui.files.details.max_lines",
+          "type": "integer",
+          "default": "8",
+          "description": "Most lines the details band takes. It never takes more than a third of the files body, and hides when the list would keep fewer than 5 rows."
         },
         {
           "key": "ui.agent_panel_sort",
