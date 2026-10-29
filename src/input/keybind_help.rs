@@ -211,18 +211,9 @@ pub(crate) fn keybind_help_groups(
         ),
         (
             "files",
-            vec![
-                entry(binding_label(&keybinds.open_files), "open files"),
-                entry("enter", "pin file / expand dir"),
-                entry("space", "focus file preview"),
-                entry("ctrl+e", "edit file"),
-                entry("ctrl+shift+f", "search contents"),
-                entry("f10", "file actions / layout / replace"),
-                entry("ctrl+c", "copy selected text / files"),
-                entry(". / i", "show dotfiles / ignored"),
-                entry("backspace", "widen root to parent"),
-                entry("ctrl+p", "find files"),
-            ],
+            // Why only the key that opens files: the client appends the
+            // files keys, which follow `ui.file_workbench_keys`.
+            vec![entry(binding_label(&keybinds.open_files), "open files")],
         ),
     ];
 
@@ -322,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn help_lists_open_files_with_the_investigation_keys() {
+    fn help_lists_open_files_in_the_files_group() {
         let unset: crate::config::Config =
             toml::from_str("[keys]\nopen_files = \"\"\n").expect("open_files parses");
         let unset = keybind_help_groups(&unset.keybinds(), &[]);
@@ -341,15 +332,6 @@ mod tests {
             .expect("files group");
         assert_eq!(files[0].0, binding_label(&keybinds.open_files));
         assert_ne!(files[0].0, "unset");
-        for key in ["enter", "space", "ctrl+e", "ctrl+c", ". / i", "backspace"] {
-            assert!(
-                files.iter().any(|(listed, _)| listed == key),
-                "{key} listed"
-            );
-        }
-        assert!(files
-            .iter()
-            .any(|(key, label)| key == "ctrl+p" && label.contains("find files")));
 
         let filtered = filter_keybind_help_groups(groups, "open files");
         assert_eq!(filtered.len(), 1);

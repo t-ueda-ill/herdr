@@ -129,6 +129,7 @@ fn the_confirm_dialog_never_replaces_an_open_overlay() {
         query: TextEditor::default(),
         search_focused: false,
         scroll: 0,
+        ..Default::default()
     }));
 
     assert!(!state.open_upload_confirm(4, "t".into(), "d".into()));
@@ -147,6 +148,7 @@ fn a_confirm_dialog_replaced_without_an_answer_is_declined_once() {
         query: TextEditor::default(),
         search_focused: false,
         scroll: 0,
+        ..Default::default()
     }));
 
     assert_eq!(
@@ -187,6 +189,7 @@ fn clicks_inside_an_overlay_never_reach_the_progress_card_beneath_it() {
         query: TextEditor::default(),
         search_focused: false,
         scroll: 0,
+        ..Default::default()
     }));
     state.compose(106, 24).unwrap();
 

@@ -581,9 +581,13 @@ impl ClientShellState {
             return;
         }
 
+        // Why only for its own overlay: with a files tab shown, the viewer
+        // lookup finds that tab's tree, which must not take another
+        // overlay's keys.
         if self.route_worktree_overlay_key(key, outcome)
             || self.route_open_picker_overlay_key(key, outcome)
-            || self.route_file_viewer_overlay_key(key, outcome)
+            || matches!(self.overlay, Some(ClientShellOverlay::FileViewer(_)))
+                && self.route_file_viewer_overlay_key(key, outcome)
         {
             return;
         }

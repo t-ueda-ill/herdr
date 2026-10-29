@@ -72,8 +72,21 @@ impl ClientShellState {
             return;
         }
         if code == KeyCode::Delete && tab.focus == Focus::Results {
-            self.investigation_menu_action(TRASH, outcome);
+            self.investigation_menu_action(if shift { DELETE } else { TRASH }, outcome);
             return;
+        }
+        if tab.content_search && modifiers == M::ALT {
+            let option = match code {
+                KeyCode::Char('r') => Some(TOGGLE_REGEX),
+                KeyCode::Char('c') => Some(TOGGLE_CASE),
+                KeyCode::Char('w') => Some(TOGGLE_WHOLE_WORD),
+                KeyCode::Char('i') => Some(INCLUDE_IGNORED),
+                _ => None,
+            };
+            if let Some(option) = option {
+                self.investigation_menu_action(option, outcome);
+                return;
+            }
         }
         if ctrl {
             match code {
@@ -230,6 +243,13 @@ impl ClientShellState {
                 _ => {}
             }
         }
+        // Why before `/`: a kitty host reports `?` as Shift+`/` with its text.
+        if crate::input::keybind_help_text_char(key) == Some('?') {
+            self.overlay = Some(ClientShellOverlay::Help(self.help_overlay(true)));
+            return;
+        }
+        let plain = modifiers.is_empty();
+        let capital = modifiers == M::SHIFT;
         match code {
             KeyCode::Char('/') => {
                 tab.focus = Focus::Paths;
@@ -296,13 +316,33 @@ impl ClientShellState {
                     }
                 }
             }
-            KeyCode::Char('n' | 'N') if tab.content_search => {
+            KeyCode::Char('n') if tab.content_search && plain => {
                 tab.hovered = None;
-                tab.selected_match = tab.adjacent_file_match(code == KeyCode::Char('n'));
+                tab.selected_match = tab.adjacent_file_match(true);
             }
-            KeyCode::Char('K') if shift => {
+            KeyCode::Char('N') if tab.content_search && capital => {
+                tab.hovered = None;
+                tab.selected_match = tab.adjacent_file_match(false);
+            }
+            KeyCode::Char('K') if capital => {
                 self.investigation_menu_action(TOGGLE_DETAILS, outcome);
             }
+            KeyCode::Char('a') if !tab.content_search && plain => {
+                self.investigation_menu_action(NEW_FILE, outcome);
+            }
+            KeyCode::Char('A') if !tab.content_search && capital => {
+                self.investigation_menu_action(NEW_DIRECTORY, outcome);
+            }
+            KeyCode::Char('y') if plain => {
+                self.investigation_menu_action(COPY_PATH, outcome);
+            }
+            KeyCode::Char('t') if plain => {
+                self.investigation_menu_action(SEND_PATH, outcome);
+            }
+            KeyCode::Char('C') if capital => {
+                self.investigation_menu_action(OPEN_AS_ROOT, outcome);
+            }
+
             KeyCode::Insert => {
                 if tab.content_search {
                     if !tab.omitted.insert(tab.selected_match) {
@@ -913,148 +953,4 @@ fn select_for_menu(tab: &mut Investigation, index: usize) {
     if !marked {
         tab.selected_files.clear();
     }
-}
-
-/// A files action users can rebind by name in `ui.file_workbench_keys`.
-struct NamedKey {
-    name: &'static str,
-    /// The key a configured one replaces.
-    alias: (KeyCode, M),
-    /// The key the router handles for it.
-    target: (KeyCode, M),
-    /// Only on the list without a dialog: elsewhere the key types or moves
-    /// in a menu.
-    list_only: bool,
-}
-
-/// A key known by `name`, wherever the files have the keys.
-const fn named(name: &'static str, key: (KeyCode, M)) -> NamedKey {
-    NamedKey {
-        name,
-        alias: key,
-        target: key,
-        list_only: false,
-    }
-}
-
-/// `alias` standing for `target` on the list.
-const fn on_list(name: &'static str, alias: (KeyCode, M), target: (KeyCode, M)) -> NamedKey {
-    NamedKey {
-        name,
-        alias,
-        target,
-        list_only: true,
-    }
-}
-
-const fn bare(code: KeyCode) -> (KeyCode, M) {
-    (code, M::empty())
-}
-
-const fn plain(c: char) -> (KeyCode, M) {
-    bare(KeyCode::Char(c))
-}
-
-const fn shifted(c: char) -> (KeyCode, M) {
-    (KeyCode::Char(c), M::SHIFT)
-}
-
-const fn ctrl(c: char) -> (KeyCode, M) {
-    (KeyCode::Char(c), M::CONTROL)
-}
-
-// Why `pin` and `read`: the names users configured when Enter pinned a
-// preview and Space read one; they now open the editor and pager.
-// Why the vim letters stand for the arrows: a configured key replaces only
-// the letter, and the arrows keep working.
-const NAMED_KEYS: &[NamedKey] = &[
-    on_list("pin", bare(KeyCode::Enter), bare(KeyCode::Enter)),
-    on_list("read", plain(' '), plain(' ')),
-    on_list("down", plain('j'), bare(KeyCode::Down)),
-    on_list("up", plain('k'), bare(KeyCode::Up)),
-    on_list("collapse", plain('h'), bare(KeyCode::Left)),
-    on_list("expand", plain('l'), bare(KeyCode::Right)),
-    on_list("top", plain('g'), bare(KeyCode::Home)),
-    on_list("bottom", shifted('G'), bare(KeyCode::End)),
-    on_list("half_page_down", ctrl('d'), ctrl('d')),
-    on_list("half_page_up", ctrl('u'), ctrl('u')),
-    on_list("mark", plain('m'), bare(KeyCode::Insert)),
-    on_list("details", shifted('K'), shifted('K')),
-    on_list("next_file", plain('n'), plain('n')),
-    on_list("previous_file", shifted('N'), shifted('N')),
-    named("find_files", ctrl('p')),
-    named("search", (KeyCode::Char('f'), M::CONTROL.union(M::SHIFT))),
-    named("replace", ctrl('h')),
-    named("edit", ctrl('e')),
-    named("copy", ctrl('c')),
-    named("cut", ctrl('x')),
-    named("paste", ctrl('v')),
-    named("select_all", ctrl('a')),
-    named("rename", bare(KeyCode::F(2))),
-    named("delete", bare(KeyCode::Delete)),
-    named("actions", bare(KeyCode::F(10))),
-    named("files_menu", (KeyCode::F(10), M::SHIFT)),
-    named("refresh", bare(KeyCode::F(5))),
-];
-
-impl ClientShellState {
-    /// The key as the router should see it: a configured key becomes its
-    /// action's, the alias it replaced does nothing, and an unconfigured
-    /// alias becomes its target.
-    fn investigation_key(&self, key: &crate::input::TerminalKey) -> crate::input::TerminalKey {
-        let on_list = self
-            .investigation()
-            .is_some_and(|t| t.focus == Focus::Results && t.dialog.is_none());
-        // Why: legacy terminals send a capital without Shift.
-        let mut shifted_capital;
-        let key = match key.code {
-            KeyCode::Char(c) if c.is_ascii_uppercase() && !key.modifiers.contains(M::SHIFT) => {
-                shifted_capital = key.clone();
-                shifted_capital.modifiers |= M::SHIFT;
-                &shifted_capital
-            }
-            _ => key,
-        };
-        let matches = |combo| crate::config::terminal_key_matches_combo(key, combo);
-        let mut disabled = false;
-        let mut aliased = None;
-        for named in NAMED_KEYS {
-            if named.list_only && !on_list {
-                continue;
-            }
-            match self.config.file_workbench_keys.get(named.name) {
-                Some(configured) => {
-                    if crate::config::parse_key_combo(configured).is_some_and(matches) {
-                        return with_combo(key, named.target);
-                    }
-                    if matches(named.alias) {
-                        disabled = true;
-                    }
-                }
-                // Why `top` passes `g` through: `gg` is two presses, which
-                // the router counts.
-                None if named.name != "top" && aliased.is_none() && matches(named.alias) => {
-                    aliased = Some(named.target);
-                }
-                None => {}
-            }
-        }
-        if disabled {
-            let mut result = key.clone();
-            result.code = KeyCode::Null;
-            result.generated_text = None;
-            return result;
-        }
-        aliased.map_or_else(|| key.clone(), |target| with_combo(key, target))
-    }
-}
-
-fn with_combo(
-    key: &crate::input::TerminalKey,
-    (code, modifiers): (KeyCode, M),
-) -> crate::input::TerminalKey {
-    let mut remapped = key.clone();
-    remapped.code = code;
-    remapped.modifiers = modifiers;
-    remapped
 }

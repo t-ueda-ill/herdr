@@ -36,6 +36,7 @@ fn shell(field: usize) -> ClientShellState {
                 query: TextEditor::default(),
                 search_focused: true,
                 scroll: 0,
+                ..Default::default()
             }))
         }
         8 => {

@@ -602,3 +602,432 @@ mod regions {
         assert!(state.files_has_focus());
     }
 }
+
+fn screen(state: &mut ClientShellState, cols: u16) -> Vec<String> {
+    let frame = state.compose(cols, ROWS).expect("composed");
+    frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|cells| cells.iter().map(|c| c.symbol.as_str()).collect::<String>())
+        .collect()
+}
+
+/// The bottom line of the files region.
+fn footer(state: &mut ClientShellState, cols: u16) -> String {
+    let rows = screen(state, cols);
+    let region = state.investigation_hits.region;
+    rows[usize::from(region.bottom() - 1)]
+        .chars()
+        .skip(usize::from(region.x))
+        .take(usize::from(region.width))
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+mod operations {
+    use super::*;
+    use crate::api::schema::{FileOperation, FilesOperateParams};
+
+    fn input_dialog(state: &ClientShellState) -> Option<(String, InputPurpose)> {
+        match &state.investigation().unwrap().dialog {
+            Some(Dialog::Input { input, purpose, .. }) => {
+                Some((input.to_string(), purpose.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_and_shift_a_ask_for_a_new_file_or_directory_in_the_selected_folder() {
+        for (c, operation) in [
+            ('a', FileOperation::CreateFile),
+            ('A', FileOperation::CreateDirectory),
+        ] {
+            let mut state = listed();
+            let src = row_of(&state, "src");
+            select(&mut state, src);
+            char_key(&mut state, c);
+            assert_eq!(
+                input_dialog(&state),
+                Some(("/repo/src/".into(), InputPurpose::Operation(operation))),
+                "{c}"
+            );
+        }
+    }
+
+    #[test]
+    fn y_copies_the_selected_path() {
+        let mut state = listed();
+        let file = row_of(&state, "f05.txt");
+        select(&mut state, file);
+        let outcome = char_key(&mut state, 'y');
+        assert!(outcome.actions.iter().any(|action| matches!(
+            action,
+            ClientShellAction::ClipboardWrite(bytes) if bytes == b"/repo/f05.txt"
+        )));
+    }
+
+    #[test]
+    fn t_asks_to_send_the_selected_path_to_the_terminal() {
+        let mut state = listed();
+        let file = row_of(&state, "f05.txt");
+        select(&mut state, file);
+        char_key(&mut state, 't');
+        assert!(matches!(
+            &state.investigation().unwrap().dialog,
+            Some(Dialog::Send { path, .. }) if path == "/repo/f05.txt"
+        ));
+    }
+
+    #[test]
+    fn shift_c_opens_the_selected_folder_as_the_root() {
+        let mut state = listed();
+        let src = row_of(&state, "src");
+        select(&mut state, src);
+        char_key(&mut state, 'C');
+        assert_eq!(
+            state.investigation().unwrap().browser.root.as_deref(),
+            Some("/repo/src")
+        );
+    }
+
+    #[test]
+    fn shift_delete_plans_a_permanent_delete() {
+        let mut state = listed();
+        let file = row_of(&state, "f05.txt");
+        select(&mut state, file);
+        let outcome = press(&mut state, KeyCode::Delete, M::SHIFT);
+        assert!(sent_methods(&outcome).iter().any(|method| matches!(
+            method,
+            Method::FilesPlan(FilesOperateParams { operation: FileOperation::Delete, paths, .. })
+                if paths == &["/repo/f05.txt".to_owned()]
+        )));
+    }
+
+    #[test]
+    fn alt_letters_in_the_search_fields_toggle_the_search_options() {
+        let mut state = listed();
+        press(&mut state, KeyCode::Char('f'), M::CONTROL | M::SHIFT);
+        assert_eq!(state.investigation().unwrap().focus, Focus::Query);
+        for c in ['r', 'c', 'w', 'i'] {
+            press(&mut state, KeyCode::Char(c), M::ALT);
+        }
+        let tab = state.investigation().unwrap();
+        assert!(tab.regex && tab.case_sensitive && tab.whole_word && tab.ignored);
+        assert_eq!(tab.query.as_str(), "");
+    }
+
+    #[test]
+    fn letters_with_ctrl_or_alt_do_not_run_the_letter_keys() {
+        let mut state = listed();
+        let file = row_of(&state, "f05.txt");
+        select(&mut state, file);
+        // Why not `m`: Alt+M opens the actions menu.
+        for c in ['a', 'y', 't', 'n'] {
+            for modifiers in [M::ALT, M::CONTROL | M::ALT].into_iter().filter(|m| {
+                // Why: Ctrl+A marks every file, whatever else is held.
+                c != 'a' || !m.contains(M::CONTROL)
+            }) {
+                let outcome = press(&mut state, KeyCode::Char(c), modifiers);
+                assert!(outcome.actions.is_empty(), "{c} {modifiers:?}");
+            }
+        }
+        let tab = state.investigation().unwrap();
+        assert!(tab.dialog.is_none());
+        assert!(tab.selected_files.is_empty());
+        for c in ['K', 'C', 'A'] {
+            press(&mut state, KeyCode::Char(c), M::CONTROL | M::SHIFT);
+        }
+        assert!(!state.workbench.hide_details);
+        assert!(state.investigation().unwrap().dialog.is_none());
+    }
+
+    #[test]
+    fn a_configured_key_takes_over_an_operation_letter() {
+        let mut state = listed();
+        state
+            .config
+            .file_workbench_keys
+            .insert("new_file".into(), "ctrl+n".into());
+        char_key(&mut state, 'a');
+        assert_eq!(input_dialog(&state), None);
+        press(&mut state, KeyCode::Char('n'), M::CONTROL);
+        assert!(input_dialog(&state).is_some());
+    }
+}
+
+mod footer {
+    use super::*;
+
+    #[test]
+    fn an_unusable_configured_key_is_left_out_rather_than_shown_as_the_default() {
+        let mut state = listed();
+        state
+            .config
+            .file_workbench_keys
+            .insert("details".into(), String::new());
+        let line = footer(&mut state, COLS);
+        assert!(!line.contains("details"), "{line}");
+        char_key(&mut state, 'K');
+        assert!(!state.workbench.hide_details, "K is off");
+    }
+
+    #[test]
+    fn the_replacement_field_says_enter_previews() {
+        let mut state = listed();
+        let tab = state.investigation_mut().unwrap();
+        tab.content_search = true;
+        tab.focus = Focus::Replacement;
+        assert!(footer(&mut state, COLS).starts_with("Enter preview"));
+    }
+
+    #[test]
+    fn the_tree_list_shows_opening_filtering_details_and_file_keys() {
+        let mut state = listed();
+        let line = footer(&mut state, COLS);
+        assert!(
+            line.starts_with("Enter edit · Space view · / filter · K details · a new · F2 rename · Del trash · F10 menu"),
+            "{line}"
+        );
+        assert!(line.ends_with("? keys"), "{line}");
+    }
+
+    #[test]
+    fn content_search_results_show_the_file_jump_and_replace_keys() {
+        let mut state = listed();
+        let tab = state.investigation_mut().unwrap();
+        tab.content_search = true;
+        tab.matches = vec![found("/repo/a", 1)];
+        let line = footer(&mut state, COLS);
+        assert!(
+            line.starts_with("Enter edit · Space view · n/N file · Ctrl+H replace · F10 menu"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn marked_files_show_the_keys_that_act_on_them() {
+        let mut state = listed();
+        state
+            .investigation_mut()
+            .unwrap()
+            .selected_files
+            .insert("/repo/f01.txt".into());
+        let line = footer(&mut state, COLS);
+        assert!(
+            line.starts_with("m mark · Ctrl+C copy · Ctrl+X cut · Del trash · Esc clear"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn the_input_fields_show_their_own_keys() {
+        let mut state = listed();
+        state.investigation_mut().unwrap().focus = Focus::Paths;
+        assert!(footer(&mut state, COLS).starts_with("Enter/Esc list · Tab next"));
+        let tab = state.investigation_mut().unwrap();
+        tab.content_search = true;
+        tab.focus = Focus::Query;
+        assert!(footer(&mut state, COLS)
+            .starts_with("Enter search · Alt+R regex · Alt+C case · Alt+W word · Tab next"));
+    }
+
+    #[test]
+    fn files_on_the_clipboard_show_the_paste_key_with_their_count() {
+        let mut state = listed();
+        char_key(&mut state, 'j');
+        press(&mut state, KeyCode::Char('c'), M::CONTROL);
+        let line = footer(&mut state, COLS);
+        assert!(
+            line.starts_with("Enter edit · Space view · Ctrl+V paste (copy 1 items)"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_configured_key_is_shown_in_place_of_the_default() {
+        let mut state = listed();
+        state
+            .config
+            .file_workbench_keys
+            .insert("details".into(), "ctrl+t".into());
+        assert!(footer(&mut state, COLS).contains("Ctrl+T details"));
+    }
+
+    #[test]
+    fn a_narrow_footer_drops_whole_items_from_the_right_and_keeps_the_key_list() {
+        let mut state = listed();
+        let line = footer(&mut state, 60);
+        assert!(line.ends_with("? keys"), "{line}");
+        assert!(line.starts_with("Enter edit · Space view"), "{line}");
+        assert!(!line.contains("F10 menu"), "{line}");
+        for item in line.trim_end_matches("? keys").split(" · ") {
+            assert!(!item.trim().is_empty(), "{line}");
+        }
+    }
+}
+
+mod key_list {
+    use super::*;
+    use crate::client::shell::state::ClientHelpOverlay;
+
+    /// The first group header in the key list's body.
+    fn first_group(rows: &[String]) -> String {
+        let filter = rows
+            .iter()
+            .position(|r| r.contains("press / to filter"))
+            .expect("key list shown");
+        rows[filter + 2].clone()
+    }
+
+    fn help(state: &ClientShellState) -> &ClientHelpOverlay {
+        match &state.overlay {
+            Some(ClientShellOverlay::Help(help)) => help,
+            other => panic!("help open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn question_mark_on_the_list_opens_the_key_list_with_files_first() {
+        let mut state = listed();
+        char_key(&mut state, '?');
+        assert!(help(&state).files_first);
+        let rows = screen(&mut state, COLS);
+        assert!(first_group(&rows).contains("│ files "));
+        assert!(rows
+            .iter()
+            .any(|r| r.contains("Enter") && r.contains("edit file / expand folder")));
+    }
+
+    #[test]
+    fn a_shifted_slash_reported_with_its_text_opens_the_key_list() {
+        let mut state = listed();
+        let mut key = crate::input::TerminalKey::new(KeyCode::Char('/'), M::SHIFT);
+        key.generated_text = Some("?".into());
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Key(key)]);
+        assert!(help(&state).files_first);
+        assert_eq!(state.investigation().unwrap().focus, Focus::Results);
+    }
+
+    #[test]
+    fn the_key_list_opened_from_the_list_scrolls_with_the_keys_and_closes_with_question_mark() {
+        let mut state = listed();
+        char_key(&mut state, '?');
+        screen(&mut state, COLS);
+        let before = selected(&state);
+        press(&mut state, KeyCode::Down, M::empty());
+        assert_eq!(selected(&state), before, "the list stays");
+        assert!(help(&state).scroll > 0);
+        char_key(&mut state, '?');
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn a_config_reload_refreshes_an_open_key_list() {
+        let mut state = listed();
+        char_key(&mut state, '?');
+        let mut config = Config::default();
+        config
+            .ui
+            .file_workbench_keys
+            .insert("copy_path".into(), "ctrl+y".into());
+        state.config.apply_live_config(&config, &[], &[]);
+        state.refresh_help_files();
+        assert!(help(&state)
+            .files
+            .iter()
+            .any(|(key, label)| key == "Ctrl+Y" && label == "copy path"));
+    }
+
+    #[test]
+    fn the_key_list_shows_configured_files_keys() {
+        let mut state = listed();
+        state
+            .config
+            .file_workbench_keys
+            .insert("copy_path".into(), "ctrl+y".into());
+        char_key(&mut state, '?');
+        assert!(help(&state)
+            .files
+            .iter()
+            .any(|(key, label)| key == "Ctrl+Y" && label == "copy path"));
+    }
+
+    #[test]
+    fn the_prefix_help_lists_the_files_keys_after_the_other_groups() {
+        let mut state = listed();
+        prefixed(&mut state, KeyCode::Char('?'), M::SHIFT);
+        assert!(!help(&state).files_first);
+        let rows = screen(&mut state, COLS);
+        assert!(!first_group(&rows).contains("│ files "));
+        assert!(help(&state)
+            .files
+            .iter()
+            .any(|(_, label)| label == "new file"));
+    }
+}
+
+mod menu_hints {
+    use super::*;
+
+    #[test]
+    fn the_files_menu_leaves_out_keys_that_act_on_the_selection_instead() {
+        let state = listed();
+        assert_eq!(state.files_menu_hint(MenuTarget::Tree, NEW_FILE), None);
+        assert_eq!(state.files_menu_hint(MenuTarget::Tree, PASTE_FILES), None);
+        assert_eq!(
+            state
+                .files_menu_hint(MenuTarget::Directory, NEW_FILE)
+                .as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            state
+                .files_menu_hint(MenuTarget::Tree, TOGGLE_DETAILS)
+                .as_deref(),
+            Some("K")
+        );
+    }
+
+    #[test]
+    fn menu_items_show_their_keys() {
+        let mut state = listed();
+        let file = row_of(&state, "f05.txt");
+        select(&mut state, file);
+        press(&mut state, KeyCode::F(10), M::empty());
+        let rows = screen(&mut state, COLS);
+        for (label, key) in [
+            ("copy path", "y"),
+            ("edit file", "Enter"),
+            ("rename…", "F2"),
+        ] {
+            assert!(
+                rows.iter()
+                    .any(|r| r.contains(label) && r.trim_end_matches(['│', ' ']).ends_with(key)),
+                "{label} {key}"
+            );
+        }
+    }
+}
+
+mod labels {
+    use super::super::super::keys::combo_label;
+
+    #[test]
+    fn configured_keys_read_as_typed() {
+        for (combo, label) in [
+            ("shift+tab", "Shift+Tab"),
+            ("shift+space", "Shift+Space"),
+            ("shift+1", "Shift+1"),
+            ("super+k", "Super+k"),
+            ("ctrl+shift+f", "Ctrl+Shift+F"),
+            ("shift+k", "K"),
+            ("shift+f10", "Shift+F10"),
+            ("alt+r", "Alt+R"),
+        ] {
+            let parsed = crate::config::parse_key_combo(combo).expect(combo);
+            assert_eq!(combo_label(parsed), label, "{combo}");
+        }
+    }
+}

@@ -13,6 +13,8 @@ pub(crate) struct MenuItem<'a> {
     pub(crate) enabled: bool,
     /// Draws an attention dot before the label and widens the menu for it.
     pub(crate) badge: bool,
+    /// The item's key, drawn dimmed at the right edge.
+    pub(crate) hint: Option<&'a str>,
 }
 
 impl<'a> MenuItem<'a> {
@@ -21,6 +23,7 @@ impl<'a> MenuItem<'a> {
             label,
             enabled: true,
             badge: false,
+            hint: None,
         }
     }
 }
@@ -59,7 +62,11 @@ pub(crate) struct MenuRender {
 pub(crate) fn menu_size(items: &[MenuItem<'_>], look: MenuLook, screen: Rect) -> (u16, u16) {
     let width = items
         .iter()
-        .map(|item| display_width(item.label).saturating_add(u16::from(item.badge) * 2))
+        .map(|item| {
+            display_width(item.label)
+                .saturating_add(u16::from(item.badge) * 2)
+                .saturating_add(item.hint.map_or(0, |hint| display_width(hint) + 2))
+        })
         .max()
         .unwrap_or(0)
         .saturating_add(4)
@@ -238,6 +245,20 @@ fn draw_row(
         item.label,
         style,
     );
+    let label_end = x.saturating_add(display_width(item.label));
+    if let Some(hint) = item.hint {
+        let width = display_width(hint);
+        let hint_x = row.right().saturating_sub(width.saturating_add(1));
+        // Why left out rather than clipped: a cut key reads as another key.
+        if hint_x > label_end {
+            let hint_style = if highlighted {
+                style
+            } else {
+                style.fg(palette.overlay0)
+            };
+            put_text(buffer, hint_x, row.y, width, hint, hint_style);
+        }
+    }
 }
 
 /// Item under the pointer, if any.
@@ -449,6 +470,42 @@ mod tests {
             indent: 0,
         };
         assert_eq!(menu_size(&rows, look, SCREEN), (14, 4));
+    }
+
+    #[test]
+    fn a_key_hint_widens_the_menu_by_its_width_and_a_gap() {
+        let plain = [MenuItem::new("abc")];
+        let hinted = [MenuItem {
+            hint: Some("F10"),
+            ..MenuItem::new("abc")
+        }];
+        let look = MenuLook::default();
+        assert_eq!(
+            menu_size(&hinted, look, SCREEN).0,
+            menu_size(&plain, look, SCREEN).0 + 5
+        );
+    }
+
+    #[test]
+    fn a_key_hint_that_does_not_fit_beside_its_label_is_left_out() {
+        let items = [MenuItem {
+            hint: Some("prefix+shift+x"),
+            ..MenuItem::new("close files tab")
+        }];
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 5));
+        render_menu(
+            &mut buffer,
+            &items,
+            MenuAnchor::TopLeft { x: 0, y: 0 },
+            MenuLook::default(),
+            None,
+            0,
+            &Palette::catppuccin(),
+        );
+        let row: String = (0..20).map(|x| buffer[(x, 1)].symbol()).collect();
+        assert!(row.contains("close files"), "{row}");
+        assert!(!row.contains("prefix"), "{row}");
+        assert!(row.ends_with('│'), "{row}");
     }
 
     #[test]

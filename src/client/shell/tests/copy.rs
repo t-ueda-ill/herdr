@@ -7,6 +7,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
         query: TextEditor::default(),
         search_focused: true,
         scroll: 0,
+        ..Default::default()
     }));
 
     assert!(state.insert_overlay_text("work\nspace"));

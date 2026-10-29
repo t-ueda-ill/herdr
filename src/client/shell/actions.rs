@@ -67,11 +67,7 @@ impl ClientShellState {
                         outcome.repaint = true;
                         return;
                     }
-                    self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
-                        query: TextEditor::default(),
-                        search_focused: false,
-                        scroll: 0,
-                    }));
+                    self.overlay = Some(ClientShellOverlay::Help(self.help_overlay(false)));
                     outcome.repaint = true;
                     return;
                 }
