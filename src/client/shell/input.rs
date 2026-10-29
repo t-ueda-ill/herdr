@@ -749,14 +749,23 @@ impl ClientShellState {
         if matches!(key.code, KeyCode::Modifier(_)) {
             return None;
         }
-        if self.files_has_focus() && self.mode != ClientShellMode::Prefix {
+        // Why not in the navigate and resize modes: their keys move the
+        // focus or a size, which includes the files region.
+        if self.files_has_focus()
+            && !matches!(
+                self.mode,
+                ClientShellMode::Prefix | ClientShellMode::Navigate | ClientShellMode::Resize
+            )
+        {
             if let Some(binding) =
                 crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
             {
+                self.forget_pending_g();
                 self.record_binding(binding, outcome);
                 return None;
             }
             if self.config.keybinds.matches_prefix(key) {
+                self.forget_pending_g();
                 self.mode = ClientShellMode::Prefix;
                 outcome.repaint = true;
                 return None;

@@ -37,6 +37,9 @@ pub(in crate::client::shell) const RETURN_MARGIN_COLS: u16 = 6;
 pub(in crate::client::shell) const RETURN_MARGIN_ROWS: u16 = 2;
 const DEFAULT_SIDE_PERMILLE: u16 = 300;
 const DEFAULT_BOTTOM_PERMILLE: u16 = 400;
+/// The share one resize-mode key moves the divider, as the server's pane
+/// resize step (5%).
+const RESIZE_STEP_PERMILLE: u32 = 50;
 
 /// The pane surface divided between terminals, divider and files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,6 +235,38 @@ impl FilesPlacement {
             },
         })
     }
+    /// Grows or shrinks the files region inside `surface` (the whole pane
+    /// surface before the carve) by the step of a pane resize, keeping both
+    /// minimums. Returns whether the ratio changed.
+    pub fn resize_step(&mut self, surface: Rect, grow: bool) -> bool {
+        let Some(carve) = self.carve(surface) else {
+            return false;
+        };
+        let (extent, min_terminal, min_files, _) = axis(self.dock, surface);
+        let available = extent.saturating_sub(1);
+        let current = match self.dock {
+            FilesDock::Left | FilesDock::Right => carve.files.width,
+            FilesDock::Bottom => carve.files.height,
+        };
+        let step = u16::try_from(u32::from(available) * RESIZE_STEP_PERMILLE / 1000)
+            .unwrap_or(u16::MAX)
+            .max(1);
+        let files = if grow {
+            current.saturating_add(step)
+        } else {
+            current.saturating_sub(step)
+        }
+        .clamp(min_files, available - min_terminal);
+        // Why not stored at a limit: the share would then describe this
+        // surface's minimum, and another window size would show it larger.
+        files != current && self.set_files_extent(files, available)
+    }
+    /// Why rounded up: `carve` rounds to nearest, and a floor would let the
+    /// divider creep one cell away from where it was put on each step.
+    fn set_files_extent(&mut self, files: u16, available: u16) -> bool {
+        let permille = (u32::from(files) * 1000).div_ceil(u32::from(available));
+        self.set_permille(u16::try_from(permille).unwrap_or(1000))
+    }
     /// Moves the divider to the pointer cell inside `surface` (the whole pane
     /// surface before the carve), keeping both minimums. Returns whether the
     /// ratio changed.
@@ -247,10 +282,7 @@ impl FilesPlacement {
             FilesDock::Bottom => surface.bottom().saturating_sub(1).saturating_sub(row),
         }
         .clamp(min_files, available - min_terminal);
-        // Why rounded up: `carve` rounds to nearest, and a floor would let the
-        // divider creep one cell away from the pointer on each event.
-        let permille = (u32::from(files) * 1000).div_ceil(u32::from(available));
-        self.set_permille(u16::try_from(permille).unwrap_or(1000))
+        self.set_files_extent(files, available)
     }
 }
 

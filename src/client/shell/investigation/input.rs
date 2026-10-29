@@ -24,6 +24,12 @@ impl ClientShellState {
         }
         true
     }
+    /// Breaks a pending `gg` for input the list router never sees.
+    pub(in crate::client::shell) fn forget_pending_g(&mut self) {
+        if let Some(tab) = self.investigation_mut() {
+            tab.pending_g = false;
+        }
+    }
     pub(in crate::client::shell) fn route_investigation_key(
         &mut self,
         key: &crate::input::TerminalKey,
@@ -39,6 +45,8 @@ impl ClientShellState {
         let Some(tab) = self.investigation_mut() else {
             return;
         };
+        // Why taken on every key: any other key between the two breaks `gg`.
+        let pending_g = std::mem::take(&mut tab.pending_g);
         if tab.dialog.is_some() {
             self.route_investigation_dialog(code, modifiers, key, outcome);
             return;
@@ -170,8 +178,30 @@ impl ClientShellState {
             }
             return;
         }
+        let first_g = code == KeyCode::Char('g') && modifiers.is_empty();
+        if pending_g && first_g {
+            tab.move_list(isize::MIN);
+            return;
+        }
+        if first_g {
+            tab.pending_g = true;
+            return;
+        }
+        let page = isize::try_from(self.investigation_hits.list.height.max(1)).unwrap_or(1);
+        let Some(tab) = self.investigation_mut() else {
+            return;
+        };
         if ctrl {
             match code {
+                KeyCode::Char('d' | 'u') => {
+                    let half = (page / 2).max(1);
+                    tab.move_list(if code == KeyCode::Char('d') {
+                        half
+                    } else {
+                        -half
+                    });
+                    return;
+                }
                 KeyCode::Char('c') => {
                     self.investigation_menu_action(COPY_FILES, outcome);
                     return;
@@ -240,33 +270,38 @@ impl ClientShellState {
                     self.investigation_open_file(mode, outcome);
                 }
             }
+            KeyCode::Home | KeyCode::End => {
+                tab.move_list(if code == KeyCode::Home {
+                    isize::MIN
+                } else {
+                    isize::MAX
+                });
+            }
             KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
                 let delta = match code {
                     KeyCode::Up => -1,
                     KeyCode::Down => 1,
-                    KeyCode::PageUp => -10,
-                    _ => 10,
+                    KeyCode::PageUp => -page,
+                    _ => page,
                 };
-                // Why not keep it: scrolling shifts rows under a resting pointer.
-                tab.hovered = None;
-                if tab.content_search {
-                    tab.selected_match = (tab.selected_match as isize + delta)
-                        .max(0)
-                        .min(tab.matches.len().saturating_sub(1) as isize)
-                        as usize;
-                } else {
-                    if shift {
-                        if let Some(e) = tab.browser.selected_entry() {
-                            tab.selected_files.insert(e.path.clone());
-                        }
-                    }
-                    tab.browser.move_selection(delta);
-                    if shift {
-                        if let Some(e) = tab.browser.selected_entry() {
-                            tab.selected_files.insert(e.path.clone());
-                        }
+                if shift && !tab.content_search {
+                    if let Some(e) = tab.browser.selected_entry() {
+                        tab.selected_files.insert(e.path.clone());
                     }
                 }
+                tab.move_list(delta);
+                if shift && !tab.content_search {
+                    if let Some(e) = tab.browser.selected_entry() {
+                        tab.selected_files.insert(e.path.clone());
+                    }
+                }
+            }
+            KeyCode::Char('n' | 'N') if tab.content_search => {
+                tab.hovered = None;
+                tab.selected_match = tab.adjacent_file_match(code == KeyCode::Char('n'));
+            }
+            KeyCode::Char('K') if shift => {
+                self.investigation_menu_action(TOGGLE_DETAILS, outcome);
             }
             KeyCode::Insert => {
                 if tab.content_search {
@@ -329,7 +364,7 @@ impl ClientShellState {
                     .iter()
                     .map(|label| menu_widget::MenuItem::new(label))
                     .collect();
-                match menu_widget::menu_key(code, Some(*selected), &items, false) {
+                match menu_widget::menu_key(code, Some(*selected), &items, true) {
                     menu_widget::MenuKey::Move(index) => {
                         *selected = index;
                         *scroll = menu_widget::scroll_window(
@@ -475,6 +510,9 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         let point = (mouse.column, mouse.row);
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.forget_pending_g();
+        }
         let right = mouse.kind == MouseEventKind::Down(MouseButton::Right);
         if right || mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             if let Some((_, index)) = self
@@ -877,54 +915,146 @@ fn select_for_menu(tab: &mut Investigation, index: usize) {
     }
 }
 
+/// A files action users can rebind by name in `ui.file_workbench_keys`.
+struct NamedKey {
+    name: &'static str,
+    /// The key a configured one replaces.
+    alias: (KeyCode, M),
+    /// The key the router handles for it.
+    target: (KeyCode, M),
+    /// Only on the list without a dialog: elsewhere the key types or moves
+    /// in a menu.
+    list_only: bool,
+}
+
+/// A key known by `name`, wherever the files have the keys.
+const fn named(name: &'static str, key: (KeyCode, M)) -> NamedKey {
+    NamedKey {
+        name,
+        alias: key,
+        target: key,
+        list_only: false,
+    }
+}
+
+/// `alias` standing for `target` on the list.
+const fn on_list(name: &'static str, alias: (KeyCode, M), target: (KeyCode, M)) -> NamedKey {
+    NamedKey {
+        name,
+        alias,
+        target,
+        list_only: true,
+    }
+}
+
+const fn bare(code: KeyCode) -> (KeyCode, M) {
+    (code, M::empty())
+}
+
+const fn plain(c: char) -> (KeyCode, M) {
+    bare(KeyCode::Char(c))
+}
+
+const fn shifted(c: char) -> (KeyCode, M) {
+    (KeyCode::Char(c), M::SHIFT)
+}
+
+const fn ctrl(c: char) -> (KeyCode, M) {
+    (KeyCode::Char(c), M::CONTROL)
+}
+
+// Why `pin` and `read`: the names users configured when Enter pinned a
+// preview and Space read one; they now open the editor and pager.
+// Why the vim letters stand for the arrows: a configured key replaces only
+// the letter, and the arrows keep working.
+const NAMED_KEYS: &[NamedKey] = &[
+    on_list("pin", bare(KeyCode::Enter), bare(KeyCode::Enter)),
+    on_list("read", plain(' '), plain(' ')),
+    on_list("down", plain('j'), bare(KeyCode::Down)),
+    on_list("up", plain('k'), bare(KeyCode::Up)),
+    on_list("collapse", plain('h'), bare(KeyCode::Left)),
+    on_list("expand", plain('l'), bare(KeyCode::Right)),
+    on_list("top", plain('g'), bare(KeyCode::Home)),
+    on_list("bottom", shifted('G'), bare(KeyCode::End)),
+    on_list("half_page_down", ctrl('d'), ctrl('d')),
+    on_list("half_page_up", ctrl('u'), ctrl('u')),
+    on_list("mark", plain('m'), bare(KeyCode::Insert)),
+    on_list("details", shifted('K'), shifted('K')),
+    on_list("next_file", plain('n'), plain('n')),
+    on_list("previous_file", shifted('N'), shifted('N')),
+    named("find_files", ctrl('p')),
+    named("search", (KeyCode::Char('f'), M::CONTROL.union(M::SHIFT))),
+    named("replace", ctrl('h')),
+    named("edit", ctrl('e')),
+    named("copy", ctrl('c')),
+    named("cut", ctrl('x')),
+    named("paste", ctrl('v')),
+    named("select_all", ctrl('a')),
+    named("rename", bare(KeyCode::F(2))),
+    named("delete", bare(KeyCode::Delete)),
+    named("actions", bare(KeyCode::F(10))),
+    named("files_menu", (KeyCode::F(10), M::SHIFT)),
+    named("refresh", bare(KeyCode::F(5))),
+];
+
 impl ClientShellState {
+    /// The key as the router should see it: a configured key becomes its
+    /// action's, the alias it replaced does nothing, and an unconfigured
+    /// alias becomes its target.
     fn investigation_key(&self, key: &crate::input::TerminalKey) -> crate::input::TerminalKey {
-        // Why `pin` and `read`: the names users configured when Enter pinned
-        // a preview and Space read one; they now open the editor and pager.
-        let bindings = [
-            ("pin", KeyCode::Enter, M::empty()),
-            ("read", KeyCode::Char(' '), M::empty()),
-            ("find_files", KeyCode::Char('p'), M::CONTROL),
-            ("search", KeyCode::Char('f'), M::CONTROL | M::SHIFT),
-            ("replace", KeyCode::Char('h'), M::CONTROL),
-            ("edit", KeyCode::Char('e'), M::CONTROL),
-            ("copy", KeyCode::Char('c'), M::CONTROL),
-            ("cut", KeyCode::Char('x'), M::CONTROL),
-            ("paste", KeyCode::Char('v'), M::CONTROL),
-            ("select_all", KeyCode::Char('a'), M::CONTROL),
-            ("rename", KeyCode::F(2), M::empty()),
-            ("delete", KeyCode::Delete, M::empty()),
-            ("actions", KeyCode::F(10), M::empty()),
-            ("files_menu", KeyCode::F(10), M::SHIFT),
-            ("refresh", KeyCode::F(5), M::empty()),
-        ];
-        let actual = crate::config::normalize_key_combo((key.code, key.modifiers));
+        let on_list = self
+            .investigation()
+            .is_some_and(|t| t.focus == Focus::Results && t.dialog.is_none());
+        // Why: legacy terminals send a capital without Shift.
+        let mut shifted_capital;
+        let key = match key.code {
+            KeyCode::Char(c) if c.is_ascii_uppercase() && !key.modifiers.contains(M::SHIFT) => {
+                shifted_capital = key.clone();
+                shifted_capital.modifiers |= M::SHIFT;
+                &shifted_capital
+            }
+            _ => key,
+        };
+        let matches = |combo| crate::config::terminal_key_matches_combo(key, combo);
         let mut disabled = false;
-        for (name, code, modifiers) in bindings {
-            if matches!(name, "pin" | "read")
-                && self
-                    .investigation()
-                    .is_some_and(|t| t.focus != Focus::Results || t.dialog.is_some())
-            {
+        let mut aliased = None;
+        for named in NAMED_KEYS {
+            if named.list_only && !on_list {
                 continue;
             }
-            if let Some(configured) = self.config.file_workbench_keys.get(name) {
-                if crate::config::parse_key_combo(configured) == Some(actual) {
-                    let mut remapped = key.clone();
-                    remapped.code = code;
-                    remapped.modifiers = modifiers;
-                    return remapped;
+            match self.config.file_workbench_keys.get(named.name) {
+                Some(configured) => {
+                    if crate::config::parse_key_combo(configured).is_some_and(matches) {
+                        return with_combo(key, named.target);
+                    }
+                    if matches(named.alias) {
+                        disabled = true;
+                    }
                 }
-                if actual == (code, modifiers) {
-                    disabled = true;
+                // Why `top` passes `g` through: `gg` is two presses, which
+                // the router counts.
+                None if named.name != "top" && aliased.is_none() && matches(named.alias) => {
+                    aliased = Some(named.target);
                 }
+                None => {}
             }
         }
-        let mut result = key.clone();
         if disabled {
+            let mut result = key.clone();
             result.code = KeyCode::Null;
             result.generated_text = None;
+            return result;
         }
-        result
+        aliased.map_or_else(|| key.clone(), |target| with_combo(key, target))
     }
+}
+
+fn with_combo(
+    key: &crate::input::TerminalKey,
+    (code, modifiers): (KeyCode, M),
+) -> crate::input::TerminalKey {
+    let mut remapped = key.clone();
+    remapped.code = code;
+    remapped.modifiers = modifiers;
+    remapped
 }
