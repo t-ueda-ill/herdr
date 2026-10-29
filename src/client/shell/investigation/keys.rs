@@ -376,6 +376,10 @@ fn with_combo(
     let mut remapped = key.clone();
     remapped.code = code;
     remapped.modifiers = modifiers;
+    // Why cleared: the router reads the text too, and the pressed key's text
+    // would make it act as that key on terminals that send one.
+    remapped.generated_text = None;
+    remapped.shifted_codepoint = None;
     remapped
 }
 

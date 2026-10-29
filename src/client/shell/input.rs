@@ -234,7 +234,11 @@ impl ClientShellState {
         &mut self,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        if self.help_passes_input_to_workbench()
+        // Why not `help_passes_input_to_workbench`: a key list opened from
+        // the files list keeps the keys, but a plan answer or a click beside
+        // it still opens a dialog beneath it.
+        if self.help_open_without_search()
+            && self.files_has_focus()
             && self.investigation().is_some_and(|tab| tab.dialog.is_some())
         {
             self.overlay = None;

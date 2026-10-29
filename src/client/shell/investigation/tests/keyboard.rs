@@ -924,6 +924,34 @@ mod key_list {
     }
 
     #[test]
+    fn a_dialog_that_opens_under_the_key_list_closes_the_list() {
+        let mut state = listed();
+        char_key(&mut state, '?');
+        state.investigation_mut().unwrap().dialog =
+            Some(Dialog::menu(MenuTarget::Tree, MenuPlacement::Header));
+        let mut outcome = ClientShellInput::default();
+        assert!(state.close_help_over_workbench_dialog(&mut outcome));
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn a_question_mark_bound_to_an_action_runs_it_whatever_text_the_host_sends() {
+        let mut state = listed();
+        state
+            .config
+            .file_workbench_keys
+            .insert("new_file".into(), "?".into());
+        let mut key = crate::input::TerminalKey::new(KeyCode::Char('?'), M::SHIFT);
+        key.generated_text = Some("?".into());
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Key(key)]);
+        assert!(state.overlay.is_none());
+        assert!(matches!(
+            state.investigation().unwrap().dialog,
+            Some(Dialog::Input { .. })
+        ));
+    }
+
+    #[test]
     fn a_config_reload_refreshes_an_open_key_list() {
         let mut state = listed();
         char_key(&mut state, '?');
