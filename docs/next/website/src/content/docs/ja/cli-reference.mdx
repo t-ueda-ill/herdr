@@ -350,7 +350,7 @@ herdr pane download <pane_id> <path>... [--dest DIR] [--on-conflict rename|fail|
 
 `--on-conflict` は、保存先に同じ名前があるときの扱いを決めます。`rename`（既定）は `name (1).ext` として公開し、`fail` は何も公開せず終了コード 3 で終わり、`replace` は既存のファイルやディレクトリを置き換えます。公開した絶対パスを 1 行に 1 つ出力し、`--json` では `{ "destination", "paths", "warnings" }` を出力します。終了コードは成功で 0、その他のエラーで 1、Ctrl-C で中断したとき（ダウンロードは中止します）は 130 です。SSH ペインでは、アップロードと同じく SSH の接続共有（ControlMaster）が必要です。Windows ホストでは、コンテナと SSH のペインに対して `platform_unsupported` を返します。
 
-TUI では、`keys.open_files`（既定では未設定）に割り当てたキー、グローバルメニューの `open files`、またはワークスペースの右クリックメニューの `Browse files...` から同じ一覧を閲覧できます。[キーボード](/ja/docs/keyboard/#ファイルビューア)を参照してください。これらのメソッドを持たない古いサーバーや Windows 上のサーバーでは、代わりに `Action unavailable` の通知が出ます。Windows ホストはこれらのコマンドに `platform_unsupported` を返します。
+TUI では、`keys.open_files`（既定は `prefix+f`）、グローバルメニューの `open files`、またはワークスペースの右クリックメニューの `Browse files...` から同じ一覧を閲覧できます。[キーボード](/ja/docs/keyboard/#ファイルビューア)を参照してください。これらのメソッドを持たない古いサーバーや Windows 上のサーバーでは、代わりに `Action unavailable` の通知が出ます。Windows ホストはこれらのコマンドに `platform_unsupported` を返します。
 
 ## コンテナ
 

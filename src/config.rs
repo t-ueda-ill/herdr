@@ -210,7 +210,8 @@ mod tests {
 
     #[test]
     fn local_keybindings_profile_carries_the_open_files_binding() {
-        let config: Config = toml::from_str("[keys]\nopen_files = \"prefix+f\"\n").unwrap();
+        // Why not the default `prefix+f`: a dropped value would restore it.
+        let config: Config = toml::from_str("[keys]\nopen_files = \"prefix+ctrl+f\"\n").unwrap();
         let profile = config.local_keybindings_profile_toml().unwrap();
         assert!(profile.contains("open_files"), "{profile}");
         let restored = keybindings_from_profile_toml(&profile).unwrap();

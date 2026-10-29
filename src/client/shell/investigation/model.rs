@@ -113,6 +113,8 @@ pub(in crate::client::shell) struct Investigation {
     /// `Workbench::placement`: that is the one being shown, and another
     /// workspace reopens with its own.
     pub placement: Option<SavedFilesPlacement>,
+    /// The first `g` of `gg` was pressed on the list.
+    pub pending_g: bool,
 }
 #[derive(Debug, Default)]
 pub(in crate::client::shell) struct StatState {
@@ -300,6 +302,7 @@ impl Investigation {
             notice: String::new(),
             upload_refresh: None,
             placement: None,
+            pending_g: false,
         }
     }
     /// The file the selection opens, and the line of a selected match.
@@ -347,6 +350,39 @@ impl Investigation {
         }
         let (path, _) = self.target()?;
         self.browser.parent_path(&path).map(str::to_owned)
+    }
+    /// Moves the list selection by `delta` rows, clamped to the list.
+    pub fn move_list(&mut self, delta: isize) {
+        // Why not keep it: scrolling shifts rows under a resting pointer.
+        self.hovered = None;
+        if self.content_search {
+            let last = self.matches.len().saturating_sub(1);
+            self.selected_match = self.selected_match.saturating_add_signed(delta).min(last);
+        } else {
+            self.browser.move_selection(delta);
+        }
+    }
+    /// The first match of the next file, or of the previous one, in the
+    /// results; the selected match when there is none.
+    pub fn adjacent_file_match(&self, forward: bool) -> usize {
+        let current = self.selected_match;
+        let Some(path) = self.matches.get(current).map(|m| m.path.as_str()) else {
+            return current;
+        };
+        if forward {
+            return self.matches[current..]
+                .iter()
+                .position(|m| m.path != path)
+                .map_or(current, |offset| current + offset);
+        }
+        let Some(previous) = self.matches[..current].iter().rposition(|m| m.path != path) else {
+            return current;
+        };
+        let previous_path = &self.matches[previous].path;
+        self.matches[..previous]
+            .iter()
+            .rposition(|m| &m.path != previous_path)
+            .map_or(0, |index| index + 1)
     }
     /// The menu target the keyboard opens on: a search field while it has
     /// the focus, otherwise the selected row.

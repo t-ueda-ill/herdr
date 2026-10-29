@@ -307,13 +307,12 @@ mod tests {
     }
 
     #[test]
-    fn open_files_is_unbound_by_default_and_resolves_once_configured() {
+    fn open_files_is_prefix_f_by_default_and_resolves_once_configured() {
         let default_keybinds = crate::config::Config::default().keybinds();
-        assert!(default_keybinds.open_files.bindings.is_empty());
-        assert!(!matches!(
+        assert!(matches!(
             resolve_prefix_binding(
                 &default_keybinds,
-                &TerminalKey::new(KeyCode::Char('f'), KeyModifiers::CONTROL)
+                &TerminalKey::new(KeyCode::Char('f'), KeyModifiers::empty())
             ),
             Some(KeybindMatch::Action(KeybindAction::OpenFiles))
         ));
@@ -338,6 +337,23 @@ mod tests {
                 &TerminalKey::new(KeyCode::Char('f'), KeyModifiers::CONTROL)
             ),
             Some(KeybindMatch::Action(KeybindAction::OpenFiles))
+        ));
+    }
+
+    #[test]
+    fn a_user_command_on_prefix_f_keeps_the_key_without_a_diagnostic() {
+        let config: crate::config::Config =
+            toml::from_str("[[keys.command]]\nkey = \"prefix+f\"\ncommand = \"echo hi\"\n")
+                .unwrap();
+        assert!(config.collect_diagnostics().is_empty());
+        let keybinds = config.keybinds();
+        assert!(keybinds.open_files.bindings.is_empty());
+        assert!(matches!(
+            resolve_prefix_binding(
+                &keybinds,
+                &TerminalKey::new(KeyCode::Char('f'), KeyModifiers::empty())
+            ),
+            Some(KeybindMatch::Command(_))
         ));
     }
 

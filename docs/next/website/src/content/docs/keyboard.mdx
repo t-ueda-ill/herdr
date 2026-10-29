@@ -98,7 +98,7 @@ Mouse drag selections and selections started with `v`, Space, or `V` remain acti
 
 ## File viewer
 
-Bind `keys.open_files` (unset by default), choose `open files` from the global menu, or choose `Browse files...` from a workspace menu to open a files tab.
+Press `keys.open_files` (`prefix+f` by default), choose `open files` from the global menu, or choose `Browse files...` from a workspace menu to open a files tab.
 The files tab opens beside the terminals, docked on the left at first; a workspace opening its first files tab starts from the placement last used. Drag the line between them to resize it. Use the files menu to dock it elsewhere (`dock left` / `dock right` / `dock bottom`) or to show it full screen over the terminals (`show full screen` / `show split`). Each workspace remembers its own choice, dock and size. When the terminals would get fewer than 40 columns or the files fewer than 24 (8 and 6 rows when docked at the bottom), it shows full screen, and goes back beside the terminals once there is a little more room than that, so a window resized near the limit does not keep switching.
 Click either side to give it the keys. `Esc` in the file list with nothing selected gives the keys back to the terminal and leaves the files shown.
 `keys.open_files` gives the keys to a files tab shown beside a focused terminal, hides one that has them, and otherwise reopens the last files tab in that workspace. In full screen it switches between the files tab and the last terminal.

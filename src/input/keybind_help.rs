@@ -323,16 +323,17 @@ mod tests {
 
     #[test]
     fn help_lists_open_files_with_the_investigation_keys() {
-        let unset = keybind_help_groups(&Keybinds::default(), &[]);
+        let unset: crate::config::Config =
+            toml::from_str("[keys]\nopen_files = \"\"\n").expect("open_files parses");
+        let unset = keybind_help_groups(&unset.keybinds(), &[]);
         let (_, files) = unset
             .iter()
             .find(|(group, _)| *group == "files")
             .expect("files group");
         assert_eq!(files[0], entry("unset", "open files"));
 
-        let config: crate::config::Config =
-            toml::from_str("[keys]\nopen_files = \"prefix+f\"\n").expect("open_files parses");
-        let keybinds = config.keybinds();
+        let keybinds = Keybinds::default();
+        assert_eq!(binding_label(&keybinds.open_files), "prefix+f");
         let groups = keybind_help_groups(&keybinds, &[]);
         let (_, files) = groups
             .iter()

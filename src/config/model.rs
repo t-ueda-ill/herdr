@@ -354,7 +354,7 @@ pub struct KeysConfig {
     pub open_ssh_workspace: BindingConfig,
     /// Pick a running Docker container and open a shell in it in a new workspace. Unset by default.
     pub open_container_workspace: BindingConfig,
-    /// Browse files from the focused pane's working directory and send a path to it. Unset by default.
+    /// Browse files from the focused pane's working directory and send a path to it. Default: "prefix+f"
     pub open_files: BindingConfig,
     /// Rename the selected workspace. Default: "prefix+shift+w"
     pub rename_workspace: BindingConfig,
@@ -1191,7 +1191,7 @@ impl Default for KeysConfig {
             remove_worktree: BindingConfig::empty(),
             open_ssh_workspace: BindingConfig::empty(),
             open_container_workspace: BindingConfig::empty(),
-            open_files: BindingConfig::empty(),
+            open_files: BindingConfig::one("prefix+f"),
             rename_workspace: BindingConfig::one("prefix+shift+w"),
             close_workspace: BindingConfig::one("prefix+shift+d"),
             workspace_picker: BindingConfig::one("prefix+w"),

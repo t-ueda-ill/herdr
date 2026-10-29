@@ -5,6 +5,7 @@ mod input;
 mod model;
 mod operations;
 mod placement;
+mod regions;
 mod render;
 mod requests;
 mod surface;
@@ -199,6 +200,9 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         use crate::input::KeybindAction as A;
+        if self.files_region_action(action, outcome) {
+            return true;
+        }
         let Some(snapshot) = self.snapshot.as_ref() else {
             return false;
         };

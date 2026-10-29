@@ -165,7 +165,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # remove_worktree = ""  # optional, unset by default; opens confirmation
 # open_ssh_workspace = "" # optional, unset by default; picks a Host from ~/.ssh/config
 # open_container_workspace = "" # optional, unset by default; picks a running Docker container
-# open_files = ""       # optional, unset by default; browses the focused pane's directory
+# open_files = "prefix+f" # browses the focused pane's directory
 # rename_workspace = "prefix+shift+w"
 # close_workspace = "prefix+shift+d"
 # previous_workspace = "" # optional, unset by default
@@ -858,9 +858,9 @@ mod tests {
     }
 
     #[test]
-    fn default_config_documents_the_file_viewer_settings_unset() {
+    fn default_config_documents_the_file_viewer_settings_and_their_defaults() {
         for line in [
-            "# open_files = \"\"",
+            "# open_files = \"prefix+f\"",
             "# file_viewer_show_hidden = false",
             "# file_viewer_show_ignored = false",
         ] {
