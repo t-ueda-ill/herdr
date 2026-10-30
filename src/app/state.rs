@@ -916,9 +916,9 @@ impl AppState {
             .with_shell_integration(self.offhost_shell_integration)
     }
 
-    /// Why not reuse `pane_shell_config_for_terminal`: cold restore starts a
-    /// plain host shell and keeps the container or ssh metadata only, because
-    /// re-attaching or reconnecting automatically is not implemented yet.
+    /// Why not reuse `pane_shell_config_for_terminal`: a cold-restored pane that
+    /// keeps container metadata on Windows, where herdr cannot open containers,
+    /// starts a plain host shell. Panes that reconnect never resume an agent.
     pub(crate) fn cold_restore_shell_config(&self) -> crate::pane::PaneShellConfig<'_> {
         crate::pane::PaneShellConfig::new(&self.default_shell, self.shell_mode)
     }

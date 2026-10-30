@@ -2495,10 +2495,13 @@ fn usable_reported_cwd(
     cwd: std::path::PathBuf,
     shell_off_host: bool,
 ) -> Option<std::path::PathBuf> {
-    // Container and ssh paths can be POSIX absolute paths even on Windows.
     // This host's filesystem cannot confirm directories on the other side.
-    let remote_absolute = shell_off_host && cwd.as_os_str().as_encoded_bytes().starts_with(b"/");
-    ((cwd.is_absolute() || remote_absolute) && (shell_off_host || cwd.is_dir())).then_some(cwd)
+    let absolute = if shell_off_host {
+        crate::offhost::is_remote_absolute(&cwd)
+    } else {
+        cwd.is_absolute()
+    };
+    (absolute && (shell_off_host || cwd.is_dir())).then_some(cwd)
 }
 
 fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<AppEvent>) {
@@ -4295,8 +4298,8 @@ impl PaneRuntime {
             })
     }
 
-    /// Whether the running shell is a docker or ssh CLI child. Cold-restored
-    /// metadata alone does not count: that shell is a host shell.
+    /// Whether the running shell is a docker or ssh CLI child. Saved launch
+    /// metadata alone does not count: a host shell may run in its place.
     pub(crate) fn shell_runs_off_host(&self) -> bool {
         self.in_container || self.in_ssh
     }
@@ -4313,14 +4316,14 @@ impl PaneRuntime {
         (pid > 0).then_some(pid)
     }
 
-    /// Whether the running shell was launched inside a container. Restored
-    /// container metadata alone does not count: cold restore starts a host shell.
+    /// Whether the running shell was launched inside a container. Saved
+    /// container metadata alone does not count: a host shell may run in its place.
     pub fn in_container(&self) -> bool {
         self.in_container
     }
 
-    /// Whether the running shell was launched as an ssh pane login. Restored
-    /// ssh metadata alone does not count: cold restore starts a host shell.
+    /// Whether the running shell was launched as an ssh pane login. Saved ssh
+    /// metadata alone does not count: a host shell may run in its place.
     pub fn in_ssh(&self) -> bool {
         self.in_ssh
     }

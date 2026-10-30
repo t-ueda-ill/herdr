@@ -115,6 +115,11 @@ pub struct PaneSnapshot {
     pub container: Option<PaneContainerSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<PaneSshSnapshot>,
+    /// Directory of the container or ssh shell, on the other side. Why not in
+    /// `cwd`: restore still needs a host directory to start the docker or ssh
+    /// CLI in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_cwd: Option<PathBuf>,
 }
 
 /// Persisted mirror of `SshLaunch`.
@@ -502,6 +507,11 @@ fn capture_tab(
         let ssh = terminal
             .and_then(|terminal| terminal.ssh.as_ref())
             .map(PaneSshSnapshot::from);
+        let reported_remote_cwd = terminal_id
+            .and_then(|id| terminal_runtimes.get(id))
+            .filter(|runtime| runtime.shell_runs_off_host())
+            .and_then(|runtime| runtime.foreground_cwd());
+        let remote_cwd = remote_cwd_for_persistence(reported_remote_cwd, terminal);
         let agent_session = terminal.and_then(|terminal| {
             if let Some(authority) = terminal.hook_authority.as_ref() {
                 if let Some(session_ref) = authority.session_ref.as_ref() {
@@ -542,6 +552,7 @@ fn capture_tab(
                 launch_argv,
                 container,
                 ssh,
+                remote_cwd,
             },
         );
     }
@@ -553,6 +564,20 @@ fn capture_tab(
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
     }
+}
+
+/// The shell's own report wins. Until one arrives (a pane still connecting,
+/// one that failed to, or a shell without the integration), the pane keeps the
+/// directory it was asked to open in, so the next save does not lose it.
+fn remote_cwd_for_persistence(
+    reported: Option<PathBuf>,
+    terminal: Option<&crate::terminal::TerminalState>,
+) -> Option<PathBuf> {
+    reported.or_else(|| {
+        terminal
+            .and_then(crate::terminal::TerminalState::off_host_start_dir)
+            .cloned()
+    })
 }
 
 pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
@@ -863,6 +888,7 @@ mod tests {
                 launch_argv: None,
                 container: None,
                 ssh: None,
+                remote_cwd: None,
             },
         );
         panes.insert(
@@ -877,6 +903,7 @@ mod tests {
                 launch_argv: None,
                 container: None,
                 ssh: None,
+                remote_cwd: None,
             },
         );
 
@@ -947,6 +974,7 @@ mod tests {
             launch_argv: None,
             container,
             ssh: None,
+            remote_cwd: None,
         }
     }
 
@@ -1816,6 +1844,65 @@ mod tests {
     }
 
     #[test]
+    fn capture_keeps_the_remote_start_dir_of_an_off_host_pane_that_is_not_running() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let host = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        let launch = crate::ssh_host::SshLaunch::new("prod".into(), None)
+            .expect("valid destination")
+            .with_start_dir(Some("/srv/app".into()));
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        state.terminals.get_mut(&terminal_id).unwrap().ssh = Some(launch);
+
+        let snapshot = capture_from_state(&state);
+        let panes = &snapshot.workspaces[0].tabs[0].panes;
+
+        assert_eq!(
+            panes[&root.raw()].remote_cwd,
+            Some(PathBuf::from("/srv/app"))
+        );
+        assert_eq!(panes[&host.raw()].remote_cwd, None);
+    }
+
+    #[test]
+    fn remote_cwd_prefers_the_shell_report_over_the_directory_it_opened_in() {
+        let terminal = crate::terminal::TerminalState::new(
+            crate::terminal::TerminalId::alloc(),
+            "/host".into(),
+        )
+        .with_ssh(
+            crate::ssh_host::SshLaunch::new("prod".into(), None)
+                .unwrap()
+                .with_start_dir(Some("/srv/app".into())),
+        );
+
+        assert_eq!(
+            remote_cwd_for_persistence(Some("/srv/app/logs".into()), Some(&terminal)),
+            Some(PathBuf::from("/srv/app/logs"))
+        );
+        assert_eq!(
+            remote_cwd_for_persistence(None, Some(&terminal)),
+            Some(PathBuf::from("/srv/app")),
+            "a shell that has not reported yet keeps the directory it opened in"
+        );
+    }
+
+    #[test]
+    fn pane_snapshot_without_remote_cwd_reads_and_writes_as_before() {
+        let decoded: PaneSnapshot =
+            serde_json::from_value(serde_json::json!({ "cwd": "/host" })).unwrap();
+
+        assert_eq!(decoded.remote_cwd, None);
+        assert_eq!(
+            serde_json::to_value(&decoded).unwrap(),
+            serde_json::json!({ "cwd": "/host" })
+        );
+    }
+
+    #[test]
     fn capture_contract_preserves_restored_agent_session() {
         let mut state = state_with_workspaces(&["one"]);
         let root = state.workspaces[0].tabs[0].root_pane;
@@ -1883,6 +1970,7 @@ mod tests {
                 launch_argv: None,
                 container: None,
                 ssh: None,
+                remote_cwd: None,
             },
         );
         panes.insert(
@@ -1899,6 +1987,7 @@ mod tests {
                 launch_argv: None,
                 container: None,
                 ssh: None,
+                remote_cwd: None,
             },
         );
 

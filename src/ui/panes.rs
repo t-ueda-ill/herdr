@@ -504,17 +504,25 @@ pub(super) fn render_panes(
                 && app.pane_exposes_host_cursor(ws_idx, info.id);
             rt.render(frame, info.inner_rect, show_cursor);
             render_pane_scrollbar(app, frame, info, rt);
-        } else if let Some(reason) = ws
+        } else if let Some(terminal) = ws
             .tabs
             .get(target.tab_index)
             .and_then(|tab| tab.terminal_id(info.id))
             .and_then(|id| app.terminals.get(id))
-            .and_then(|terminal| terminal.restore_error.as_deref())
         {
-            frame.render_widget(
-                Paragraph::new(reason).wrap(Wrap { trim: false }),
-                info.inner_rect,
-            );
+            let message = match (&terminal.restore_error, &terminal.pending_offhost_connect) {
+                (Some(reason), _) => Some(std::borrow::Cow::Borrowed(reason.as_str())),
+                (None, Some(_)) => terminal
+                    .off_host_target_label()
+                    .map(|target| std::borrow::Cow::Owned(format!("Connecting to {target}…"))),
+                (None, None) => None,
+            };
+            if let Some(message) = message {
+                frame.render_widget(
+                    Paragraph::new(message).wrap(Wrap { trim: false }),
+                    info.inner_rect,
+                );
+            }
         }
     }
 
@@ -984,6 +992,36 @@ mod tests {
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
         assert!(text.contains("Saved directory is unavailable."));
         assert!(cursor.is_none_or(|cursor| !cursor.visible));
+    }
+
+    #[test]
+    fn waiting_off_host_pane_renders_where_it_connects_without_a_runtime() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("offhost")];
+        app.active = Some(0);
+        app.ensure_test_terminals();
+        let pane_id = app.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.workspaces[0].terminal_id(pane_id).unwrap().clone();
+        let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+        terminal.ssh = crate::ssh_host::SshLaunch::new("deploy@prod".into(), None);
+        terminal.pending_offhost_connect = Some(Default::default());
+        let runtimes = TerminalRuntimeRegistry::new();
+        let area = Rect::new(0, 0, 80, 24);
+        let layout = crate::ui::compute_tab_surface_for(
+            &app,
+            &runtimes,
+            Some(crate::ui::TabSurfaceTarget {
+                workspace_index: 0,
+                tab_index: 0,
+            }),
+            area,
+            false,
+            Default::default(),
+        );
+        let (buffer, _, _, _) =
+            crate::server::render_stream::render_tab_surface_virtual(&app, &runtimes, layout, area);
+        let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("Connecting to deploy@prod…"));
     }
 
     #[test]

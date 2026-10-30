@@ -13,6 +13,14 @@ pub(crate) mod tokens;
 
 pub(crate) use exec::PaneEnvironment;
 
+/// Whether `path` is absolute on the other side of a container or ssh pane.
+///
+/// Why not `Path::is_absolute` alone: it follows this host's rules, and on a
+/// Windows host a POSIX path such as `/srv/app` has no drive and is relative.
+pub(crate) fn is_remote_absolute(path: &std::path::Path) -> bool {
+    path.is_absolute() || path.as_os_str().as_encoded_bytes().starts_with(b"/")
+}
+
 /// Where a pane is, from what the app thread already holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneTarget {
@@ -55,3 +63,15 @@ impl PaneTarget {
 // The tests run the scripts with the local `/bin/sh`, git, and Unix paths.
 #[cfg(all(test, unix))]
 mod tests;
+
+// Why not in `tests`: that module is Unix-only, and this must run on Windows.
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn a_posix_path_is_absolute_on_the_other_side_on_every_host() {
+        assert!(is_remote_absolute(std::path::Path::new("/srv/app")));
+        assert!(!is_remote_absolute(std::path::Path::new("srv/app")));
+    }
+}

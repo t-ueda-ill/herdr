@@ -165,7 +165,18 @@ pub struct TerminalState {
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
     agent_process_acquisition_pending: bool,
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
+    /// Set while a restored container or ssh pane waits for its shell to start.
+    pub pending_offhost_connect: Option<PendingOffHostConnect>,
     pub restore_error: Option<String>,
+}
+
+/// A restored container or ssh pane whose shell the app starts after restore.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PendingOffHostConnect {
+    /// Saved pane history, painted before the remote shell's first output.
+    pub initial_history_ansi: Option<String>,
+    /// True while a background container lookup runs, so only one starts.
+    pub resolving: bool,
 }
 
 /// Picks the directory a new pane should inherit.
@@ -225,6 +236,7 @@ impl TerminalState {
             recent_agent_process_exit: None,
             agent_process_acquisition_pending: false,
             pending_agent_resume_plan: None,
+            pending_offhost_connect: None,
             restore_error: None,
         }
     }
@@ -327,6 +339,37 @@ impl TerminalState {
     pub fn with_ssh(mut self, launch: crate::ssh_host::SshLaunch) -> Self {
         self.ssh = Some(launch);
         self
+    }
+
+    pub fn with_pending_offhost_connect(mut self, initial_history_ansi: Option<String>) -> Self {
+        self.pending_offhost_connect = Some(PendingOffHostConnect {
+            initial_history_ansi,
+            resolving: false,
+        });
+        self
+    }
+
+    /// What a container or ssh pane connects to, as shown while it connects.
+    pub(crate) fn off_host_target_label(&self) -> Option<String> {
+        if let Some(launch) = &self.container {
+            return Some(match &launch.ssh {
+                Some(ssh) => format!("{} on {}", launch.canonical, ssh.host),
+                None => launch.canonical.clone(),
+            });
+        }
+        self.ssh.as_ref().map(|launch| launch.host.clone())
+    }
+
+    /// The directory the container or ssh shell is asked to open in.
+    pub(crate) fn off_host_start_dir(&self) -> Option<&std::path::PathBuf> {
+        self.container
+            .as_ref()
+            .and_then(|launch| launch.start_dir.as_ref())
+            .or_else(|| {
+                self.ssh
+                    .as_ref()
+                    .and_then(|launch| launch.start_dir.as_ref())
+            })
     }
 
     #[cfg(any(windows, test))]

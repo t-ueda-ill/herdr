@@ -13,4 +13,7 @@ pub use state::{
     inherited_cwd, AgentMetadataReport, EffectivePresentation, EffectiveStateChange, TerminalState,
     TerminalStateMutation,
 };
+// Why test-only: outside the terminal module only tests build one by name.
+#[cfg(test)]
+pub use state::PendingOffHostConnect;
 pub(crate) use title::stripped_terminal_title;

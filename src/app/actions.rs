@@ -1677,6 +1677,7 @@ impl AppState {
             AppEvent::ContainerOpenFinished(_) => Vec::new(),
             AppEvent::PaneEditorProbed(_) => Vec::new(),
             AppEvent::ContainerListFinished(_) => Vec::new(),
+            AppEvent::OffHostReconnectResolved { .. } => Vec::new(),
             // Client-owned result; the headless server pastes it before the
             // app ever sees it.
             AppEvent::ClipboardImageStaged(_) => Vec::new(),

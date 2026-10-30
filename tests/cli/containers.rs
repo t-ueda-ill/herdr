@@ -378,7 +378,7 @@ fn tab_create_with_unknown_container_returns_container_not_found() {
 }
 
 #[test]
-fn container_launch_survives_session_snapshot() {
+fn container_launch_survives_session_snapshot_and_reconnects_to_the_recreated_container() {
     let test = ContainerTest::new(DOCKER_SHIM);
     let project = test.dir("shop");
     test.docker
@@ -412,6 +412,10 @@ fn container_launch_survives_session_snapshot() {
         })]
     );
 
+    // `docker compose up` recreated the service while herdr was stopped.
+    let mut recreated = compose_container("shop", "web", &project);
+    recreated["Id"] = RUN_ID.into();
+    test.docker.set_running(&[recreated]);
     let restarted = test.start_server();
     let panes = test.cli_json(&["pane", "list"]);
     let restored: Vec<&serde_json::Value> = panes["result"]["panes"]
@@ -425,6 +429,13 @@ fn container_launch_survives_session_snapshot() {
         vec!["shop/web"],
         "the restored pane keeps its container reference"
     );
+    let exec = test.docker.wait_for_last_call_starting_with("exec ");
+    assert!(
+        exec.contains(RUN_ID) && !exec.contains(COMPOSE_ID),
+        "cold restore enters the running container, not the saved id: {exec}"
+    );
+    let pane_id = panes["result"]["panes"][0]["pane_id"].as_str().unwrap();
+    assert_pane_runs_shell(&test, pane_id, "restored-container");
 
     test.finish(restarted);
 }
