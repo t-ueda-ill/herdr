@@ -2980,6 +2980,7 @@ impl PaneRuntime {
                 let _ = rt.block_on(exit_events.send(AppEvent::PaneDied {
                     pane_id,
                     exit_reason: crate::platform::ChildExitReason::Handoff,
+                    exit_code: None,
                 }));
                 debug!(pane = pane_id.raw(), "handoff PTY actor exiting");
             });
@@ -3099,16 +3100,19 @@ impl PaneRuntime {
                 crate::logging::pane_spawned(pane_id.raw(), pid);
             }
             tokio::task::spawn_blocking(move || {
-                let exit_reason = match child.wait() {
+                let (exit_reason, exit_code) = match child.wait() {
                     Ok(status) => {
                         let exit_reason = crate::platform::classify_child_exit(&status);
                         let status_text = format!("{status:?}");
                         crate::logging::pane_exited(pane_id.raw(), &status_text);
-                        exit_reason
+                        (
+                            exit_reason,
+                            status.signal().is_none().then(|| status.exit_code()),
+                        )
                     }
                     Err(e) => {
                         crate::logging::pane_exit_failed(pane_id.raw(), &e.to_string());
-                        crate::platform::ChildExitReason::WaitFailed
+                        (crate::platform::ChildExitReason::WaitFailed, None)
                     }
                 };
                 child_wait_completed.store(true, Ordering::Release);
@@ -3116,6 +3120,7 @@ impl PaneRuntime {
                 if let Err(e) = rt.block_on(events.send(AppEvent::PaneDied {
                     pane_id,
                     exit_reason,
+                    exit_code,
                 })) {
                     error!(pane = pane_id.raw(), err = %e, "failed to send PaneDied event");
                 }

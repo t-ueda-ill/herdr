@@ -1,5 +1,6 @@
 use ratatui::layout::Rect;
 
+mod disconnect_bar;
 mod onboarding;
 mod panes;
 mod release_notes;
@@ -10,6 +11,7 @@ mod tab_surface;
 mod text;
 mod widgets;
 
+pub(crate) use self::disconnect_bar::{disconnect_bar_button_at, DisconnectBarButton};
 pub(crate) use self::onboarding::{
     onboarding_welcome_continue_rect, ONBOARDING_DESCRIPTION, ONBOARDING_HELP_LABEL,
     ONBOARDING_HELP_SUFFIX, ONBOARDING_NEXT, ONBOARDING_PREFIX_SUFFIX, ONBOARDING_SUBTITLE,

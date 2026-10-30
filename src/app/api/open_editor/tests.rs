@@ -169,6 +169,7 @@ async fn open_editor_zooms_an_overlay_pane_that_closes_back_to_the_previous_focu
     app.handle_internal_event(AppEvent::PaneDied {
         pane_id: editor_pane,
         exit_reason: crate::platform::ChildExitReason::Exited,
+        exit_code: None,
     });
 
     let tab = &app.state.workspaces[0].tabs[0];

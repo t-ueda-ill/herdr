@@ -367,6 +367,13 @@ mod tests {
                 json!({"pane_id": "pane"}),
             ),
             (
+                "reconnect",
+                vec!["pane"],
+                "cli:pane:reconnect",
+                "pane.reconnect",
+                json!({"pane_id": "pane"}),
+            ),
+            (
                 "open-editor",
                 vec!["--path", editor_file.as_str()],
                 "cli:pane:open_editor",

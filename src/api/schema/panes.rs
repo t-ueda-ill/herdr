@@ -495,6 +495,13 @@ crate::cli::projection::cli_params! {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneDisconnected {
+    /// Exit code of the ssh or docker CLI; absent when a signal ended it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneInfo {
     pub pane_id: String,
@@ -508,6 +515,10 @@ pub struct PaneInfo {
     pub foreground_cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_error: Option<String>,
+    /// Present while a container or ssh pane's connection has ended with an
+    /// error; `pane.reconnect` connects it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disconnected: Option<PaneDisconnected>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

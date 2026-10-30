@@ -425,6 +425,7 @@ async fn a_pane_that_dies_cancels_its_download() {
     app.handle_internal_event(AppEvent::PaneDied {
         pane_id: pane,
         exit_reason: crate::platform::ChildExitReason::Exited,
+        exit_code: None,
     });
     let response = read(&mut app, DownloadOrigin::Api, &started.download_id, 0);
 

@@ -167,7 +167,18 @@ pub struct TerminalState {
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
     /// Set while a restored container or ssh pane waits for its shell to start.
     pub pending_offhost_connect: Option<PendingOffHostConnect>,
+    /// Set while a container or ssh pane's connection has ended with an error.
+    /// Its exited runtime stays so the error the ssh or docker CLI printed
+    /// remains visible.
+    pub disconnected: Option<Disconnected>,
     pub restore_error: Option<String>,
+}
+
+/// How a container or ssh pane's connection ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Disconnected {
+    /// `None` when a signal ended the ssh or docker CLI, or the code is unknown.
+    pub exit_code: Option<u32>,
 }
 
 /// A restored container or ssh pane whose shell the app starts after restore.
@@ -237,6 +248,7 @@ impl TerminalState {
             agent_process_acquisition_pending: false,
             pending_agent_resume_plan: None,
             pending_offhost_connect: None,
+            disconnected: None,
             restore_error: None,
         }
     }

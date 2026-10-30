@@ -199,6 +199,23 @@ impl App {
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
+    pub(super) fn handle_pane_reconnect(&mut self, id: String, target: PaneTarget) -> String {
+        let Some((_, pane_id)) = self.parse_pane_id(&target.pane_id) else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        match self.reconnect_offhost_pane(pane_id) {
+            Ok(()) => encode_success(id, ResponseResult::Ok {}),
+            Err(crate::app::offhost_disconnect::ReconnectRefusal::PaneNotFound) => {
+                pane_not_found(id, &target.pane_id)
+            }
+            Err(crate::app::offhost_disconnect::ReconnectRefusal::NotDisconnected) => encode_error(
+                id,
+                "pane_not_disconnected",
+                "the pane is not a disconnected container or ssh pane",
+            ),
+        }
+    }
+
     pub(super) fn handle_pane_clear(&mut self, id: String, target: PaneTarget) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
@@ -2012,7 +2029,11 @@ impl App {
     }
 
     /// Close a pane; `Err` carries the encoded error response.
-    pub(super) fn close_pane(&mut self, id: String, target: &PaneTarget) -> Result<(), String> {
+    pub(in crate::app) fn close_pane(
+        &mut self,
+        id: String,
+        target: &PaneTarget,
+    ) -> Result<(), String> {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(id, &target.pane_id));
         };

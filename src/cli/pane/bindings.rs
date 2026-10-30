@@ -668,6 +668,14 @@ pub(super) const LEAVES: &[Leaf] = &[
         PaneClose
     ),
     leaf!(
+        "reconnect",
+        "Connect a disconnected container or ssh pane again",
+        "cli:pane:reconnect",
+        Json,
+        PaneTargetProjection,
+        PaneReconnect
+    ),
+    leaf!(
         "open-editor",
         "Open a file in $EDITOR over the focused pane",
         "cli:pane:open_editor",

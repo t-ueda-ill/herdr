@@ -34,6 +34,10 @@ Snapshot restore does not preserve running shells, servers, tests, or arbitrary 
 
 If a saved directory is unavailable or the shell cannot start, the pane stays in the layout with an error instead of disappearing or moving to your home directory. Its saved directory and agent session reference remain intact. Fix the directory or shell configuration and restart the server to retry, or explicitly close the pane to remove it.
 
+Container and SSH panes connect again instead of starting a host shell. An SSH pane logs in again; a container pane enters its saved container while that runs, otherwise the one its name or compose service runs now. Either opens in the directory its shell last reported. Native agent sessions are not resumed in these panes, because the resume command would have to wait for the login; their session references are kept. On Windows, saved container panes start a host shell.
+
+When the `ssh` or `docker` process of such a pane exits with an error or a signal, the pane keeps what it printed and shows `disconnected (exit N) · ↵ reconnect · close` on its last line. Press Enter or click `reconnect` to connect again, or use `herdr pane reconnect`. The wheel and page keys still scroll the pane. A live handoff connects disconnected panes again in the new server. A pane carried over by a live handoff cannot report its exit code, so until the next server restart it closes when its connection ends, as before.
+
 When saving, Herdr prefers the live shell's directory where the operating system exposes it, and retains the last confirmed directory after the shell exits. Shell-reported directories remain the fallback on other platforms.
 
 If `session.json` cannot be read or parsed, or requires a newer Herdr version, Herdr logs why loading failed. Before saving or clearing the replacement session, it preserves the original bytes in `session-backups/` beside `session.json` and logs the recovery path as `persist.backup`. A file missing at startup is checked again before the first save or clear. These failed-load recovery copies are separate from normal snapshot history.

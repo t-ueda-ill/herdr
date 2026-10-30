@@ -228,7 +228,10 @@ herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [
 herdr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--no-focus]
 herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]
 herdr pane close <pane_id>
+herdr pane reconnect <pane_id>
 ```
+
+When the `ssh` or `docker` process of an SSH or container pane exits with an error or a signal, the pane stays with what that process printed and shows `disconnected (exit N) · ↵ reconnect · close` on its last line. Press Enter or click `reconnect` to connect again, or click `close`. `pane reconnect` does the same from scripts and returns `pane_not_disconnected` for any other pane. A clean `exit` still closes the pane.
 
 For pane commands that accept `--current`, Herdr uses the calling pane's
 `HERDR_PANE_ID` when the command runs inside a Herdr pane. For `pane split`,
@@ -403,7 +406,7 @@ herdr tab create --container myapp/web --label web
 
 An unknown or stopped container returns `container_not_found`. A missing Docker CLI, a failing daemon, or a call that exceeds 5 seconds returns `container_unavailable`. Windows hosts return `platform_unsupported`.
 
-Session restore keeps the container reference but starts a plain host shell; re-attaching is not implemented yet. `agent start --container` is not supported.
+After a server restart, a restored container pane enters its container again. Herdr uses the saved container while it runs, otherwise the one its name or compose service runs now, and opens the shell in the directory it last reported. `agent start --container` is not supported.
 
 ## SSH hosts
 
@@ -423,7 +426,7 @@ herdr ssh hosts
 herdr tab create --ssh deploy@prod --label prod
 ```
 
-Only aliases present in `~/.ssh/config` can be opened; an unknown name is rejected before any pane is created. Pane info from `pane get` and `pane list` carries `ssh_host`, the alias without any `user@` prefix. Session restore keeps the SSH host, but after a server restart the pane starts a plain local shell and keeps `ssh_host`; Herdr does not reconnect automatically. Windows hosts return `platform_unsupported`.
+Only aliases present in `~/.ssh/config` can be opened; an unknown name is rejected before any pane is created. Pane info from `pane get` and `pane list` carries `ssh_host`, the alias without any `user@` prefix. After a server restart, a restored SSH pane logs in again and opens in the directory its shell last reported. Windows hosts return `platform_unsupported`.
 
 In the TUI, choose `open ssh host` from the global menu or `ssh host…` under the spaces sidebar's `new`, or bind `keys.open_ssh_workspace` (unset by default), to pick an alias from the same list. `/` filters, Enter opens the host in a new focused workspace named after the alias, and Esc closes the picker. The spaces sidebar shows it as `[s] alias:pwd`, with the same OSC 7 rule and the same treatment of renamed workspaces. A server too old to list SSH hosts shows an `Action unavailable` notice instead.
 
