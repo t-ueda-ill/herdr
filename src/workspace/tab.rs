@@ -574,8 +574,8 @@ impl Tab {
         let terminal_id = self.terminal_id(pane_id)?;
         let terminal = terminals.get(terminal_id);
         let runtime = terminal_runtimes.get(terminal_id);
-        // Why not the saved metadata: a cold restore keeps container and ssh
-        // metadata but runs a host shell. Without a runtime there is no
+        // Why not the saved metadata: a pane can keep container or ssh
+        // metadata while a host shell runs. Without a runtime there is no
         // runtime cwd, so the flag cannot change the result.
         crate::terminal::inherited_cwd(
             runtime.is_some_and(crate::terminal::TerminalRuntime::shell_runs_off_host),

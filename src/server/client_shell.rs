@@ -21,8 +21,8 @@ pub(crate) enum RunningOffHostShell<'a> {
     Ssh(&'a crate::ssh_host::SshLaunch),
 }
 
-/// Why not read `TerminalState.container` or `.ssh` alone: a cold restore
-/// keeps them while the pane runs a plain host shell.
+/// Why not read `TerminalState.container` or `.ssh` alone: a pane keeps them
+/// while it waits to reconnect, or while a plain host shell runs.
 pub(crate) fn running_off_host_shell<'a>(
     app: &'a app::App,
     runtime: &crate::terminal::TerminalRuntime,

@@ -59,7 +59,7 @@ impl InheritedLaunch {
 impl App {
     /// Reuses the stored launch instead of resolving docker or the ssh config
     /// again: this runs on the app thread. Why not the stored metadata alone
-    /// to decide: a cold-restored pane keeps it while running a host shell.
+    /// to decide: a pane can keep it while a host shell runs.
     fn inherited_launch(
         &self,
         ws_idx: usize,

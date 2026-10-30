@@ -346,7 +346,7 @@ fn ssh_hosts_without_an_ssh_client_reports_ssh_unavailable() {
 }
 
 #[test]
-fn ssh_launch_survives_session_snapshot_and_restores_a_host_shell() {
+fn ssh_launch_survives_session_snapshot_and_reconnects_on_cold_restore() {
     let test = SshTest::new();
     let mut herdr = test.start_server();
     test.cli_json(&[
@@ -391,14 +391,13 @@ fn ssh_launch_survives_session_snapshot_and_restores_a_host_shell() {
         vec!["prod"],
         "the restored pane keeps its ssh host"
     );
-    let pane_id = panes["result"]["panes"][0]["pane_id"].as_str().unwrap();
-    assert_pane_runs_shell(&test, pane_id, "restored-host");
+    let calls = test.wait_for_calls(2);
     assert_eq!(
-        test.calls().len(),
-        1,
-        "cold restore starts a host shell instead of reconnecting: {:#?}",
-        test.calls()
+        calls[1], calls[0],
+        "cold restore logs in again through the same multiplexed connection"
     );
+    let pane_id = panes["result"]["panes"][0]["pane_id"].as_str().unwrap();
+    assert_pane_runs_shell(&test, pane_id, "restored-ssh");
 
     test.finish(restarted);
 }

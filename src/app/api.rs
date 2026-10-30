@@ -64,6 +64,13 @@ impl App {
                 self.handle_container_list_finished(*result);
                 false
             }
+            AppEvent::OffHostReconnectResolved {
+                terminal_id,
+                container_id,
+            } => {
+                self.handle_offhost_reconnect_resolved(terminal_id, container_id);
+                true
+            }
             AppEvent::PaneEditorProbed(result) => self.handle_pane_editor_probed(*result),
             AppEvent::SshOpenFinished(result) => {
                 self.handle_ssh_open_finished(*result);
@@ -231,6 +238,15 @@ impl App {
 
         if let AppEvent::ContainerListFinished(result) = ev {
             self.handle_container_list_finished(*result);
+            return Vec::new();
+        }
+
+        if let AppEvent::OffHostReconnectResolved {
+            terminal_id,
+            container_id,
+        } = ev
+        {
+            self.handle_offhost_reconnect_resolved(terminal_id, container_id);
             return Vec::new();
         }
 

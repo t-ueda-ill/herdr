@@ -302,6 +302,12 @@ pub enum AppEvent {
     ContainerOpenFinished(Box<ContainerOpenResult>),
     /// Background container listing completed for an API `container.list` request.
     ContainerListFinished(Box<ContainerListResult>),
+    /// Background lookup of a cold-restored container pane's running container
+    /// finished; `None` when it found none or docker could not answer.
+    OffHostReconnectResolved {
+        terminal_id: crate::terminal::TerminalId,
+        container_id: Option<String>,
+    },
     /// Background path probe completed for an API `pane.directory.open_editor` request.
     PaneEditorProbed(Box<PaneEditorProbeResult>),
     /// Background copy of a client clipboard image into a container pane finished.

@@ -4295,8 +4295,8 @@ impl PaneRuntime {
             })
     }
 
-    /// Whether the running shell is a docker or ssh CLI child. Cold-restored
-    /// metadata alone does not count: that shell is a host shell.
+    /// Whether the running shell is a docker or ssh CLI child. Saved launch
+    /// metadata alone does not count: a host shell may run in its place.
     pub(crate) fn shell_runs_off_host(&self) -> bool {
         self.in_container || self.in_ssh
     }
@@ -4313,14 +4313,14 @@ impl PaneRuntime {
         (pid > 0).then_some(pid)
     }
 
-    /// Whether the running shell was launched inside a container. Restored
-    /// container metadata alone does not count: cold restore starts a host shell.
+    /// Whether the running shell was launched inside a container. Saved
+    /// container metadata alone does not count: a host shell may run in its place.
     pub fn in_container(&self) -> bool {
         self.in_container
     }
 
-    /// Whether the running shell was launched as an ssh pane login. Restored
-    /// ssh metadata alone does not count: cold restore starts a host shell.
+    /// Whether the running shell was launched as an ssh pane login. Saved ssh
+    /// metadata alone does not count: a host shell may run in its place.
     pub fn in_ssh(&self) -> bool {
         self.in_ssh
     }

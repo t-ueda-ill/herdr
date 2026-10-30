@@ -240,8 +240,8 @@ impl App {
     }
 
     /// The environment, root, and directory of a live off-host pane. Host panes
-    /// (cold-restored ones included, since their shell runs on this host) are
-    /// rejected: their files are `directory.*`'s.
+    /// (including ones that keep off-host metadata while a host shell runs)
+    /// are rejected: their files are `directory.*`'s.
     pub(crate) fn pane_target(&self, pane_id: &str) -> Result<PaneTarget, Failure> {
         let (ws_idx, pane) = self
             .parse_pane_id(pane_id)

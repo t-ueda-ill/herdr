@@ -591,6 +591,9 @@ impl HeadlessServer {
             AppEvent::ContainerListFinished(_) | AppEvent::SshHostsFinished(_) => {
                 self.app.handle_internal_event_with_render_impact(ev)
             }
+            AppEvent::OffHostReconnectResolved { .. } => {
+                self.app.handle_internal_event_with_render_impact(ev)
+            }
             // The overlay appears now, not when the request arrived, so the
             // reconcile and geometry claim a synchronous `pane.open_editor`
             // gets at request time must happen here.

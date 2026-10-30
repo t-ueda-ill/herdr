@@ -463,6 +463,24 @@ fn restored_container_launch(
     launch
 }
 
+/// Whether a cold-restored pane connects to its container or ssh host again
+/// instead of starting a host shell.
+///
+/// Why not containers on Windows: herdr cannot open them there, so saved
+/// container metadata came from another machine.
+fn reconnects_on_cold_restore(
+    container: Option<&crate::container::ContainerLaunch>,
+    ssh: Option<&crate::ssh_host::SshLaunch>,
+) -> bool {
+    ssh.is_some() || (container.is_some() && !cfg!(windows))
+}
+
+/// Why only absolute paths: the launcher hands the value to `cd` on the other
+/// side, where a relative path would depend on the login directory.
+fn saved_remote_cwd(pane: &super::snapshot::PaneSnapshot) -> Option<PathBuf> {
+    pane.remote_cwd.clone().filter(|cwd| cwd.is_absolute())
+}
+
 fn unavailable_restored_terminal(
     pane: Option<&super::snapshot::PaneSnapshot>,
     cwd: PathBuf,
@@ -564,17 +582,30 @@ fn restore_tab(
             .and_then(crate::detect::parse_canonical_agent_label);
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
         // Why not gate this on `was_imported` like `launch_argv`: the container
-        // or ssh host is pane identity, not a live process detail, so it
-        // survives cold restores even though they relaunch a plain host shell.
-        let saved_container = saved_pane.and_then(restored_container_launch);
-        let saved_ssh = saved_pane.and_then(restored_ssh_launch);
+        // or ssh host is pane identity, not a live process detail, so a cold
+        // restore connects to it again.
+        let mut saved_container = saved_pane.and_then(restored_container_launch);
+        let mut saved_ssh = saved_pane.and_then(restored_ssh_launch);
+        let connects_off_host =
+            !has_import && reconnects_on_cold_restore(saved_container.as_ref(), saved_ssh.as_ref());
+        if connects_off_host {
+            let remote_cwd = saved_pane.and_then(saved_remote_cwd);
+            if let Some(launch) = &mut saved_container {
+                launch.start_dir = remote_cwd.clone();
+            }
+            if let Some(launch) = &mut saved_ssh {
+                launch.start_dir = remote_cwd;
+            }
+        }
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
         let saved_agent_resume = saved_pane.and_then(saved_reported_resume);
         let saved_history =
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
         let startup = {
             let mut agent_restore = AgentRestoreState {
-                enabled: runtime_context.resume_agents_on_restore,
+                // Why not resume through the remote shell: the command would be
+                // typed ahead of a password prompt, which would swallow it.
+                enabled: runtime_context.resume_agents_on_restore && !connects_off_host,
                 resumed_sessions: resumed_agent_sessions,
             };
             pane_restore_startup(
@@ -623,6 +654,29 @@ fn restore_tab(
             .is_some_and(|imported| imported.state.offhost_claim.is_some());
         #[cfg(not(unix))]
         let carries_claim = false;
+        if connects_off_host {
+            let mut terminal = TerminalState::new(TerminalId::alloc(), cwd.clone())
+                .with_pending_offhost_connect(startup.initial_history_ansi.map(str::to_owned));
+            if let Some(label) = saved_label {
+                terminal.set_manual_label(label);
+            }
+            if let Some(launch) = saved_container {
+                terminal = terminal.with_container(launch);
+            }
+            if let Some(launch) = saved_ssh {
+                terminal = terminal.with_ssh(launch);
+            }
+            if let Some(session) = restored_agent_session {
+                terminal.set_persisted_agent_session(session);
+            }
+            if let Some(resume) = restored_agent_resume {
+                terminal.restore_reported_resume(resume);
+            }
+            panes.insert(*id, PaneState::new(terminal.id.clone()));
+            terminals.push(terminal);
+            continue;
+        }
+
         let pending_native_agent_restore = if was_imported {
             None
         } else {
@@ -1699,7 +1753,14 @@ mod tests {
             let healthy = workspaces[1].tabs[0]
                 .terminal_id(workspaces[1].tabs[0].root_pane)
                 .unwrap();
-            assert_eq!(terminals[healthy].restore_error.is_some(), missing_shell);
+            if cfg!(windows) {
+                // Herdr opens no containers on Windows, so a host shell starts.
+                assert_eq!(terminals[healthy].restore_error.is_some(), missing_shell);
+            } else {
+                // A missing host shell does not matter: the pane connects off host.
+                assert_eq!(terminals[healthy].restore_error, None);
+                assert!(terminals[healthy].pending_offhost_connect.is_some());
+            }
             let mut state = crate::app::AppState::test_new();
             state.workspaces = workspaces;
             state.terminals = terminals;
@@ -1708,9 +1769,85 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    fn restore_single_pane(
+        pane: super::super::snapshot::PaneSnapshot,
+        history_ansi: Option<&str>,
+        resume_agents: bool,
+    ) -> RestoredSession {
+        let snapshot = single_pane_session(pane);
+        let history = history_ansi.map(|ansi| SessionHistorySnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            layout_fingerprint: super::super::snapshot::layout_fingerprint(&snapshot),
+            workspaces: vec![WorkspaceHistorySnapshot {
+                tabs: vec![super::super::snapshot::TabHistorySnapshot {
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneHistorySnapshot {
+                            ansi: ansi.into(),
+                            lines: 1,
+                        },
+                    )]),
+                }],
+            }],
+        });
+        let (events, _event_rx) = mpsc::channel(8);
+        restore(
+            &snapshot,
+            history.as_ref(),
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            resume_agents,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+    }
+
+    fn assert_restored_invariants(
+        workspaces: Vec<Workspace>,
+        terminals: HashMap<TerminalId, TerminalState>,
+    ) {
+        let mut state = crate::app::AppState::test_new();
+        state.workspaces = workspaces;
+        state.terminals = terminals;
+        state.active = Some(0);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn cold_restore_leaves_an_ssh_pane_to_connect_in_its_saved_remote_directory() {
+        let mut ssh = test_ssh_snapshot("prod");
+        ssh.has_remote_command = false;
+        let mut pane = ssh_pane(Some(ssh));
+        pane.remote_cwd = Some(PathBuf::from("/srv/app"));
+        let (workspaces, terminals, runtimes) =
+            restore_single_pane(pane, Some("SAVED_SSH_HISTORY\r\n"), false);
+
+        let terminal = terminals.values().next().expect("terminal should restore");
+        assert!(
+            runtimes.is_empty(),
+            "the app starts the ssh login, not a host shell"
+        );
+        let launch = terminal.ssh.as_ref().expect("ssh launch survives");
+        assert_eq!(launch.start_dir, Some(PathBuf::from("/srv/app")));
+        assert!(!launch.has_remote_command);
+        assert_eq!(
+            terminal.pending_offhost_connect,
+            Some(crate::terminal::PendingOffHostConnect {
+                initial_history_ansi: Some("SAVED_SSH_HISTORY\r\n".into()),
+                resolving: false,
+            })
+        );
+        assert_eq!(terminal.restore_error, None);
+        assert_restored_invariants(workspaces, terminals);
+    }
+
+    #[test]
     #[cfg(unix)]
-    async fn cold_restore_keeps_container_metadata_but_launches_plain_shell() {
+    fn cold_restore_leaves_a_container_pane_to_connect_for_local_and_remote_docker() {
         for (container, ssh) in [
             (test_container_snapshot("scratch"), None),
             (
@@ -1721,34 +1858,17 @@ mod tests {
                 ),
             ),
         ] {
-            let snapshot = single_pane_session(super::super::snapshot::PaneSnapshot {
-                cwd: std::env::current_dir().unwrap(),
-                label: None,
-                agent_name: None,
-                managed_agent_kind: None,
-                agent_session: None,
-                agent_resume: None,
-                launch_argv: None,
-                container: Some(container),
-                ssh: None,
-            });
-            let (events, _event_rx) = mpsc::channel(8);
+            let mut pane = ssh_pane(None);
+            pane.container = Some(container);
+            pane.remote_cwd = Some(PathBuf::from("/work/sub"));
 
-            let (workspaces, terminals, runtimes) = restore(
-                &snapshot,
-                None,
-                24,
-                80,
-                0,
-                test_restore_shell(),
-                crate::config::ShellModeConfig::NonLogin,
-                false,
-                events,
-                Arc::new(Notify::new()),
-                Arc::new(RenderSignal::new()),
-            );
+            let (workspaces, terminals, runtimes) = restore_single_pane(pane, None, false);
 
             let terminal = terminals.values().next().expect("terminal should restore");
+            assert!(
+                runtimes.is_empty(),
+                "the app starts docker exec after a lookup"
+            );
             assert_eq!(
                 terminal.container,
                 Some(crate::container::ContainerLaunch {
@@ -1756,7 +1876,7 @@ mod tests {
                     canonical: "scratch".into(),
                     id: "herdr-test-scratch-id".into(),
                     workdir: Some(PathBuf::from("/work")),
-                    start_dir: None,
+                    start_dir: Some(PathBuf::from("/work/sub")),
                     user: None,
                     shell: crate::container::ContainerShell::BashOrSh,
                     ssh,
@@ -1766,30 +1886,56 @@ mod tests {
                 terminal.ssh, None,
                 "the pane runs no ssh login; only its container may be remote"
             );
-            assert_eq!(terminal.restore_error, None);
-            let runtime = runtimes
-                .get(&terminal.id)
-                .expect("cold restore should start a runtime");
-            // A docker exec against the made-up id could never evaluate shell
-            // arithmetic, so the computed marker proves a host shell is running.
-            runtime
-                .try_send_bytes(bytes::Bytes::from_static(b"echo herdr-plain-$((40+2))\n"))
-                .unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while !runtime.visible_text().contains("herdr-plain-42") {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .expect("cold restore should run the plain host shell");
-            let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
-
-            let mut state = crate::app::AppState::test_new();
-            state.workspaces = workspaces;
-            state.terminals = terminals;
-            state.active = Some(0);
-            state.assert_invariants_for_test();
+            assert!(terminal.pending_offhost_connect.is_some());
+            assert_restored_invariants(workspaces, terminals);
         }
+    }
+
+    #[test]
+    fn cold_restore_ignores_a_relative_remote_directory() {
+        let mut pane = ssh_pane(Some(test_ssh_snapshot("prod")));
+        pane.remote_cwd = Some(PathBuf::from("srv/app"));
+
+        let (_, terminals, _) = restore_single_pane(pane, None, false);
+
+        let terminal = terminals.values().next().expect("terminal should restore");
+        assert_eq!(terminal.ssh.as_ref().unwrap().start_dir, None);
+    }
+
+    #[test]
+    fn cold_restore_does_not_resume_an_agent_of_an_off_host_pane_but_keeps_its_session() {
+        let mut pane = ssh_pane(Some(test_ssh_snapshot("prod")));
+        pane.agent_session = Some(super::super::snapshot::PaneAgentSessionSnapshot {
+            source: "herdr:codex".into(),
+            agent: "codex".into(),
+            kind: crate::agent_resume::AgentSessionRefKind::Id,
+            value: "codex-session".into(),
+        });
+        let (workspaces, terminals, runtimes) =
+            restore_single_pane(pane, Some("SAVED_AGENT_HISTORY\r\n"), true);
+
+        let terminal = terminals.values().next().expect("terminal should restore");
+        assert!(runtimes.is_empty());
+        assert!(
+            terminal.pending_agent_resume_plan.is_none(),
+            "a resume command typed into a host shell would run on the wrong machine"
+        );
+        assert_eq!(
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("codex-session")
+        );
+        assert_eq!(
+            terminal
+                .pending_offhost_connect
+                .as_ref()
+                .and_then(|pending| pending.initial_history_ansi.as_deref()),
+            Some("SAVED_AGENT_HISTORY\r\n"),
+            "without an agent resume the saved history is the pane's only content"
+        );
+        assert_restored_invariants(workspaces, terminals);
     }
 
     #[tokio::test]
@@ -1805,6 +1951,7 @@ mod tests {
             launch_argv: None,
             container: Some(remote_container_snapshot("scratch", "-oProxyCommand=sh")),
             ssh: None,
+            remote_cwd: None,
         });
         let (events, _event_rx) = mpsc::channel(8);
 
@@ -1834,7 +1981,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_agent_restore_keeps_pane_container() {
+    #[cfg(unix)]
+    async fn native_agent_restore_of_a_container_pane_keeps_the_container_and_waits_to_connect() {
         let snapshot = single_pane_session(super::super::snapshot::PaneSnapshot {
             cwd: std::env::current_dir().unwrap(),
             label: None,
@@ -1850,6 +1998,7 @@ mod tests {
             launch_argv: None,
             container: Some(test_container_snapshot("agent")),
             ssh: None,
+            remote_cwd: None,
         });
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1868,7 +2017,8 @@ mod tests {
         );
 
         let terminal = terminals.values().next().expect("terminal should restore");
-        assert!(terminal.pending_agent_resume_plan.is_some());
+        assert!(terminal.pending_agent_resume_plan.is_none());
+        assert!(terminal.pending_offhost_connect.is_some());
         assert!(runtimes.is_empty());
         assert_eq!(
             terminal.container.as_ref().map(|launch| launch.id.as_str()),
@@ -1902,6 +2052,7 @@ mod tests {
             launch_argv: None,
             container: None,
             ssh,
+            remote_cwd: None,
         }
     }
 
@@ -1990,59 +2141,6 @@ mod tests {
             state.active = Some(0);
             state.assert_invariants_for_test();
         }
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn cold_restore_keeps_ssh_metadata_but_launches_plain_shell() {
-        let snapshot = single_pane_session(ssh_pane(Some(test_ssh_snapshot("prod"))));
-        let (events, _event_rx) = mpsc::channel(8);
-
-        let (workspaces, terminals, runtimes) = restore(
-            &snapshot,
-            None,
-            24,
-            80,
-            0,
-            test_restore_shell(),
-            crate::config::ShellModeConfig::NonLogin,
-            false,
-            events,
-            Arc::new(Notify::new()),
-            Arc::new(RenderSignal::new()),
-        );
-
-        let terminal = terminals.values().next().expect("terminal should restore");
-        assert_eq!(
-            terminal.ssh,
-            crate::ssh_host::SshLaunch::new(
-                "prod".into(),
-                Some(PathBuf::from("/tmp/hssh-test/prod-%C"))
-            )
-        );
-        assert_eq!(terminal.restore_error, None);
-        let runtime = runtimes
-            .get(&terminal.id)
-            .expect("cold restore should start a runtime");
-        // An ssh session to the made-up alias could never evaluate shell
-        // arithmetic locally, so the computed marker proves a host shell runs.
-        runtime
-            .try_send_bytes(bytes::Bytes::from_static(b"echo herdr-plain-$((40+2))\n"))
-            .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !runtime.visible_text().contains("herdr-plain-42") {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("cold restore should run the plain host shell");
-        let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
-
-        let mut state = crate::app::AppState::test_new();
-        state.workspaces = workspaces;
-        state.terminals = terminals;
-        state.active = Some(0);
-        state.assert_invariants_for_test();
     }
 
     #[tokio::test]
@@ -2180,6 +2278,7 @@ mod tests {
                             launch_argv: None,
                             container: None,
                             ssh: None,
+                            remote_cwd: None,
                         },
                     )]),
                     zoomed: false,
@@ -2264,6 +2363,7 @@ mod tests {
                                 launch_argv: None,
                                 container: None,
                                 ssh: None,
+                                remote_cwd: None,
                             },
                         ),
                         (
@@ -2278,6 +2378,7 @@ mod tests {
                                 launch_argv: None,
                                 container: None,
                                 ssh: None,
+                                remote_cwd: None,
                             },
                         ),
                     ]),
@@ -2334,6 +2435,7 @@ mod tests {
                     launch_argv: None,
                     container: None,
                     ssh: None,
+                    remote_cwd: None,
                 },
             )
         };
@@ -2352,6 +2454,7 @@ mod tests {
             launch_argv: None,
             container: None,
             ssh: None,
+            remote_cwd: None,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -2506,6 +2609,7 @@ mod tests {
                             launch_argv: None,
                             container: None,
                             ssh: None,
+                            remote_cwd: None,
                         },
                     )]),
                     zoomed: false,
@@ -2721,7 +2825,7 @@ mod tests {
             },
         )]);
 
-        let (_, restored_terminals, restored_runtimes) = restore_handoff(
+        let (restored_workspaces, restored_terminals, restored_runtimes) = restore_handoff(
             &snapshot,
             4096,
             test_restore_shell(),
@@ -2763,6 +2867,20 @@ mod tests {
             terminal.state,
             AgentState::Unknown,
             "no Idle seed before the first detection"
+        );
+        let restored_runtimes = crate::terminal::TerminalRuntimeRegistry::from(restored_runtimes);
+        let saved = crate::persist::capture(
+            &restored_workspaces,
+            &restored_terminals,
+            &restored_runtimes,
+            Some(0),
+            0,
+        );
+        let saved_pane = saved.workspaces[0].tabs[0].panes.values().next().unwrap();
+        assert_eq!(
+            saved_pane.remote_cwd,
+            Some("/srv/remote project".into()),
+            "the next cold restore opens the shell where it was"
         );
         drop(restored_runtimes);
         drop(runtimes);
@@ -2959,6 +3077,7 @@ mod tests {
                 launch_argv: None,
                 container: None,
                 ssh: None,
+                remote_cwd: None,
             },
         );
         let mut history = SessionHistorySnapshot {
