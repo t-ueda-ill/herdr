@@ -148,6 +148,16 @@ impl ClientShellState {
         let index = self.workbench.active?;
         let presentation = self.workbench.placement.presentation;
         let dock = self.workbench.placement.dock;
+        // Why taken before the tab: the tab is borrowed mutably below.
+        let footer_items = self.files_footer_items(&self.workbench.tabs[index]);
+        let menu_hints: Vec<Option<String>> = match &self.workbench.tabs[index].dialog {
+            Some(Dialog::Menu { target, .. }) => self.workbench.tabs[index]
+                .menu_labels(presentation, dock)
+                .iter()
+                .map(|label| self.files_menu_hint(*target, label))
+                .collect(),
+            _ => Vec::new(),
+        };
         let tab = &mut self.workbench.tabs[index];
         let head = format!(
             " {}{} · {}",
@@ -355,26 +365,8 @@ impl ClientShellState {
             &tab.notice
         };
         text(b, footer, notice, muted);
-        let clipboard = self
-            .workbench
-            .clipboard
-            .as_ref()
-            .map(|c| {
-                format!(
-                    " · {} {} items",
-                    if c.cut { "cut" } else { "copy" },
-                    c.paths.len()
-                )
-            })
-            .unwrap_or_default();
-        text(
-            b,
-            line(area, area.height.saturating_sub(1)),
-            &format!(
-                " Enter edit · Space view · Esc back · Tab focus · Ctrl+P files · Ctrl+Shift+F search{clipboard}"
-            ),
-            muted,
-        );
+        let keys = line(area, area.height.saturating_sub(1));
+        text(b, keys, &fit_footer(&footer_items, keys.width), muted);
         if let Some(dialog) = &tab.dialog {
             let labels = tab.menu_labels(presentation, dock);
             cursor = render_dialog(
@@ -382,6 +374,7 @@ impl ClientShellState {
                 area,
                 dialog,
                 labels,
+                &menu_hints,
                 tab,
                 p,
                 &mut self.investigation_hits,
@@ -401,6 +394,7 @@ impl ClientShellState {
 fn render_menu(
     b: &mut Buffer,
     labels: &[&str],
+    hints: &[Option<String>],
     target: MenuTarget,
     placement: MenuPlacement,
     selected: usize,
@@ -411,7 +405,16 @@ fn render_menu(
 ) {
     let items: Vec<menu_widget::MenuItem<'_>> = labels
         .iter()
-        .map(|label| menu_widget::MenuItem::new(label))
+        .zip(
+            hints
+                .iter()
+                .map(Option::as_deref)
+                .chain(std::iter::repeat(None)),
+        )
+        .map(|(label, hint)| menu_widget::MenuItem {
+            hint,
+            ..menu_widget::MenuItem::new(label)
+        })
         .collect();
     let anchor = match placement {
         MenuPlacement::Pointer { x, y } => menu_widget::MenuAnchor::TopLeft { x, y },
@@ -484,6 +487,7 @@ fn render_dialog(
     area: Rect,
     dialog: &Dialog,
     labels: &[&str],
+    hints: &[Option<String>],
     tab: &Investigation,
     p: &Palette,
     hits: &mut Hits,
@@ -496,7 +500,7 @@ fn render_dialog(
     } = dialog
     {
         render_menu(
-            b, labels, *target, *anchor, *selected, *scroll, tab, p, hits,
+            b, labels, hints, *target, *anchor, *selected, *scroll, tab, p, hits,
         );
         return None;
     }
@@ -703,6 +707,29 @@ fn details_band_height(lines: usize, max_lines: u16, body: u16) -> u16 {
     } else {
         wanted
     }
+}
+
+/// The items that fit `width` whole, from the left, with the key list's
+/// key kept at the right edge.
+fn fit_footer(items: &[String], width: u16) -> String {
+    const KEYS: &str = "? keys";
+    let width = usize::from(width);
+    let keys = usize::from(display_width(KEYS));
+    let room = width.saturating_sub(keys + 2);
+    let mut shown = String::new();
+    for item in items {
+        let next = if shown.is_empty() {
+            format!(" {item}")
+        } else {
+            format!("{shown} · {item}")
+        };
+        if usize::from(display_width(&next)) > room {
+            break;
+        }
+        shown = next;
+    }
+    let gap = width.saturating_sub(usize::from(display_width(&shown)) + keys + 1);
+    format!("{shown}{} {KEYS}", " ".repeat(gap))
 }
 
 #[cfg(test)]

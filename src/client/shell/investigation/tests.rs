@@ -4264,6 +4264,7 @@ mod help_open {
             query: TextEditor::default(),
             search_focused,
             scroll: 0,
+            ..Default::default()
         }));
         state.set_pane_surface(crate::client::shell::tests::surface());
         state.compose(120, 32).expect("composed with help");
@@ -4905,6 +4906,7 @@ mod split {
             query: TextEditor::default(),
             search_focused: false,
             scroll: 0,
+            ..Default::default()
         }));
         state.compose(COLS, ROWS);
         let pane = state.layout(COLS, ROWS).pane_surface;
@@ -5035,6 +5037,7 @@ mod split {
             query: TextEditor::default(),
             search_focused: false,
             scroll: 0,
+            ..Default::default()
         }));
         state.compose(COLS, ROWS);
         assert!(!state.workbench.files_focused);

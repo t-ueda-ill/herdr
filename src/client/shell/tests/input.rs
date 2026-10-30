@@ -271,6 +271,7 @@ fn delayed_link_fallback_does_not_replay_against_changed_geometry() {
                         query: TextEditor::default(),
                         search_focused: false,
                         scroll: 0,
+                        ..Default::default()
                     }))
                 }
             }

@@ -1028,7 +1028,7 @@
           "key": "ui.file_workbench_keys",
           "type": "table",
           "default": "{}",
-          "description": "Files tab key overrides by action name. Example: [ui.file_workbench_keys] pin = \"alt+enter\". Actions: pin (open the selection in $EDITOR), read (open it in the pager), find_files, search, replace, edit, copy, cut, paste, select_all, rename, delete, actions, files_menu, refresh."
+          "description": "Files tab key overrides by action name. Example: [ui.file_workbench_keys] pin = \"alt+enter\". Actions: pin (open the selection in $EDITOR), read (open it in the pager), down, up, collapse, expand, top, bottom, half_page_down, half_page_up, mark, details, next_file, previous_file, new_file, new_directory, copy_path, send_path, change_root, find_files, search, replace, toggle_regex, toggle_case, toggle_whole_word, toggle_ignored, edit, copy, cut, paste, select_all, rename, delete, delete_permanently, actions, files_menu, refresh. A key replacing a single-letter key (j, k, h, l, gg, G, m, K, n, N, a, A, y, t, C) disables only that letter; the arrows, Home/End and PageUp/PageDown stay."
         },
         {
           "key": "ui.pane_borders",

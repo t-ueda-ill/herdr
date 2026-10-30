@@ -917,6 +917,7 @@ fn help_overlay_restores_released_search_scroll_and_custom_binding_behavior() {
             search_focused: false,
             ref query,
             scroll: 0,
+            ..
         })) if query.is_empty()
     ));
     state.compose(106, 30).expect("restored help");

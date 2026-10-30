@@ -2,6 +2,7 @@
 mod details;
 mod drops;
 mod input;
+mod keys;
 mod model;
 mod operations;
 mod placement;

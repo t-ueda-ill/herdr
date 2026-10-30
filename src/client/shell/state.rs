@@ -404,11 +404,15 @@ pub(super) struct ClientNavigatorOverlay {
     pub(super) filter: Option<ClientNavigatorFilter>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct ClientHelpOverlay {
     pub(super) query: TextEditor,
     pub(super) search_focused: bool,
     pub(super) scroll: usize,
+    /// The files keys as configured when it opened.
+    pub(super) files: Vec<(String, String)>,
+    /// Opened from the files list, so its keys come first.
+    pub(super) files_first: bool,
 }
 
 #[derive(Debug)]

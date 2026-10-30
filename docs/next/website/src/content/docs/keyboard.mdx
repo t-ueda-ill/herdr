@@ -99,33 +99,53 @@ Mouse drag selections and selections started with `v`, Space, or `V` remain acti
 ## File viewer
 
 Press `keys.open_files` (`prefix+f` by default), choose `open files` from the global menu, or choose `Browse files...` from a workspace menu to open a files tab.
-The files tab opens beside the terminals, docked on the left at first; a workspace opening its first files tab starts from the placement last used. Drag the line between them to resize it. Use the files menu to dock it elsewhere (`dock left` / `dock right` / `dock bottom`) or to show it full screen over the terminals (`show full screen` / `show split`). Each workspace remembers its own choice, dock and size. When the terminals would get fewer than 40 columns or the files fewer than 24 (8 and 6 rows when docked at the bottom), it shows full screen, and goes back beside the terminals once there is a little more room than that, so a window resized near the limit does not keep switching.
-Click either side to give it the keys. `Esc` in the file list with nothing selected gives the keys back to the terminal and leaves the files shown.
+The files tab opens beside the terminals, docked on the left at first; a workspace opening its first files tab starts from the placement last used. Drag the line between them, or press `prefix+r` and then `h`/`l` (`j`/`k` when docked at the bottom) while the files have the keys, to resize it. Use the files menu or `prefix+shift+h` / `prefix+shift+l` / `prefix+shift+j` to dock it elsewhere (`dock left` / `dock right` / `dock bottom`), and the menu or `prefix+z` to show it full screen over the terminals (`show full screen` / `show split`). Each workspace remembers its own choice, dock and size. When the terminals would get fewer than 40 columns or the files fewer than 24 (8 and 6 rows when docked at the bottom), it shows full screen, and goes back beside the terminals once there is a little more room than that, so a window resized near the limit does not keep switching.
+Click either side to give it the keys, or move between them with `prefix+h/j/k/l` (and `h/j/k/l` in navigate mode): from the terminal pane on the docked edge the key toward the files gives them the keys, and the opposite key gives the keys back to the terminal. A zoomed tab leaves these keys to its panes. `Esc` in the file list with nothing selected also gives the keys back to the terminal and leaves the files shown.
 `keys.open_files` gives the keys to a files tab shown beside a focused terminal, hides one that has them, and otherwise reopens the last files tab in that workspace. In full screen it switches between the files tab and the last terminal.
 The files root stays fixed when a terminal changes directory; use the files menu to change the root or create another files tab.
 The top tab strip switches between terminals and files tabs.
 The right-click menu opens at the pointer and lists the actions for what was clicked: a file, a folder, empty space in the tree, the search fields and results, or the details band. `F10` opens the same menu at the selected row for the selection: the selected file, folder or content search match. Below, `F10` → an item means that item in the menu of the target it acts on.
 The files menu holds the actions for the whole files tab: creating and pasting at the root, refreshing, showing ignored files, showing the details band, changing the root, opening or closing a files tab, and the placement. It opens from the `≡` button in the title line, `Shift+F10`, a right-click on the title line, on a files tab in the top strip, or on empty space in the tree.
 
+The bottom line shows the most used keys for where the keys are; `?` on the list opens the whole list. Menu items show their keys on the right.
+
 | Key | Action |
 | --- | --- |
-| Up / Down, mouse click | Select |
+| Up / Down, `j` / `k`, mouse click | Select |
+| Left / Right, `h` / `l` | Collapse / expand a folder; Left on a file or collapsed folder selects its parent |
+| Home / End, `gg` / `G` | First / last row |
+| PageUp / PageDown | One page up / down |
+| Ctrl+U / Ctrl+D | Half a page up / down |
+| `n` / `N` | Next / previous file in content search results |
 | Enter, double-click | Open the file in `$EDITOR`, at the line of a content search match; expand a directory |
 | Space | Open the file in the pager; expand a directory |
 | Esc | Leave a field, clear marked files, then give the keys back to the terminal |
 | Tab / Shift+Tab | Move between fields and results |
+| `/` | Filter the tree by path |
 | Ctrl+P | Find files by fuzzy name/path |
 | Ctrl+Shift+F | Search file contents |
+| Alt+R / Alt+C / Alt+W / Alt+I | In content search: regex / case sensitivity / whole word / ignored files |
 | Ctrl+H | Open the replacement field |
 | Ctrl+E | Open the selected file in an external editor |
+| `K` | Show or hide the details band |
+| `a` / `A` | New file / new directory in the selected folder |
+| `y` | Copy the path |
+| `t` | Send the path to the terminal |
+| `C` | Open the selected folder (or the selected file's folder) as the root |
+| Backspace | Widen the root to its parent |
+| `.` / `i` | Show dotfiles / ignored files |
 | Ctrl+C | Copy the selected files |
 | Ctrl+X / Ctrl+V | Cut files / choose a paste destination |
 | Shift+arrows / Shift+click | Select a range of files |
-| Ctrl+click / Insert | Toggle an individual file or search match |
-| F2 / Delete | Rename / confirm deletion to trash |
+| `m`, Insert, Ctrl+click | Toggle an individual file or search match |
+| Ctrl+A | Mark every file in the list |
+| F2 / Delete / Shift+Delete | Rename / confirm deletion to trash / confirm permanent deletion |
 | F5 | Refresh the folder listings, the path index and the details now |
-| F10, right-click | Actions for the selection, or for what was clicked |
+| F10, Alt+M, right-click | Actions for the selection, or for what was clicked |
 | Shift+F10, `≡` | The files menu |
+| `?` | All files keys, as configured |
+
+`ui.file_workbench_keys` replaces a files key by name, for example `details = "ctrl+t"`; a single letter it replaces stops working, while the arrows, Home/End and PageUp/PageDown stay. The names are `pin` (Enter), `read` (Space), `down`, `up`, `collapse`, `expand`, `top`, `bottom`, `half_page_down`, `half_page_up`, `mark`, `details`, `next_file`, `previous_file`, `new_file`, `new_directory`, `copy_path`, `send_path`, `change_root`, `find_files`, `search`, `replace`, `toggle_regex`, `toggle_case`, `toggle_whole_word`, `toggle_ignored`, `edit`, `copy`, `cut`, `paste`, `select_all`, `rename`, `delete`, `delete_permanently`, `actions`, `files_menu` and `refresh`.
 
 Content search updates after a short pause and combines a literal or regular expression with include/exclude globs.
 Separate globs with commas; `**/*.rs` includes Rust files at the root and in subdirectories.

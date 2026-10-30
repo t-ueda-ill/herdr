@@ -199,8 +199,18 @@ impl ClientShellState {
     /// Why not always: the overlay is modal elsewhere. With the files view up
     /// the reader is looking at the keys while moving through the tree, so
     /// only the search field, which needs the typed text, keeps the overlay.
+    /// Why not when opened with `?` on the list: that list is the files keys
+    /// themselves, longer than the overlay, and the keys must scroll it.
     pub(super) fn help_passes_input_to_workbench(&self) -> bool {
-        self.help_open_without_search() && self.files_has_focus()
+        self.help_open_without_search()
+            && self.files_has_focus()
+            && !matches!(
+                self.overlay,
+                Some(ClientShellOverlay::Help(ClientHelpOverlay {
+                    files_first: true,
+                    ..
+                }))
+            )
     }
 
     /// Help is open and its filter does not hold the keys.
@@ -224,7 +234,11 @@ impl ClientShellState {
         &mut self,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        if self.help_passes_input_to_workbench()
+        // Why not `help_passes_input_to_workbench`: a key list opened from
+        // the files list keeps the keys, but a plan answer or a click beside
+        // it still opens a dialog beneath it.
+        if self.help_open_without_search()
+            && self.files_has_focus()
             && self.investigation().is_some_and(|tab| tab.dialog.is_some())
         {
             self.overlay = None;
