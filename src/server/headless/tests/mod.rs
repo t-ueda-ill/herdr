@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "container_clipboard.rs"]
 mod container_clipboard_tests;
+#[path = "disconnected_pane.rs"]
+mod disconnected_pane_tests;
 mod event_fairness;
 mod native_graphics;
 mod off_host_clipboard_fixture;
@@ -5150,6 +5152,7 @@ async fn host_shutdown_preserves_panes_from_queued_and_selected_death_events() {
     let event = || AppEvent::PaneDied {
         pane_id,
         exit_reason: crate::platform::ChildExitReason::Exited,
+        exit_code: None,
     };
     server.app.event_tx.try_send(event()).unwrap();
     server
@@ -5261,6 +5264,7 @@ fn windows_shutdown_probe_preserves_panes_and_agent_sessions() {
             exit_reason: crate::platform::classify_child_exit(
                 &portable_pty::ExitStatus::with_exit_code(0x40010004),
             ),
+            exit_code: Some(0x40010004),
         };
         let agent_exit = || AppEvent::StateChanged {
             pane_id,
@@ -5321,6 +5325,7 @@ fn windows_shutdown_probe_preserves_panes_and_agent_sessions() {
                 exit_reason: crate::platform::classify_child_exit(
                     &portable_pty::ExitStatus::with_exit_code(0xC0000142),
                 ),
+                exit_code: Some(0xC0000142),
             })
         );
         assert!(server.should_quit.load(Ordering::Acquire));
@@ -5369,6 +5374,7 @@ fn windows_shutdown_probe_preserves_panes_and_agent_sessions() {
                 exit_reason: crate::platform::classify_child_exit(
                     &portable_pty::ExitStatus::with_exit_code(code)
                 ),
+                exit_code: Some(code),
             })
         );
         assert!(server.app.find_pane(pane_id).is_none());
@@ -5417,7 +5423,8 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
             pane_id: dead_pane,
-            exit_reason: crate::platform::ChildExitReason::Exited
+            exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_code: None,
         })
     );
 
@@ -5486,7 +5493,8 @@ async fn pane_death_reapplies_controller_geometry() {
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
             pane_id: dead_pane,
-            exit_reason: crate::platform::ChildExitReason::Exited
+            exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_code: None,
         })
     );
 
@@ -5671,7 +5679,8 @@ fn expected_worktree_runtime_exit_does_not_release_agent() {
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
             pane_id,
-            exit_reason: crate::platform::ChildExitReason::Exited
+            exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_code: None,
         })
     );
 

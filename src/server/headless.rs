@@ -2681,6 +2681,51 @@ impl HeadlessServer {
                 ) else {
                     return foreground_changed | geometry_changed;
                 };
+                let disconnected = self
+                    .app
+                    .state
+                    .workspaces
+                    .get(workspace_index)
+                    .and_then(|ws| ws.terminal_id(runtime_pane_id))
+                    .and_then(|terminal_id| self.app.state.terminals.get(terminal_id))
+                    .and_then(|terminal| terminal.disconnected);
+                if let Some(disconnected) = disconnected {
+                    let action = super::pane_input::disconnected_pane_action(
+                        &events,
+                        runtime.current_size(),
+                        disconnected.exit_code,
+                    );
+                    return match action {
+                        Some(crate::ui::DisconnectBarButton::Reconnect) => {
+                            let _ = self.app.reconnect_offhost_pane(runtime_pane_id);
+                            true
+                        }
+                        Some(crate::ui::DisconnectBarButton::Close) => {
+                            self.app.close_disconnected_pane(runtime_pane_id);
+                            true
+                        }
+                        None => {
+                            // Scrolling stays, so a long error can still be read.
+                            let scrolls = events
+                                .into_iter()
+                                .filter(super::pane_input::scrolls_a_disconnected_pane)
+                                .collect::<Vec<_>>();
+                            let scroll_before = runtime.scroll_metrics();
+                            let mut keyboard_forwarded = false;
+                            if let Err(err) = apply_client_terminal_input_events(
+                                runtime,
+                                &scrolls,
+                                true,
+                                &mut keyboard_forwarded,
+                            ) {
+                                warn!(client_id, pane_id, err = %err, "disconnected pane scroll failed");
+                            }
+                            foreground_changed
+                                | geometry_changed
+                                | (runtime.scroll_metrics() != scroll_before)
+                        }
+                    };
+                }
                 let scroll_before = runtime.scroll_metrics();
                 let mut keyboard_forwarded = false;
                 let input_result = apply_client_terminal_input_events(

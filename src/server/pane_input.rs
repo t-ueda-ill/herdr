@@ -200,6 +200,60 @@ pub(super) fn apply_terminal_attach_input(
     }
 }
 
+/// What input to a disconnected pane asks for: Enter or a click on the bar.
+/// The caller drops everything else, because the exited process reads nothing.
+pub(super) fn disconnected_pane_action(
+    events: &[ClientPaneInputEvent],
+    (rows, cols): (u16, u16),
+    exit_code: Option<u32>,
+) -> Option<crate::ui::DisconnectBarButton> {
+    events.iter().find_map(|event| match event {
+        ClientPaneInputEvent::Key {
+            code: crate::protocol::ClientKeyCode::Enter,
+            modifiers: 0,
+            kind: crate::protocol::ClientKeyKind::Press,
+            ..
+        } => Some(crate::ui::DisconnectBarButton::Reconnect),
+        ClientPaneInputEvent::Mouse {
+            kind: crate::protocol::ClientMouseKind::Down(crate::protocol::ClientMouseButton::Left),
+            position,
+            ..
+        } => {
+            let (column, row) = match *position {
+                crate::protocol::ClientMousePosition::Cell { column, row }
+                | crate::protocol::ClientMousePosition::Pixels { column, row, .. } => (column, row),
+            };
+            (row + 1 == rows)
+                .then(|| crate::ui::disconnect_bar_button_at(cols, exit_code, column))
+                .flatten()
+        }
+        _ => None,
+    })
+}
+
+/// The input a disconnected pane still takes: the wheel and page keys, which
+/// scroll its history without reaching the exited process.
+pub(super) fn scrolls_a_disconnected_pane(event: &ClientPaneInputEvent) -> bool {
+    match event {
+        ClientPaneInputEvent::Mouse { kind, .. } => matches!(
+            kind,
+            crate::protocol::ClientMouseKind::ScrollUp
+                | crate::protocol::ClientMouseKind::ScrollDown
+        ),
+        ClientPaneInputEvent::Key {
+            code, modifiers, ..
+        } => {
+            *modifiers == 0
+                && matches!(
+                    code,
+                    crate::protocol::ClientKeyCode::PageUp
+                        | crate::protocol::ClientKeyCode::PageDown
+                )
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn test_apply_client_pane_input_events(
     runtime: &crate::terminal::TerminalRuntime,
@@ -363,6 +417,57 @@ pub(super) fn apply_client_terminal_input_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(code: crate::protocol::ClientKeyCode, modifiers: u8) -> ClientPaneInputEvent {
+        ClientPaneInputEvent::Key {
+            code,
+            modifiers,
+            kind: crate::protocol::ClientKeyKind::Press,
+            repeat_count: 1,
+            shifted_codepoint: None,
+            generated_text: None,
+            tracks_release: false,
+            physical_key_id: None,
+            windows_record: None,
+        }
+    }
+
+    fn click(column: u16, row: u16) -> ClientPaneInputEvent {
+        ClientPaneInputEvent::Mouse {
+            kind: crate::protocol::ClientMouseKind::Down(crate::protocol::ClientMouseButton::Left),
+            position: crate::protocol::ClientMousePosition::Cell { column, row },
+            geometry: None,
+            modifiers: 0,
+            lines: 1,
+        }
+    }
+
+    #[test]
+    fn enter_or_a_click_on_the_bar_acts_on_a_disconnected_pane() {
+        use crate::protocol::ClientKeyCode;
+        use crate::ui::DisconnectBarButton;
+        let size = (24, 80);
+        let items = crate::ui::disconnect_bar_button_at;
+        let close_column = (0..80)
+            .find(|&column| items(80, Some(255), column) == Some(DisconnectBarButton::Close))
+            .unwrap();
+
+        assert_eq!(
+            disconnected_pane_action(&[key(ClientKeyCode::Enter, 0)], size, Some(255)),
+            Some(DisconnectBarButton::Reconnect)
+        );
+        assert_eq!(
+            disconnected_pane_action(&[click(close_column, 23)], size, Some(255)),
+            Some(DisconnectBarButton::Close)
+        );
+        for ignored in [
+            key(ClientKeyCode::Char('q'), 0),
+            key(ClientKeyCode::Enter, KeyModifiers::CONTROL.bits()),
+            click(close_column, 22),
+        ] {
+            assert_eq!(disconnected_pane_action(&[ignored], size, Some(255)), None);
+        }
+    }
 
     #[tokio::test]
     async fn terminal_attach_stale_geometry_falls_back_to_the_canonical_cell() {

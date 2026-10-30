@@ -225,6 +225,7 @@ fn reply_to_probe(request: ApiRequestMessage) {
                 cwd: None,
                 foreground_cwd: None,
                 restore_error: None,
+                disconnected: None,
                 label: None,
                 container: None,
                 ssh_host: None,

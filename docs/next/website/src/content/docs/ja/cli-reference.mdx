@@ -223,7 +223,10 @@ herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [
 herdr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--no-focus]
 herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]
 herdr pane close <pane_id>
+herdr pane reconnect <pane_id>
 ```
+
+SSH ペインやコンテナペインの `ssh` / `docker` プロセスがエラーまたはシグナルで終了すると、ペインはそのプロセスの出力を残したまま、最終行に `disconnected (exit N) · ↵ reconnect · close` を表示します。Enter を押すか `reconnect` をクリックすると接続し直し、`close` をクリックすると閉じます。`pane reconnect` はスクリプトから同じことを行い、それ以外のペインには `pane_not_disconnected` を返します。正常な `exit` では、これまでどおりペインが閉じます。
 
 `--current` を受け付けるペインコマンドは、Herdr ペイン内から実行した場合、呼び出し元の `HERDR_PANE_ID` を使います。`pane split` では、明示したペイン ID または `--pane ID` がそのペインを分割します。対象を省略すると `HERDR_PANE_ID` があれば呼び出し元ペインを、なければフォーカス中のペインを使います。`--current` は呼び出し元ペインを必須とし、`HERDR_PANE_ID` がない場合はエラーになります。分割レスポンスでは、新しいペイン ID は `.result.pane.pane_id` にあります。
 
@@ -382,7 +385,7 @@ herdr tab create --container myapp/web --label web
 
 存在しないコンテナや停止中のコンテナは `container_not_found` を返します。Docker CLI がない、デーモンが失敗する、呼び出しが 5 秒を超えた場合は `container_unavailable` を返します。Windows ホストでは `platform_unsupported` を返します。
 
-セッション復元ではコンテナ情報は保持されますが、プレーンなホストシェルで起動します。再アタッチは未実装です。`agent start --container` は未対応です。
+サーバーの再起動後、復元したコンテナペインは同じコンテナに入り直します。保存したコンテナが動いていればそれを、なければ同じ名前または compose サービスでいま動いているコンテナを使い、シェルが最後に報告したディレクトリで開きます。`agent start --container` は未対応です。
 
 ## SSH ホスト
 
@@ -402,7 +405,7 @@ herdr ssh hosts
 herdr tab create --ssh deploy@prod --label prod
 ```
 
-開けるのは `~/.ssh/config` にあるエイリアスだけで、未知の名前はペインを作る前に拒否されます。`pane get` と `pane list` のペイン情報には、`user@` を除いたエイリアスを持つ `ssh_host` が含まれます。セッション復元では SSH ホストは保持されますが、サーバーの再起動後はプレーンなローカルシェルで起動し、`ssh_host` だけが残ります。自動再接続はしません。Windows ホストでは `platform_unsupported` を返します。
+開けるのは `~/.ssh/config` にあるエイリアスだけで、未知の名前はペインを作る前に拒否されます。`pane get` と `pane list` のペイン情報には、`user@` を除いたエイリアスを持つ `ssh_host` が含まれます。サーバーの再起動後、復元した SSH ペインはもう一度ログインし、シェルが最後に報告したディレクトリで開きます。Windows ホストでは `platform_unsupported` を返します。
 
 TUI では、グローバルメニューの `open ssh host`、spaces サイドバーの `new` にある `ssh host…`、または `keys.open_ssh_workspace`（既定では未設定）に割り当てたキーから、同じ一覧のエイリアスを選べます。`/` で絞り込み、Enter でエイリアス名の新しいワークスペースを開いてフォーカスし、Esc でピッカーを閉じます。spaces サイドバーでは `[s] エイリアス:pwd` と表示し、OSC 7 の扱いと名前を変更した場合の表示はコンテナと同じです。SSH ホストを一覧できない古いサーバーでは、代わりに `Action unavailable` の通知が出ます。
 

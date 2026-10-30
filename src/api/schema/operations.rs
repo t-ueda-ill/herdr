@@ -193,6 +193,7 @@ mod tests {
             "pane.resize",
             "pane.scroll",
             "pane.clear",
+            "pane.reconnect",
             "pane.edit_scrollback",
             "pane.open_editor",
             "pane.open_file",

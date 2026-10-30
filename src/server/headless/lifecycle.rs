@@ -45,14 +45,7 @@ impl HeadlessServer {
             }
         };
 
-        let mut pane_by_terminal = HashMap::new();
-        for ws in &self.app.state.workspaces {
-            for tab in &ws.tabs {
-                for (pane_id, pane) in &tab.panes {
-                    pane_by_terminal.insert(pane.attached_terminal_id.clone(), pane_id.raw());
-                }
-            }
-        }
+        let pane_by_terminal = handoff_panes(&self.app.state);
 
         self.handoff_in_progress = true;
         self.abort_transfers(Duration::from_secs(2));
@@ -383,6 +376,30 @@ impl HeadlessServer {
     }
 }
 
+/// The panes whose runtimes the replacement server imports.
+///
+/// Why not a disconnected container or ssh pane: its process has exited, so
+/// there is no PTY to hand over. The replacement restores it like a cold
+/// restore, which connects it again.
+#[cfg(unix)]
+fn handoff_panes(state: &crate::app::AppState) -> HashMap<crate::terminal::TerminalId, u32> {
+    let mut pane_by_terminal = HashMap::new();
+    for ws in &state.workspaces {
+        for tab in &ws.tabs {
+            for (pane_id, pane) in &tab.panes {
+                let disconnected = state
+                    .terminals
+                    .get(&pane.attached_terminal_id)
+                    .is_some_and(|terminal| terminal.disconnected.is_some());
+                if !disconnected {
+                    pane_by_terminal.insert(pane.attached_terminal_id.clone(), pane_id.raw());
+                }
+            }
+        }
+    }
+    pane_by_terminal
+}
+
 #[cfg(unix)]
 pub(super) fn wait_for_old_public_sockets_to_close(timeout: Duration) -> io::Result<()> {
     let deadline = Instant::now() + timeout;
@@ -401,4 +418,32 @@ pub(super) fn wait_for_old_public_sockets_to_close(timeout: Duration) -> io::Res
         io::ErrorKind::TimedOut,
         "old server sockets did not close before handoff import bind",
     ))
+}
+
+// Why Unix-only: live handoff passes PTY file descriptors, which Windows lacks.
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_disconnected_pane_is_left_for_the_replacement_to_reconnect() {
+        let mut state = crate::app::AppState::test_new();
+        let mut workspace = crate::workspace::Workspace::test_new("handoff");
+        let disconnected_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let connected_pane = workspace.tabs[0].root_pane;
+        state.workspaces = vec![workspace];
+        state.ensure_test_terminals();
+        let terminal_of = |pane| state.workspaces[0].terminal_id(pane).unwrap().clone();
+        let disconnected = terminal_of(disconnected_pane);
+        let connected = terminal_of(connected_pane);
+        state.terminals.get_mut(&disconnected).unwrap().disconnected =
+            Some(crate::terminal::Disconnected {
+                exit_code: Some(255),
+            });
+
+        let panes = handoff_panes(&state);
+
+        assert_eq!(panes.get(&connected), Some(&connected_pane.raw()));
+        assert!(!panes.contains_key(&disconnected));
+    }
 }
