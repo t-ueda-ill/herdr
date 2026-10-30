@@ -478,7 +478,9 @@ fn reconnects_on_cold_restore(
 /// Why only absolute paths: the launcher hands the value to `cd` on the other
 /// side, where a relative path would depend on the login directory.
 fn saved_remote_cwd(pane: &super::snapshot::PaneSnapshot) -> Option<PathBuf> {
-    pane.remote_cwd.clone().filter(|cwd| cwd.is_absolute())
+    pane.remote_cwd
+        .clone()
+        .filter(|cwd| crate::offhost::is_remote_absolute(cwd))
 }
 
 fn unavailable_restored_terminal(

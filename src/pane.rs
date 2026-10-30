@@ -2495,10 +2495,13 @@ fn usable_reported_cwd(
     cwd: std::path::PathBuf,
     shell_off_host: bool,
 ) -> Option<std::path::PathBuf> {
-    // Container and ssh paths can be POSIX absolute paths even on Windows.
     // This host's filesystem cannot confirm directories on the other side.
-    let remote_absolute = shell_off_host && cwd.as_os_str().as_encoded_bytes().starts_with(b"/");
-    ((cwd.is_absolute() || remote_absolute) && (shell_off_host || cwd.is_dir())).then_some(cwd)
+    let absolute = if shell_off_host {
+        crate::offhost::is_remote_absolute(&cwd)
+    } else {
+        cwd.is_absolute()
+    };
+    (absolute && (shell_off_host || cwd.is_dir())).then_some(cwd)
 }
 
 fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<AppEvent>) {
