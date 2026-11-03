@@ -304,8 +304,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 # Show dotfiles and Git-ignored entries when the file viewer opens.
 # `.` and `i` toggle them inside the viewer; the toggle is not saved.
-# file_viewer_show_hidden = false
-# file_viewer_show_ignored = false
+# file_viewer_show_hidden = true
+# file_viewer_show_ignored = true
 
 # Draw borders around split panes.
 # "auto" draws them only for split panes, "always" also frames a lone pane
@@ -861,8 +861,8 @@ mod tests {
     fn default_config_documents_the_file_viewer_settings_and_their_defaults() {
         for line in [
             "# open_files = \"prefix+f\"",
-            "# file_viewer_show_hidden = false",
-            "# file_viewer_show_ignored = false",
+            "# file_viewer_show_hidden = true",
+            "# file_viewer_show_ignored = true",
         ] {
             assert_eq!(DEFAULT_CONFIG.matches(line).count(), 1, "{line}");
         }

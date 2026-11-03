@@ -1015,13 +1015,13 @@
         {
           "key": "ui.file_viewer_show_hidden",
           "type": "boolean",
-          "default": "false",
+          "default": "true",
           "description": "Show dotfiles when the file viewer opens. Press . in the viewer to toggle them for that session only."
         },
         {
           "key": "ui.file_viewer_show_ignored",
           "type": "boolean",
-          "default": "false",
+          "default": "true",
           "description": "Show Git-ignored entries when the file viewer opens. Press i in the viewer to toggle them for that session only."
         },
         {

@@ -94,10 +94,16 @@ fn repo_index() -> ResponseResult {
 }
 
 fn shell_state() -> ClientShellState {
-    shell_state_with(
-        ClientShellConfig::from_config(&Config::default()),
-        snapshot(),
-    )
+    shell_state_with(ClientShellConfig::from_config(&hiding_config()), snapshot())
+}
+
+// Most tree cases characterize the filtered view, which needs both visibility
+// settings turned off; the defaults show everything.
+fn hiding_config() -> Config {
+    let mut config = Config::default();
+    config.ui.file_viewer_show_hidden = false;
+    config.ui.file_viewer_show_ignored = false;
+    config
 }
 
 fn shell_state_with(
@@ -418,7 +424,8 @@ fn opening_lists_the_focused_workspace_directory_then_indexes_it() {
 }
 
 #[test]
-fn the_tree_marks_directories_and_symlinks_and_hides_dotfiles_and_ignored_entries() {
+fn the_tree_marks_directories_and_symlinks_and_hides_dotfiles_and_ignored_entries_when_configured()
+{
     let mut state = shell_state();
     let (list, _) = open(&mut state);
 
@@ -427,7 +434,7 @@ fn the_tree_marks_directories_and_symlinks_and_hides_dotfiles_and_ignored_entrie
     assert_eq!(
         rows(&state),
         ["src/", "docs@", "my file.txt", "README.md"],
-        "dotfiles and ignored entries are hidden by default"
+        "dotfiles and ignored entries are hidden when both settings are off"
     );
     let text = frame_text(&mut state);
     assert!(text.contains("files · /repo"), "{text}");
@@ -462,14 +469,27 @@ fn dot_and_i_toggle_hidden_and_ignored_entries_for_this_session_only() {
     state.handle_input_bytes(b".");
     state.handle_input_bytes(b"i");
     assert_eq!(rows(&state), ["src/", "docs@", "my file.txt", "README.md"]);
+}
 
-    let mut config = Config::default();
-    config.ui.file_viewer_show_hidden = true;
-    config.ui.file_viewer_show_ignored = true;
-    let mut seeded = shell_state_with(ClientShellConfig::from_config(&config), snapshot());
-    open_repo(&mut seeded);
-    assert!(rows(&seeded).contains(&".env".to_owned()));
-    assert!(rows(&seeded).contains(&"target/".to_owned()));
+#[test]
+fn the_tree_shows_dotfiles_and_ignored_entries_by_default() {
+    let mut state = shell_state_with(
+        ClientShellConfig::from_config(&Config::default()),
+        snapshot(),
+    );
+    open_repo(&mut state);
+
+    assert_eq!(
+        rows(&state),
+        [
+            "src/",
+            "target/",
+            "docs@",
+            ".env",
+            "my file.txt",
+            "README.md"
+        ]
+    );
 }
 
 #[test]
