@@ -862,6 +862,90 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
 }
 
 #[test]
+fn close_on_a_disconnect_bar_asks_the_server_like_a_close_key() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut shell_snapshot = snapshot();
+    shell_snapshot.panes[0].disconnected = Some(crate::protocol::ClientShellPaneDisconnected {
+        exit_code: Some(255),
+    });
+    let pane_id = shell_snapshot.panes[0].pane_id.clone();
+    state.set_snapshot(Box::new(shell_snapshot));
+    let mut pane_surface = surface();
+    // Wide enough for the bar to show its close button.
+    let wide = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 3));
+    pane_surface.frame =
+        crate::protocol::FrameData::from_ratatui_buffer_with_hyperlinks(&wide, None, &[]);
+    let rect = crate::protocol::SurfaceRect {
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 3,
+    };
+    pane_surface.panes[0].rect = rect;
+    pane_surface.panes[0].inner_rect = rect;
+    pane_surface.panes[0].mouse_reporting = true;
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let pane = state.hits.panes[0].clone();
+    let close_column = (0..pane.inner_rect.width)
+        .find(|&column| {
+            crate::ui::disconnect_bar_button_at(pane.inner_rect.width, Some(255), column)
+                == Some(crate::ui::DisconnectBarButton::Close)
+        })
+        .unwrap();
+
+    let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: pane.inner_rect.x + close_column,
+        row: pane.inner_rect.y + pane.inner_rect.height - 1,
+        modifiers: KeyModifiers::NONE,
+    })]);
+
+    assert!(click.requests.is_empty(), "{:?}", click.requests);
+    assert!(
+        matches!(click.actions.as_slice(),
+            [ClientShellAction::Endpoint { request, .. }]
+                if matches!(&request.method,
+                    crate::api::schema::Method::PaneClose(target) if target.pane_id == pane_id)),
+        "a refusal that needs confirmation can only open the dialog for a client request"
+    );
+}
+
+#[test]
+fn a_plain_click_on_the_last_row_of_a_reporting_pane_reaches_the_server_not_a_selection() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].mouse_reporting = true;
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let pane = state.hits.panes[0].clone();
+    let last_row = pane.inner_rect.y + pane.inner_rect.height - 1;
+
+    let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: pane.inner_rect.x + 2,
+        row: last_row,
+        modifiers: KeyModifiers::NONE,
+    })]);
+
+    assert!(
+        matches!(&click.requests[..],
+        [ClientMessage::ClientShellPaneInput { events, .. }]
+            if matches!(&events[..], [ClientPaneInputEvent::Mouse {
+                kind: crate::protocol::ClientMouseKind::Down(
+                    crate::protocol::ClientMouseButton::Left
+                ),
+                modifiers: 0,
+                ..
+            }])),
+        "{:?}",
+        click.requests
+    );
+    assert!(state.selection.is_none());
+}
+
+#[test]
 fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

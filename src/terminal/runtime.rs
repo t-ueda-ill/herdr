@@ -331,6 +331,10 @@ impl TerminalRuntime {
         self.0.mouse_reporting_enabled()
     }
 
+    pub(crate) fn retire_exited_process(&self) {
+        self.0.retire_exited_process();
+    }
+
     pub fn sgr_pixel_mouse_enabled(&self) -> bool {
         self.0.sgr_pixel_mouse_enabled()
     }

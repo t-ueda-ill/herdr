@@ -754,9 +754,33 @@ pub(crate) fn set_default_plugin_pane_pwd(env: &mut Vec<(String, String)>, cwd: 
     }
 }
 
+/// The `kill` target that names exactly one process, or `None`.
+///
+/// Why not `pid as pid_t`: values above `i32::MAX` wrap to zero or negative
+/// targets, and `kill(-1, ..)` signals every process the user owns.
+pub(crate) fn single_process_target(pid: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(pid).ok().filter(|&target| target > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_ids_of_one_process_become_kill_targets() {
+        assert_eq!(single_process_target(0), None, "0 is the caller's group");
+        assert_eq!(single_process_target(u32::MAX), None, "-1 is every process");
+        assert_eq!(
+            single_process_target(1 << 31),
+            None,
+            "wraps to a negative group"
+        );
+        assert_eq!(single_process_target(1), Some(1));
+        assert_eq!(
+            single_process_target(i32::MAX as u32),
+            Some(libc::pid_t::MAX)
+        );
+    }
 
     #[test]
     fn server_signal_monitor_survives_hangup_and_reports_terminate() {

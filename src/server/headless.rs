@@ -1949,6 +1949,27 @@ impl HeadlessServer {
         }
     }
 
+    /// Closes a pane from its disconnect bar with the client reconciliation
+    /// `pane.close` and a pane death run, so the panes left take the space.
+    fn close_disconnected_pane(&mut self, pane_id: crate::layout::PaneId) {
+        let focus_before = self.shell_focus_targets();
+        let focused_tabs_before = self.focused_shell_tabs();
+        let terminal_id = self
+            .app
+            .find_pane(pane_id)
+            .map(|(_, pane)| pane.attached_terminal_id.to_string());
+        self.app.close_disconnected_pane(pane_id);
+        self.reconcile_client_shell_locations();
+        self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
+        self.reapply_controlled_shell_tab_geometry(false);
+        if let Some(terminal_id) = terminal_id.filter(|_| self.app.find_pane(pane_id).is_none()) {
+            self.shutdown_terminal_stream_clients(
+                &terminal_id,
+                format!("terminal {terminal_id} closed"),
+            );
+        }
+    }
+
     #[cfg(unix)]
     fn disconnect_all_clients_for_handoff(&mut self) {
         let client_ids = self.clients.keys().copied().collect::<Vec<_>>();
@@ -2681,6 +2702,40 @@ impl HeadlessServer {
                 ) else {
                     return foreground_changed | geometry_changed;
                 };
+                let disconnected = self
+                    .app
+                    .state
+                    .workspaces
+                    .get(workspace_index)
+                    .and_then(|ws| ws.terminal_id(runtime_pane_id))
+                    .and_then(|terminal_id| self.app.state.terminals.get(terminal_id))
+                    .and_then(|terminal| terminal.disconnected);
+                if let Some(disconnected) = disconnected {
+                    let action = super::pane_input::disconnected_pane_action(
+                        &events,
+                        runtime.current_size(),
+                        disconnected.exit_code,
+                    );
+                    return match action {
+                        Some(crate::ui::DisconnectBarButton::Reconnect) => {
+                            let _ = self.app.reconnect_offhost_pane(runtime_pane_id);
+                            self.reapply_controlled_shell_tab_geometry(false);
+                            true
+                        }
+                        Some(crate::ui::DisconnectBarButton::Close) => {
+                            self.close_disconnected_pane(runtime_pane_id);
+                            true
+                        }
+                        None => {
+                            // Scrolling stays, so a long error can still be read.
+                            let scroll_before = runtime.scroll_metrics();
+                            super::pane_input::scroll_disconnected_pane(runtime, &events);
+                            foreground_changed
+                                | geometry_changed
+                                | (runtime.scroll_metrics() != scroll_before)
+                        }
+                    };
+                }
                 let scroll_before = runtime.scroll_metrics();
                 let mut keyboard_forwarded = false;
                 let input_result = apply_client_terminal_input_events(

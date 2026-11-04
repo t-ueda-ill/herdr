@@ -869,21 +869,21 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
         Signal::Kill => libc::SIGKILL,
     };
 
-    for &pid in pids {
-        if pid == 0 {
-            continue;
-        }
+    for target in pids
+        .iter()
+        .filter_map(|&pid| super::unix_common::single_process_target(pid))
+    {
         unsafe {
-            libc::kill(pid as i32, sig);
+            libc::kill(target, sig);
         }
     }
 }
 
 pub fn process_exists(pid: u32) -> bool {
-    if pid == 0 {
+    let Some(target) = super::unix_common::single_process_target(pid) else {
         return false;
-    }
-    let result = unsafe { libc::kill(pid as i32, 0) };
+    };
+    let result = unsafe { libc::kill(target, 0) };
     if result == 0 {
         true
     } else {

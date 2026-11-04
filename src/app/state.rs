@@ -923,12 +923,17 @@ impl AppState {
         crate::pane::PaneShellConfig::new(&self.default_shell, self.shell_mode)
     }
 
+    /// A disconnected pane shows no cursor: nothing reads input there.
     pub(crate) fn pane_exposes_host_cursor(
         &self,
-        _ws_idx: usize,
-        _pane_id: crate::layout::PaneId,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
     ) -> bool {
-        true
+        self.workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.terminal_id(pane_id))
+            .and_then(|terminal_id| self.terminals.get(terminal_id))
+            .is_none_or(|terminal| terminal.disconnected.is_none())
     }
 
     pub(crate) fn refresh_agent_manifest_summaries(&mut self) {

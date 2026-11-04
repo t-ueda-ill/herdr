@@ -106,7 +106,7 @@ Raw socket method names use dot notation:
 | SSH hosts | `ssh.open`, `ssh.hosts` |
 | Files | `directory.list`, `directory.index`, `files.stat`, `pane.open_editor`, `pane.open_file`, `pane.directory.list`, `pane.directory.index`, `pane.directory.open_editor`, `pane.directory.open_file`, `pane.file.read`, `pane.file.stat`, `pane.upload.begin`, `pane.upload.write`, `pane.upload.finish`, `pane.upload.cancel`, `pane.download.begin`, `pane.download.read`, `pane.download.cancel` |
 | Tab | `tab.create`, `tab.create_inherit`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
-| Pane | `pane.split`, `pane.split_inherit`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
+| Pane | `pane.split`, `pane.split_inherit`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.reconnect`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
@@ -473,7 +473,7 @@ Create and split params stay unchanged; the SSH host travels only in `ssh.open`.
 
 ## Opening where a pane runs
 
-`tab.create` and `pane.split` always start a shell on the server's host. `tab.create_inherit` and `pane.split_inherit` start it where an existing pane's shell runs now: in the same container, over the same ssh login, or through the same remote Docker host. A pane counts as off-host only while its container or ssh shell is running; a pane restored from a session runs a plain host shell, so a tab or split made from it is a host one.
+`tab.create` and `pane.split` always start a shell on the server's host. `tab.create_inherit` and `pane.split_inherit` start it where an existing pane's shell runs now: in the same container, over the same ssh login, or through the same remote Docker host. A pane counts as off-host only while its container or ssh shell is running; a restored pane that is still connecting gives a host one.
 
 `tab.create_inherit` takes the `tab.create` params plus an optional `source_pane_id`. Without it, the source is the focused pane of the target workspace (`workspace_id`, or the active workspace). `pane.split_inherit` takes the `pane.split` params, and the source is the pane being split. The results are the same as the plain methods'.
 
@@ -488,6 +488,14 @@ Create and split params stay unchanged; the SSH host travels only in `ssh.open`.
 When the source runs on the host, both methods behave exactly like the plain ones. Otherwise the new shell reuses the source's stored launch, without asking Docker or ssh again, and starts in the directory the source's shell last reported (OSC 7). Without a report, or when that directory no longer exists, it starts in the source's original directory: a container's launch working directory, or the ssh login directory. An explicit `cwd` is a host path, as in `container.open`. For a container on this host, Herdr looks the container up again and maps that path through its bind mounts to pick the working directory, so the lookup can fail with a `container_not_found` or `container_unavailable` error. For ssh sources, an explicit `cwd` only sets the directory of the local `ssh` process and does not move the remote shell, and the reported directory still applies. For remote Docker sources, an explicit `cwd` likewise does not move the remote shell, and no reported directory is applied. A remote launch that fails returns the usual `tab_create_failed` or `pane_split_failed` error instead of falling back to a host shell.
 
 Clients check the endpoint's advertised methods first. Against a server that lacks these two methods, the TUI falls back to `tab.create` and `pane.split`, which open a host shell.
+
+## Reconnecting panes
+
+After a server restart, restored container and ssh panes connect again on their own. When the `ssh` or `docker` process of such a pane exits with a nonzero code or a signal, the pane stays instead of closing, and its pane info carries `disconnected`, with `exit_code` when the process exited with one. `pane.reconnect` takes a `pane_id`, starts the connection again, and answers `ok`; a pane that is not disconnected returns `pane_not_disconnected`. A container pane looks its container up again first, so a recreated compose service is found by name.
+
+```json
+{ "id": "req_1", "method": "pane.reconnect", "params": { "pane_id": "w1:p2" } }
+```
 
 ## Files
 

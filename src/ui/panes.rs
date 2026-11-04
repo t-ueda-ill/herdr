@@ -499,11 +499,25 @@ pub(super) fn render_panes(
 
     for info in pane_infos {
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
+            let disconnected = ws
+                .tabs
+                .get(target.tab_index)
+                .and_then(|tab| tab.terminal_id(info.id))
+                .and_then(|id| app.terminals.get(id))
+                .and_then(|terminal| terminal.disconnected);
             let show_cursor = info.is_focused
                 && !pane_is_scrolled_back(rt)
                 && app.pane_exposes_host_cursor(ws_idx, info.id);
             rt.render(frame, info.inner_rect, show_cursor);
             render_pane_scrollbar(app, frame, info, rt);
+            if let Some(disconnected) = disconnected {
+                super::disconnect_bar::render_disconnect_bar(
+                    frame.buffer_mut(),
+                    info.inner_rect,
+                    disconnected.exit_code,
+                    &app.palette,
+                );
+            }
         } else if let Some(terminal) = ws
             .tabs
             .get(target.tab_index)
@@ -991,6 +1005,56 @@ mod tests {
             crate::server::render_stream::render_tab_surface_virtual(&app, &runtimes, layout, area);
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
         assert!(text.contains("Saved directory is unavailable."));
+        assert!(cursor.is_none_or(|cursor| !cursor.visible));
+    }
+
+    #[tokio::test]
+    async fn disconnected_pane_keeps_its_screen_under_the_disconnect_bar() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("offhost")];
+        app.active = Some(0);
+        app.ensure_test_terminals();
+        let pane_id = app.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.workspaces[0].terminal_id(pane_id).unwrap().clone();
+        app.terminals.get_mut(&terminal_id).unwrap().disconnected =
+            Some(crate::terminal::Disconnected {
+                exit_code: Some(255),
+            });
+        let mut runtimes = TerminalRuntimeRegistry::new();
+        runtimes.insert(
+            terminal_id,
+            TerminalRuntime::test_with_screen_bytes(80, 24, b"Permission denied (publickey).\r\n"),
+        );
+        let area = Rect::new(0, 0, 80, 24);
+        let layout = crate::ui::compute_tab_surface_for(
+            &app,
+            &runtimes,
+            Some(crate::ui::TabSurfaceTarget {
+                workspace_index: 0,
+                tab_index: 0,
+            }),
+            area,
+            false,
+            Default::default(),
+        );
+        let (buffer, cursor, _, _) =
+            crate::server::render_stream::render_tab_surface_virtual(&app, &runtimes, layout, area);
+        let row = |y: u16| -> String {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        };
+        let all: String = (0..buffer.area.height).map(row).collect();
+        assert!(all.contains("Permission denied"));
+        let last = (0..buffer.area.height)
+            .rev()
+            .map(row)
+            .find(|line| !line.trim().is_empty())
+            .unwrap();
+        assert!(
+            last.contains("disconnected (exit 255) · ↵ reconnect · close"),
+            "{last:?}"
+        );
         assert!(cursor.is_none_or(|cursor| !cursor.visible));
     }
 

@@ -102,7 +102,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | SSH ホスト | `ssh.open`, `ssh.hosts` |
 | ファイル | `directory.list`、`directory.index`、`files.stat`、`pane.open_editor`、`pane.open_file`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.directory.open_file`、`pane.file.read`、`pane.file.stat`、`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel`、`pane.download.begin`、`pane.download.read`、`pane.download.cancel` |
 | タブ | `tab.create`、`tab.create_inherit`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
-| ペイン | `pane.split`、`pane.split_inherit`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
+| ペイン | `pane.split`、`pane.split_inherit`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.reconnect`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
@@ -398,7 +398,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 
 ## ペインの実行場所で開く
 
-`tab.create` と `pane.split` は常にサーバーのホスト上でシェルを起動します。`tab.create_inherit` と `pane.split_inherit` は、既存のペインのシェルがいま動いている場所で起動します。同じコンテナ、同じ ssh ログイン、同じリモート Docker ホストのいずれかです。ペインが off-host として扱われるのは、コンテナまたは ssh のシェルが実行中の間だけです。セッションから復元されたペインは通常のホストシェルを実行しているため、そこから作ったタブや分割はホストのものになります。
+`tab.create` と `pane.split` は常にサーバーのホスト上でシェルを起動します。`tab.create_inherit` と `pane.split_inherit` は、既存のペインのシェルがいま動いている場所で起動します。同じコンテナ、同じ ssh ログイン、同じリモート Docker ホストのいずれかです。ペインが off-host として扱われるのは、コンテナまたは ssh のシェルが実行中の間だけです。復元後にまだ接続中のペインから作ったタブや分割はホストのものになります。
 
 `tab.create_inherit` は `tab.create` のパラメーターに加えて、省略可能な `source_pane_id` を取ります。省略すると、対象ワークスペース（`workspace_id`、なければアクティブなワークスペース）のフォーカス中のペインが元になります。`pane.split_inherit` は `pane.split` のパラメーターを取り、分割するペインが元になります。結果は通常のメソッドと同じ形です。
 
@@ -413,6 +413,14 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 元がホストで動いている場合、どちらのメソッドも通常のメソッドとまったく同じ動作です。それ以外では、新しいシェルは元の保存済みの起動情報を使い、Docker や ssh へ問い合わせ直しません。起動ディレクトリは、元のシェルが最後に報告したディレクトリ（OSC 7）です。報告がないとき、またはそのディレクトリがなくなっているときは、元の最初のディレクトリで、コンテナなら起動時の作業ディレクトリ、ssh ならログインディレクトリです。明示した `cwd` は `container.open` と同じくホスト側のパスです。このホスト上のコンテナでは、Herdr がコンテナを調べ直し、そのパスをバインドマウントで対応づけて作業ディレクトリを決めます。そのため調べ直しが `container_not_found` や `container_unavailable` エラーで失敗することがあります。ssh が元の場合、明示した `cwd` はローカルの `ssh` プロセスのディレクトリを決めるだけで、リモートのシェルは動かず、報告されたディレクトリが引き続き使われます。リモート Docker が元の場合も、明示した `cwd` ではリモートのシェルは動かず、報告されたディレクトリは使われません。リモートの起動に失敗した場合は、ホストシェルに戻らず、通常の `tab_create_failed` または `pane_split_failed` エラーを返します。
 
 クライアントは先にエンドポイントが公開するメソッドを確認します。この 2 つのメソッドを持たないサーバーでは、TUI は `tab.create` と `pane.split` にフォールバックし、ホストシェルを開きます。
+
+## ペインの再接続
+
+サーバーの再起動後、復元したコンテナペインと ssh ペインは自動で接続し直します。こうしたペインの `ssh` / `docker` プロセスが 0 以外の終了コードまたはシグナルで終了すると、ペインは閉じずに残り、ペイン情報に `disconnected` が付きます。終了コードがあれば `exit_code` に入ります。`pane.reconnect` は `pane_id` を受け取って接続し直し、`ok` を返します。切断されていないペインには `pane_not_disconnected` を返します。コンテナペインは先にコンテナを調べ直すので、作り直された compose サービスも名前で見つかります。
+
+```json
+{ "id": "req_1", "method": "pane.reconnect", "params": { "pane_id": "w1:p2" } }
+```
 
 ## ファイル
 

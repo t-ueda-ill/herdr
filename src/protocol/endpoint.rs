@@ -379,6 +379,7 @@ mod tests {
             right_click_passthrough: false,
             container: container.map(str::to_owned),
             ssh_host: ssh_host.map(str::to_owned),
+            disconnected: None,
         });
         snapshot
     }

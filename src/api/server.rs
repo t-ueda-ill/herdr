@@ -1144,6 +1144,7 @@ mod tests {
             cwd: None,
             foreground_cwd: None,
             restore_error: None,
+            disconnected: None,
             label: None,
             container: None,
             ssh_host: None,

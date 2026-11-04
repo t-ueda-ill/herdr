@@ -271,6 +271,28 @@ mod tests {
     }
 
     #[test]
+    fn a_container_reconnect_opens_in_the_directory_its_shell_reported() {
+        let mut terminal = crate::terminal::TerminalState::new(
+            crate::terminal::TerminalId::alloc(),
+            "/host".into(),
+        )
+        .with_container(plan_launch(&info(), Some(Path::new("/host"))));
+
+        terminal.open_off_host_in("/image/logs".into());
+
+        assert_eq!(
+            terminal.off_host_start_dir(),
+            Some(&std::path::PathBuf::from("/image/logs"))
+        );
+        let launch = terminal.container.as_ref().unwrap();
+        assert_eq!(
+            launch.workdir,
+            Some("/image".into()),
+            "the workdir stays the container's own"
+        );
+    }
+
+    #[test]
     fn plan_launch_resolves_defaults_from_container_config() {
         let planned = plan_launch(&info(), Some(Path::new("/host")));
         assert_eq!(planned.id, "cid");

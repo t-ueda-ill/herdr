@@ -19,4 +19,7 @@ pub use self::snapshot::{
     capture, capture_history, DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot,
     SessionSnapshot, TabSnapshot, WorkspaceSnapshot,
 };
+// Why Unix-only: only live handoff, which passes PTY descriptors, uses it.
+#[cfg(unix)]
+pub use self::snapshot::capture_history_where;
 pub(crate) use self::writer::SessionWriter;

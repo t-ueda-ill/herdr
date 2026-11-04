@@ -167,7 +167,18 @@ pub struct TerminalState {
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
     /// Set while a restored container or ssh pane waits for its shell to start.
     pub pending_offhost_connect: Option<PendingOffHostConnect>,
+    /// Set while a container or ssh pane's connection has ended with an error.
+    /// Its exited runtime stays so the error the ssh or docker CLI printed
+    /// remains visible.
+    pub disconnected: Option<Disconnected>,
     pub restore_error: Option<String>,
+}
+
+/// How a container or ssh pane's connection ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Disconnected {
+    /// `None` when a signal ended the ssh or docker CLI, or the code is unknown.
+    pub exit_code: Option<u32>,
 }
 
 /// A restored container or ssh pane whose shell the app starts after restore.
@@ -177,6 +188,15 @@ pub struct PendingOffHostConnect {
     pub initial_history_ansi: Option<String>,
     /// True while a background container lookup runs, so only one starts.
     pub resolving: bool,
+}
+
+/// The snapshot ends at the last printed character, so without the break the
+/// next connection's first output would overwrite the old last line.
+pub(crate) fn ending_with_a_line_break(mut history: String) -> String {
+    if !history.ends_with('\n') {
+        history.push_str("\r\n");
+    }
+    history
 }
 
 /// Picks the directory a new pane should inherit.
@@ -237,6 +257,7 @@ impl TerminalState {
             agent_process_acquisition_pending: false,
             pending_agent_resume_plan: None,
             pending_offhost_connect: None,
+            disconnected: None,
             restore_error: None,
         }
     }
@@ -341,9 +362,11 @@ impl TerminalState {
         self
     }
 
+    /// The history ends with a line break, so the new connection's first
+    /// output starts below it instead of overwriting the last line.
     pub fn with_pending_offhost_connect(mut self, initial_history_ansi: Option<String>) -> Self {
         self.pending_offhost_connect = Some(PendingOffHostConnect {
-            initial_history_ansi,
+            initial_history_ansi: initial_history_ansi.map(ending_with_a_line_break),
             resolving: false,
         });
         self
@@ -358,6 +381,15 @@ impl TerminalState {
             });
         }
         self.ssh.as_ref().map(|launch| launch.host.clone())
+    }
+
+    /// Makes the next container or ssh connection open in `cwd`.
+    pub(crate) fn open_off_host_in(&mut self, cwd: std::path::PathBuf) {
+        if let Some(launch) = self.container.as_mut() {
+            launch.start_dir = Some(cwd);
+        } else if let Some(launch) = self.ssh.as_mut() {
+            launch.start_dir = Some(cwd);
+        }
     }
 
     /// The directory the container or ssh shell is asked to open in.
@@ -2529,6 +2561,22 @@ pub(crate) fn stabilize_agent_detection(detection: crate::detect::AgentDetection
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pending_connection_starts_below_the_saved_output() {
+        let pending = |history: &str| {
+            TerminalState::new(TerminalId::alloc(), "/".into())
+                .with_pending_offhost_connect(Some(history.into()))
+                .pending_offhost_connect
+                .and_then(|pending| pending.initial_history_ansi)
+        };
+
+        assert_eq!(
+            pending("Permission denied").as_deref(),
+            Some("Permission denied\r\n")
+        );
+        assert_eq!(pending("done\r\n").as_deref(), Some("done\r\n"));
+    }
     use crate::detect::AgentDetection;
 
     #[test]

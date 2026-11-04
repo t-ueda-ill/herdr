@@ -331,6 +331,19 @@ impl HeadlessServer {
             let Some((workspace_index, pane_id)) = self.app.parse_pane_id(&public_pane_id) else {
                 fallback!("pane_missing");
             };
+            // Terminal rows patched alone would paint over the disconnect bar,
+            // which only the full renderer draws.
+            let disconnected = self
+                .app
+                .state
+                .workspaces
+                .get(workspace_index)
+                .and_then(|workspace| workspace.terminal_id(pane_id))
+                .and_then(|terminal_id| self.app.state.terminals.get(terminal_id))
+                .is_some_and(|terminal| terminal.disconnected.is_some());
+            if disconnected {
+                fallback!("disconnected_overlay");
+            }
             let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
                 &self.app.terminal_runtimes,
                 workspace_index,

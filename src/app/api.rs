@@ -137,6 +137,7 @@ impl App {
                 AppEvent::PaneDied {
                     pane_id,
                     exit_reason: crate::platform::ChildExitReason::Exited,
+                    exit_code: None,
                 }
             }
             ev => ev,
@@ -275,7 +276,12 @@ impl App {
         }
 
         let mut worktree_restore_updates = Vec::new();
-        if let AppEvent::PaneDied { pane_id, .. } = &ev {
+        if let AppEvent::PaneDied {
+            pane_id,
+            exit_reason,
+            exit_code,
+        } = &ev
+        {
             self.upload_sessions.abort_pane(*pane_id);
             self.download_sessions.abort_pane(*pane_id);
             if self
@@ -334,6 +340,10 @@ impl App {
                     self.render_notify.notify_one();
                     return worktree_restore_updates;
                 }
+                if self.keeps_disconnected_pane(*pane_id, *exit_reason, *exit_code) {
+                    self.mark_pane_disconnected(*pane_id, *exit_code);
+                    return worktree_restore_updates;
+                }
             }
         }
 
@@ -342,6 +352,7 @@ impl App {
             AppEvent::PaneDied {
                 pane_id,
                 exit_reason,
+                ..
             } if exit_reason.requires_session_checkpoint() && self.find_pane(*pane_id).is_some() && !self.overlay_panes.contains_key(pane_id)
         );
         if checkpointed_pane_exit {
@@ -1311,6 +1322,7 @@ impl App {
             Method::PaneResize(params) => return self.handle_pane_resize(request.id, params),
             Method::PaneScroll(params) => return self.handle_pane_scroll(request.id, params),
             Method::PaneClear(target) => return self.handle_pane_clear(request.id, target),
+            Method::PaneReconnect(target) => return self.handle_pane_reconnect(request.id, target),
             Method::PaneEditScrollback(target) => {
                 return self.handle_pane_edit_scrollback(request.id, target);
             }
@@ -2214,6 +2226,7 @@ mod tests {
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
             exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_code: None,
         });
 
         let overlay_tab = &app.state.workspaces[0].tabs[0];
@@ -2243,6 +2256,7 @@ mod tests {
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: dead_pane,
             exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_code: None,
         });
 
         let events = event_hub.events_after(0);
@@ -2401,6 +2415,7 @@ mod tests {
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
             exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_code: None,
         });
 
         let events = event_hub.events_after(0);
@@ -2427,6 +2442,7 @@ mod tests {
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
             exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_code: None,
         });
 
         let tab = &app.state.workspaces[0].tabs[0];
@@ -2447,6 +2463,7 @@ mod tests {
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
             exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_code: None,
         });
 
         let tab = &app.state.workspaces[0].tabs[0];
@@ -2489,6 +2506,7 @@ mod tests {
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id,
             exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_code: None,
         });
 
         assert!(

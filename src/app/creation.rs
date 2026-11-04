@@ -360,6 +360,11 @@ impl App {
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
             restore_error: terminal.restore_error.clone(),
+            disconnected: terminal.disconnected.map(|disconnected| {
+                crate::api::schema::PaneDisconnected {
+                    exit_code: disconnected.exit_code,
+                }
+            }),
             label: terminal.manual_label.clone(),
             container: terminal
                 .container

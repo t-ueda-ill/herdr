@@ -200,6 +200,91 @@ pub(super) fn apply_terminal_attach_input(
     }
 }
 
+/// What input to a disconnected pane asks for: Enter or a click on the bar.
+/// The caller drops everything else, because the exited process reads nothing.
+pub(super) fn disconnected_pane_action(
+    events: &[ClientPaneInputEvent],
+    (rows, cols): (u16, u16),
+    exit_code: Option<u32>,
+) -> Option<crate::ui::DisconnectBarButton> {
+    events.iter().find_map(|event| match event {
+        ClientPaneInputEvent::Key {
+            code: crate::protocol::ClientKeyCode::Enter,
+            modifiers: 0,
+            kind: crate::protocol::ClientKeyKind::Press,
+            ..
+        } => Some(crate::ui::DisconnectBarButton::Reconnect),
+        ClientPaneInputEvent::Mouse {
+            kind: crate::protocol::ClientMouseKind::Down(crate::protocol::ClientMouseButton::Left),
+            position,
+            ..
+        } => {
+            let (column, row) = match *position {
+                crate::protocol::ClientMousePosition::Cell { column, row }
+                | crate::protocol::ClientMousePosition::Pixels { column, row, .. } => (column, row),
+            };
+            (row + 1 == rows)
+                .then(|| crate::ui::disconnect_bar_button_at(cols, exit_code, column))
+                .flatten()
+        }
+        _ => None,
+    })
+}
+
+/// How far the wheel or a page key scrolls a disconnected pane's history:
+/// positive lines scroll back. Everything else, key releases included, is none.
+///
+/// Why not the live input routing: modes the exited process left on, such as
+/// mouse reporting or application cursor keys, would send these to the dead PTY.
+pub(super) fn disconnected_pane_scroll(event: &ClientPaneInputEvent, rows: u16) -> Option<i64> {
+    use crate::protocol::{ClientKeyCode, ClientKeyKind, ClientMouseKind};
+    let page = i64::from(rows.saturating_sub(1).max(1));
+    match event {
+        ClientPaneInputEvent::Mouse { kind, lines, .. } => {
+            let lines = i64::from((*lines).max(1));
+            match kind {
+                ClientMouseKind::ScrollUp => Some(lines),
+                ClientMouseKind::ScrollDown => Some(-lines),
+                _ => None,
+            }
+        }
+        ClientPaneInputEvent::Key {
+            code,
+            modifiers: 0,
+            kind: ClientKeyKind::Press | ClientKeyKind::Repeat,
+            repeat_count,
+            ..
+        } => {
+            let pages = page.saturating_mul(i64::from((*repeat_count).max(1)));
+            match code {
+                ClientKeyCode::PageUp => Some(pages),
+                ClientKeyCode::PageDown => Some(-pages),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Applies [`disconnected_pane_scroll`] to every event, straight to the history.
+pub(super) fn scroll_disconnected_pane(
+    runtime: &crate::terminal::TerminalRuntime,
+    events: &[ClientPaneInputEvent],
+) {
+    let (rows, _) = runtime.current_size();
+    for lines in events
+        .iter()
+        .filter_map(|event| disconnected_pane_scroll(event, rows))
+    {
+        let amount = usize::try_from(lines.unsigned_abs()).unwrap_or(usize::MAX);
+        if lines > 0 {
+            runtime.scroll_up(amount);
+        } else {
+            runtime.scroll_down(amount);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn test_apply_client_pane_input_events(
     runtime: &crate::terminal::TerminalRuntime,
@@ -363,6 +448,105 @@ pub(super) fn apply_client_terminal_input_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(code: crate::protocol::ClientKeyCode, modifiers: u8) -> ClientPaneInputEvent {
+        ClientPaneInputEvent::Key {
+            code,
+            modifiers,
+            kind: crate::protocol::ClientKeyKind::Press,
+            repeat_count: 1,
+            shifted_codepoint: None,
+            generated_text: None,
+            tracks_release: false,
+            physical_key_id: None,
+            windows_record: None,
+        }
+    }
+
+    fn click(column: u16, row: u16) -> ClientPaneInputEvent {
+        ClientPaneInputEvent::Mouse {
+            kind: crate::protocol::ClientMouseKind::Down(crate::protocol::ClientMouseButton::Left),
+            position: crate::protocol::ClientMousePosition::Cell { column, row },
+            geometry: None,
+            modifiers: 0,
+            lines: 1,
+        }
+    }
+
+    #[test]
+    fn enter_or_a_click_on_the_bar_acts_on_a_disconnected_pane() {
+        use crate::protocol::ClientKeyCode;
+        use crate::ui::DisconnectBarButton;
+        let size = (24, 80);
+        let items = crate::ui::disconnect_bar_button_at;
+        let close_column = (0..80)
+            .find(|&column| items(80, Some(255), column) == Some(DisconnectBarButton::Close))
+            .unwrap();
+
+        assert_eq!(
+            disconnected_pane_action(&[key(ClientKeyCode::Enter, 0)], size, Some(255)),
+            Some(DisconnectBarButton::Reconnect)
+        );
+        assert_eq!(
+            disconnected_pane_action(&[click(close_column, 23)], size, Some(255)),
+            Some(DisconnectBarButton::Close)
+        );
+        for ignored in [
+            key(ClientKeyCode::Char('q'), 0),
+            key(ClientKeyCode::Enter, KeyModifiers::CONTROL.bits()),
+            click(close_column, 22),
+        ] {
+            assert_eq!(disconnected_pane_action(&[ignored], size, Some(255)), None);
+        }
+    }
+
+    #[test]
+    fn the_wheel_and_page_key_presses_scroll_a_disconnected_pane_by_lines_and_pages() {
+        use crate::protocol::{ClientKeyCode, ClientKeyKind, ClientMouseKind};
+        let wheel = |kind, lines| ClientPaneInputEvent::Mouse {
+            kind,
+            position: crate::protocol::ClientMousePosition::Cell { column: 0, row: 0 },
+            geometry: None,
+            modifiers: 0,
+            lines,
+        };
+        let page = |code, kind, repeat_count| ClientPaneInputEvent::Key {
+            code,
+            modifiers: 0,
+            kind,
+            repeat_count,
+            shifted_codepoint: None,
+            generated_text: None,
+            tracks_release: true,
+            physical_key_id: None,
+            windows_record: None,
+        };
+
+        assert_eq!(
+            disconnected_pane_scroll(&wheel(ClientMouseKind::ScrollUp, 3), 24),
+            Some(3)
+        );
+        assert_eq!(
+            disconnected_pane_scroll(&wheel(ClientMouseKind::ScrollDown, 0), 24),
+            Some(-1)
+        );
+        assert_eq!(
+            disconnected_pane_scroll(&page(ClientKeyCode::PageUp, ClientKeyKind::Press, 1), 24),
+            Some(23)
+        );
+        assert_eq!(
+            disconnected_pane_scroll(&page(ClientKeyCode::PageDown, ClientKeyKind::Repeat, 2), 24),
+            Some(-46)
+        );
+        for ignored in [
+            page(ClientKeyCode::PageUp, ClientKeyKind::Release, 1),
+            page(ClientKeyCode::Up, ClientKeyKind::Press, 1),
+            key(ClientKeyCode::PageUp, KeyModifiers::SHIFT.bits()),
+            click(0, 0),
+        ] {
+            assert_eq!(disconnected_pane_scroll(&ignored, 24), None);
+        }
+    }
 
     #[tokio::test]
     async fn terminal_attach_stale_geometry_falls_back_to_the_canonical_cell() {

@@ -45,14 +45,7 @@ impl HeadlessServer {
             }
         };
 
-        let mut pane_by_terminal = HashMap::new();
-        for ws in &self.app.state.workspaces {
-            for tab in &ws.tabs {
-                for (pane_id, pane) in &tab.panes {
-                    pane_by_terminal.insert(pane.attached_terminal_id.clone(), pane_id.raw());
-                }
-            }
-        }
+        let pane_by_terminal = handoff_panes(&self.app.state);
 
         self.handoff_in_progress = true;
         self.abort_transfers(Duration::from_secs(2));
@@ -76,6 +69,13 @@ impl HeadlessServer {
             &self.app.terminal_runtimes,
             self.app.state.active,
             self.app.state.selected,
+        );
+
+        let offhost_history = handoff_offhost_history(
+            &snapshot,
+            &self.app.state,
+            &self.app.terminal_runtimes,
+            &pane_by_terminal,
         );
 
         let mut handoff_entries = Vec::new();
@@ -106,7 +106,7 @@ impl HeadlessServer {
             .iter()
             .map(|(_, runtime)| runtime.clone())
             .collect();
-        let manifest = crate::server::handoff::manifest_for(
+        let mut manifest = crate::server::handoff::manifest_for(
             snapshot,
             panes,
             params.expected_protocol,
@@ -114,6 +114,7 @@ impl HeadlessServer {
             self.api_window_title.clone(),
             self.host_shutdown_intent.get(),
         );
+        manifest.offhost_history = offhost_history;
         let mut import_child = match crate::server::handoff::spawn_handoff_import(
             import_exe.as_deref(),
             &socket_path,
@@ -383,6 +384,77 @@ impl HeadlessServer {
     }
 }
 
+/// The panes whose runtimes the replacement server imports.
+///
+/// Why not a disconnected container or ssh pane: its process has exited, so
+/// there is no PTY to hand over. The replacement restores it like a cold
+/// restore, which connects it again.
+#[cfg(unix)]
+fn handoff_panes(state: &crate::app::AppState) -> HashMap<crate::terminal::TerminalId, u32> {
+    let mut pane_by_terminal = HashMap::new();
+    for ws in &state.workspaces {
+        for tab in &ws.tabs {
+            for (pane_id, pane) in &tab.panes {
+                // A pending connection has no runtime yet; its screen lives in
+                // the pending connect and travels with the off-host history.
+                let has_no_pty =
+                    state
+                        .terminals
+                        .get(&pane.attached_terminal_id)
+                        .is_some_and(|terminal| {
+                            terminal.disconnected.is_some()
+                                || terminal.pending_offhost_connect.is_some()
+                        });
+                if !has_no_pty {
+                    pane_by_terminal.insert(pane.attached_terminal_id.clone(), pane_id.raw());
+                }
+            }
+        }
+    }
+    pane_by_terminal
+}
+
+/// The screens of the panes [`handoff_panes`] leaves out, so the replacement
+/// reconnects them with the output that explains why they disconnected.
+#[cfg(unix)]
+fn handoff_offhost_history(
+    snapshot: &crate::persist::SessionSnapshot,
+    state: &crate::app::AppState,
+    terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+    handed_over: &HashMap<crate::terminal::TerminalId, u32>,
+) -> Option<crate::persist::SessionHistorySnapshot> {
+    let history = crate::persist::capture_history_where(
+        snapshot,
+        &state.workspaces,
+        &state.terminals,
+        terminal_runtimes,
+        |terminal_id| !handed_over.contains_key(terminal_id),
+    );
+    // The manifest travels as one line with a size cap, so each screen keeps
+    // only the tail a live pane's replay keeps.
+    let mut history = history;
+    for tab in history
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.tabs)
+    {
+        tab.panes.retain(|_, pane| {
+            pane.ansi = crate::pane::truncate_handoff_history(
+                std::mem::take(&mut pane.ansi),
+                crate::server::handoff::MAX_REPLAY_BYTES_PER_PANE,
+            );
+            pane.lines = pane.ansi.lines().count();
+            !pane.ansi.is_empty()
+        });
+    }
+    history
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.tabs)
+        .any(|tab| !tab.panes.is_empty())
+        .then_some(history)
+}
+
 #[cfg(unix)]
 pub(super) fn wait_for_old_public_sockets_to_close(timeout: Duration) -> io::Result<()> {
     let deadline = Instant::now() + timeout;
@@ -401,4 +473,129 @@ pub(super) fn wait_for_old_public_sockets_to_close(timeout: Duration) -> io::Res
         io::ErrorKind::TimedOut,
         "old server sockets did not close before handoff import bind",
     ))
+}
+
+// Why Unix-only: live handoff passes PTY file descriptors, which Windows lacks.
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_disconnected_pane_is_left_for_the_replacement_to_reconnect() {
+        let mut state = crate::app::AppState::test_new();
+        let mut workspace = crate::workspace::Workspace::test_new("handoff");
+        let disconnected_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let connected_pane = workspace.tabs[0].root_pane;
+        state.workspaces = vec![workspace];
+        state.ensure_test_terminals();
+        let terminal_of = |pane| state.workspaces[0].terminal_id(pane).unwrap().clone();
+        let disconnected = terminal_of(disconnected_pane);
+        let connected = terminal_of(connected_pane);
+        state.terminals.get_mut(&disconnected).unwrap().disconnected =
+            Some(crate::terminal::Disconnected {
+                exit_code: Some(255),
+            });
+
+        let panes = handoff_panes(&state);
+
+        assert_eq!(panes.get(&connected), Some(&connected_pane.raw()));
+        assert!(!panes.contains_key(&disconnected));
+    }
+
+    #[test]
+    fn a_pane_waiting_for_its_container_hands_over_its_pending_history() {
+        let mut state = crate::app::AppState::test_new();
+        state.workspaces = vec![crate::workspace::Workspace::test_new("handoff")];
+        state.ensure_test_terminals();
+        let pane = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].terminal_id(pane).unwrap().clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .pending_offhost_connect = Some(crate::terminal::PendingOffHostConnect {
+            initial_history_ansi: Some("Permission denied\r\n".into()),
+            resolving: true,
+        });
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let snapshot =
+            crate::persist::capture(&state.workspaces, &state.terminals, &runtimes, None, 0);
+
+        let handed_over = handoff_panes(&state);
+        let history = handoff_offhost_history(&snapshot, &state, &runtimes, &handed_over)
+            .expect("the pending history");
+
+        assert!(!handed_over.contains_key(&terminal_id));
+        assert_eq!(
+            history.workspaces[0].tabs[0].panes[&pane.raw()].ansi,
+            "Permission denied\r\n"
+        );
+    }
+
+    #[test]
+    fn a_long_disconnected_history_fits_the_per_pane_replay_limit() {
+        let mut state = crate::app::AppState::test_new();
+        state.workspaces = vec![crate::workspace::Workspace::test_new("handoff")];
+        state.ensure_test_terminals();
+        let pane = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].terminal_id(pane).unwrap().clone();
+        let long = "debug1: a line of verbose ssh output\r\n".repeat(2_000);
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .pending_offhost_connect = Some(crate::terminal::PendingOffHostConnect {
+            initial_history_ansi: Some(long),
+            resolving: true,
+        });
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let snapshot =
+            crate::persist::capture(&state.workspaces, &state.terminals, &runtimes, None, 0);
+
+        let history = handoff_offhost_history(&snapshot, &state, &runtimes, &handoff_panes(&state))
+            .expect("the tail of the history");
+
+        let kept = &history.workspaces[0].tabs[0].panes[&pane.raw()];
+        assert!(kept.ansi.len() <= crate::server::handoff::MAX_REPLAY_BYTES_PER_PANE);
+        assert!(kept.ansi.ends_with("output\r\n"));
+        assert_eq!(kept.lines, kept.ansi.lines().count());
+    }
+
+    #[tokio::test]
+    async fn the_handoff_carries_only_the_screens_of_panes_it_cannot_hand_over() {
+        let mut state = crate::app::AppState::test_new();
+        let mut workspace = crate::workspace::Workspace::test_new("handoff");
+        let disconnected_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let connected_pane = workspace.tabs[0].root_pane;
+        state.workspaces = vec![workspace];
+        state.ensure_test_terminals();
+        let terminal_of = |pane| state.workspaces[0].terminal_id(pane).unwrap().clone();
+        let disconnected = terminal_of(disconnected_pane);
+        let connected = terminal_of(connected_pane);
+        state.terminals.get_mut(&disconnected).unwrap().disconnected =
+            Some(crate::terminal::Disconnected {
+                exit_code: Some(255),
+            });
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        for (terminal_id, screen) in [
+            (&disconnected, &b"Permission denied\r\n"[..]),
+            (&connected, &b"LIVE SHELL\r\n"[..]),
+        ] {
+            runtimes.insert(
+                terminal_id.clone(),
+                crate::terminal::TerminalRuntime::test_with_scrollback_bytes(40, 5, 4096, screen),
+            );
+        }
+        let snapshot =
+            crate::persist::capture(&state.workspaces, &state.terminals, &runtimes, None, 0);
+
+        let history = handoff_offhost_history(&snapshot, &state, &runtimes, &handoff_panes(&state))
+            .expect("history of the disconnected pane");
+
+        let panes = &history.workspaces[0].tabs[0].panes;
+        assert!(panes[&disconnected_pane.raw()]
+            .ansi
+            .contains("Permission denied"));
+        assert!(!panes.contains_key(&connected_pane.raw()));
+    }
 }
