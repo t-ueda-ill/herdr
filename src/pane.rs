@@ -2000,7 +2000,7 @@ fn shutdown_pane_processes(
 }
 
 #[cfg(unix)]
-fn truncate_handoff_history(history: String, max_bytes: usize) -> String {
+pub(crate) fn truncate_handoff_history(history: String, max_bytes: usize) -> String {
     if history.len() <= max_bytes {
         return history;
     }
@@ -3986,12 +3986,32 @@ impl PaneRuntime {
         if let Some(handle) = &self.detect_handle {
             handle.abort();
         }
+        // The bar covers the bottom row, where an error printed without a
+        // trailing newline sits. Why not on the alternate screen: it has no
+        // history, so the scrolled-off top row would be lost.
+        if !self.terminal.alternate_screen_active() {
+            self.process_local_bytes(b"\r\n");
+        }
         let child_pid = self.child_pid.swap(0, Ordering::AcqRel);
         shutdown_pane_processes(
             self.pane_id,
             child_pid,
             self.child_wait_completed.as_deref(),
         );
+    }
+
+    /// Feeds bytes that did not come from the PTY through the parser, under the
+    /// same content revision protocol as PTY output.
+    fn process_local_bytes(&self, bytes: &[u8]) {
+        let _content_write_guard = match self.content_write_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        self.content_seq.fetch_add(1, Ordering::AcqRel);
+        let (tx, _rx) = mpsc::channel(1);
+        let _ = self.terminal.process_pty_bytes(self.pane_id, 0, bytes, &tx);
+        self.content_seq.fetch_add(1, Ordering::Release);
+        self.compression.wake();
     }
 
     pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
@@ -4562,15 +4582,7 @@ impl PaneRuntime {
     }
 
     pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) {
-        let _content_write_guard = match self.content_write_lock.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        self.content_seq.fetch_add(1, Ordering::AcqRel);
-        let (tx, _rx) = mpsc::channel(1);
-        let _ = self.terminal.process_pty_bytes(self.pane_id, 0, bytes, &tx);
-        self.content_seq.fetch_add(1, Ordering::Release);
-        self.compression.wake();
+        self.process_local_bytes(bytes);
     }
 
     pub(crate) fn test_with_scrollback_bytes(
@@ -6452,6 +6464,27 @@ mod tests {
             "clicks reach the disconnect bar instead of starting a selection"
         );
         assert!(runtime.visible_text().contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn the_last_line_an_exited_process_printed_stays_above_the_disconnect_bar() {
+        let runtime =
+            PaneRuntime::test_with_screen_bytes(40, 3, b"one\r\ntwo\r\nPermission denied");
+
+        runtime.retire_exited_process();
+
+        let rows = runtime.visible_text();
+        let rows = rows.lines().collect::<Vec<_>>();
+        assert_eq!(
+            rows.get(1).map(|row| row.trim_end()),
+            Some("Permission denied"),
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows.get(2).map(|row| row.trim()).unwrap_or(""),
+            "",
+            "{rows:?}"
+        );
     }
 
     #[cfg(unix)]

@@ -299,7 +299,7 @@ mod tests {
     fn a_finished_lookup_takes_the_running_container_id() {
         let mut terminal = TerminalState::new(TerminalId::alloc(), "/host".into())
             .with_container(container_launch("old-id"))
-            .with_pending_offhost_connect(Some("history".into()));
+            .with_pending_offhost_connect(Some("history\r\n".into()));
         terminal.pending_offhost_connect.as_mut().unwrap().resolving = true;
 
         assert!(apply_container_lookup(&mut terminal, Some("new-id".into())));
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(
             terminal.pending_offhost_connect,
             Some(crate::terminal::PendingOffHostConnect {
-                initial_history_ansi: Some("history".into()),
+                initial_history_ansi: Some("history\r\n".into()),
                 resolving: false,
             })
         );

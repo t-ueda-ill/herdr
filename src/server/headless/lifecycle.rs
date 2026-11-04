@@ -395,11 +395,17 @@ fn handoff_panes(state: &crate::app::AppState) -> HashMap<crate::terminal::Termi
     for ws in &state.workspaces {
         for tab in &ws.tabs {
             for (pane_id, pane) in &tab.panes {
-                let disconnected = state
-                    .terminals
-                    .get(&pane.attached_terminal_id)
-                    .is_some_and(|terminal| terminal.disconnected.is_some());
-                if !disconnected {
+                // A pending connection has no runtime yet; its screen lives in
+                // the pending connect and travels with the off-host history.
+                let has_no_pty =
+                    state
+                        .terminals
+                        .get(&pane.attached_terminal_id)
+                        .is_some_and(|terminal| {
+                            terminal.disconnected.is_some()
+                                || terminal.pending_offhost_connect.is_some()
+                        });
+                if !has_no_pty {
                     pane_by_terminal.insert(pane.attached_terminal_id.clone(), pane_id.raw());
                 }
             }
@@ -424,6 +430,23 @@ fn handoff_offhost_history(
         terminal_runtimes,
         |terminal_id| !handed_over.contains_key(terminal_id),
     );
+    // The manifest travels as one line with a size cap, so each screen keeps
+    // only the tail a live pane's replay keeps.
+    let mut history = history;
+    for tab in history
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.tabs)
+    {
+        tab.panes.retain(|_, pane| {
+            pane.ansi = crate::pane::truncate_handoff_history(
+                std::mem::take(&mut pane.ansi),
+                crate::server::handoff::MAX_REPLAY_BYTES_PER_PANE,
+            );
+            pane.lines = pane.ansi.lines().count();
+            !pane.ansi.is_empty()
+        });
+    }
     history
         .workspaces
         .iter()
@@ -477,6 +500,65 @@ mod tests {
 
         assert_eq!(panes.get(&connected), Some(&connected_pane.raw()));
         assert!(!panes.contains_key(&disconnected));
+    }
+
+    #[test]
+    fn a_pane_waiting_for_its_container_hands_over_its_pending_history() {
+        let mut state = crate::app::AppState::test_new();
+        state.workspaces = vec![crate::workspace::Workspace::test_new("handoff")];
+        state.ensure_test_terminals();
+        let pane = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].terminal_id(pane).unwrap().clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .pending_offhost_connect = Some(crate::terminal::PendingOffHostConnect {
+            initial_history_ansi: Some("Permission denied\r\n".into()),
+            resolving: true,
+        });
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let snapshot =
+            crate::persist::capture(&state.workspaces, &state.terminals, &runtimes, None, 0);
+
+        let handed_over = handoff_panes(&state);
+        let history = handoff_offhost_history(&snapshot, &state, &runtimes, &handed_over)
+            .expect("the pending history");
+
+        assert!(!handed_over.contains_key(&terminal_id));
+        assert_eq!(
+            history.workspaces[0].tabs[0].panes[&pane.raw()].ansi,
+            "Permission denied\r\n"
+        );
+    }
+
+    #[test]
+    fn a_long_disconnected_history_fits_the_per_pane_replay_limit() {
+        let mut state = crate::app::AppState::test_new();
+        state.workspaces = vec![crate::workspace::Workspace::test_new("handoff")];
+        state.ensure_test_terminals();
+        let pane = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].terminal_id(pane).unwrap().clone();
+        let long = "debug1: a line of verbose ssh output\r\n".repeat(2_000);
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .pending_offhost_connect = Some(crate::terminal::PendingOffHostConnect {
+            initial_history_ansi: Some(long),
+            resolving: true,
+        });
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let snapshot =
+            crate::persist::capture(&state.workspaces, &state.terminals, &runtimes, None, 0);
+
+        let history = handoff_offhost_history(&snapshot, &state, &runtimes, &handoff_panes(&state))
+            .expect("the tail of the history");
+
+        let kept = &history.workspaces[0].tabs[0].panes[&pane.raw()];
+        assert!(kept.ansi.len() <= crate::server::handoff::MAX_REPLAY_BYTES_PER_PANE);
+        assert!(kept.ansi.ends_with("output\r\n"));
+        assert_eq!(kept.lines, kept.ansi.lines().count());
     }
 
     #[tokio::test]

@@ -190,6 +190,15 @@ pub struct PendingOffHostConnect {
     pub resolving: bool,
 }
 
+/// The snapshot ends at the last printed character, so without the break the
+/// next connection's first output would overwrite the old last line.
+pub(crate) fn ending_with_a_line_break(mut history: String) -> String {
+    if !history.ends_with('\n') {
+        history.push_str("\r\n");
+    }
+    history
+}
+
 /// Picks the directory a new pane should inherit.
 ///
 /// Why not trust the runtime path for container and ssh panes: the shell
@@ -353,9 +362,11 @@ impl TerminalState {
         self
     }
 
+    /// The history ends with a line break, so the new connection's first
+    /// output starts below it instead of overwriting the last line.
     pub fn with_pending_offhost_connect(mut self, initial_history_ansi: Option<String>) -> Self {
         self.pending_offhost_connect = Some(PendingOffHostConnect {
-            initial_history_ansi,
+            initial_history_ansi: initial_history_ansi.map(ending_with_a_line_break),
             resolving: false,
         });
         self
@@ -2550,6 +2561,22 @@ pub(crate) fn stabilize_agent_detection(detection: crate::detect::AgentDetection
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pending_connection_starts_below_the_saved_output() {
+        let pending = |history: &str| {
+            TerminalState::new(TerminalId::alloc(), "/".into())
+                .with_pending_offhost_connect(Some(history.into()))
+                .pending_offhost_connect
+                .and_then(|pending| pending.initial_history_ansi)
+        };
+
+        assert_eq!(
+            pending("Permission denied").as_deref(),
+            Some("Permission denied\r\n")
+        );
+        assert_eq!(pending("done\r\n").as_deref(), Some("done\r\n"));
+    }
     use crate::detect::AgentDetection;
 
     #[test]

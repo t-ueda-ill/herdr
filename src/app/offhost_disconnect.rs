@@ -48,6 +48,7 @@ impl App {
             terminal.disconnected = Some(Disconnected { exit_code });
             terminal.revision = terminal.revision.saturating_add(1);
         }
+        self.emit_disconnect_change(pane_id);
         self.render_dirty.request_generic();
         self.render_notify.notify_one();
     }
@@ -104,24 +105,23 @@ impl App {
         let history = runtime.and_then(|runtime| {
             let history = runtime.snapshot_history();
             runtime.shutdown();
-            history.map(ending_with_a_line_break)
+            history.map(crate::terminal::state::ending_with_a_line_break)
         });
         terminal.pending_offhost_connect = Some(crate::terminal::PendingOffHostConnect {
             initial_history_ansi: history,
             resolving: false,
         });
         terminal.revision = terminal.revision.saturating_add(1);
+        self.emit_disconnect_change(pane_id);
         Ok(())
     }
-}
 
-/// The snapshot ends at the last printed character, so without the break the
-/// new connection's first output would overwrite the old last line.
-fn ending_with_a_line_break(mut history: String) -> String {
-    if !history.ends_with('\n') {
-        history.push_str("\r\n");
+    /// `PaneInfo.disconnected` changed, and no exit or spawn event says so.
+    fn emit_disconnect_change(&mut self, pane_id: PaneId) {
+        if let Some((ws_idx, _)) = self.find_pane(pane_id) {
+            self.emit_pane_updated(ws_idx, pane_id);
+        }
     }
-    history
 }
 
 /// A nonzero code or a signal counts as failed; a clean `exit` reports 0.
@@ -300,6 +300,32 @@ mod tests {
             fixture.app.state.terminals[&fixture.terminal_id].off_host_start_dir(),
             Some(&std::path::PathBuf::from("/srv/app/logs"))
         );
+    }
+
+    #[tokio::test]
+    async fn subscribers_hear_when_a_pane_disconnects_and_when_it_reconnects() {
+        let mut fixture = ssh_pane(true);
+        let disconnected_states = |app: &App| {
+            app.event_hub
+                .events_after(0)
+                .into_iter()
+                .filter_map(|(_, event)| match event.data {
+                    crate::api::schema::EventData::PaneUpdated { pane } => {
+                        Some(pane.disconnected.is_some())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        exit(&mut fixture, ChildExitReason::Exited, Some(255));
+        assert_eq!(disconnected_states(&fixture.app), [true]);
+
+        fixture
+            .app
+            .begin_offhost_reconnect(fixture.pane_id)
+            .unwrap();
+        assert_eq!(disconnected_states(&fixture.app), [true, false]);
     }
 
     #[tokio::test]
