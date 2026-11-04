@@ -1002,10 +1002,10 @@ pub struct UiConfig {
     /// Ask for a workspace name before interactive creation. Default: false.
     pub prompt_new_workspace_name: bool,
     /// Show dotfiles when the file viewer opens; `.` toggles them for that
-    /// session only. Default: false.
+    /// session only. Default: true.
     pub file_viewer_show_hidden: bool,
     /// Show Git-ignored entries when the file viewer opens; `i` toggles them
-    /// for that session only. Default: false.
+    /// for that session only. Default: true.
     pub file_viewer_show_ignored: bool,
     /// Override files tab actions by name, e.g. refresh = "ctrl+r". A key
     /// replacing a single-letter key disables only that letter.
@@ -1284,8 +1284,8 @@ impl Default for UiConfig {
             upload_max_entries: 10_000,
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
-            file_viewer_show_hidden: false,
-            file_viewer_show_ignored: false,
+            file_viewer_show_hidden: true,
+            file_viewer_show_ignored: true,
             file_workbench_keys: Default::default(),
             pane_borders: PaneBordersConfig::Auto,
             pane_outer_borders: true,
@@ -1741,20 +1741,20 @@ prompt_new_workspace_name = true
     }
 
     #[test]
-    fn file_viewer_visibility_defaults_off_and_parses() {
+    fn file_viewer_visibility_defaults_on_and_parses() {
         let default_config = Config::default();
-        assert!(!default_config.ui.file_viewer_show_hidden);
-        assert!(!default_config.ui.file_viewer_show_ignored);
+        assert!(default_config.ui.file_viewer_show_hidden);
+        assert!(default_config.ui.file_viewer_show_ignored);
 
         let toml = r#"
 [ui]
-file_viewer_show_hidden = true
-file_viewer_show_ignored = true
+file_viewer_show_hidden = false
+file_viewer_show_ignored = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.collect_diagnostics().is_empty());
-        assert!(config.ui.file_viewer_show_hidden);
-        assert!(config.ui.file_viewer_show_ignored);
+        assert!(!config.ui.file_viewer_show_hidden);
+        assert!(!config.ui.file_viewer_show_ignored);
     }
 
     #[test]
