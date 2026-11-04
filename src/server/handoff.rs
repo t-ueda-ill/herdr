@@ -51,6 +51,11 @@ pub(crate) struct HandoffManifest {
     /// committed. Absent from manifests written before this field existed.
     #[serde(default)]
     pub host_shutdown_intent: Option<crate::platform::HostShutdownIntent>,
+    /// Screens of panes with no PTY to hand over, such as a disconnected
+    /// container or ssh pane, so the replacement reconnects them with their
+    /// output. Absent from manifests written before this field existed.
+    #[serde(default)]
+    pub offhost_history: Option<crate::persist::SessionHistorySnapshot>,
 }
 
 #[cfg(unix)]
@@ -323,6 +328,7 @@ pub(crate) fn manifest_for(
         panes,
         api_window_title,
         host_shutdown_intent,
+        offhost_history: None,
     }
 }
 

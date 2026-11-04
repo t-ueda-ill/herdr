@@ -93,8 +93,11 @@ pub fn restore(
 }
 
 #[cfg(unix)]
+/// `history` holds the screens of panes the old server had no PTY to hand
+/// over, such as a disconnected container or ssh pane.
 pub fn restore_handoff(
     snapshot: &SessionSnapshot,
+    history: Option<&SessionHistorySnapshot>,
     scrollback_limit_bytes: usize,
     default_shell: &str,
     shell_mode: crate::config::ShellModeConfig,
@@ -105,7 +108,7 @@ pub fn restore_handoff(
 ) -> std::io::Result<RestoredSession> {
     restore_with_imports_strict(
         snapshot,
-        None,
+        history,
         24,
         80,
         scrollback_limit_bytes,
@@ -1904,6 +1907,50 @@ mod tests {
         assert_eq!(terminal.ssh.as_ref().unwrap().start_dir, None);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn handoff_seeds_a_disconnected_ssh_pane_with_the_history_the_old_server_sent() {
+        let snapshot = single_pane_session(ssh_pane(Some(test_ssh_snapshot("prod"))));
+        let history = SessionHistorySnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            layout_fingerprint: super::super::snapshot::layout_fingerprint(&snapshot),
+            workspaces: vec![WorkspaceHistorySnapshot {
+                tabs: vec![super::super::snapshot::TabHistorySnapshot {
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneHistorySnapshot {
+                            ansi: "Permission denied (publickey).\r\n".into(),
+                            lines: 1,
+                        },
+                    )]),
+                }],
+            }],
+        };
+
+        let (_, terminals, runtimes) = restore_handoff(
+            &snapshot,
+            Some(&history),
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            &mut HashMap::new(),
+            mpsc::channel(4).0,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .expect("handoff restore");
+
+        assert!(runtimes.is_empty());
+        let terminal = terminals.values().next().expect("terminal");
+        assert_eq!(
+            terminal
+                .pending_offhost_connect
+                .as_ref()
+                .and_then(|pending| pending.initial_history_ansi.as_deref()),
+            Some("Permission denied (publickey).\r\n")
+        );
+    }
+
     #[test]
     fn cold_restore_does_not_resume_an_agent_of_an_off_host_pane_but_keeps_its_session() {
         let mut pane = ssh_pane(Some(test_ssh_snapshot("prod")));
@@ -2661,6 +2708,7 @@ mod tests {
         let mut imports = HashMap::new();
         let (_handoff_workspaces, handoff_terminals, handoff_runtimes) = restore_handoff(
             &snapshot,
+            None,
             0,
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
@@ -2745,6 +2793,7 @@ mod tests {
             )]);
             let (_, mut restored_terminals, restored_runtimes) = restore_handoff(
                 &snapshot,
+                None,
                 4096,
                 test_restore_shell(),
                 crate::config::ShellModeConfig::NonLogin,
@@ -2829,6 +2878,7 @@ mod tests {
 
         let (restored_workspaces, restored_terminals, restored_runtimes) = restore_handoff(
             &snapshot,
+            None,
             4096,
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
@@ -2926,6 +2976,7 @@ mod tests {
 
         let (_, _, restored_runtimes) = restore_handoff(
             &snapshot,
+            None,
             4096,
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,

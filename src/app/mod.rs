@@ -712,6 +712,7 @@ impl App {
         api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
         event_hub: crate::api::EventHub,
         snapshot: &crate::persist::SessionSnapshot,
+        history: Option<&crate::persist::SessionHistorySnapshot>,
         imports: &mut std::collections::HashMap<
             u32,
             crate::handoff_runtime::ImportedHandoffRuntime,
@@ -733,6 +734,7 @@ impl App {
         }
         let (workspaces, terminals, runtimes) = crate::persist::restore_handoff(
             snapshot,
+            history,
             config.advanced.scrollback_limit_bytes,
             &config.terminal.default_shell,
             config.terminal.shell_mode,

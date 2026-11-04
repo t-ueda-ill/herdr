@@ -591,8 +591,11 @@ impl HeadlessServer {
             AppEvent::ContainerListFinished(_) | AppEvent::SshHostsFinished(_) => {
                 self.app.handle_internal_event_with_render_impact(ev)
             }
+            // The shell spawns from the global view size; the tab's controller
+            // may be sized differently.
             AppEvent::OffHostReconnectResolved { .. } => {
-                self.app.handle_internal_event_with_render_impact(ev)
+                let changed = self.app.handle_internal_event_with_render_impact(ev);
+                changed | self.reapply_controlled_shell_tab_geometry(false)
             }
             // The overlay appears now, not when the request arrived, so the
             // reconcile and geometry claim a synchronous `pane.open_editor`

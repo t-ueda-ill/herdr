@@ -71,6 +71,13 @@ impl HeadlessServer {
             self.app.state.selected,
         );
 
+        let offhost_history = handoff_offhost_history(
+            &snapshot,
+            &self.app.state,
+            &self.app.terminal_runtimes,
+            &pane_by_terminal,
+        );
+
         let mut handoff_entries = Vec::new();
         for (terminal_id, runtime) in self.app.terminal_runtimes.iter() {
             let Some(pane_id) = pane_by_terminal.get(terminal_id).copied() else {
@@ -99,7 +106,7 @@ impl HeadlessServer {
             .iter()
             .map(|(_, runtime)| runtime.clone())
             .collect();
-        let manifest = crate::server::handoff::manifest_for(
+        let mut manifest = crate::server::handoff::manifest_for(
             snapshot,
             panes,
             params.expected_protocol,
@@ -107,6 +114,7 @@ impl HeadlessServer {
             self.api_window_title.clone(),
             self.host_shutdown_intent.get(),
         );
+        manifest.offhost_history = offhost_history;
         let mut import_child = match crate::server::handoff::spawn_handoff_import(
             import_exe.as_deref(),
             &socket_path,
@@ -400,6 +408,30 @@ fn handoff_panes(state: &crate::app::AppState) -> HashMap<crate::terminal::Termi
     pane_by_terminal
 }
 
+/// The screens of the panes [`handoff_panes`] leaves out, so the replacement
+/// reconnects them with the output that explains why they disconnected.
+#[cfg(unix)]
+fn handoff_offhost_history(
+    snapshot: &crate::persist::SessionSnapshot,
+    state: &crate::app::AppState,
+    terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+    handed_over: &HashMap<crate::terminal::TerminalId, u32>,
+) -> Option<crate::persist::SessionHistorySnapshot> {
+    let history = crate::persist::capture_history_where(
+        snapshot,
+        &state.workspaces,
+        &state.terminals,
+        terminal_runtimes,
+        |terminal_id| !handed_over.contains_key(terminal_id),
+    );
+    history
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.tabs)
+        .any(|tab| !tab.panes.is_empty())
+        .then_some(history)
+}
+
 #[cfg(unix)]
 pub(super) fn wait_for_old_public_sockets_to_close(timeout: Duration) -> io::Result<()> {
     let deadline = Instant::now() + timeout;
@@ -445,5 +477,43 @@ mod tests {
 
         assert_eq!(panes.get(&connected), Some(&connected_pane.raw()));
         assert!(!panes.contains_key(&disconnected));
+    }
+
+    #[tokio::test]
+    async fn the_handoff_carries_only_the_screens_of_panes_it_cannot_hand_over() {
+        let mut state = crate::app::AppState::test_new();
+        let mut workspace = crate::workspace::Workspace::test_new("handoff");
+        let disconnected_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let connected_pane = workspace.tabs[0].root_pane;
+        state.workspaces = vec![workspace];
+        state.ensure_test_terminals();
+        let terminal_of = |pane| state.workspaces[0].terminal_id(pane).unwrap().clone();
+        let disconnected = terminal_of(disconnected_pane);
+        let connected = terminal_of(connected_pane);
+        state.terminals.get_mut(&disconnected).unwrap().disconnected =
+            Some(crate::terminal::Disconnected {
+                exit_code: Some(255),
+            });
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        for (terminal_id, screen) in [
+            (&disconnected, &b"Permission denied\r\n"[..]),
+            (&connected, &b"LIVE SHELL\r\n"[..]),
+        ] {
+            runtimes.insert(
+                terminal_id.clone(),
+                crate::terminal::TerminalRuntime::test_with_scrollback_bytes(40, 5, 4096, screen),
+            );
+        }
+        let snapshot =
+            crate::persist::capture(&state.workspaces, &state.terminals, &runtimes, None, 0);
+
+        let history = handoff_offhost_history(&snapshot, &state, &runtimes, &handoff_panes(&state))
+            .expect("history of the disconnected pane");
+
+        let panes = &history.workspaces[0].tabs[0].panes;
+        assert!(panes[&disconnected_pane.raw()]
+            .ansi
+            .contains("Permission denied"));
+        assert!(!panes.contains_key(&connected_pane.raw()));
     }
 }

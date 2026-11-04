@@ -2719,6 +2719,7 @@ impl HeadlessServer {
                     return match action {
                         Some(crate::ui::DisconnectBarButton::Reconnect) => {
                             let _ = self.app.reconnect_offhost_pane(runtime_pane_id);
+                            self.reapply_controlled_shell_tab_geometry(false);
                             true
                         }
                         Some(crate::ui::DisconnectBarButton::Close) => {

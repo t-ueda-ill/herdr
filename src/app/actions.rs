@@ -1455,13 +1455,13 @@ impl AppState {
                 agent,
                 observed_at,
             } => self
-                .update_terminal_state(pane_id, |terminal| {
+                .update_terminal_state_from_screen(pane_id, |terminal| {
                     Some(terminal.set_detected_agent_process_at(agent, observed_at))
                 })
                 .into_iter()
                 .collect(),
             AppEvent::CodexPromptObserved { pane_id, ready } => self
-                .update_terminal_state(pane_id, |terminal| {
+                .update_terminal_state_from_screen(pane_id, |terminal| {
                     terminal.observe_codex_prompt_ready(ready)
                 })
                 .into_iter()
@@ -1475,7 +1475,7 @@ impl AppState {
                 process_exited,
                 observed_at,
             } => self
-                .update_terminal_state(pane_id, |terminal| {
+                .update_terminal_state_from_screen(pane_id, |terminal| {
                     Some(terminal.set_detected_state_with_screen_signals_at(
                         agent,
                         state,
@@ -1686,6 +1686,24 @@ impl AppState {
             AppEvent::TabBarCommandFinished { .. } => Vec::new(),
             AppEvent::PluginCommandFinished { .. } => Vec::new(),
         }
+    }
+
+    /// Screen detection can still deliver an observation queued before the
+    /// connection ended; a disconnected pane shows an exited screen, not an agent.
+    fn update_terminal_state_from_screen<F>(
+        &mut self,
+        pane_id: PaneId,
+        update: F,
+    ) -> Option<PaneStateUpdate>
+    where
+        F: FnOnce(&mut crate::terminal::TerminalState) -> Option<TerminalStateMutation>,
+    {
+        self.update_terminal_state(pane_id, |terminal| {
+            if terminal.disconnected.is_some() {
+                return None;
+            }
+            update(terminal)
+        })
     }
 
     fn update_terminal_state<F>(&mut self, pane_id: PaneId, update: F) -> Option<PaneStateUpdate>
@@ -3039,6 +3057,49 @@ mod tests {
         let terminal = state.terminals.get(&terminal_id).unwrap();
         assert_eq!(terminal.state, AgentState::Working);
         assert_eq!(terminal.detected_agent, Some(Agent::Pi));
+    }
+
+    #[test]
+    fn screen_detection_queued_before_a_disconnect_does_not_update_the_pane() {
+        let mut state = app_with_workspaces(&["test"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let terminal_id = state.workspaces[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        state.terminals.get_mut(&terminal_id).unwrap().disconnected =
+            Some(crate::terminal::Disconnected {
+                exit_code: Some(255),
+            });
+        let observed_at = std::time::Instant::now();
+
+        let updates = [
+            AppEvent::StateChanged {
+                pane_id,
+                agent: Some(Agent::Pi),
+                state: AgentState::Blocked,
+                visible_blocker: true,
+                visible_working: false,
+                process_exited: false,
+                observed_at,
+            },
+            AppEvent::AgentProcessDetected {
+                pane_id,
+                agent: Agent::Pi,
+                observed_at,
+            },
+            AppEvent::CodexPromptObserved {
+                pane_id,
+                ready: true,
+            },
+        ]
+        .into_iter()
+        .flat_map(|event| state.handle_app_event(event))
+        .collect::<Vec<_>>();
+
+        assert!(updates.is_empty());
+        let terminal = &state.terminals[&terminal_id];
+        assert_eq!(terminal.detected_agent, None);
+        assert_ne!(terminal.state, AgentState::Blocked);
     }
 
     #[test]

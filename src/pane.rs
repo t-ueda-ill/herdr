@@ -3978,9 +3978,14 @@ impl PaneRuntime {
     ///
     /// Ends the rest of the process session now, while its id still names it,
     /// and forgets the id: a later close or reconnect must not signal another
-    /// process that reused it.
+    /// process that reused it. Stops agent detection, which would otherwise keep
+    /// reporting the dead connection's screen.
     pub(crate) fn retire_exited_process(&self) {
         self.retired.store(true, Ordering::Release);
+        // The PTY reader keeps draining the last output; only detection stops.
+        if let Some(handle) = &self.detect_handle {
+            handle.abort();
+        }
         let child_pid = self.child_pid.swap(0, Ordering::AcqRel);
         shutdown_pane_processes(
             self.pane_id,

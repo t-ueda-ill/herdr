@@ -296,3 +296,85 @@ async fn a_disconnected_shell_asks_clients_to_forward_its_clicks() {
     );
     shutdown_test_runtimes(&mut server);
 }
+
+#[test]
+fn pane_reconnect_reapplies_the_controlled_geometry_like_other_layout_requests() {
+    let method = crate::api::schema::Method::PaneReconnect(crate::api::schema::PaneTarget {
+        pane_id: "w1:p1".into(),
+    });
+    assert!(HeadlessServer::public_request_may_change_geometry(&method));
+    assert!(HeadlessServer::shell_endpoint_claims_geometry(&method));
+}
+
+#[tokio::test]
+async fn a_resolved_container_lookup_sizes_the_tab_from_its_controller() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("reconnect-geometry");
+    let first_pane = workspace.tabs[0].root_pane;
+    let other_pane = workspace.test_split(ratatui::layout::Direction::Vertical);
+    for pane in [first_pane, other_pane] {
+        workspace.insert_test_runtime(
+            pane,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        );
+    }
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    server.app.state.ensure_test_terminals();
+    let (control, _) = connect_test_shell(&mut server, 73, 185, 46);
+    let _ = control.recv().expect("snapshot");
+    let controlled = server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
+    // A runtime spawned from the global view size instead of the controller's.
+    server.app.state.workspaces[0].test_runtimes[&first_pane].resize(10, 30, 0, 0);
+    let terminal_id = server.app.state.workspaces[0]
+        .terminal_id(first_pane)
+        .unwrap()
+        .clone();
+
+    server.handle_internal_event_with_forwarding(AppEvent::OffHostReconnectResolved {
+        terminal_id,
+        container_id: None,
+    });
+
+    assert_eq!(
+        server.app.state.workspaces[0].test_runtimes[&first_pane].current_size(),
+        controlled
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn late_output_of_a_disconnected_pane_redraws_its_bar_instead_of_patching_rows() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
+    server.app.state.ensure_test_terminals();
+    let (control, render) = connect_matching_test_shell(&mut server, 7);
+    let _ = control.recv().expect("snapshot");
+    server.render_and_stream();
+    let _ = recv_pane_surface(&render, "initial surface");
+    let terminal_id = server.app.state.workspaces[0]
+        .terminal_id(pane_id)
+        .unwrap()
+        .clone();
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .disconnected = Some(crate::terminal::Disconnected {
+        exit_code: Some(255),
+    });
+    server.render_and_stream();
+    let _ = recv_pane_surface(&render, "surface with the bar");
+
+    write_shared_test_pane(&mut server, pane_id, b"\r\nConnection closed.");
+
+    assert!(
+        !server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])),
+        "a row patch would paint over the bar"
+    );
+    shutdown_test_runtimes(&mut server);
+}

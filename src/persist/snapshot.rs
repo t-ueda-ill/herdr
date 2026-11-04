@@ -599,6 +599,18 @@ pub fn capture_history(
     terminals: &HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> SessionHistorySnapshot {
+    capture_history_where(snapshot, workspaces, terminals, terminal_runtimes, |_| true)
+}
+
+/// [`capture_history`] for the panes whose terminal `include` accepts; the
+/// others are not read at all, since a large scrollback is costly to render.
+pub fn capture_history_where(
+    snapshot: &SessionSnapshot,
+    workspaces: &[Workspace],
+    terminals: &HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    include: impl Fn(&crate::terminal::TerminalId) -> bool,
+) -> SessionHistorySnapshot {
     SessionHistorySnapshot {
         version: SNAPSHOT_VERSION,
         layout_fingerprint: layout_fingerprint(snapshot),
@@ -609,7 +621,7 @@ pub fn capture_history(
                     .tabs
                     .iter()
                     .map(|tab| TabHistorySnapshot {
-                        panes: capture_tab_history(tab, terminals, terminal_runtimes),
+                        panes: capture_tab_history(tab, terminals, terminal_runtimes, &include),
                     })
                     .collect(),
             })
@@ -621,9 +633,13 @@ fn capture_tab_history(
     tab: &crate::workspace::Tab,
     terminals: &HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    include: &impl Fn(&crate::terminal::TerminalId) -> bool,
 ) -> HashMap<u32, PaneHistorySnapshot> {
     let mut panes = HashMap::new();
     for (id, pane) in &tab.panes {
+        if !include(&pane.attached_terminal_id) {
+            continue;
+        }
         if let Some(history) = capture_pane_history(pane, terminals, terminal_runtimes) {
             panes.insert(id.raw(), history);
         }
