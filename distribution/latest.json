@@ -1,23 +1,42 @@
 {
-  "version": "0.9.510",
+  "version": "0.9.511",
   "protocol": 22,
   "endpoint_generation": 1,
-  "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.510\n- Source commit: 249dad19a01eef6a4e291dc00ed8d6bfd5071e57\n\nSHA-256:\n\n```\n00d147a15282573a7ee62f09a7bdc88615425fe60177b9fecd6631342a36718d  herdr-linux-x86_64\n9a25019995d881fbc4e25e9c76fa3726206c71b945689a25028a2a5d535df222  herdr-linux-aarch64\n129d9864c916c96799ef50fb82826f9a1634795d0649d98eb7890b1570bb31e4  herdr-macos-x86_64\n6be06e7d8336ccc447a5da62e8fce3e002aa28d857e682bf4a52480173a68982  herdr-macos-aarch64\necee094b4328ca7132865be42990560d8d987b8554748086c7a0360530fb2543  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.509 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/43\n* ci: skip build and test jobs when a pull request only bumps the herdr version by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/44\n* feat: reach and drive the files workbench from the keyboard alone by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/45\n* test: wait for cmd to accept input before checking its windows cwd by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/47\n* feat: give files operations keys and show them in the footer, menus and a key list by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/46\n* chore: prepare v0.9.510 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/48\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.509...v0.9.510",
+  "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.511\n- Source commit: 3b2b5015b45d8a3a21c9266b7a4485cd36e9e57c\n\nSHA-256:\n\n```\n68b2e95d7b8121174f6bf63905388cc5d1636eeab23bd63fa40efe2530280f73  herdr-linux-x86_64\na1e47c6fdbf0457f590c20dfb4f253bb9ca2eced7dc0364d8389cf35e0c17454  herdr-linux-aarch64\nb21d6da734bcdd35d7cdaf4f2432b508f0ad308071ff39ea599f0b3ed204afc8  herdr-macos-x86_64\nb2ecca4142b0c7d90a9b3352df3aa7421af79f9df95cbf777ce026c85addd530  herdr-macos-aarch64\n69cfcd221950620c9d95d950f32d3f85a244ebfe0d21d64db81bdcbc9401f45a  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.510 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/49\n* fix: server stop \u5f8c\u306e\u30b3\u30fc\u30eb\u30c9\u5fa9\u5143\u3067 ssh \u3068\u30b3\u30f3\u30c6\u30ca\u306e\u30da\u30a4\u30f3\u3092\u518d\u63a5\u7d9a\u3059\u308b by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/50\n* feat: files \u30d3\u30e5\u30fc\u3067\u30c9\u30c3\u30c8\u30d5\u30a1\u30a4\u30eb\u3068 ignore \u5bfe\u8c61\u3092\u65e2\u5b9a\u3067\u8868\u793a\u3059\u308b by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/52\n* feat: ssh \u3068\u30b3\u30f3\u30c6\u30ca\u306e\u30da\u30a4\u30f3\u304c\u5207\u65ad\u3055\u308c\u305f\u3089\u518d\u63a5\u7d9a\u30d0\u30fc\u3092\u6b8b\u3057\u3001pane.reconnect \u3092\u8ffd\u52a0\u3059\u308b by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/51\n* chore: prepare v0.9.511 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/53\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.510...v0.9.511",
   "assets": {
-    "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.510/herdr-linux-x86_64",
-    "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.510/herdr-linux-aarch64",
-    "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.510/herdr-macos-x86_64",
-    "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.510/herdr-macos-aarch64",
-    "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.510/herdr-windows-x86_64.zip"
+    "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.511/herdr-linux-x86_64",
+    "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.511/herdr-linux-aarch64",
+    "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.511/herdr-macos-x86_64",
+    "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.511/herdr-macos-aarch64",
+    "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.511/herdr-windows-x86_64.zip"
   },
   "sha256": {
-    "linux-x86_64": "00d147a15282573a7ee62f09a7bdc88615425fe60177b9fecd6631342a36718d",
-    "linux-aarch64": "9a25019995d881fbc4e25e9c76fa3726206c71b945689a25028a2a5d535df222",
-    "macos-x86_64": "129d9864c916c96799ef50fb82826f9a1634795d0649d98eb7890b1570bb31e4",
-    "macos-aarch64": "6be06e7d8336ccc447a5da62e8fce3e002aa28d857e682bf4a52480173a68982",
-    "windows-x86_64": "ecee094b4328ca7132865be42990560d8d987b8554748086c7a0360530fb2543"
+    "linux-x86_64": "68b2e95d7b8121174f6bf63905388cc5d1636eeab23bd63fa40efe2530280f73",
+    "linux-aarch64": "a1e47c6fdbf0457f590c20dfb4f253bb9ca2eced7dc0364d8389cf35e0c17454",
+    "macos-x86_64": "b21d6da734bcdd35d7cdaf4f2432b508f0ad308071ff39ea599f0b3ed204afc8",
+    "macos-aarch64": "b2ecca4142b0c7d90a9b3352df3aa7421af79f9df95cbf777ce026c85addd530",
+    "windows-x86_64": "69cfcd221950620c9d95d950f32d3f85a244ebfe0d21d64db81bdcbc9401f45a"
   },
   "releases": {
+    "0.9.511": {
+      "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.511\n- Source commit: 3b2b5015b45d8a3a21c9266b7a4485cd36e9e57c\n\nSHA-256:\n\n```\n68b2e95d7b8121174f6bf63905388cc5d1636eeab23bd63fa40efe2530280f73  herdr-linux-x86_64\na1e47c6fdbf0457f590c20dfb4f253bb9ca2eced7dc0364d8389cf35e0c17454  herdr-linux-aarch64\nb21d6da734bcdd35d7cdaf4f2432b508f0ad308071ff39ea599f0b3ed204afc8  herdr-macos-x86_64\nb2ecca4142b0c7d90a9b3352df3aa7421af79f9df95cbf777ce026c85addd530  herdr-macos-aarch64\n69cfcd221950620c9d95d950f32d3f85a244ebfe0d21d64db81bdcbc9401f45a  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.510 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/49\n* fix: server stop \u5f8c\u306e\u30b3\u30fc\u30eb\u30c9\u5fa9\u5143\u3067 ssh \u3068\u30b3\u30f3\u30c6\u30ca\u306e\u30da\u30a4\u30f3\u3092\u518d\u63a5\u7d9a\u3059\u308b by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/50\n* feat: files \u30d3\u30e5\u30fc\u3067\u30c9\u30c3\u30c8\u30d5\u30a1\u30a4\u30eb\u3068 ignore \u5bfe\u8c61\u3092\u65e2\u5b9a\u3067\u8868\u793a\u3059\u308b by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/52\n* feat: ssh \u3068\u30b3\u30f3\u30c6\u30ca\u306e\u30da\u30a4\u30f3\u304c\u5207\u65ad\u3055\u308c\u305f\u3089\u518d\u63a5\u7d9a\u30d0\u30fc\u3092\u6b8b\u3057\u3001pane.reconnect \u3092\u8ffd\u52a0\u3059\u308b by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/51\n* chore: prepare v0.9.511 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/53\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.510...v0.9.511",
+      "protocol": 22,
+      "endpoint_generation": 1,
+      "assets": {
+        "linux-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.511/herdr-linux-x86_64",
+        "linux-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.511/herdr-linux-aarch64",
+        "macos-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.511/herdr-macos-x86_64",
+        "macos-aarch64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.511/herdr-macos-aarch64",
+        "windows-x86_64": "https://github.com/t-ueda-ill/herdr/releases/download/v0.9.511/herdr-windows-x86_64.zip"
+      },
+      "sha256": {
+        "linux-x86_64": "68b2e95d7b8121174f6bf63905388cc5d1636eeab23bd63fa40efe2530280f73",
+        "linux-aarch64": "a1e47c6fdbf0457f590c20dfb4f253bb9ca2eced7dc0364d8389cf35e0c17454",
+        "macos-x86_64": "b21d6da734bcdd35d7cdaf4f2432b508f0ad308071ff39ea599f0b3ed204afc8",
+        "macos-aarch64": "b2ecca4142b0c7d90a9b3352df3aa7421af79f9df95cbf777ce026c85addd530",
+        "windows-x86_64": "69cfcd221950620c9d95d950f32d3f85a244ebfe0d21d64db81bdcbc9401f45a"
+      }
+    },
     "0.9.510": {
       "notes": "Fork release of t-ueda-ill/herdr\n\n- Tag: v0.9.510\n- Source commit: 249dad19a01eef6a4e291dc00ed8d6bfd5071e57\n\nSHA-256:\n\n```\n00d147a15282573a7ee62f09a7bdc88615425fe60177b9fecd6631342a36718d  herdr-linux-x86_64\n9a25019995d881fbc4e25e9c76fa3726206c71b945689a25028a2a5d535df222  herdr-linux-aarch64\n129d9864c916c96799ef50fb82826f9a1634795d0649d98eb7890b1570bb31e4  herdr-macos-x86_64\n6be06e7d8336ccc447a5da62e8fce3e002aa28d857e682bf4a52480173a68982  herdr-macos-aarch64\necee094b4328ca7132865be42990560d8d987b8554748086c7a0360530fb2543  herdr-windows-x86_64.zip\n```\n\n\n## What's Changed\n* release: synchronize distribution manifest for v0.9.509 by @github-actions[bot] in https://github.com/t-ueda-ill/herdr/pull/43\n* ci: skip build and test jobs when a pull request only bumps the herdr version by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/44\n* feat: reach and drive the files workbench from the keyboard alone by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/45\n* test: wait for cmd to accept input before checking its windows cwd by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/47\n* feat: give files operations keys and show them in the footer, menus and a key list by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/46\n* chore: prepare v0.9.510 by @t-ueda-ill in https://github.com/t-ueda-ill/herdr/pull/48\n\n\n**Full Changelog**: https://github.com/t-ueda-ill/herdr/compare/v0.9.509...v0.9.510",
       "protocol": 22,
