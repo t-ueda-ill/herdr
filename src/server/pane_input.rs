@@ -231,26 +231,57 @@ pub(super) fn disconnected_pane_action(
     })
 }
 
-/// The input a disconnected pane still takes: the wheel and page keys, which
-/// scroll its history without reaching the exited process.
-pub(super) fn scrolls_a_disconnected_pane(event: &ClientPaneInputEvent) -> bool {
+/// How far the wheel or a page key scrolls a disconnected pane's history:
+/// positive lines scroll back. Everything else, key releases included, is none.
+///
+/// Why not the live input routing: modes the exited process left on, such as
+/// mouse reporting or application cursor keys, would send these to the dead PTY.
+pub(super) fn disconnected_pane_scroll(event: &ClientPaneInputEvent, rows: u16) -> Option<i64> {
+    use crate::protocol::{ClientKeyCode, ClientKeyKind, ClientMouseKind};
+    let page = i64::from(rows.saturating_sub(1).max(1));
     match event {
-        ClientPaneInputEvent::Mouse { kind, .. } => matches!(
-            kind,
-            crate::protocol::ClientMouseKind::ScrollUp
-                | crate::protocol::ClientMouseKind::ScrollDown
-        ),
-        ClientPaneInputEvent::Key {
-            code, modifiers, ..
-        } => {
-            *modifiers == 0
-                && matches!(
-                    code,
-                    crate::protocol::ClientKeyCode::PageUp
-                        | crate::protocol::ClientKeyCode::PageDown
-                )
+        ClientPaneInputEvent::Mouse { kind, lines, .. } => {
+            let lines = i64::from((*lines).max(1));
+            match kind {
+                ClientMouseKind::ScrollUp => Some(lines),
+                ClientMouseKind::ScrollDown => Some(-lines),
+                _ => None,
+            }
         }
-        _ => false,
+        ClientPaneInputEvent::Key {
+            code,
+            modifiers: 0,
+            kind: ClientKeyKind::Press | ClientKeyKind::Repeat,
+            repeat_count,
+            ..
+        } => {
+            let pages = page.saturating_mul(i64::from((*repeat_count).max(1)));
+            match code {
+                ClientKeyCode::PageUp => Some(pages),
+                ClientKeyCode::PageDown => Some(-pages),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Applies [`disconnected_pane_scroll`] to every event, straight to the history.
+pub(super) fn scroll_disconnected_pane(
+    runtime: &crate::terminal::TerminalRuntime,
+    events: &[ClientPaneInputEvent],
+) {
+    let (rows, _) = runtime.current_size();
+    for lines in events
+        .iter()
+        .filter_map(|event| disconnected_pane_scroll(event, rows))
+    {
+        let amount = usize::try_from(lines.unsigned_abs()).unwrap_or(usize::MAX);
+        if lines > 0 {
+            runtime.scroll_up(amount);
+        } else {
+            runtime.scroll_down(amount);
+        }
     }
 }
 
@@ -466,6 +497,54 @@ mod tests {
             click(close_column, 22),
         ] {
             assert_eq!(disconnected_pane_action(&[ignored], size, Some(255)), None);
+        }
+    }
+
+    #[test]
+    fn the_wheel_and_page_key_presses_scroll_a_disconnected_pane_by_lines_and_pages() {
+        use crate::protocol::{ClientKeyCode, ClientKeyKind, ClientMouseKind};
+        let wheel = |kind, lines| ClientPaneInputEvent::Mouse {
+            kind,
+            position: crate::protocol::ClientMousePosition::Cell { column: 0, row: 0 },
+            geometry: None,
+            modifiers: 0,
+            lines,
+        };
+        let page = |code, kind, repeat_count| ClientPaneInputEvent::Key {
+            code,
+            modifiers: 0,
+            kind,
+            repeat_count,
+            shifted_codepoint: None,
+            generated_text: None,
+            tracks_release: true,
+            physical_key_id: None,
+            windows_record: None,
+        };
+
+        assert_eq!(
+            disconnected_pane_scroll(&wheel(ClientMouseKind::ScrollUp, 3), 24),
+            Some(3)
+        );
+        assert_eq!(
+            disconnected_pane_scroll(&wheel(ClientMouseKind::ScrollDown, 0), 24),
+            Some(-1)
+        );
+        assert_eq!(
+            disconnected_pane_scroll(&page(ClientKeyCode::PageUp, ClientKeyKind::Press, 1), 24),
+            Some(23)
+        );
+        assert_eq!(
+            disconnected_pane_scroll(&page(ClientKeyCode::PageDown, ClientKeyKind::Repeat, 2), 24),
+            Some(-46)
+        );
+        for ignored in [
+            page(ClientKeyCode::PageUp, ClientKeyKind::Release, 1),
+            page(ClientKeyCode::Up, ClientKeyKind::Press, 1),
+            key(ClientKeyCode::PageUp, KeyModifiers::SHIFT.bits()),
+            click(0, 0),
+        ] {
+            assert_eq!(disconnected_pane_scroll(&ignored, 24), None);
         }
     }
 

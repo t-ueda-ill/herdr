@@ -1694,6 +1694,9 @@ pub struct PaneRuntime {
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
     cwd_process_exited: Arc<AtomicBool>,
     child_wait_completed: Option<Arc<AtomicBool>>,
+    /// Set once a disconnected pane keeps this runtime after its process
+    /// exited; see [`PaneRuntime::retire_exited_process`].
+    retired: AtomicBool,
     in_container: bool,
     in_ssh: bool,
     kitty_keyboard_flags: Arc<AtomicU16>,
@@ -3017,6 +3020,7 @@ impl PaneRuntime {
             persistence_cwd: Mutex::new(None),
             cwd_process_exited,
             child_wait_completed: None,
+            retired: AtomicBool::new(false),
             in_container,
             in_ssh,
             kitty_keyboard_flags,
@@ -3730,6 +3734,7 @@ impl PaneRuntime {
             persistence_cwd: Mutex::new(None),
             cwd_process_exited: child_wait_completed.clone(),
             child_wait_completed: Some(child_wait_completed),
+            retired: AtomicBool::new(false),
             in_container,
             in_ssh,
             kitty_keyboard_flags,
@@ -3929,8 +3934,10 @@ impl PaneRuntime {
         self.terminal.focus_reporting_enabled()
     }
 
+    /// A retired runtime asks for pointer input, so clients forward clicks
+    /// on the disconnect bar to the server instead of starting a selection.
     pub fn mouse_reporting_enabled(&self) -> bool {
-        self.terminal.mouse_reporting_enabled()
+        self.retired.load(Ordering::Acquire) || self.terminal.mouse_reporting_enabled()
     }
 
     pub fn sgr_pixel_mouse_enabled(&self) -> bool {
@@ -3961,12 +3968,30 @@ impl PaneRuntime {
         })
     }
 
+    /// Why a retired runtime reports none: a process that died inside a
+    /// synchronized update never ends it, and renders would wait for it forever.
     pub fn synchronized_output_active(&self) -> bool {
-        self.terminal.synchronized_output_active()
+        !self.retired.load(Ordering::Acquire) && self.terminal.synchronized_output_active()
+    }
+
+    /// Keeps the screen of a pane whose process exited, for the disconnect bar.
+    ///
+    /// Ends the rest of the process session now, while its id still names it,
+    /// and forgets the id: a later close or reconnect must not signal another
+    /// process that reused it.
+    pub(crate) fn retire_exited_process(&self) {
+        self.retired.store(true, Ordering::Release);
+        let child_pid = self.child_pid.swap(0, Ordering::AcqRel);
+        shutdown_pane_processes(
+            self.pane_id,
+            child_pid,
+            self.child_wait_completed.as_deref(),
+        );
     }
 
     pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
-        self.terminal.synchronized_output_state()
+        let (active, epoch) = self.terminal.synchronized_output_state();
+        (active && !self.retired.load(Ordering::Acquire), epoch)
     }
 
     pub fn visible_text(&self) -> String {
@@ -4586,6 +4611,7 @@ impl PaneRuntime {
                 persistence_cwd: Mutex::new(None),
                 cwd_process_exited: Arc::new(AtomicBool::new(false)),
                 child_wait_completed: None,
+                retired: AtomicBool::new(false),
                 in_container: false,
                 in_ssh: false,
                 kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
@@ -6396,6 +6422,33 @@ mod tests {
         assert_eq!(output, "vt100\n24bit\n");
     }
 
+    #[tokio::test]
+    async fn a_retired_runtime_keeps_its_screen_but_no_process_or_pending_update() {
+        let runtime =
+            PaneRuntime::test_with_screen_bytes(40, 5, b"Permission denied\r\n\x1b[?2026h");
+        // Above every pid_max, so retiring it signals no real process.
+        runtime.child_pid.store(i32::MAX as u32, Ordering::Release);
+        assert!(runtime.synchronized_output_active());
+
+        runtime.retire_exited_process();
+
+        assert_eq!(
+            runtime.child_pid(),
+            None,
+            "a reused id must not be signalled later"
+        );
+        assert!(
+            !runtime.synchronized_output_active(),
+            "an update the exited process never ended must not hold renders back"
+        );
+        assert!(!runtime.synchronized_output_state().0);
+        assert!(
+            runtime.mouse_reporting_enabled(),
+            "clicks reach the disconnect bar instead of starting a selection"
+        );
+        assert!(runtime.visible_text().contains("Permission denied"));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn handoff_history_ansi_captures_primary_screen() {
@@ -6607,6 +6660,7 @@ mod tests {
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
+            retired: AtomicBool::new(false),
             in_container: false,
             in_ssh: false,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
@@ -6649,6 +6703,7 @@ mod tests {
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
+            retired: AtomicBool::new(false),
             in_container: false,
             in_ssh: false,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),

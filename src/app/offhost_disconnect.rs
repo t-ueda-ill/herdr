@@ -41,6 +41,9 @@ impl App {
         else {
             return;
         };
+        if let Some(runtime) = self.terminal_runtimes.get(&terminal_id) {
+            runtime.retire_exited_process();
+        }
         if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
             terminal.disconnected = Some(Disconnected { exit_code });
             terminal.revision = terminal.revision.saturating_add(1);
@@ -91,14 +94,18 @@ impl App {
         if terminal.disconnected.take().is_none() {
             return Err(ReconnectRefusal::NotDisconnected);
         }
-        let history = self
-            .terminal_runtimes
-            .remove(&terminal_id)
-            .and_then(|runtime| {
-                let history = runtime.snapshot_history();
-                runtime.shutdown();
-                history.map(ending_with_a_line_break)
-            });
+        let runtime = self.terminal_runtimes.remove(&terminal_id);
+        if let Some(cwd) = runtime
+            .as_ref()
+            .and_then(crate::terminal::TerminalRuntime::foreground_cwd)
+        {
+            terminal.open_off_host_in(cwd);
+        }
+        let history = runtime.and_then(|runtime| {
+            let history = runtime.snapshot_history();
+            runtime.shutdown();
+            history.map(ending_with_a_line_break)
+        });
         terminal.pending_offhost_connect = Some(crate::terminal::PendingOffHostConnect {
             initial_history_ansi: history,
             resolving: false,
@@ -192,6 +199,15 @@ mod tests {
             exit(&mut fixture, exit_reason, exit_code);
 
             assert!(fixture.app.find_pane(fixture.pane_id).is_some());
+            let runtime = fixture
+                .app
+                .terminal_runtimes
+                .get(&fixture.terminal_id)
+                .unwrap();
+            assert!(
+                runtime.mouse_reporting_enabled(),
+                "the retired runtime takes clicks for the bar"
+            );
             assert_eq!(
                 fixture.app.state.terminals[&fixture.terminal_id].disconnected,
                 Some(Disconnected { exit_code })
@@ -261,6 +277,28 @@ mod tests {
         assert!(
             history.ends_with('\n'),
             "the next connection starts below the last one's output: {history:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnecting_opens_in_the_directory_the_remote_shell_last_reported() {
+        let mut fixture = ssh_pane(true);
+        fixture
+            .app
+            .terminal_runtimes
+            .get(&fixture.terminal_id)
+            .unwrap()
+            .test_set_reported_cwd("/srv/app/logs".into());
+        exit(&mut fixture, ChildExitReason::Exited, Some(255));
+
+        fixture
+            .app
+            .begin_offhost_reconnect(fixture.pane_id)
+            .unwrap();
+
+        assert_eq!(
+            fixture.app.state.terminals[&fixture.terminal_id].off_host_start_dir(),
+            Some(&std::path::PathBuf::from("/srv/app/logs"))
         );
     }
 

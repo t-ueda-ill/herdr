@@ -596,6 +596,7 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
 pub fn capture_history(
     snapshot: &SessionSnapshot,
     workspaces: &[Workspace],
+    terminals: &HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> SessionHistorySnapshot {
     SessionHistorySnapshot {
@@ -608,7 +609,7 @@ pub fn capture_history(
                     .tabs
                     .iter()
                     .map(|tab| TabHistorySnapshot {
-                        panes: capture_tab_history(tab, terminal_runtimes),
+                        panes: capture_tab_history(tab, terminals, terminal_runtimes),
                     })
                     .collect(),
             })
@@ -618,24 +619,35 @@ pub fn capture_history(
 
 fn capture_tab_history(
     tab: &crate::workspace::Tab,
+    terminals: &HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> HashMap<u32, PaneHistorySnapshot> {
     let mut panes = HashMap::new();
     for (id, pane) in &tab.panes {
-        if let Some(history) = capture_pane_history(Some(pane), terminal_runtimes) {
+        if let Some(history) = capture_pane_history(pane, terminals, terminal_runtimes) {
             panes.insert(id.raw(), history);
         }
     }
     panes
 }
 
+/// A pane waiting for its container or ssh connection has no runtime yet; its
+/// history lives in the pending connect until the shell starts.
 fn capture_pane_history(
-    pane: Option<&crate::pane::PaneState>,
+    pane: &crate::pane::PaneState,
+    terminals: &HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> Option<PaneHistorySnapshot> {
-    let ansi = terminal_runtimes
-        .get(&pane?.attached_terminal_id)?
-        .snapshot_history()?;
+    let terminal_id = &pane.attached_terminal_id;
+    let ansi = match terminal_runtimes.get(terminal_id) {
+        Some(runtime) => runtime.snapshot_history()?,
+        None => terminals
+            .get(terminal_id)?
+            .pending_offhost_connect
+            .as_ref()?
+            .initial_history_ansi
+            .clone()?,
+    };
     let lines = ansi.lines().count();
     Some(PaneHistorySnapshot { ansi, lines })
 }
@@ -763,7 +775,12 @@ mod tests {
         terminal_runtimes: &TerminalRuntimeRegistry,
     ) -> SessionHistorySnapshot {
         let snapshot = capture_from_state_with_runtimes(state, terminal_runtimes);
-        capture_history(&snapshot, &state.workspaces, terminal_runtimes)
+        capture_history(
+            &snapshot,
+            &state.workspaces,
+            &state.terminals,
+            terminal_runtimes,
+        )
     }
 
     fn root_split_ratio(tab: &TabSnapshot) -> Option<f32> {
@@ -1658,6 +1675,30 @@ mod tests {
         assert!(history.ansi.contains("alpha"));
         assert!(history.ansi.contains("gamma"));
         assert!(history.lines >= 3);
+    }
+
+    #[test]
+    fn history_of_a_pane_waiting_for_its_connection_is_the_pending_history() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .pending_offhost_connect = Some(crate::terminal::PendingOffHostConnect {
+            initial_history_ansi: Some("alpha\r\nbeta\r\n".into()),
+            resolving: true,
+        });
+
+        let history_snapshot =
+            capture_history_from_state_with_runtimes(&state, &TerminalRuntimeRegistry::new());
+        let history = &history_snapshot.workspaces[0].tabs[0].panes[&root.raw()];
+
+        assert_eq!(history.ansi, "alpha\r\nbeta\r\n");
+        assert_eq!(history.lines, 2);
     }
 
     #[tokio::test]

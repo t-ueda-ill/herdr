@@ -52,6 +52,7 @@ impl App {
                 crate::persist::capture_history(
                     &snapshot,
                     &self.state.workspaces,
+                    &self.state.terminals,
                     &self.terminal_runtimes,
                 )
             });

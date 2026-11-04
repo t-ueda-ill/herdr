@@ -106,7 +106,12 @@ pub(crate) fn render_disconnect_bar(
     }
     let y = pane.bottom() - 1;
     let background = Style::default().bg(palette.panel_bg);
-    buffer.set_style(Rect::new(pane.x, y, pane.width, 1), background);
+    // Why not `set_style` alone: it keeps the row's symbols and modifiers, so
+    // the exited output and its hidden or reversed styles would show through.
+    for x in pane.x..pane.right() {
+        buffer[(x, y)].reset();
+        buffer[(x, y)].set_style(background);
+    }
     let mut previous_end = None;
     for item in disconnect_bar_items(pane.width, exit_code) {
         let x = pane.x + item.x;
@@ -131,6 +136,29 @@ mod tests {
             .into_iter()
             .map(|item| item.text)
             .collect()
+    }
+
+    #[test]
+    fn the_bar_replaces_the_row_it_covers_with_its_own_cells() {
+        use ratatui::style::{Color, Modifier};
+        let palette = Palette::catppuccin();
+        let pane = Rect::new(0, 0, 40, 2);
+        let mut buffer = Buffer::empty(pane);
+        let leftover = Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::HIDDEN | Modifier::REVERSED);
+        buffer.set_string(0, 1, "x".repeat(40), leftover);
+
+        render_disconnect_bar(&mut buffer, pane, Some(255), &palette);
+
+        let row = (0..40).map(|x| &buffer[(x, 1)]).collect::<Vec<_>>();
+        let text = row.iter().map(|cell| cell.symbol()).collect::<String>();
+        assert!(!text.contains('x'), "{text:?}");
+        assert!(text.contains("close"), "{text:?}");
+        for cell in row {
+            assert_eq!(cell.bg, palette.panel_bg);
+            assert!(cell.modifier.is_empty(), "{:?}", cell.modifier);
+        }
     }
 
     #[test]

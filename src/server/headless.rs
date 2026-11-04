@@ -1949,6 +1949,27 @@ impl HeadlessServer {
         }
     }
 
+    /// Closes a pane from its disconnect bar with the client reconciliation
+    /// `pane.close` and a pane death run, so the panes left take the space.
+    fn close_disconnected_pane(&mut self, pane_id: crate::layout::PaneId) {
+        let focus_before = self.shell_focus_targets();
+        let focused_tabs_before = self.focused_shell_tabs();
+        let terminal_id = self
+            .app
+            .find_pane(pane_id)
+            .map(|(_, pane)| pane.attached_terminal_id.to_string());
+        self.app.close_disconnected_pane(pane_id);
+        self.reconcile_client_shell_locations();
+        self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
+        self.reapply_controlled_shell_tab_geometry(false);
+        if let Some(terminal_id) = terminal_id.filter(|_| self.app.find_pane(pane_id).is_none()) {
+            self.shutdown_terminal_stream_clients(
+                &terminal_id,
+                format!("terminal {terminal_id} closed"),
+            );
+        }
+    }
+
     #[cfg(unix)]
     fn disconnect_all_clients_for_handoff(&mut self) {
         let client_ids = self.clients.keys().copied().collect::<Vec<_>>();
@@ -2701,25 +2722,13 @@ impl HeadlessServer {
                             true
                         }
                         Some(crate::ui::DisconnectBarButton::Close) => {
-                            self.app.close_disconnected_pane(runtime_pane_id);
+                            self.close_disconnected_pane(runtime_pane_id);
                             true
                         }
                         None => {
                             // Scrolling stays, so a long error can still be read.
-                            let scrolls = events
-                                .into_iter()
-                                .filter(super::pane_input::scrolls_a_disconnected_pane)
-                                .collect::<Vec<_>>();
                             let scroll_before = runtime.scroll_metrics();
-                            let mut keyboard_forwarded = false;
-                            if let Err(err) = apply_client_terminal_input_events(
-                                runtime,
-                                &scrolls,
-                                true,
-                                &mut keyboard_forwarded,
-                            ) {
-                                warn!(client_id, pane_id, err = %err, "disconnected pane scroll failed");
-                            }
+                            super::pane_input::scroll_disconnected_pane(runtime, &events);
                             foreground_changed
                                 | geometry_changed
                                 | (runtime.scroll_metrics() != scroll_before)

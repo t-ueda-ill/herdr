@@ -862,6 +862,40 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
 }
 
 #[test]
+fn a_plain_click_on_the_last_row_of_a_reporting_pane_reaches_the_server_not_a_selection() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].mouse_reporting = true;
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let pane = state.hits.panes[0].clone();
+    let last_row = pane.inner_rect.y + pane.inner_rect.height - 1;
+
+    let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: pane.inner_rect.x + 2,
+        row: last_row,
+        modifiers: KeyModifiers::NONE,
+    })]);
+
+    assert!(
+        matches!(&click.requests[..],
+        [ClientMessage::ClientShellPaneInput { events, .. }]
+            if matches!(&events[..], [ClientPaneInputEvent::Mouse {
+                kind: crate::protocol::ClientMouseKind::Down(
+                    crate::protocol::ClientMouseButton::Left
+                ),
+                modifiers: 0,
+                ..
+            }])),
+        "{:?}",
+        click.requests
+    );
+    assert!(state.selection.is_none());
+}
+
+#[test]
 fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

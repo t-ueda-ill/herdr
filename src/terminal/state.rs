@@ -372,6 +372,15 @@ impl TerminalState {
         self.ssh.as_ref().map(|launch| launch.host.clone())
     }
 
+    /// Makes the next container or ssh connection open in `cwd`.
+    pub(crate) fn open_off_host_in(&mut self, cwd: std::path::PathBuf) {
+        if let Some(launch) = self.container.as_mut() {
+            launch.start_dir = Some(cwd);
+        } else if let Some(launch) = self.ssh.as_mut() {
+            launch.start_dir = Some(cwd);
+        }
+    }
+
     /// The directory the container or ssh shell is asked to open in.
     pub(crate) fn off_host_start_dir(&self) -> Option<&std::path::PathBuf> {
         self.container
