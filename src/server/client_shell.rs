@@ -209,6 +209,11 @@ pub(super) fn snapshot_with_completions(
                 right_click_passthrough,
                 container,
                 ssh_host,
+                disconnected: pane.disconnected.map(|disconnected| {
+                    protocol::ClientShellPaneDisconnected {
+                        exit_code: disconnected.exit_code,
+                    }
+                }),
             }
         })
         .collect();

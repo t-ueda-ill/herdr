@@ -1091,6 +1091,17 @@ pub struct ClientShellPane {
     /// Clients bridge local images to such panes, like container panes.
     #[serde(default)]
     pub ssh_host: Option<String>,
+    /// Set while the pane's container or ssh connection has ended with an
+    /// error and its disconnect bar shows. Clients send a click on the bar's
+    /// close through `pane.close`, so a close that needs confirmation asks.
+    #[serde(default)]
+    pub disconnected: Option<ClientShellPaneDisconnected>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellPaneDisconnected {
+    /// Exit code of the ssh or docker CLI; `None` when a signal ended it.
+    pub exit_code: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2879,6 +2890,7 @@ mod tests {
                 right_click_passthrough: false,
                 container: None,
                 ssh_host: None,
+                disconnected: None,
             }],
             agents: Vec::new(),
             commands: vec![ClientShellCommand {

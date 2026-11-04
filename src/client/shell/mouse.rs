@@ -2402,6 +2402,16 @@ impl ClientShellState {
                     .find(|hit| super::contains(hit.rect, point))
                     .cloned();
                 if let Some(hit) = pane_hit {
+                    if let Some(pane_id) = self.disconnect_bar_close_at(&hit, point) {
+                        self.push_endpoint_method(
+                            crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
+                                pane_id,
+                            }),
+                            outcome,
+                        );
+                        outcome.repaint = true;
+                        return;
+                    }
                     if hit.mouse_reporting && super::contains(hit.inner_rect, point) {
                         self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome);
                         self.pane_mouse_gesture = Some(ClientPaneMouseGesture {
@@ -2569,5 +2579,32 @@ impl ClientShellState {
             },
             outcome,
         );
+    }
+}
+
+impl ClientShellState {
+    /// The pane whose disconnect bar close button sits under `point`.
+    ///
+    /// Why not forward the click like other pane input: the server cannot
+    /// answer pane input, so a close that needs confirmation could not open
+    /// the dialog. A `pane.close` request gets the same answer a close key does.
+    fn disconnect_bar_close_at(&self, hit: &PaneHit, point: (u16, u16)) -> Option<String> {
+        let inner = hit.inner_rect;
+        if !super::contains(inner, point) || point.1 + 1 != inner.bottom() {
+            return None;
+        }
+        let disconnected = self
+            .snapshot
+            .as_deref()?
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == hit.pane_id)?
+            .disconnected?;
+        (crate::ui::disconnect_bar_button_at(
+            inner.width,
+            disconnected.exit_code,
+            point.0 - inner.x,
+        ) == Some(crate::ui::DisconnectBarButton::Close))
+        .then(|| hit.pane_id.clone())
     }
 }
