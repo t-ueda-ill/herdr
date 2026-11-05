@@ -32,6 +32,9 @@ pub(super) struct OffHostClaimWatcher {
     /// seen now would meet the old identity and be dropped as "already known".
     awaiting_clear: bool,
     last_adoption: Option<Instant>,
+    /// Claims up to this generation were released on purpose; a rewind must
+    /// not hand them back.
+    released_through: u64,
 }
 
 fn is_claimed(identity: Option<(Agent, AgentIdentitySource)>) -> bool {
@@ -64,6 +67,7 @@ impl OffHostClaimWatcher {
     /// after the pane's identity was released on purpose.
     pub(super) fn consume(&mut self, marks: OffHostClaimMarks) {
         self.seen_generation = marks.generation;
+        self.released_through = marks.generation;
         self.seen_released = marks.released_generation;
         self.awaiting_clear = false;
         self.last_adoption = None;
@@ -73,7 +77,7 @@ impl OffHostClaimWatcher {
     /// not ask for (manifest reload, hook authority) drops the identity while
     /// the remote agent keeps running; without this its exit would never land.
     pub(super) fn rewind(&mut self, marks: OffHostClaimMarks) {
-        self.seen_generation = marks.rewound_generation;
+        self.seen_generation = marks.rewound_generation.max(self.released_through);
         self.seen_released = marks.released_generation;
         self.awaiting_clear = false;
         self.last_adoption = None;
@@ -352,6 +356,57 @@ mod tests {
         assert_eq!(
             poll_tracker(&mut watcher, &tracker, None, now),
             OffHostClaimAction::None
+        );
+    }
+
+    #[test]
+    fn a_rewind_does_not_revive_a_claim_that_was_released_on_purpose() {
+        let mut tracker = AgentOscStateTracker::default();
+        tracker.observe(&start_bytes("t1", "claude"));
+        let mut watcher = OffHostClaimWatcher::default();
+        let now = Instant::now();
+        poll_tracker(&mut watcher, &tracker, None, now);
+        watcher.consume(tracker.offhost_claim_marks());
+        let codex = Some((Agent::Codex, AgentIdentitySource::Declared));
+
+        assert_eq!(
+            watcher.next_action(
+                true,
+                None,
+                codex,
+                now,
+                || tracker.offhost_claim_marks(),
+                |_| None,
+            ),
+            OffHostClaimAction::Release
+        );
+
+        assert_eq!(
+            poll_tracker(&mut watcher, &tracker, None, now),
+            OffHostClaimAction::None
+        );
+    }
+
+    #[test]
+    fn a_claim_started_after_a_release_survives_a_rewind() {
+        let mut tracker = AgentOscStateTracker::default();
+        tracker.observe(&start_bytes("t1", "claude"));
+        let mut watcher = OffHostClaimWatcher::default();
+        let now = Instant::now();
+        poll_tracker(&mut watcher, &tracker, None, now);
+        watcher.consume(tracker.offhost_claim_marks());
+        tracker.observe(&exit_bytes("t1"));
+        tracker.observe(&start_bytes("t2", "codex"));
+        assert_eq!(
+            poll_tracker(&mut watcher, &tracker, None, now),
+            OffHostClaimAction::Adopt(Agent::Codex)
+        );
+
+        watcher.rewind(tracker.offhost_claim_marks());
+
+        assert_eq!(
+            poll_tracker(&mut watcher, &tracker, None, now),
+            OffHostClaimAction::Adopt(Agent::Codex)
         );
     }
 
