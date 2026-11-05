@@ -99,7 +99,15 @@ zsh、fish、sh（dash や ash）では `--shell zsh`、`--shell fish`、`--shel
 herdr pane release-agent <pane_id> --source remote-shell --agent claude
 ```
 
-通知されたエージェントは `herdr agent list` に載ります。画面の読み取りにはローカルのエージェントと同じ manifest のルールを使うので、状態と通知も通常どおり働きます。この通知は、そのペインに表示されるどんな出力でも偽装できる申告です。そのため、一覧への掲載と通知だけを許可します。`agent prompt` と `agent keys` は、そのようなエージェントに対しては拒否されたままです。ペインに出力された文字列で入力を操作できてしまうからです。ペイン内に実際のローカルのエージェントプロセスが見つかったときは、そちらが優先されます。
+通知されたエージェントは `herdr agent list` に載ります。画面の読み取りにはローカルのエージェントと同じ manifest のルールを使うので、状態と通知も通常どおり働きます。この通知は、そのペインに表示されるどんな出力でも偽装できる申告です。そのため、一覧への掲載と通知だけを許可します。`agent prompt` と `agent send-keys` は、そのようなエージェントに対しては `agent_off_host_undeclared` で拒否されます。ペインに出力された文字列で入力を操作できてしまうからです。ペイン内に実際のローカルのエージェントプロセスが見つかったときは、そちらが優先されます。
+
+SSH ペインやコンテナペインのエージェントに入力を送るには、自分で宣言します。
+
+```bash
+herdr pane declare-agent <pane_id> claude
+```
+
+宣言は上のシェル関数がなくても働きます（パススルーのないリモートの tmux の中など）。申告より宣言が優先されます。宣言は `herdr pane declare-agent <pane_id> --clear`、同じエージェントへの `herdr pane release-agent`、接続の終了のいずれかまで続きます。ライブハンドオフと再接続でも消えます。宣言が続く間は、エージェントが終了した後も `agent prompt` と `agent send-keys` がペインに入力するので、エージェントを抜けたら解除してください。宣言しない場合は、`herdr pane run <pane_id> <text>` で複数行のテキストも貼り付けて Enter を押せます。
 
 ## blocked 状態
 

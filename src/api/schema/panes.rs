@@ -495,6 +495,16 @@ crate::cli::projection::cli_params! {
     }
 }
 
+crate::cli::projection::cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct PaneDeclareAgentParams => PaneDeclareAgentProjection {
+        pub pane_id: String => Field::new(String::new()).input(binding::pane_id()),
+        /// Agent label for the ssh or container connection; absent withdraws the declaration.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub agent: Option<String> => binding::declared_agent(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneDisconnected {
     /// Exit code of the ssh or docker CLI; absent when a signal ended it.

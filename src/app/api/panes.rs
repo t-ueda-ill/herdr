@@ -1969,7 +1969,13 @@ impl App {
         else {
             return;
         };
-        if runtime.claimed_agent_active() {
+        let declared = runtime.declared_agent() == Some(agent);
+        if declared {
+            // Withdrawn before the reset, so the next tick cannot adopt it again.
+            runtime.set_declared_agent(None);
+        }
+        if declared || runtime.claimed_agent_active() {
+            // A graceful release marks claims that arrived meanwhile as handled.
             runtime.begin_graceful_release(agent);
         }
     }

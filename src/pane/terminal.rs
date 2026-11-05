@@ -226,6 +226,9 @@ pub(crate) struct GhosttyPaneCore {
 pub(crate) struct PaneTerminal {
     pub(crate) ghostty: GhosttyPaneTerminal,
     claimed_agent_active: std::sync::atomic::AtomicBool,
+    /// `0` or the position in `Agent::ALL` plus one, so the detection tick
+    /// reads the declaration with one atomic load.
+    declared_agent: std::sync::atomic::AtomicU8,
 }
 
 impl PaneTerminal {
@@ -233,6 +236,7 @@ impl PaneTerminal {
         Self {
             ghostty,
             claimed_agent_active: std::sync::atomic::AtomicBool::new(false),
+            declared_agent: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -662,6 +666,29 @@ impl PaneTerminal {
     pub(super) fn set_claimed_agent_active(&self, active: bool) {
         self.claimed_agent_active
             .store(active, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The agent a user declared for this connection, if any.
+    pub fn declared_agent(&self) -> Option<crate::detect::Agent> {
+        let encoded = self
+            .declared_agent
+            .load(std::sync::atomic::Ordering::Acquire);
+        usize::from(encoded)
+            .checked_sub(1)
+            .and_then(|index| crate::detect::Agent::ALL.get(index).copied())
+    }
+
+    pub fn set_declared_agent(&self, agent: Option<crate::detect::Agent>) {
+        let encoded = agent
+            .and_then(|agent| {
+                crate::detect::Agent::ALL
+                    .iter()
+                    .position(|known| *known == agent)
+            })
+            .and_then(|index| u8::try_from(index + 1).ok())
+            .unwrap_or(0);
+        self.declared_agent
+            .store(encoded, std::sync::atomic::Ordering::Release);
     }
 
     pub fn keyboard_protocol(

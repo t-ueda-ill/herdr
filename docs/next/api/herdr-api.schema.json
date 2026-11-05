@@ -2923,6 +2923,24 @@
           },
           "type": "object"
         },
+        "PaneDeclareAgentParams": {
+          "properties": {
+            "agent": {
+              "description": "Agent label for the ssh or container connection; absent withdraws the declaration.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
         "PaneDirection": {
           "enum": [
             "left",
@@ -7798,6 +7816,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneDownloadReadParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.declare_agent",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneDeclareAgentParams"
             }
           },
           "required": [

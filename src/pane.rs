@@ -431,6 +431,10 @@ enum AgentIdentitySource {
     /// Claimed in-band by a remote shell function. The agent runs on another
     /// host, so the local process tree can neither confirm nor refute it.
     OffHostClaim,
+    /// Declared through the API for an off-host connection. Like a claim, the
+    /// local process tree says nothing about it; unlike a claim, it ends only
+    /// when the declaration is withdrawn.
+    Declared,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -542,7 +546,15 @@ fn apply_off_host_claim_action(
         OffHostClaimAction::None => ClaimOutcome::Unchanged,
         OffHostClaimAction::Adopt(agent) => {
             let previous = agent_presence.current_agent();
-            if agent_presence.adopt_off_host_claim(agent) {
+            if agent_presence.adopt_off_host_identity(agent, AgentIdentitySource::OffHostClaim) {
+                ClaimOutcome::Adopted { previous, agent }
+            } else {
+                ClaimOutcome::Unchanged
+            }
+        }
+        OffHostClaimAction::Declare(agent) => {
+            let previous = agent_presence.current_agent();
+            if agent_presence.adopt_off_host_identity(agent, AgentIdentitySource::Declared) {
                 ClaimOutcome::Adopted { previous, agent }
             } else {
                 ClaimOutcome::Unchanged
@@ -555,6 +567,28 @@ fn apply_off_host_claim_action(
             ClaimOutcome::Releasing
         }
     }
+}
+
+fn off_host_identity_action(
+    off_host: bool,
+    terminal: &PaneTerminal,
+    claims: &mut OffHostClaimWatcher,
+    identity: Option<(Agent, AgentIdentitySource)>,
+    now: std::time::Instant,
+) -> OffHostClaimAction {
+    let declared = if off_host {
+        terminal.declared_agent()
+    } else {
+        None
+    };
+    claims.next_action(
+        off_host,
+        declared,
+        identity,
+        now,
+        || terminal.offhost_agent_claim_marks(),
+        |seen| terminal.offhost_agent_claim_since(seen),
+    )
 }
 
 /// A pane shell in front, or a lost background job, says nothing about an
@@ -1070,7 +1104,10 @@ fn spawn_basic_detection_task(
                             .is_some();
                     let was_claimed = matches!(
                         agent_presence.identity(),
-                        Some((_, AgentIdentitySource::OffHostClaim))
+                        Some((
+                            _,
+                            AgentIdentitySource::OffHostClaim | AgentIdentitySource::Declared
+                        ))
                     );
                     publish_codex_prompt_observation(
                         &state_events, pane_id, Some(Agent::Codex), "", None, false,
@@ -1247,10 +1284,13 @@ fn spawn_basic_detection_task(
                 }
             }
 
-            let claim_action =
-                offhost_claims.poll(shell_off_host, agent_presence.identity(), now, |seen| {
-                    terminal.offhost_agent_claim_since(seen)
-                });
+            let claim_action = off_host_identity_action(
+                shell_off_host,
+                &terminal,
+                &mut offhost_claims,
+                agent_presence.identity(),
+                now,
+            );
             if let ClaimOutcome::Adopted {
                 previous,
                 agent: claimed,
@@ -1451,10 +1491,10 @@ impl AgentDetectionPresence {
         true
     }
 
-    /// Takes an identity claimed by the remote shell. Returns whether the
-    /// agent changed.
-    fn adopt_off_host_claim(&mut self, agent: Agent) -> bool {
-        self.source = AgentIdentitySource::OffHostClaim;
+    /// Takes an identity claimed by the remote shell or declared through the
+    /// API. Returns whether the agent changed.
+    fn adopt_off_host_identity(&mut self, agent: Agent, source: AgentIdentitySource) -> bool {
+        self.source = source;
         self.consecutive_misses = 0;
         if self.current_agent == Some(agent) {
             return false;
@@ -3285,7 +3325,11 @@ impl PaneRuntime {
                                     .is_some();
                             let was_claimed = matches!(
                                 agent_presence.identity(),
-                                Some((_, AgentIdentitySource::OffHostClaim))
+                                Some((
+                                    _,
+                                    AgentIdentitySource::OffHostClaim
+                                        | AgentIdentitySource::Declared
+                                ))
                             );
                             publish_codex_prompt_observation(
                                 &state_events, pane_id, Some(Agent::Codex), "", None, false,
@@ -3525,11 +3569,12 @@ impl PaneRuntime {
                         }
                     }
 
-                    let claim_action = offhost_claims.poll(
+                    let claim_action = off_host_identity_action(
                         shell_off_host,
+                        &terminal,
+                        &mut offhost_claims,
                         agent_presence.identity(),
                         now,
-                        |seen| terminal.offhost_agent_claim_since(seen),
                     );
                     if let ClaimOutcome::Adopted {
                         previous,
@@ -4046,6 +4091,14 @@ impl PaneRuntime {
     /// True while the pane's agent identity is an in-band claim.
     pub fn claimed_agent_active(&self) -> bool {
         self.terminal.claimed_agent_active()
+    }
+
+    pub fn declared_agent(&self) -> Option<Agent> {
+        self.terminal.declared_agent()
+    }
+
+    pub fn set_declared_agent(&self, agent: Option<Agent>) {
+        self.terminal.set_declared_agent(agent);
     }
 
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
@@ -6925,7 +6978,9 @@ mod tests {
                     pending_clear: false,
                     exit_reported: false,
                 };
-                assert!(pane.presence.adopt_off_host_claim(agent));
+                assert!(pane
+                    .presence
+                    .adopt_off_host_identity(agent, AgentIdentitySource::OffHostClaim));
                 pane
             }
 
@@ -7087,7 +7142,7 @@ mod tests {
     #[test]
     fn release_action_queues_the_process_exit_path_and_keeps_the_identity() {
         let mut presence = AgentDetectionPresence::from_agent(None);
-        presence.adopt_off_host_claim(Agent::Claude);
+        presence.adopt_off_host_identity(Agent::Claude, AgentIdentitySource::OffHostClaim);
         let mut pending = false;
 
         let outcome =
@@ -7096,6 +7151,46 @@ mod tests {
         assert_eq!(outcome, ClaimOutcome::Releasing);
         assert!(pending);
         assert_eq!(presence.current_agent(), Some(Agent::Claude));
+    }
+
+    #[test]
+    fn declare_action_adopts_a_declared_identity_over_a_claim() {
+        let mut presence = AgentDetectionPresence::from_agent(None);
+        presence.adopt_off_host_identity(Agent::Claude, AgentIdentitySource::OffHostClaim);
+        let mut pending = false;
+
+        let outcome = apply_off_host_claim_action(
+            OffHostClaimAction::Declare(Agent::Claude),
+            &mut presence,
+            &mut pending,
+        );
+
+        assert_eq!(outcome, ClaimOutcome::Unchanged, "the agent is the same");
+        assert_eq!(
+            presence.identity(),
+            Some((Agent::Claude, AgentIdentitySource::Declared))
+        );
+        assert!(!pending);
+    }
+
+    #[test]
+    fn a_declared_identity_survives_probes_that_find_no_local_agent() {
+        let mut presence = AgentDetectionPresence::from_agent(None);
+        presence.adopt_off_host_identity(Agent::Claude, AgentIdentitySource::Declared);
+
+        for _ in 0..AGENT_MISS_CONFIRMATION_ATTEMPTS + 1 {
+            assert!(!presence.observe_process_probe(None));
+        }
+        let action = claimed_identity_action(
+            AgentIdentitySource::Declared,
+            ForegroundShellAgentAction::ReportProcessExit,
+            false,
+            false,
+            false,
+        );
+
+        assert_eq!(presence.current_agent(), Some(Agent::Claude));
+        assert_eq!(action, ForegroundShellAgentAction::ObserveProbe);
     }
 
     #[test]
