@@ -102,7 +102,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | SSH ホスト | `ssh.open`, `ssh.hosts` |
 | ファイル | `directory.list`、`directory.index`、`files.stat`、`pane.open_editor`、`pane.open_file`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.directory.open_file`、`pane.file.read`、`pane.file.stat`、`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel`、`pane.download.begin`、`pane.download.read`、`pane.download.cancel` |
 | タブ | `tab.create`、`tab.create_inherit`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
-| ペイン | `pane.split`、`pane.split_inherit`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.reconnect`、`pane.wait_for_output` |
+| ペイン | `pane.split`、`pane.split_inherit`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.declare_agent`、`pane.close`、`pane.reconnect`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
@@ -110,7 +110,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | インテグレーション | `integration.install`、`integration.uninstall` |
 | プラグイン | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
 
-`agent.wait` はサーバー所有でイベント駆動です。解決したペイン占有者に固定されるため、置換されたエージェントが待機を満たすことはありません。`agent.prompt` は `until` と `timeout_ms` を持つ省略可能な `wait` オブジェクトを受け付けます。これにより、プロンプト送信と待機開始を 1 つのリクエストで行い、別々の呼び出し間の競合を避けられます。解決したエージェントがすでに `blocked` の場合、`agent.prompt` は入力を送信せず、待機も開始せずに `agent_blocked` を返します。
+`agent.wait` はサーバー所有でイベント駆動です。解決したペイン占有者に固定されるため、置換されたエージェントが待機を満たすことはありません。`agent.prompt` は `until` と `timeout_ms` を持つ省略可能な `wait` オブジェクトを受け付けます。これにより、プロンプト送信と待機開始を 1 つのリクエストで行い、別々の呼び出し間の競合を避けられます。解決したエージェントがすでに `blocked` の場合、`agent.prompt` は入力を送信せず、待機も開始せずに `agent_blocked` を返します。SSH ペインやコンテナペインの中のエージェントには、`pane_id` と `agent` を渡した `pane.declare_agent` でそのエージェントを宣言するまで、`agent.prompt` と `agent.send_keys` が `agent_off_host_undeclared` を返します。`agent` を省くと宣言を取り消します。ローカルのペインには `pane_not_off_host` を返します。
 
 `workspace.move_block` は、順序付きの `workspace_ids` を `before_workspace_id` の前へアトミックに移動します。アンカーを省略するとブロックを末尾へ移動します。id は一意である必要があり、アンカーをブロックに含めることはできません。レスポンスにはサーバーが確定した順序付きワークスペース一覧が含まれます。
 

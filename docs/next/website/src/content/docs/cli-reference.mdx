@@ -305,6 +305,13 @@ herdr pane release-agent <pane_id> \
 
 `report-agent-session` updates native session identity without reporting lifecycle state. `release-agent` ends that source's lifecycle authority when its agent process exits.
 
+```bash
+herdr pane declare-agent <pane_id> <AGENT>
+herdr pane declare-agent <pane_id> --clear
+```
+
+`declare-agent` names the agent that runs inside an SSH or container pane and allows `agent prompt` and `agent send-keys` for it. Herdr cannot see that agent's process, and the in-band announcement can be forged, so input stays refused with `agent_off_host_undeclared` until you declare it. A local pane returns `pane_not_off_host`. See [Agents on other machines](/docs/agents/#agents-on-other-machines) for when a declaration ends.
+
 Arguments after `--` are the command Herdr runs to resume this session after a server restart. The first argument must be a plain command name on `PATH`, and no argument may contain an apostrophe.
 
 `pane get`, `pane list`, `agent get`, and `agent list` include a read-only `agent_session` object when an official integration has reported a native session reference. If no native session reference is stored, the field is omitted.

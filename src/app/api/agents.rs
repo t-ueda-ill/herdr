@@ -184,14 +184,16 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
             return Err(agent_not_found(id, &params.target));
         };
-        if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
-            return Err(encode_error(
+        if let Err(refusal) = super::super::agents::agent_input_access(runtime, expected_agent) {
+            let pane = self
+                .public_pane_id(resolved.ws_idx, resolved.pane_id)
+                .unwrap_or_else(|| params.target.clone());
+            return Err(agent_input_refused(
                 id,
-                "agent_not_ready",
-                format!(
-                    "agent {} is no longer the pane foreground process",
-                    params.target
-                ),
+                &params.target,
+                &pane,
+                expected_agent,
+                refusal,
             ));
         }
         let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) else {
@@ -408,8 +410,11 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
             return agent_not_found(id, &params.target);
         };
-        if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
-            return agent_not_ready(id, &params.target);
+        if let Err(refusal) = super::super::agents::agent_input_access(runtime, expected_agent) {
+            let pane = self
+                .public_pane_id(resolved.ws_idx, resolved.pane_id)
+                .unwrap_or_else(|| params.target.clone());
+            return agent_input_refused(id, &params.target, &pane, expected_agent, refusal);
         }
         let encoded = match super::super::api_helpers::encode_api_keys(runtime, &params.keys) {
             Ok(encoded) => encoded,
@@ -438,8 +443,41 @@ fn agent_not_ready(id: String, target: &str) -> String {
     encode_error(
         id,
         "agent_not_ready",
-        format!("agent {target} is not an active named agent"),
+        format!("{target} has no running agent that is ready for input"),
     )
+}
+
+fn agent_input_refused(
+    id: String,
+    target: &str,
+    pane: &str,
+    agent: crate::detect::Agent,
+    refusal: super::super::agents::AgentInputRefusal,
+) -> String {
+    match refusal {
+        super::super::agents::AgentInputRefusal::OffHostUndeclared { ssh } => {
+            let kind = if ssh {
+                "an ssh pane"
+            } else {
+                "a container pane"
+            };
+            let label = crate::detect::agent_label(agent);
+            encode_error(
+                id,
+                "agent_off_host_undeclared",
+                format!(
+                    "agent {target} runs inside {kind}, where Herdr cannot verify it; \
+                     run `herdr pane declare-agent {pane} {label}` to allow agent input, \
+                     or use `herdr pane run {pane} <text>`"
+                ),
+            )
+        }
+        super::super::agents::AgentInputRefusal::NotForeground => encode_error(
+            id,
+            "agent_not_ready",
+            format!("agent {target} is not the pane foreground process"),
+        ),
+    }
 }
 
 fn agent_not_found(id: String, target: &str) -> String {

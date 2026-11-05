@@ -428,7 +428,38 @@ fn available_shell_name(runtime: &crate::terminal::TerminalRuntime) -> Option<St
     crate::platform::available_pane_shell(runtime.child_pid()?)
 }
 
-pub(super) fn runtime_hosts_agent(
+/// Why input to an agent was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AgentInputRefusal {
+    /// The agent runs on the far side of an ssh or container pane and nobody
+    /// declared it, so only an in-band claim, which any byte can forge, names it.
+    OffHostUndeclared {
+        ssh: bool,
+    },
+    NotForeground,
+}
+
+pub(super) fn agent_input_access(
+    runtime: &crate::terminal::TerminalRuntime,
+    expected: crate::detect::Agent,
+) -> Result<(), AgentInputRefusal> {
+    if runtime.shell_runs_off_host() {
+        return if runtime.declared_agent() == Some(expected) {
+            Ok(())
+        } else {
+            Err(AgentInputRefusal::OffHostUndeclared {
+                ssh: runtime.in_ssh(),
+            })
+        };
+    }
+    if runtime_hosts_agent(runtime, expected) {
+        Ok(())
+    } else {
+        Err(AgentInputRefusal::NotForeground)
+    }
+}
+
+fn runtime_hosts_agent(
     runtime: &crate::terminal::TerminalRuntime,
     expected: crate::detect::Agent,
 ) -> bool {

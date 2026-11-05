@@ -2,7 +2,8 @@
 //!
 //! A claim grants the agents list and notifications only. It never grants
 //! input access (`runtime_hosts_agent` stays non-exempt), because any byte
-//! stream that reaches the pane can forge it.
+//! stream that reaches the pane can forge it. Only a declaration made through
+//! the API (`pane.declare_agent`) does, and it outranks every claim.
 
 use std::time::{Duration, Instant};
 
@@ -17,7 +18,9 @@ const ADOPTION_MIN_INTERVAL: Duration = Duration::from_secs(2);
 pub(super) enum OffHostClaimAction {
     None,
     Adopt(Agent),
-    /// The claimed agent said it exited.
+    /// A user declared the agent through the API.
+    Declare(Agent),
+    /// The claimed agent said it exited, or its declaration was withdrawn.
     Release,
 }
 
@@ -33,6 +36,27 @@ pub(super) struct OffHostClaimWatcher {
 
 fn is_claimed(identity: Option<(Agent, AgentIdentitySource)>) -> bool {
     matches!(identity, Some((_, AgentIdentitySource::OffHostClaim)))
+}
+
+/// Reconciles the pane identity with the declared agent of its connection.
+pub(super) fn declared_identity_action(
+    off_host: bool,
+    declared: Option<Agent>,
+    identity: Option<(Agent, AgentIdentitySource)>,
+) -> OffHostClaimAction {
+    if !off_host {
+        return OffHostClaimAction::None;
+    }
+    match (declared, identity) {
+        // A process-derived identity is positive local evidence.
+        (_, Some((_, AgentIdentitySource::Process))) => OffHostClaimAction::None,
+        (Some(declared), Some((current, AgentIdentitySource::Declared))) if declared == current => {
+            OffHostClaimAction::None
+        }
+        (Some(declared), _) => OffHostClaimAction::Declare(declared),
+        (None, Some((_, AgentIdentitySource::Declared))) => OffHostClaimAction::Release,
+        (None, _) => OffHostClaimAction::None,
+    }
 }
 
 impl OffHostClaimWatcher {
@@ -65,7 +89,9 @@ impl OffHostClaimWatcher {
         now: Instant,
         fetch: impl FnOnce(u64) -> Option<OffHostClaimUpdate>,
     ) -> OffHostClaimAction {
-        if !off_host {
+        // Why not consume claims while declared: once the declaration is
+        // withdrawn, a remote agent that is still running is claimed again.
+        if !off_host || matches!(identity, Some((_, AgentIdentitySource::Declared))) {
             return OffHostClaimAction::None;
         }
         if self.awaiting_clear && !is_claimed(identity) {
@@ -178,6 +204,89 @@ mod tests {
         watcher.poll(true, identity, now, |seen| {
             tracker.offhost_claim_since(seen)
         })
+    }
+
+    const DECLARED: Option<(Agent, AgentIdentitySource)> =
+        Some((Agent::Claude, AgentIdentitySource::Declared));
+
+    #[test]
+    fn a_declaration_on_a_local_pane_is_ignored() {
+        assert_eq!(
+            declared_identity_action(false, Some(Agent::Claude), None),
+            OffHostClaimAction::None
+        );
+    }
+
+    #[test]
+    fn a_declaration_is_adopted_over_no_identity_or_a_claim() {
+        for identity in [None, CLAIMED] {
+            assert_eq!(
+                declared_identity_action(true, Some(Agent::Claude), identity),
+                OffHostClaimAction::Declare(Agent::Claude)
+            );
+        }
+    }
+
+    #[test]
+    fn an_adopted_declaration_is_not_adopted_again() {
+        assert_eq!(
+            declared_identity_action(true, Some(Agent::Claude), DECLARED),
+            OffHostClaimAction::None
+        );
+    }
+
+    #[test]
+    fn a_new_declaration_replaces_the_declared_agent() {
+        assert_eq!(
+            declared_identity_action(true, Some(Agent::Codex), DECLARED),
+            OffHostClaimAction::Declare(Agent::Codex)
+        );
+    }
+
+    #[test]
+    fn a_declaration_does_not_replace_a_process_identity() {
+        let identity = Some((Agent::Codex, AgentIdentitySource::Process));
+
+        assert_eq!(
+            declared_identity_action(true, Some(Agent::Claude), identity),
+            OffHostClaimAction::None
+        );
+    }
+
+    #[test]
+    fn withdrawing_a_declaration_releases_only_a_declared_identity() {
+        assert_eq!(
+            declared_identity_action(true, None, DECLARED),
+            OffHostClaimAction::Release
+        );
+        for identity in [
+            None,
+            CLAIMED,
+            Some((Agent::Codex, AgentIdentitySource::Process)),
+        ] {
+            assert_eq!(
+                declared_identity_action(true, None, identity),
+                OffHostClaimAction::None
+            );
+        }
+    }
+
+    #[test]
+    fn claims_wait_unread_while_a_declaration_holds_the_pane() {
+        let mut watcher = OffHostClaimWatcher::default();
+
+        let action = watcher.poll(true, DECLARED, Instant::now(), |_| {
+            panic!("a declared pane must not consume claims")
+        });
+
+        assert_eq!(action, OffHostClaimAction::None);
+        assert_eq!(
+            watcher.poll(true, None, Instant::now(), |seen| {
+                assert_eq!(seen, 0, "the claim stream is still unread");
+                started("codex")
+            }),
+            OffHostClaimAction::Adopt(Agent::Codex)
+        );
     }
 
     #[test]

@@ -99,7 +99,15 @@ If the exit marker never arrives (the shell was killed, an agent stopped with Ct
 herdr pane release-agent <pane_id> --source remote-shell --agent claude
 ```
 
-Once announced, the agent appears in `herdr agent list`. Herdr reads its screen with the same manifest rules as a local agent, so status and notifications work as usual. The announcement is a claim that anything printed to that pane can forge, so it only grants the agents list and notifications. `agent prompt` and `agent keys` stay refused for such an agent, because they would let any output typed into the pane drive input. A Herdr that finds a real local agent process in the pane uses that instead.
+Once announced, the agent appears in `herdr agent list`. Herdr reads its screen with the same manifest rules as a local agent, so status and notifications work as usual. The announcement is a claim that anything printed to that pane can forge, so it only grants the agents list and notifications. `agent prompt` and `agent send-keys` refuse such an agent with `agent_off_host_undeclared`, because they would let any output typed into the pane drive input. A Herdr that finds a real local agent process in the pane uses that instead.
+
+To send input to the agent of an SSH or container pane, declare it yourself:
+
+```bash
+herdr pane declare-agent <pane_id> claude
+```
+
+A declaration names the agent even without the shell functions above, for example inside a remote tmux without passthrough, and it takes precedence over announcements. It lasts until `herdr pane declare-agent <pane_id> --clear`, `herdr pane release-agent` for the same agent, or the end of the connection; a live handoff and a reconnect drop it. While it lasts, `agent prompt` and `agent send-keys` type into the pane even after the agent has exited, so clear it when you leave the agent. Without a declaration, `herdr pane run <pane_id> <text>` pastes text, including several lines, and presses Enter.
 
 ## Blocked state
 

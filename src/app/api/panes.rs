@@ -1949,6 +1949,7 @@ impl App {
             seq: params.seq,
         });
         self.release_claimed_agent(ws_idx, pane_id, known_agent);
+        self.withdraw_declared_agent(ws_idx, pane_id, known_agent);
 
         encode_success(id, ResponseResult::Ok {})
     }

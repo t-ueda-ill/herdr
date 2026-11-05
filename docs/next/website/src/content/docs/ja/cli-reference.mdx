@@ -286,6 +286,13 @@ herdr pane release-agent <pane_id> \
 
 `report-agent-session` はライフサイクル状態を報告せずにネイティブセッション識別子を更新します。`release-agent` は、そのエージェントプロセスが終了したときに、そのソースのライフサイクル権限を終了します。
 
+```bash
+herdr pane declare-agent <pane_id> <AGENT>
+herdr pane declare-agent <pane_id> --clear
+```
+
+`declare-agent` は SSH ペインやコンテナペインの中で動くエージェントを宣言し、`agent prompt` と `agent send-keys` を使えるようにします。Herdr にはそのエージェントのプロセスが見えず、インバンドの申告は偽装できるため、宣言するまで入力は `agent_off_host_undeclared` で拒否されます。ローカルのペインには `pane_not_off_host` を返します。宣言が終わる条件は、[エージェント](/docs/ja/agents/) の「別のマシン上のエージェント」を参照してください。
+
 `--` の後の引数は、サーバー再起動後にこのセッションを再開するために Herdr が実行するコマンドです。最初の引数は `PATH` 上の単純なコマンド名でなければならず、どの引数にもアポストロフィを含めることはできません。
 
 公式インテグレーションがネイティブセッション参照を報告している場合、`pane get`、`pane list`、`agent get`、`agent list` は読み取り専用の `agent_session` オブジェクトを含みます。ネイティブセッション参照が保存されていない場合、このフィールドは省略されます。

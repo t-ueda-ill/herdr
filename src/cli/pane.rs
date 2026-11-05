@@ -248,6 +248,15 @@ mod tests {
     }
 
     #[test]
+    fn declare_agent_clear_omits_the_agent() {
+        assert_eq!(
+            serde_json::to_value(request("declare-agent", &["pane", "--clear"]).unwrap()).unwrap(),
+            serde_json::json!({"id": "cli:request", "method": "pane.declare_agent", "params": {"pane_id": "pane"}}),
+        );
+        assert!(request("declare-agent", &["pane", "claude", "--clear"]).is_err());
+    }
+
+    #[test]
     fn pane_projection_all_leaf_request_values() {
         use serde_json::json;
         // Absolute on every platform, unlike a literal Unix path.
@@ -430,6 +439,13 @@ mod tests {
                 "cli:request",
                 "pane.release_agent",
                 json!({"pane_id": "pane", "source": "hook", "agent": "a"}),
+            ),
+            (
+                "declare-agent",
+                vec!["pane", "claude"],
+                "cli:request",
+                "pane.declare_agent",
+                json!({"pane_id": "pane", "agent": "claude"}),
             ),
             (
                 "report-metadata",
@@ -1207,6 +1223,7 @@ mod tests {
             "report-agent",
             "report-agent-session",
             "release-agent",
+            "declare-agent",
             "report-metadata",
         ] {
             assert_eq!(run_pane_command(&args(&[name])).unwrap(), 2);

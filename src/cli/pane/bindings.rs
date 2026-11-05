@@ -200,6 +200,26 @@ pub(crate) fn label() -> Field<Option<String>> {
         }))
 }
 
+pub(crate) fn declared_agent() -> Field<Option<String>> {
+    Field::new(None)
+        .input(
+            Input::positional("agent", 1, |slot, value| {
+                *slot = Some(value.to_owned());
+                Ok(())
+            })
+            .value_name("AGENT")
+            .configure(|arg| {
+                arg.required(false)
+                    .required_unless_present("clear")
+                    .conflicts_with("clear")
+            }),
+        )
+        .input(Input::flag("clear", |slot, _| {
+            *slot = None;
+            Ok(())
+        }))
+}
+
 pub(crate) fn read_source(include_detection: bool) -> Input<ReadSource> {
     Input::value("source", "SOURCE", |slot, value| {
         *slot = parse_choice(READ_SOURCES, "read source", value)?;
@@ -674,6 +694,14 @@ pub(super) const LEAVES: &[Leaf] = &[
         Json,
         PaneTargetProjection,
         PaneReconnect
+    ),
+    leaf!(
+        "declare-agent",
+        "Declare the agent running inside a container or ssh pane",
+        "cli:request",
+        Quiet,
+        PaneDeclareAgentProjection,
+        PaneDeclareAgent
     ),
     leaf!(
         "open-editor",

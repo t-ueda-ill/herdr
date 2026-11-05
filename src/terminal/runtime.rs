@@ -392,6 +392,15 @@ impl TerminalRuntime {
         self.0.claimed_agent_active()
     }
 
+    /// The agent a user declared for this off-host connection, if any.
+    pub fn declared_agent(&self) -> Option<crate::detect::Agent> {
+        self.0.declared_agent()
+    }
+
+    pub fn set_declared_agent(&self, agent: Option<crate::detect::Agent>) {
+        self.0.set_declared_agent(agent);
+    }
+
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> crate::pane::TerminalReadSnapshot {
         self.0.recent_text_snapshot(lines)
     }

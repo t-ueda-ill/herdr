@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+mod agent_declare;
 mod agent_view;
 mod agents;
 mod directory;
@@ -1368,6 +1369,9 @@ impl App {
             }
             Method::PaneReleaseAgent(params) => {
                 return self.handle_pane_release_agent(request.id, params);
+            }
+            Method::PaneDeclareAgent(params) => {
+                return self.handle_pane_declare_agent(request.id, params);
             }
             Method::PaneSendText(params) => return self.handle_pane_send_text(request.id, params),
             Method::PaneSendInput(params) => {

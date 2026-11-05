@@ -205,6 +205,7 @@ mod tests {
             "pane.report_metadata",
             "pane.clear_agent_authority",
             "pane.release_agent",
+            "pane.declare_agent",
             "pane.close",
             "popup.close",
             "plugin.unlink",

@@ -192,6 +192,7 @@ operations::define_operations! {
     PaneDownloadBegin(PaneDownloadBeginParams) => "pane.download.begin", false, true;
     PaneDownloadCancel(PaneDownloadCancelParams) => "pane.download.cancel", false, true;
     PaneDownloadRead(PaneDownloadReadParams) => "pane.download.read", false, true;
+    PaneDeclareAgent(PaneDeclareAgentParams) => "pane.declare_agent", true, false;
 }
 
 #[cfg(test)]
