@@ -569,8 +569,6 @@ fn apply_off_host_claim_action(
     }
 }
 
-/// A declaration outranks the in-band claim stream, which is read only when
-/// the declaration has nothing to change.
 fn off_host_identity_action(
     off_host: bool,
     terminal: &PaneTerminal,
@@ -583,12 +581,14 @@ fn off_host_identity_action(
     } else {
         None
     };
-    match offhost_claim::declared_identity_action(off_host, declared, identity) {
-        OffHostClaimAction::None => claims.poll(off_host, identity, now, |seen| {
-            terminal.offhost_agent_claim_since(seen)
-        }),
-        action => action,
-    }
+    claims.next_action(
+        off_host,
+        declared,
+        identity,
+        now,
+        || terminal.offhost_agent_claim_marks(),
+        |seen| terminal.offhost_agent_claim_since(seen),
+    )
 }
 
 /// A pane shell in front, or a lost background job, says nothing about an
@@ -1104,7 +1104,10 @@ fn spawn_basic_detection_task(
                             .is_some();
                     let was_claimed = matches!(
                         agent_presence.identity(),
-                        Some((_, AgentIdentitySource::OffHostClaim))
+                        Some((
+                            _,
+                            AgentIdentitySource::OffHostClaim | AgentIdentitySource::Declared
+                        ))
                     );
                     publish_codex_prompt_observation(
                         &state_events, pane_id, Some(Agent::Codex), "", None, false,
@@ -3322,7 +3325,11 @@ impl PaneRuntime {
                                     .is_some();
                             let was_claimed = matches!(
                                 agent_presence.identity(),
-                                Some((_, AgentIdentitySource::OffHostClaim))
+                                Some((
+                                    _,
+                                    AgentIdentitySource::OffHostClaim
+                                        | AgentIdentitySource::Declared
+                                ))
                             );
                             publish_codex_prompt_observation(
                                 &state_events, pane_id, Some(Agent::Codex), "", None, false,

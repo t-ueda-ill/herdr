@@ -79,6 +79,29 @@ impl OffHostClaimWatcher {
         self.last_adoption = None;
     }
 
+    /// A declaration outranks the claim stream, which is read only when the
+    /// declaration has nothing to change. Withdrawing a declaration hands the
+    /// live claim back, so a remote agent that still runs is claimed again
+    /// even when its claim was adopted before the declaration.
+    pub(super) fn next_action(
+        &mut self,
+        off_host: bool,
+        declared: Option<Agent>,
+        identity: Option<(Agent, AgentIdentitySource)>,
+        now: Instant,
+        marks: impl FnOnce() -> OffHostClaimMarks,
+        fetch: impl FnOnce(u64) -> Option<OffHostClaimUpdate>,
+    ) -> OffHostClaimAction {
+        match declared_identity_action(off_host, declared, identity) {
+            OffHostClaimAction::None => self.poll(off_host, identity, now, fetch),
+            OffHostClaimAction::Release => {
+                self.rewind(marks());
+                OffHostClaimAction::Release
+            }
+            action => action,
+        }
+    }
+
     /// `fetch` receives the last handled generation and returns a newer claim.
     /// It is not called for a local pane, which must ignore claims entirely and
     /// pays no per-tick cost for them.
@@ -269,6 +292,67 @@ mod tests {
                 OffHostClaimAction::None
             );
         }
+    }
+
+    #[test]
+    fn clearing_a_declaration_hands_back_a_claim_adopted_before_it() {
+        let mut tracker = AgentOscStateTracker::default();
+        tracker.observe(&start_bytes("t1", "claude"));
+        let mut watcher = OffHostClaimWatcher::default();
+        let now = Instant::now();
+        let tick = |watcher: &mut OffHostClaimWatcher, declared, identity| {
+            watcher.next_action(
+                true,
+                declared,
+                identity,
+                now,
+                || tracker.offhost_claim_marks(),
+                |seen| tracker.offhost_claim_since(seen),
+            )
+        };
+        assert_eq!(
+            tick(&mut watcher, None, None),
+            OffHostClaimAction::Adopt(Agent::Claude)
+        );
+        assert_eq!(
+            tick(&mut watcher, Some(Agent::Claude), CLAIMED),
+            OffHostClaimAction::Declare(Agent::Claude)
+        );
+
+        assert_eq!(
+            tick(&mut watcher, None, DECLARED),
+            OffHostClaimAction::Release
+        );
+
+        assert_eq!(
+            tick(&mut watcher, None, None),
+            OffHostClaimAction::Adopt(Agent::Claude),
+            "the remote agent still runs"
+        );
+    }
+
+    #[test]
+    fn clearing_a_declaration_does_not_revive_an_exited_claim() {
+        let mut tracker = AgentOscStateTracker::default();
+        tracker.observe(&start_bytes("t1", "claude"));
+        let mut watcher = OffHostClaimWatcher::default();
+        let now = Instant::now();
+        watcher.poll(true, None, now, |seen| tracker.offhost_claim_since(seen));
+        tracker.observe(&exit_bytes("t1"));
+
+        watcher.next_action(
+            true,
+            None,
+            DECLARED,
+            now,
+            || tracker.offhost_claim_marks(),
+            |_| panic!("a withdrawal does not read claims"),
+        );
+
+        assert_eq!(
+            poll_tracker(&mut watcher, &tracker, None, now),
+            OffHostClaimAction::None
+        );
     }
 
     #[test]

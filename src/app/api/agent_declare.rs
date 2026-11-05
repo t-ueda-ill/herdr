@@ -46,24 +46,6 @@ impl App {
 
         encode_success(id, ResponseResult::Ok {})
     }
-
-    /// An explicit release ends a declaration of the same agent too.
-    pub(super) fn withdraw_declared_agent(
-        &self,
-        ws_idx: usize,
-        pane_id: crate::layout::PaneId,
-        agent: Option<crate::detect::Agent>,
-    ) {
-        let Some(runtime) =
-            self.state
-                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-        else {
-            return;
-        };
-        if agent.is_some() && runtime.declared_agent() == agent {
-            runtime.set_declared_agent(None);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -230,6 +212,12 @@ mod tests {
     async fn releasing_the_agent_withdraws_its_declaration() {
         let mut fixture = fixture(true);
         assert_ok(&declare(&mut fixture, Some("claude")));
+        let pane_id = fixture.app.state.workspaces[0].tabs[0].root_pane;
+        let reset = fixture
+            .app
+            .lookup_runtime_sender(0, pane_id)
+            .unwrap()
+            .agent_detection_reset_notify_for_test();
 
         fixture.app.handle_pane_release_agent(
             "release".into(),
@@ -245,6 +233,9 @@ mod tests {
             error_code(&send_keys(&mut fixture)),
             "agent_off_host_undeclared"
         );
+        tokio::time::timeout(Duration::from_secs(1), reset.notified())
+            .await
+            .expect("the detector releases the identity and claims that arrived meanwhile");
     }
 
     #[tokio::test]
