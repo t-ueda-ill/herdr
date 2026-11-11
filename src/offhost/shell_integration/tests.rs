@@ -992,7 +992,12 @@ fn prompt_row_count(terminal: &crate::ghostty::Terminal) -> usize {
 }
 
 fn run_marked_shell(shell: &str, rc_file: &str, rc_body: &str, input: &str) -> String {
-    let root = scratch(&format!("pty-marks-{shell}-{}", rc_body.len()));
+    // Why a counter: `scratch` empties the directory it returns, and tests
+    // that run as threads of one process would clear each other's files if
+    // two of them asked for the same name.
+    static INVOCATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let invocation = INVOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = scratch(&format!("pty-marks-{shell}-{invocation}"));
     let home = root.join("home");
     let tmp = root.join("tmp");
     for dir in [&home, &tmp] {
