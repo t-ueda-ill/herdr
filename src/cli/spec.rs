@@ -49,6 +49,7 @@ pub(super) fn command() -> Command {
         .subcommand(terminal_command())
         .subcommand(session_command())
         .subcommand(integration_command())
+        .subcommand(skill_command())
         .subcommand(plugin_command());
     configure_help(command, 0)
 }
@@ -319,6 +320,35 @@ fn integration_command() -> Command {
         )
 }
 
+fn skill_command() -> Command {
+    Command::new("skill")
+        .about("Install the Herdr skill for AI agents")
+        .subcommand(
+            Command::new("install")
+                .about("Install the skill for detected agents or the named targets")
+                .arg(skill_targets_arg())
+                .arg(flag("force")),
+        )
+        .subcommand(
+            Command::new("uninstall")
+                .about("Remove the skill Herdr installed")
+                .arg(skill_targets_arg()),
+        )
+        .subcommand(Command::new("status").about("Show where the skill is installed"))
+        .subcommand(Command::new("print").about("Print the bundled skill file"))
+}
+
+fn skill_targets_arg() -> Arg {
+    Arg::new("target")
+        .value_name("TARGET")
+        .num_args(0..)
+        .value_parser(
+            crate::integration::skill::SkillTarget::ALL
+                .map(crate::integration::skill::SkillTarget::label)
+                .to_vec(),
+        )
+}
+
 fn plugin_command() -> Command {
     super::plugin::command()
 }
@@ -522,6 +552,24 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
+    }
+
+    #[test]
+    fn spec_matches_all_skill_targets() {
+        let cmd = super::command();
+        for path in [&["skill", "install"][..], &["skill", "uninstall"][..]] {
+            assert_eq!(
+                argument(command_path(&cmd, path), "target")
+                    .get_value_parser()
+                    .possible_values()
+                    .unwrap()
+                    .map(|value| value.get_name().to_string())
+                    .collect::<Vec<_>>(),
+                crate::integration::skill::SkillTarget::ALL
+                    .map(|target| target.label().to_string())
+                    .to_vec()
+            );
+        }
     }
 
     #[test]

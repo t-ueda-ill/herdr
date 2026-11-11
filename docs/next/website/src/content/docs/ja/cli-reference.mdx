@@ -525,6 +525,17 @@ herdr integration status [--outdated-only]
 herdr integration remote-shell [--shell bash|zsh|fish|sh]
 ```
 
+## エージェントスキル
+
+```bash
+herdr skill install [<target>...] [--force]
+herdr skill uninstall [<target>...]
+herdr skill status
+herdr skill print
+```
+
+target は `claude`、`agents`、`opencode`、`cursor`、`copilot`、`gemini` です。`agents` は `~/.agents/skills` に書き込みます。Codex や Pi など、共通の Agent Skills 配置を読むエージェントはここを参照します。target を省くと、`skill install` は設定ディレクトリが存在するエージェントすべてに、バイナリと同じリリースのスキルを書き込みます。`skill uninstall` は Herdr が書き込んだコピーだけを削除します。Herdr は自分がインストールしたコピーを記録し、それ以外はそのまま残します。対象は、`npx skills add` などが作った symlink、Herdr がインストールしていないコピー、Herdr がインストールした後に変更されたコピーです。`skill install --force` はこれらを置き換えます。target を指定した `skill uninstall` が外すのは symlink だけです。詳しくは[エージェントスキルファイル](./agent-skill/)を参照してください。
+
 ## プラグイン
 
 プラグインコマンドは、ローカル実行型ワークフロープラグインをインストールして実行します。プラグインはマニフェストとプロセス外コマンドの組み合わせです。ホスト側の面は Herdr が、実装言語はプラグインが担います。
