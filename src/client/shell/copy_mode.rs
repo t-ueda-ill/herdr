@@ -889,6 +889,28 @@ impl ClientShellState {
         true
     }
 
+    /// Drops the selection when the cursor is still where the request left.
+    ///
+    /// Why a command without output clears it: the key asks for that
+    /// command's output as the selection, and there is none. An earlier
+    /// selection left in place would be what the next copy key takes.
+    /// Why a search match stays: it was not made by this key, and it remains
+    /// highlighted as what the copy key takes.
+    pub(super) fn clear_copy_selection_at(
+        &mut self,
+        pane_id: &str,
+        origin: crate::api::schema::PaneTextPoint,
+    ) {
+        let Some(copy_mode) = self.copy_mode.as_mut() else {
+            return;
+        };
+        if copy_mode.pane_id != pane_id || copy_mode.cursor != origin {
+            return;
+        }
+        copy_mode.selection = None;
+        self.selection = None;
+    }
+
     pub(super) fn exit_copy_mode(&mut self, copy: bool, outcome: &mut ClientShellInput) {
         let live_selection = self
             .selection

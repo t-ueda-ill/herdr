@@ -52,9 +52,13 @@ fn prompt_start_row(
 /// has no output of its own yet. Why only the row directly above, and only for
 /// the last prompt: a command that printed nothing leaves its prompt there, and
 /// stepping over it would hand back an older command's output unnoticed.
+/// Why `shell_cursor_row` has to be a prompt row too: once the command typed
+/// at the last prompt runs, the shell's cursor is below the prompt, and a
+/// command that has printed nothing yet must not stand for the one before it.
 fn output_probe(
     total_rows: usize,
     row: usize,
+    shell_cursor_row: usize,
     prompt_at: impl Fn(usize) -> RowPrompt,
 ) -> OutputProbe {
     if row >= total_rows {
@@ -72,9 +76,11 @@ fn output_probe(
     let own = (row + 1..total_rows)
         .find(|candidate| prompt_at(*candidate) != RowPrompt::Continuation)
         .filter(|candidate| prompt_at(*candidate) == RowPrompt::None);
-    let is_last_prompt =
-        prompt_start_row(total_rows, row, PromptMotion::Next, &prompt_at).is_none();
-    let previous = is_last_prompt
+    let waits_for_input = prompt_start_row(total_rows, row, PromptMotion::Next, &prompt_at)
+        .is_none()
+        && shell_cursor_row < total_rows
+        && prompt_at(shell_cursor_row) != RowPrompt::None;
+    let previous = waits_for_input
         .then(|| {
             // The first row of this prompt, or the row above it when the
             // prompt's first row already left the scrollback.
@@ -90,6 +96,13 @@ fn output_probe(
         .flatten()
         .filter(|candidate| prompt_at(*candidate) == RowPrompt::None);
     OutputProbe { own, previous }
+}
+
+/// Screen row of the cursor the shell writes at.
+fn shell_cursor_row(terminal: &Terminal, total_rows: usize) -> Option<usize> {
+    let viewport_rows = usize::from(terminal.rows().ok()?);
+    let cursor_y = usize::from(terminal.cursor_y().ok()?);
+    Some(total_rows.saturating_sub(viewport_rows) + cursor_y)
 }
 
 fn row_prompt(terminal: &Terminal, row: usize) -> RowPrompt {
@@ -199,7 +212,9 @@ impl PaneTerminal {
         let total_rows = terminal
             .total_rows()
             .map_err(|_| CommandMarkError::NotFound)?;
-        let probe = output_probe(total_rows, row as usize, |candidate| {
+        // Past the screen when unknown, which rules out the fallback.
+        let cursor_row = shell_cursor_row(terminal, total_rows).unwrap_or(total_rows);
+        let probe = output_probe(total_rows, row as usize, cursor_row, |candidate| {
             row_prompt(terminal, candidate)
         });
         [probe.own, probe.previous]
@@ -558,6 +573,25 @@ mod tests {
         assert_eq!(
             shell.command_output_range(3),
             Ok((point(1, 0), point(2, 4)))
+        );
+    }
+
+    #[test]
+    fn a_running_command_without_output_does_not_stand_for_the_command_before_it() {
+        let mut terminal = Terminal::new(20, 8, 100).unwrap();
+        terminal.write(HOOK_PROMPT);
+        terminal.write(b"echo previous\r\n\x1b]133;C\x07previous\r\n");
+        terminal.write(HOOK_PROMPT);
+        terminal.write(b"sleep 30\r\n\x1b]133;C\x07");
+        let shell = pane(terminal);
+
+        assert_eq!(
+            shell.command_output_range(2),
+            Err(CommandMarkError::NotFound)
+        );
+        assert_eq!(
+            shell.command_output_range(3),
+            Err(CommandMarkError::NotFound)
         );
     }
 }
