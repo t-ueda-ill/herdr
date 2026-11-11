@@ -482,8 +482,7 @@ pane_history = false
 # scrollback_limit_bytes = 10000000
 "##;
 
-// Bundled at build time so the printed skill always matches this binary's release.
-const SKILL: &str = include_str!("../skills/herdr/SKILL.md");
+use integration::skill::HERDR_SKILL as SKILL;
 
 fn should_block_nested(config: &config::Config) -> bool {
     should_block_nested_for_env(config, std::env::var(HERDR_ENV_VAR).ok().as_deref())
@@ -666,6 +665,7 @@ fn main() -> io::Result<()> {
         println!("       herdr pane <subcommand> ...");
         println!("       herdr session <subcommand> ...");
         println!("       herdr integration <subcommand> ...");
+        println!("       herdr skill <subcommand> ...");
         println!();
         println!("Common commands:");
         for (command, description) in [
@@ -729,6 +729,10 @@ fn main() -> io::Result<()> {
             (
                 "herdr integration <subcommand>",
                 "Manage built-in agent integrations",
+            ),
+            (
+                "herdr skill <subcommand>",
+                "Install the Herdr skill for AI agents",
             ),
         ] {
             println!("  {command:<32} {description}");

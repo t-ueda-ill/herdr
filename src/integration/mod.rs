@@ -8,6 +8,7 @@ mod file_ops;
 mod opencode_config;
 mod registry;
 pub(crate) mod remote_shell;
+pub(crate) mod skill;
 mod targets;
 mod types;
 mod version;
