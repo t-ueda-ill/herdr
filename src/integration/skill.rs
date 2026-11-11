@@ -142,7 +142,9 @@ pub(crate) fn skill_state_at(skill_dir: &Path, bundled: &str) -> io::Result<Skil
     if is_symlink(skill_dir)? || is_symlink(&skill_file)? {
         return Ok(SkillState::Linked);
     }
-    let content = match fs::read_to_string(&skill_file) {
+    // Bytes, not a string: a copy that is not UTF-8 is still just a copy
+    // Herdr did not write, and decoding it would turn that into an error.
+    let content = match fs::read(&skill_file) {
         Ok(content) => content,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(SkillState::NotInstalled),
         Err(err) => return Err(err),
@@ -155,7 +157,7 @@ pub(crate) fn skill_state_at(skill_dir: &Path, bundled: &str) -> io::Result<Skil
     if crate::checksum::file_sha256(&skill_file)? != installed_digest {
         return Ok(SkillState::Modified);
     }
-    Ok(if content == bundled {
+    Ok(if content == bundled.as_bytes() {
         SkillState::Current
     } else {
         SkillState::Outdated
@@ -167,7 +169,14 @@ pub(crate) fn install_skill_at(
     bundled: &str,
     force: bool,
 ) -> io::Result<InstallOutcome> {
-    let state = skill_state_at(skill_dir, bundled)?;
+    let state = match skill_state_at(skill_dir, bundled) {
+        Ok(state) => state,
+        // Replacing renames over the copy without reading it, so --force can
+        // repair one this user may not read. Links were ruled out before the
+        // read that failed.
+        Err(err) if force && err.kind() == io::ErrorKind::PermissionDenied => SkillState::Foreign,
+        Err(err) => return Err(err),
+    };
     match state {
         SkillState::Current => return Ok(InstallOutcome::AlreadyCurrent),
         SkillState::Linked | SkillState::Modified | SkillState::Foreign if !force => {
@@ -222,8 +231,9 @@ pub(crate) fn uninstall_skill_at(
 }
 
 fn read_install_marker(skill_dir: &Path) -> io::Result<Option<String>> {
-    match fs::read_to_string(skill_dir.join(INSTALL_MARKER_NAME)) {
-        Ok(digest) => Ok(Some(digest.trim().to_string())),
+    match fs::read(skill_dir.join(INSTALL_MARKER_NAME)) {
+        // Lossy: a damaged marker should fail the digest match, not the command.
+        Ok(digest) => Ok(Some(String::from_utf8_lossy(&digest).trim().to_string())),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err),
     }
@@ -557,6 +567,69 @@ mod tests {
             uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
             UninstallOutcome::Removed
         );
+    }
+
+    #[test]
+    fn a_copy_that_is_not_utf8_is_kept_unless_forced() {
+        let temp = TempSkills::new();
+        fs::create_dir_all(temp.skill_dir()).unwrap();
+        fs::write(temp.skill_file(), [0xff, 0xfe, 0x00]).unwrap();
+
+        assert_eq!(
+            skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            SkillState::Foreign
+        );
+        assert_eq!(
+            install_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
+            InstallOutcome::Refused(SkillState::Foreign)
+        );
+
+        let forced = install_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
+        assert_eq!(forced, InstallOutcome::Updated);
+        assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), BUNDLED);
+    }
+
+    #[test]
+    fn a_marker_that_is_not_utf8_marks_the_copy_as_changed() {
+        let temp = TempSkills::new();
+        install_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap();
+        fs::write(temp.skill_dir().join(INSTALL_MARKER_NAME), [0xff]).unwrap();
+
+        assert_eq!(
+            skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            SkillState::Modified
+        );
+
+        let forced = install_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
+        assert_eq!(forced, InstallOutcome::Updated);
+        assert_eq!(
+            skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            SkillState::Current
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_install_replaces_a_copy_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempSkills::new();
+        temp.write_skill(FOREIGN);
+        fs::set_permissions(temp.skill_file(), fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(temp.skill_file()).is_ok() {
+            // root reads any file, so this case only exists for other users.
+            return;
+        }
+
+        let unforced = install_skill_at(&temp.skill_dir(), BUNDLED, false);
+        assert_eq!(
+            unforced.unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        let forced = install_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
+        assert_eq!(forced, InstallOutcome::Updated);
+        assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), BUNDLED);
     }
 
     #[test]
