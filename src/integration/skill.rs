@@ -1,19 +1,25 @@
 //! Installs the bundled Herdr agent skill into each agent's skills directory.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::env::{
     claude_dir, codex_dir, config_dir_from_env_or_home, copilot_dir, cursor_dir, expand_tilde_path,
     home_dir, PI_CODING_AGENT_DIR_ENV_VAR,
 };
+use super::file_ops::remove_file_if_exists;
 
 /// Bundled at build time so an installed skill always matches this binary's release.
 pub(crate) const HERDR_SKILL: &str = include_str!("../../skills/herdr/SKILL.md");
 
 const SKILL_DIR_NAME: &str = "herdr";
 const SKILL_FILE_NAME: &str = "SKILL.md";
+/// Holds the digest of the `SKILL.md` Herdr wrote. Content alone cannot show
+/// who installed a copy: `npx skills add` writes the same file to the same
+/// path, and a user may edit a copy Herdr installed.
+const INSTALL_MARKER_NAME: &str = ".herdr-installed";
 
 /// Skill locations, not agent integrations: several agents share
 /// `~/.agents/skills`, so this list is deliberately separate from the frozen
@@ -100,7 +106,9 @@ pub(crate) enum SkillState {
     Outdated,
     /// A symlink, usually from `npx skills add`; its target belongs to that tool.
     Linked,
-    /// A user-written skill that happens to live at the same path.
+    /// A copy Herdr installed and someone edited afterwards.
+    Modified,
+    /// A copy Herdr did not install, whatever its content.
     Foreign,
 }
 
@@ -139,12 +147,15 @@ pub(crate) fn skill_state_at(skill_dir: &Path, bundled: &str) -> io::Result<Skil
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(SkillState::NotInstalled),
         Err(err) => return Err(err),
     };
+    let Some(installed_digest) = read_install_marker(skill_dir)? else {
+        return Ok(SkillState::Foreign);
+    };
     Ok(if content == bundled {
         SkillState::Current
-    } else if declares_herdr_skill(&content) {
+    } else if crate::checksum::file_sha256(&skill_file)? == installed_digest {
         SkillState::Outdated
     } else {
-        SkillState::Foreign
+        SkillState::Modified
     })
 }
 
@@ -156,7 +167,7 @@ pub(crate) fn install_skill_at(
     let state = skill_state_at(skill_dir, bundled)?;
     match state {
         SkillState::Current => return Ok(InstallOutcome::AlreadyCurrent),
-        SkillState::Linked | SkillState::Foreign if !force => {
+        SkillState::Linked | SkillState::Modified | SkillState::Foreign if !force => {
             return Ok(InstallOutcome::Refused(state))
         }
         SkillState::Linked => remove_skill_links(skill_dir)?,
@@ -164,12 +175,11 @@ pub(crate) fn install_skill_at(
     }
 
     fs::create_dir_all(skill_dir)?;
-    let skill_file = skill_dir.join(SKILL_FILE_NAME);
-    // Write then rename so an agent loading skills mid-install never sees a
-    // truncated SKILL.md.
-    let staged = skill_dir.join(format!(".{SKILL_FILE_NAME}.herdr-tmp"));
-    fs::write(&staged, bundled)?;
-    fs::rename(&staged, &skill_file)?;
+    replace_file(skill_dir, SKILL_FILE_NAME, bundled.as_bytes())?;
+    // Marker last, so an interrupted install never claims a copy Herdr did
+    // not finish writing.
+    let digest = crate::checksum::file_sha256(&skill_dir.join(SKILL_FILE_NAME))?;
+    replace_file(skill_dir, INSTALL_MARKER_NAME, digest.as_bytes())?;
 
     Ok(match state {
         SkillState::NotInstalled | SkillState::Linked => InstallOutcome::Installed,
@@ -180,8 +190,13 @@ pub(crate) fn install_skill_at(
 pub(crate) fn uninstall_skill_at(skill_dir: &Path, bundled: &str) -> io::Result<UninstallOutcome> {
     let state = skill_state_at(skill_dir, bundled)?;
     match state {
-        SkillState::NotInstalled => Ok(UninstallOutcome::NotInstalled),
-        SkillState::Foreign => Ok(UninstallOutcome::Refused(state)),
+        SkillState::NotInstalled => {
+            // A marker can outlive a SKILL.md the user deleted by hand.
+            remove_file_if_exists(&skill_dir.join(INSTALL_MARKER_NAME))?;
+            remove_dir_if_empty(skill_dir)?;
+            Ok(UninstallOutcome::NotInstalled)
+        }
+        SkillState::Modified | SkillState::Foreign => Ok(UninstallOutcome::Refused(state)),
         SkillState::Linked => {
             remove_skill_links(skill_dir)?;
             remove_dir_if_empty(skill_dir)?;
@@ -189,24 +204,51 @@ pub(crate) fn uninstall_skill_at(skill_dir: &Path, bundled: &str) -> io::Result<
         }
         SkillState::Current | SkillState::Outdated => {
             fs::remove_file(skill_dir.join(SKILL_FILE_NAME))?;
+            remove_file_if_exists(&skill_dir.join(INSTALL_MARKER_NAME))?;
             remove_dir_if_empty(skill_dir)?;
             Ok(UninstallOutcome::Removed)
         }
     }
 }
 
-/// Ownership marker: Herdr only replaces or removes a skill whose frontmatter
-/// names it `herdr`, never a user's unrelated skill at the same path.
-fn declares_herdr_skill(content: &str) -> bool {
-    let Some(rest) = content.strip_prefix("---") else {
-        return false;
-    };
-    rest.lines()
-        .skip(1)
-        .take_while(|line| line.trim_end() != "---")
-        .filter_map(|line| line.strip_prefix("name:"))
-        .map(|value| value.trim().trim_matches(|c| c == '"' || c == '\''))
-        .any(|name| name == SKILL_DIR_NAME)
+fn read_install_marker(skill_dir: &Path) -> io::Result<Option<String>> {
+    match fs::read_to_string(skill_dir.join(INSTALL_MARKER_NAME)) {
+        Ok(digest) => Ok(Some(digest.trim().to_string())),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+/// Writes `dir/file_name` through a staging file and a rename, so an agent
+/// loading skills mid-install never sees a truncated file.
+fn replace_file(dir: &Path, file_name: &str, bytes: &[u8]) -> io::Result<()> {
+    static STAGED: AtomicU64 = AtomicU64::new(0);
+    // A fixed staging name would let two concurrent installs truncate each
+    // other's file, so every call gets its own.
+    let staged = dir.join(format!(
+        ".{file_name}.herdr-tmp-{}-{}",
+        std::process::id(),
+        STAGED.fetch_add(1, Ordering::Relaxed)
+    ));
+    write_new_file(&staged, bytes)?;
+    fs::rename(&staged, dir.join(file_name)).inspect_err(|_| {
+        let _ = fs::remove_file(&staged);
+    })
+}
+
+/// Fails when `path` already exists instead of writing to it: `fs::write`
+/// would follow a symlink planted there and truncate its target.
+fn write_new_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    // Past this point the file is ours, so a failed write may remove it.
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .inspect_err(|_| {
+            let _ = fs::remove_file(path);
+        })
 }
 
 fn is_symlink(path: &Path) -> io::Result<bool> {
@@ -258,6 +300,7 @@ mod tests {
     const BUNDLED: &str = "---\nname: herdr\ndescription: \"Control Herdr\"\n---\n\n# Herdr\n";
     const OLDER: &str = "---\nname: herdr\ndescription: older\n---\n\n# Herdr v0\n";
     const FOREIGN: &str = "---\nname: my-herdr-notes\n---\n\nmine\n";
+    const EDITED: &str = "---\nname: herdr\ndescription: older\n---\n\n# Herdr v0\n\nmy notes\n";
 
     struct TempSkills(PathBuf);
 
@@ -293,13 +336,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
-    }
-
-    #[test]
-    fn the_bundled_skill_is_recognized_as_herdr_owned() {
-        assert!(declares_herdr_skill(HERDR_SKILL));
-        assert!(!declares_herdr_skill(FOREIGN));
-        assert!(!declares_herdr_skill("# no frontmatter\nname: herdr\n"));
     }
 
     #[test]
@@ -386,9 +422,9 @@ mod tests {
     }
 
     #[test]
-    fn install_updates_an_older_herdr_skill() {
+    fn install_updates_an_older_copy_herdr_installed() {
         let temp = TempSkills::new();
-        temp.write_skill(OLDER);
+        install_skill_at(&temp.skill_dir(), OLDER, false).unwrap();
         assert_eq!(
             skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
             SkillState::Outdated
@@ -416,6 +452,104 @@ mod tests {
         let forced = install_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
         assert_eq!(forced, InstallOutcome::Updated);
         assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), BUNDLED);
+    }
+
+    #[test]
+    fn a_copy_herdr_did_not_install_is_kept_even_when_identical() {
+        let temp = TempSkills::new();
+        temp.write_skill(BUNDLED);
+
+        assert_eq!(
+            skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            SkillState::Foreign
+        );
+        assert_eq!(
+            install_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
+            InstallOutcome::Refused(SkillState::Foreign)
+        );
+        assert_eq!(
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            UninstallOutcome::Refused(SkillState::Foreign)
+        );
+        assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), BUNDLED);
+    }
+
+    #[test]
+    fn forced_install_adopts_a_copy_herdr_did_not_install() {
+        let temp = TempSkills::new();
+        temp.write_skill(OLDER);
+
+        let forced = install_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
+
+        assert_eq!(forced, InstallOutcome::Updated);
+        assert_eq!(
+            skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            SkillState::Current
+        );
+        assert_eq!(
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            UninstallOutcome::Removed
+        );
+    }
+
+    #[test]
+    fn a_copy_edited_after_install_is_kept_unless_forced() {
+        let temp = TempSkills::new();
+        install_skill_at(&temp.skill_dir(), OLDER, false).unwrap();
+        fs::write(temp.skill_file(), EDITED).unwrap();
+
+        assert_eq!(
+            skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            SkillState::Modified
+        );
+        assert_eq!(
+            install_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
+            InstallOutcome::Refused(SkillState::Modified)
+        );
+        assert_eq!(
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            UninstallOutcome::Refused(SkillState::Modified)
+        );
+        assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), EDITED);
+
+        let forced = install_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
+        assert_eq!(forced, InstallOutcome::Updated);
+        assert_eq!(
+            skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            SkillState::Current
+        );
+    }
+
+    #[test]
+    fn a_leftover_marker_without_a_skill_file_counts_as_not_installed() {
+        let temp = TempSkills::new();
+        install_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap();
+        fs::remove_file(temp.skill_file()).unwrap();
+
+        assert_eq!(
+            skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            SkillState::NotInstalled
+        );
+        assert_eq!(
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            UninstallOutcome::NotInstalled
+        );
+        assert!(!temp.skill_dir().exists());
+    }
+
+    #[test]
+    fn install_leaves_only_the_skill_and_its_marker() {
+        let temp = TempSkills::new();
+        install_skill_at(&temp.skill_dir(), OLDER, false).unwrap();
+        install_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap();
+
+        let mut names: Vec<_> = fs::read_dir(temp.skill_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+
+        assert_eq!(names, [INSTALL_MARKER_NAME, SKILL_FILE_NAME]);
     }
 
     #[test]
@@ -466,6 +600,7 @@ mod tests {
         uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap();
 
         assert!(!temp.skill_file().exists());
+        assert!(!temp.skill_dir().join(INSTALL_MARKER_NAME).exists());
         assert!(temp.skill_dir().join("notes.md").exists());
     }
 
@@ -559,6 +694,41 @@ mod tests {
                 .file_type()
                 .is_symlink());
             assert_eq!(fs::read_to_string(&checkout).unwrap(), BUNDLED);
+        }
+
+        #[test]
+        fn a_link_planted_at_the_old_staging_path_is_never_written_through() {
+            let temp = TempSkills::new();
+            let victim = temp.0.join("victim.txt");
+            fs::write(&victim, "keep").unwrap();
+            fs::create_dir_all(temp.skill_dir()).unwrap();
+            std::os::unix::fs::symlink(&victim, temp.skill_dir().join(".SKILL.md.herdr-tmp"))
+                .unwrap();
+
+            let outcome = install_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap();
+
+            assert_eq!(outcome, InstallOutcome::Installed);
+            assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+            assert!(!fs::symlink_metadata(temp.skill_file())
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), BUNDLED);
+        }
+
+        #[test]
+        fn a_staging_path_that_already_exists_fails_instead_of_being_reused() {
+            let temp = TempSkills::new();
+            let victim = temp.0.join("victim.txt");
+            fs::write(&victim, "keep").unwrap();
+            let staged = temp.0.join("staged");
+            std::os::unix::fs::symlink(&victim, &staged).unwrap();
+
+            let result = write_new_file(&staged, b"overwritten");
+
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+            assert!(fs::symlink_metadata(&staged).is_ok());
         }
 
         #[test]

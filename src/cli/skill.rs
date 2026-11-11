@@ -173,7 +173,8 @@ fn describe_state(state: SkillState) -> &'static str {
         SkillState::Current => "current",
         SkillState::Outdated => "outdated",
         SkillState::Linked => "symlink",
-        SkillState::Foreign => "not a herdr skill",
+        SkillState::Modified => "edited since herdr installed it",
+        SkillState::Foreign => "not installed by herdr",
     }
 }
 
@@ -272,6 +273,21 @@ mod tests {
     }
 
     #[test]
+    fn an_edited_copy_is_described_as_edited() {
+        let (ok, message) = describe_install(
+            SkillTarget::Agents,
+            "p",
+            InstallOutcome::Refused(SkillState::Modified),
+        );
+
+        assert!(!ok);
+        assert_eq!(
+            message,
+            "agents: kept p (edited since herdr installed it); rerun with --force to replace it"
+        );
+    }
+
+    #[test]
     fn implicit_uninstall_stays_quiet_about_targets_it_does_not_own() {
         for outcome in [
             UninstallOutcome::NotInstalled,
@@ -289,7 +305,7 @@ mod tests {
                 UninstallOutcome::Refused(SkillState::Foreign),
                 true
             ),
-            Some((false, "cursor: kept p (not a herdr skill)".to_string()))
+            Some((false, "cursor: kept p (not installed by herdr)".to_string()))
         );
     }
 }
