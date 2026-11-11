@@ -25,7 +25,17 @@ Herdr は別の用途向けに [`herdr.dev/agent-guide.md`](https://herdr.dev/ag
 
 ## インストールする
 
-`npx skills` でスキルをインストールします:
+Herdr 自身でスキルをインストールします:
+
+```bash
+herdr skill install
+```
+
+target を省くと、設定ディレクトリが存在する対応エージェントすべてに、バイナリに同梱されたコピーをインストールします。対応エージェントは `claude`（`~/.claude/skills`）、`agents`（`~/.agents/skills`。Codex や Pi など Agent Skills を読むエージェントが参照）、`opencode`、`cursor`、`copilot`、`gemini` です。まだセットアップしていないエージェントに入れるときは、`herdr skill install claude agents` のように target を指定します。`herdr update` の後にもう一度実行するとスキルが更新されます。インストール先は `herdr skill status` で確認できます。`herdr skill uninstall` は Herdr が書き込んだコピーだけを削除します。symlink になっているスキルも外すときは target を指定します。
+
+symlink になっているスキルや、同じパスにある別のスキルは上書きしません。置き換えるときは `--force` を付けます。
+
+`npx skills` でもインストールできます:
 
 ```bash
 npx skills add herdrdev/herdr --skill herdr -g

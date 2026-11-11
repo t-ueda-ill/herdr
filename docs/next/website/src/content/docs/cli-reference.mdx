@@ -567,6 +567,17 @@ herdr integration status [--outdated-only]
 herdr integration remote-shell [--shell bash|zsh|fish|sh]
 ```
 
+## Agent skill
+
+```bash
+herdr skill install [<target>...] [--force]
+herdr skill uninstall [<target>...]
+herdr skill status
+herdr skill print
+```
+
+Targets are `claude`, `agents`, `opencode`, `cursor`, `copilot`, and `gemini`. `agents` writes `~/.agents/skills`, which Codex, Pi, and other agents following the shared Agent Skills layout read. Without targets, `skill install` writes the release-matched skill for every agent whose config directory exists, and `skill uninstall` removes only copies Herdr wrote. Herdr leaves a symlinked skill, such as one from `npx skills add`, and a non-Herdr skill at the same path in place unless you pass `--force` or name the target. See [Agent skill file](./agent-skill/).
+
 ## Plugins
 
 Plugin commands install and run local executable workflow plugins. A plugin is a manifest plus out-of-process commands; Herdr owns the host surface and plugins own their implementation language.

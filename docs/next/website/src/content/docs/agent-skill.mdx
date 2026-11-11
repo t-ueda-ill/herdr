@@ -25,7 +25,17 @@ The skill is a Markdown instruction file for agents. If Herdr is already install
 
 ## Install it
 
-Install the skill with `npx skills`:
+Install the skill with Herdr itself:
+
+```bash
+herdr skill install
+```
+
+Without targets, Herdr installs the copy bundled with the binary for every supported agent whose config directory exists: `claude` (`~/.claude/skills`), `agents` (`~/.agents/skills`, read by Codex, Pi, and other Agent Skills readers), `opencode`, `cursor`, `copilot`, and `gemini`. Name targets to install for an agent that is not set up yet, such as `herdr skill install claude agents`. Rerun the command after `herdr update` to refresh the skill, and check where it is installed with `herdr skill status`. `herdr skill uninstall` removes only the copies Herdr wrote; name a target to also remove a symlinked skill there.
+
+Herdr does not overwrite a symlinked skill or a different skill at the same path. Pass `--force` to replace it.
+
+You can also install the skill with `npx skills`:
 
 ```bash
 npx skills add herdrdev/herdr --skill herdr -g
