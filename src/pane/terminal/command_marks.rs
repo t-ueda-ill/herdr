@@ -145,7 +145,7 @@ fn last_text_cell(terminal: &Terminal, start: (u16, u32), end: (u16, u32)) -> Op
 
 /// The output around `row`, or `None` when nothing visible is written there.
 ///
-/// Why the terminal's own range is narrowed on both sides: zsh and fish fill
+/// Why the terminal's own range is moved on both sides: zsh and fish fill
 /// a row with spaces before they draw a prompt. Those spaces are written
 /// output cells, so the terminal starts the output right of the command line
 /// and ends it after the spaces that follow output without a final newline.
@@ -158,6 +158,12 @@ fn written_output_range(
     let end = last_text_cell(terminal, start, end)?;
     while start.1 < end.1 && row_prompt(terminal, start.1 as usize) != RowPrompt::None {
         start = (0, start.1 + 1);
+    }
+    // Why the first column on an output row: the terminal starts at the first
+    // written cell, and a tab or a cursor move at the start of the output
+    // writes none of the cells it skips, which would drop the indentation.
+    if row_prompt(terminal, start.1 as usize) == RowPrompt::None {
+        start.0 = 0;
     }
     Some((
         TerminalTextPoint {
@@ -592,6 +598,34 @@ mod tests {
         assert_eq!(
             shell.command_output_range(3),
             Err(CommandMarkError::NotFound)
+        );
+    }
+
+    /// A tab moves the cursor without writing the cells it skips, so the
+    /// first written cell of such output is not in the first column.
+    #[test]
+    fn output_range_keeps_the_indentation_of_output_that_starts_with_a_tab() {
+        let mut terminal = Terminal::new(40, 8, 100).unwrap();
+        terminal.write(HOOK_PROMPT);
+        terminal.write(b"printf\r\n\x1b]133;C\x07\thello\r\nworld\r\n");
+        terminal.write(HOOK_PROMPT);
+        let text_from_the_range = |start: TerminalTextPoint, end: TerminalTextPoint| {
+            terminal
+                .read_text_screen((start.col, start.row), (end.col, end.row), false)
+                .unwrap()
+        };
+        let expected_text = text_from_the_range(point(1, 0), point(2, 4));
+        assert!(expected_text.ends_with("hello\nworld"), "{expected_text:?}");
+        assert_ne!(expected_text, "hello\nworld");
+        let shell = pane(terminal);
+
+        assert_eq!(
+            shell.command_output_range(1),
+            Ok((point(1, 0), point(2, 4)))
+        );
+        assert_eq!(
+            shell.command_output_range(3),
+            Ok((point(1, 0), point(2, 4)))
         );
     }
 }
