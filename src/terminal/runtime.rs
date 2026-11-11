@@ -323,6 +323,27 @@ impl TerminalRuntime {
         self.0.paragraph_motion_target(row, direction)
     }
 
+    pub(crate) fn prompt_motion_target(
+        &self,
+        row: u32,
+        motion: crate::pane::PromptMotion,
+    ) -> Result<crate::pane::TerminalTextPoint, crate::pane::CommandMarkError> {
+        self.0.prompt_motion_target(row, motion)
+    }
+
+    pub(crate) fn command_output_range(
+        &self,
+        row: u32,
+    ) -> Result<
+        (
+            crate::pane::TerminalTextPoint,
+            crate::pane::TerminalTextPoint,
+        ),
+        crate::pane::CommandMarkError,
+    > {
+        self.0.command_output_range(row)
+    }
+
     pub fn bracketed_paste_enabled(&self) -> bool {
         self.0.bracketed_paste_enabled()
     }

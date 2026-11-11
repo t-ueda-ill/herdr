@@ -257,6 +257,7 @@ mod close_pane;
 mod close_tab;
 mod containers;
 mod copy;
+mod copy_commands;
 mod endpoint_requests;
 mod endpoints;
 mod file_viewer;

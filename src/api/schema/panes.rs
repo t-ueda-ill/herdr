@@ -331,6 +331,35 @@ pub struct PaneCopySearchParams {
     pub previous: Option<PaneTextRange>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PanePromptDirection {
+    Previous,
+    Next,
+}
+
+/// Moves `cursor` to the shell prompt above or below it. Prompts are the rows
+/// the pane's shell marks with OSC 133.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PanePromptMotionParams {
+    pub pane_id: String,
+    pub cursor: PaneTextPoint,
+    pub direction: PanePromptDirection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_revision: Option<u64>,
+}
+
+/// Asks for the output of the command at `cursor`: on an output row that
+/// command, on a prompt row the command typed at it. The prompt waiting for
+/// input stands for the output directly above it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneCommandOutputRangeParams {
+    pub pane_id: String,
+    pub cursor: PaneTextPoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_revision: Option<u64>,
+}
+
 crate::cli::projection::cli_params! {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
     pub struct PaneListParams => PaneListProjection {

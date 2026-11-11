@@ -189,6 +189,8 @@ pub(super) fn render_mode_bar(
                         (format!(" repeat{match_status}  "), base),
                         ("v/space".to_owned(), key),
                         (format!(" {select}  "), base),
+                        ("o".to_owned(), key),
+                        (" output  ".to_owned(), base),
                         ("y/enter".to_owned(), key),
                         (" copy  ".to_owned(), base),
                         (exit_keys.to_owned(), key),

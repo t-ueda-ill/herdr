@@ -15,10 +15,13 @@ use unicode_width::UnicodeWidthStr;
 use crate::layout::PaneId;
 use crate::protocol::CellData;
 
+mod command_marks;
 #[cfg(test)]
 mod migration_tests;
 #[cfg(windows)]
 mod windows_recent_fallback;
+
+pub(crate) use command_marks::{CommandMarkError, PromptMotion};
 
 #[cfg(test)]
 use super::cursor::CURSOR_POSITION_SETTLE;

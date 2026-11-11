@@ -104,6 +104,90 @@ __herdr_osc7
     .to_owned()
 }
 
+/// Marks every prompt and the start of every command's output with OSC 133,
+/// so the herdr in front of the shell can move and copy by command. Shared by
+/// bash and zsh; dash and ash run it without effect.
+///
+/// Why `A` and not `P` for the prompt: `A` also makes the terminal start a
+/// fresh line. With `P`, a prompt that follows output without a final newline
+/// shares a row with that output, and the row then counts as a prompt row
+/// only, which hides the output from a lookup by row.
+/// Why nothing for bash before 4.4, dash and ash: they have no hook between
+/// the typed command and its output (`PS0`, `preexec`), and a prompt mark
+/// alone would turn every output row into a prompt row.
+/// Why nothing under tmux: tmux redraws the screen itself, so a mark would
+/// land on whatever row tmux last drew and not on the prompt.
+/// Why the prompt hook is appended: text other hooks print belongs to the
+/// output above the prompt, so the mark has to follow them.
+/// Why a newline joins `PROMPT_COMMAND`: a value that ends in `;` would make
+/// `;;` with a semicolon.
+/// Why `PS0` holds the escape itself: it is printed without running a command,
+/// so no function call is possible there.
+/// Why zsh marks once while the launcher loads this: the launcher sources it
+/// from inside the first `precmd`, and zsh runs the hooks it had when that
+/// round began, so the first prompt would stay unmarked.
+pub(crate) fn injected_prompt_marks_posix() -> String {
+    r#"# herdr shell integration: marks prompts and command output (OSC 133) for the herdr in front of this shell.
+if [ -z "${TMUX:-}" ] && [ -z "${__herdr_marks:-}" ]; then
+  __herdr_marks=1
+  __herdr_prompt_mark() {
+    { printf '\033]133;A\007' >/dev/tty; } 2>/dev/null || :
+    return 0
+  }
+  __herdr_output_mark() {
+    { printf '\033]133;C\007' >/dev/tty; } 2>/dev/null || :
+    return 0
+  }
+  if [ -n "${BASH_VERSION:-}" ]; then
+    case $BASH_VERSION in
+      [123].*|4.[0123].*) ;;
+      *)
+        case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+          "declare -a"*) eval 'PROMPT_COMMAND+=(__herdr_prompt_mark)' ;;
+          *) PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND
+}__herdr_prompt_mark" ;;
+        esac
+        PS0='\e]133;C\a'"${PS0-}" ;;
+    esac
+  elif [ -n "${ZSH_VERSION:-}" ]; then
+    eval 'precmd_functions+=(__herdr_prompt_mark); preexec_functions+=(__herdr_output_mark)'
+    [ -z "${__HERDR_DIR:-}" ] || __herdr_prompt_mark
+  fi
+fi
+"#
+    .to_owned()
+}
+
+/// Fish counterpart of [`injected_prompt_marks_posix`].
+///
+/// Why no check for a fish that sends OSC 133 itself: a second mark for the
+/// same prompt changes nothing, and one body then serves every fish version.
+pub(crate) fn injected_prompt_marks_fish() -> String {
+    r#"# herdr shell integration: marks prompts and command output (OSC 133) for the herdr in front of this shell.
+if not set -q TMUX; and not set -q __herdr_marks
+    set -g __herdr_marks 1
+    function __herdr_prompt_mark --on-event fish_prompt
+        printf '\033]133;A\007' >/dev/tty 2>/dev/null
+        return 0
+    end
+    function __herdr_output_mark --on-event fish_preexec
+        printf '\033]133;C\007' >/dev/tty 2>/dev/null
+        return 0
+    end
+end
+"#
+    .to_owned()
+}
+
+/// What `herdr integration prompt-marks` prints: the marks alone, for a shell
+/// herdr did not start, such as the one on this machine.
+pub(crate) fn prompt_marks_manual_install(shell: RemoteShell) -> String {
+    match shell {
+        RemoteShell::Fish => injected_prompt_marks_fish(),
+        _ => injected_prompt_marks_posix(),
+    }
+}
+
 /// A command the generated functions wrap, and the label sent in the OSC.
 /// They differ where the process is not named after the agent: `cursor-agent`
 /// is Cursor, `kiro-cli` is Kiro.
@@ -164,36 +248,44 @@ pub(crate) fn remote_shell_function(shell: RemoteShell) -> String {
     }
 }
 
-/// What `herdr integration remote-shell` prints: the directory report and the
-/// agent functions, for a shell herdr did not start.
+/// What `herdr integration remote-shell` prints: the directory report, the
+/// prompt marks and the agent functions, for a shell herdr did not start.
 pub(crate) fn remote_shell_manual_install(shell: RemoteShell) -> String {
     match shell {
         RemoteShell::Fish => format!(
-            "{}{}",
+            "{}{}{}",
             injected_cwd_integration_fish(),
+            injected_prompt_marks_fish(),
             remote_shell_function(shell)
         ),
         _ => format!(
-            "{}{}",
+            "{}{}{}",
             injected_cwd_integration_posix(),
+            injected_prompt_marks_posix(),
             remote_shell_function(shell)
         ),
     }
 }
 
-/// Body the launcher sources in a bash, zsh or sh pane: directory report plus
-/// agent functions.
+/// Body the launcher sources in a bash, zsh or sh pane: directory report,
+/// prompt marks and agent functions.
 pub(crate) fn injected_integration_posix() -> String {
     format!(
-        "{}{}",
+        "{}{}{}",
         injected_cwd_integration_posix(),
+        injected_prompt_marks_posix(),
         injected_agent_integration_posix()
     )
 }
 
 /// Body the launcher sources in a fish pane.
 pub(crate) fn injected_integration_fish() -> String {
-    format!("{}{}", injected_cwd_integration_fish(), fish_function())
+    format!(
+        "{}{}{}",
+        injected_cwd_integration_fish(),
+        injected_prompt_marks_fish(),
+        fish_function()
+    )
 }
 
 /// Exit is announced by a subshell EXIT trap, which also fires when the agent

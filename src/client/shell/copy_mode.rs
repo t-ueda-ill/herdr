@@ -257,6 +257,17 @@ impl ClientShellState {
             '}' => {
                 self.request_copy_motion(crate::api::schema::PaneCopyMotion::NextParagraph, outcome)
             }
+            '[' => self.request_copy_operation(
+                ClientCopyOperation::PromptMotion(
+                    crate::api::schema::PanePromptDirection::Previous,
+                ),
+                outcome,
+            ),
+            ']' => self.request_copy_operation(
+                ClientCopyOperation::PromptMotion(crate::api::schema::PanePromptDirection::Next),
+                outcome,
+            ),
+            'o' => self.request_copy_operation(ClientCopyOperation::CommandOutput, outcome),
             _ => return,
         }
         outcome.repaint = true;
@@ -700,11 +711,18 @@ impl ClientShellState {
         motion: crate::api::schema::PaneCopyMotion,
         outcome: &mut ClientShellInput,
     ) {
+        self.request_copy_operation(ClientCopyOperation::Motion(motion), outcome);
+    }
+
+    fn request_copy_operation(
+        &mut self,
+        operation: ClientCopyOperation,
+        outcome: &mut ClientShellInput,
+    ) {
         if self.copy_mode.is_none() {
             return;
         }
-        self.copy_operation_queue
-            .push_back(ClientCopyOperation::Motion(motion));
+        self.copy_operation_queue.push_back(operation);
         self.dispatch_next_copy_operation(outcome);
     }
 
@@ -732,6 +750,37 @@ impl ClientShellState {
                         },
                     ),
                     PendingEndpointKind::CopyMotion {
+                        pane_id,
+                        origin,
+                        session_generation,
+                    },
+                ),
+                // The answer is a cursor like any other motion's, so it shares
+                // the pending kind.
+                ClientCopyOperation::PromptMotion(direction) => (
+                    crate::api::schema::Method::PanePromptMotion(
+                        crate::api::schema::PanePromptMotionParams {
+                            pane_id: pane_id.clone(),
+                            cursor: origin,
+                            direction,
+                            content_revision: Some(copy_mode.content_revision),
+                        },
+                    ),
+                    PendingEndpointKind::CopyMotion {
+                        pane_id,
+                        origin,
+                        session_generation,
+                    },
+                ),
+                ClientCopyOperation::CommandOutput => (
+                    crate::api::schema::Method::PaneCommandOutputRange(
+                        crate::api::schema::PaneCommandOutputRangeParams {
+                            pane_id: pane_id.clone(),
+                            cursor: origin,
+                            content_revision: Some(copy_mode.content_revision),
+                        },
+                    ),
+                    PendingEndpointKind::CopyCommandOutput {
                         pane_id,
                         origin,
                         session_generation,
@@ -808,6 +857,58 @@ impl ClientShellState {
         self.sync_copy_selection();
         outcome.repaint = true;
         true
+    }
+
+    /// Selects `range` with the cursor on its first cell.
+    ///
+    /// Why the cursor goes to the start and the anchor to the end: the next
+    /// key is usually the previous-prompt motion, which then grows the
+    /// selection upward over the command line and earlier commands.
+    pub(super) fn apply_copy_command_output(
+        &mut self,
+        pane_id: &str,
+        origin: crate::api::schema::PaneTextPoint,
+        range: crate::api::schema::PaneTextRange,
+        content_revision: u64,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let Some(copy_mode) = self.copy_mode.as_mut() else {
+            return false;
+        };
+        if copy_mode.pane_id != pane_id
+            || copy_mode.cursor != origin
+            || copy_mode.content_revision != content_revision
+        {
+            return false;
+        }
+        copy_mode.selection = Some(ClientCopySelection::Character { anchor: range.end });
+        copy_mode.cursor = range.start;
+        self.reveal_copy_cursor(outcome, false);
+        self.sync_copy_selection();
+        outcome.repaint = true;
+        true
+    }
+
+    /// Drops the selection when the cursor is still where the request left.
+    ///
+    /// Why a command without output clears it: the key asks for that
+    /// command's output as the selection, and there is none. An earlier
+    /// selection left in place would be what the next copy key takes.
+    /// Why a search match stays: it was not made by this key, and it remains
+    /// highlighted as what the copy key takes.
+    pub(super) fn clear_copy_selection_at(
+        &mut self,
+        pane_id: &str,
+        origin: crate::api::schema::PaneTextPoint,
+    ) {
+        let Some(copy_mode) = self.copy_mode.as_mut() else {
+            return;
+        };
+        if copy_mode.pane_id != pane_id || copy_mode.cursor != origin {
+            return;
+        }
+        copy_mode.selection = None;
+        self.selection = None;
     }
 
     pub(super) fn exit_copy_mode(&mut self, copy: bool, outcome: &mut ClientShellInput) {

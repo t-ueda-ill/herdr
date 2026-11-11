@@ -81,7 +81,7 @@ The functions wrap these commands: `amp`, `agy`, `claude`, `cline`, `codex`, `co
 
 Agents whose state comes only from their hooks (pi, omp, mastracode, opencode, kilo, and kimi) are listed with their identity, but their state stays weak on another machine, because the hooks report to the machine they run on and not to the Herdr in front of the pane.
 
-For an `ssh` command you type in a local pane, Herdr cannot load the functions for you. Print them for the remote shell, which include the working directory report, and append them to that shell's rc file:
+For an `ssh` command you type in a local pane, Herdr cannot load the functions for you. Print them for the remote shell, which include the working directory report and the prompt marks for [copying by command](/docs/keyboard#copying-by-command), and append them to that shell's rc file:
 
 ```bash
 herdr integration remote-shell --shell bash >> ~/.bashrc

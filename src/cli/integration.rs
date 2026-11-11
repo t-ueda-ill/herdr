@@ -11,6 +11,7 @@ pub(super) fn run_integration_command(args: &[String]) -> std::io::Result<i32> {
         "uninstall" => integration_uninstall(&args[1..]),
         "status" => integration_status(&args[1..]),
         "remote-shell" => integration_remote_shell(&args[1..]),
+        "prompt-marks" => integration_prompt_marks(&args[1..]),
         "help" | "--help" | "-h" => {
             print_integration_help();
             Ok(0)
@@ -42,6 +43,30 @@ fn integration_remote_shell(args: &[String]) -> std::io::Result<i32> {
         _ => return usage(),
     };
     print!("{}", crate::integration::remote_shell_manual_install(shell));
+    Ok(0)
+}
+
+/// Prints the OSC 133 prompt marks for a shell Herdr did not start, such as
+/// the local one. `sh` is not offered: dash and ash cannot send the marks.
+fn integration_prompt_marks(args: &[String]) -> std::io::Result<i32> {
+    use crate::integration::RemoteShell;
+
+    let usage = || {
+        eprintln!("usage: herdr integration prompt-marks [--shell bash|zsh|fish]");
+        Ok(2)
+    };
+    let shell = match args {
+        [] => RemoteShell::from_shell_env(std::env::var("SHELL").ok().as_deref()),
+        [flag, label] if flag == "--shell" => match RemoteShell::parse(label) {
+            Some(shell) => shell,
+            None => return usage(),
+        },
+        _ => return usage(),
+    };
+    if shell == RemoteShell::Sh {
+        return usage();
+    }
+    print!("{}", crate::integration::prompt_marks_manual_install(shell));
     Ok(0)
 }
 
@@ -255,4 +280,5 @@ fn print_integration_help() {
     eprintln!("  herdr integration uninstall grok");
     eprintln!("  herdr integration status [--outdated-only]");
     eprintln!("  herdr integration remote-shell [--shell bash|zsh|fish|sh]");
+    eprintln!("  herdr integration prompt-marks [--shell bash|zsh|fish]");
 }

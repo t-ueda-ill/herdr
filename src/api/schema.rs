@@ -132,6 +132,8 @@ operations::define_operations! {
     PaneSelectionRead(PaneSelectionReadParams) => "pane.selection.read", false, true;
     PaneCopyMotion(PaneCopyMotionParams) => "pane.copy_motion", false, true;
     PaneCopySearch(PaneCopySearchParams) => "pane.copy_search", false, true;
+    PanePromptMotion(PanePromptMotionParams) => "pane.prompt_motion", false, true;
+    PaneCommandOutputRange(PaneCommandOutputRangeParams) => "pane.command_output_range", false, true;
     PaneList(PaneListParams) => "pane.list", false, false;
     PaneCurrent(PaneCurrentParams) => "pane.current", false, false;
     PaneGet(PaneTarget) => "pane.get", false, true;

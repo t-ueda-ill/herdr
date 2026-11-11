@@ -1027,6 +1027,11 @@ pub(super) enum PendingEndpointKind {
         generation: u64,
         session_generation: u64,
     },
+    CopyCommandOutput {
+        pane_id: String,
+        origin: crate::api::schema::PaneTextPoint,
+        session_generation: u64,
+    },
 }
 
 pub(super) struct PendingEndpointRequest {
@@ -1177,6 +1182,8 @@ pub(super) struct ClientCopySearchPrompt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ClientCopyOperation {
     Motion(crate::api::schema::PaneCopyMotion),
+    PromptMotion(crate::api::schema::PanePromptDirection),
+    CommandOutput,
     Search {
         query: String,
         direction: crate::api::schema::PaneCopySearchDirection,

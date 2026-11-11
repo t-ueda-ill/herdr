@@ -318,6 +318,16 @@ fn integration_command() -> Command {
                         .value_parser(["bash", "zsh", "fish", "sh"]),
                 ),
         )
+        .subcommand(
+            Command::new("prompt-marks")
+                .about("Print shell code that marks prompts and command output, so copy mode can move and select by command")
+                .arg(
+                    Arg::new("shell")
+                        .long("shell")
+                        .value_name("SHELL")
+                        .value_parser(["bash", "zsh", "fish"]),
+                ),
+        )
 }
 
 fn skill_command() -> Command {

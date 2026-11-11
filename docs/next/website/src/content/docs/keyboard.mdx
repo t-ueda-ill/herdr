@@ -92,9 +92,27 @@ Typing and paste insert at the cursor. Movement and deletion respect Unicode gra
 
 ## Copy mode
 
-Press `prefix+[` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-style `w/b/e` and big-word `W/B/E`, `{`/`}`, `PageUp`/`PageDown`, `ctrl+b`/`ctrl+f`, and `ctrl+u`/`ctrl+d` to move. Press `/` or `?` for forward or backward literal search, then `n` or `N` to repeat in the same or opposite direction. Search is case-insensitive unless the query contains an uppercase letter. Use `v` or Space to start a selection, `y` or Enter to copy it, and `q` or Esc to leave without copying. Esc clears an active selection or search before exiting. Copy mode does not pause the pane process: output remains live, follows at the bottom, and stays pinned when you navigate into history. The configured prefix keeps its normal meaning in copy mode; with the default prefix, `ctrl+b` enters prefix mode instead of paging up, so use a different prefix if you want `ctrl+b` for copy-mode page-up. Mouse drag-select copies without entering copy mode at all.
+Press `prefix+[` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-style `w/b/e` and big-word `W/B/E`, `{`/`}`, `[`/`]` (see [Copying by command](#copying-by-command)), `PageUp`/`PageDown`, `ctrl+b`/`ctrl+f`, and `ctrl+u`/`ctrl+d` to move. Press `/` or `?` for forward or backward literal search, then `n` or `N` to repeat in the same or opposite direction. Search is case-insensitive unless the query contains an uppercase letter. Use `v` or Space to start a selection, `y` or Enter to copy it, and `q` or Esc to leave without copying. Esc clears an active selection or search before exiting. Copy mode does not pause the pane process: output remains live, follows at the bottom, and stays pinned when you navigate into history. The configured prefix keeps its normal meaning in copy mode; with the default prefix, `ctrl+b` enters prefix mode instead of paging up, so use a different prefix if you want `ctrl+b` for copy-mode page-up. Mouse drag-select copies without entering copy mode at all.
 
 Mouse drag selections and selections started with `v`, Space, or `V` remain active during output and redraws, including when part of the selected range is outside the viewport. Copy reads the current text in that range, not a frozen snapshot. Resizing the pane or switching between its normal and alternate screens still clears the selection. Search results and double-click word selections retain their content-change checks.
+
+### Copying by command
+
+In copy mode, `[` and `]` move to the previous and next shell prompt, and `o` selects the output of the command at the cursor. On the prompt that is waiting for input, `o` selects the output directly above it, which is the output of the command that just ended, so `prefix+[`, `o`, `y` copies the last output without the mouse. When that command printed nothing, or is still running without output, `o` clears the selection and shows a notice instead of reaching for an older command; move to the command you want with `[` first. After `o`, each `[` grows the selection upward: first over the command line, then over earlier commands and their output. A command that is still running is selected up to its last written line.
+
+These keys need a shell that marks its prompts with OSC 133. In an SSH or container pane that Herdr opened, bash 4.4 or later, zsh, and fish send the marks automatically (see [SSH and container panes](/docs/configuration#ssh-and-container-panes)). For a local shell, add the marks to its startup file:
+
+```bash
+# ~/.bashrc or ~/.zshrc
+eval "$(herdr integration prompt-marks)"
+```
+
+```fish
+# ~/.config/fish/config.fish
+herdr integration prompt-marks --shell fish | source
+```
+
+A shell that already sends OSC 133 works without this. sh (dash, ash) and bash before 4.4 cannot send the marks, and a shell that tmux starts inside the pane does not send them. In a pane without marks, the three keys show a notice and leave the cursor where it is. Only commands run after the marks are loaded have boundaries. With the marks, a prompt always starts on a new line, including after output that does not end with a newline.
 
 ## File viewer
 

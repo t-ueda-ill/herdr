@@ -48,11 +48,12 @@ use self::offhost_claim::{OffHostClaimAction, OffHostClaimWatcher};
 pub(crate) use self::terminal::test_encode_key_for_app;
 #[cfg(unix)]
 pub use self::terminal::InputState;
-use self::terminal::{GhosttyPaneTerminal, PaneTerminal};
 pub(crate) use self::terminal::{
-    TerminalCompressionStep, TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalReadSnapshot,
-    TerminalSearchDirection, TerminalSearchWindow, TerminalTextPoint, TerminalWordMotion,
+    CommandMarkError, PromptMotion, TerminalCompressionStep, TerminalDirtyPatch,
+    TerminalDirtyPatchOutcome, TerminalReadSnapshot, TerminalSearchDirection, TerminalSearchWindow,
+    TerminalTextPoint, TerminalWordMotion,
 };
+use self::terminal::{GhosttyPaneTerminal, PaneTerminal};
 pub use self::{
     state::PaneState,
     terminal::{ScrollMetrics, TerminalCursorState},
@@ -3962,6 +3963,25 @@ impl PaneRuntime {
         direction: i8,
     ) -> Option<crate::pane::TerminalTextPoint> {
         let result = self.terminal.paragraph_motion_target(row, direction);
+        self.compression.wake();
+        result
+    }
+
+    pub(crate) fn prompt_motion_target(
+        &self,
+        row: u32,
+        motion: PromptMotion,
+    ) -> Result<TerminalTextPoint, CommandMarkError> {
+        let result = self.terminal.prompt_motion_target(row, motion);
+        self.compression.wake();
+        result
+    }
+
+    pub(crate) fn command_output_range(
+        &self,
+        row: u32,
+    ) -> Result<(TerminalTextPoint, TerminalTextPoint), CommandMarkError> {
+        let result = self.terminal.command_output_range(row);
         self.compression.wake();
         result
     }
