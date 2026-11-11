@@ -107,28 +107,53 @@ fn missing_mark_error(terminal: &Terminal, total_rows: usize) -> CommandMarkErro
     }
 }
 
-/// The output around `row`, or `None` when nothing is written there: the
-/// terminal answers with a single blank cell for output that has no text.
+/// Last cell with visible text between `start` and `end`, both `(col, row)`.
+fn last_text_cell(terminal: &Terminal, start: (u16, u32), end: (u16, u32)) -> Option<(u16, u32)> {
+    (start.1..=end.1).rev().find_map(|row| {
+        let first_col = if row == start.1 { start.0 } else { 0 };
+        let last_col = if row == end.1 { end.0 } else { u16::MAX };
+        let mut col = 0u16;
+        let mut found = None;
+        terminal
+            .for_each_screen_row_cell(row, |_, graphemes| {
+                let visible = graphemes
+                    .iter()
+                    .filter_map(|codepoint| char::from_u32(*codepoint))
+                    .any(|character| !character.is_whitespace());
+                if visible && (first_col..=last_col).contains(&col) {
+                    found = Some(col);
+                }
+                col = col.saturating_add(1);
+            })
+            .ok()?;
+        found.map(|col| (col, row))
+    })
+}
+
+/// The output around `row`, or `None` when nothing visible is written there.
+///
+/// Why the terminal's own range is narrowed on both sides: zsh and fish fill
+/// a row with spaces before they draw a prompt. Those spaces are written
+/// output cells, so the terminal starts the output right of the command line
+/// and ends it after the spaces that follow output without a final newline.
 fn written_output_range(
     terminal: &Terminal,
     row: usize,
 ) -> Option<(TerminalTextPoint, TerminalTextPoint)> {
     let row = u32::try_from(row).ok()?;
-    let ((start_col, start_row), (end_col, end_row)) =
-        terminal.screen_command_output_range(0, row).ok()??;
-    let (_, graphemes) = terminal.screen_cell(end_col, end_row).ok()?;
-    let has_text = graphemes
-        .iter()
-        .filter_map(|codepoint| char::from_u32(*codepoint))
-        .any(|character| !character.is_whitespace());
-    has_text.then_some((
+    let (mut start, end) = terminal.screen_command_output_range(0, row).ok()??;
+    let end = last_text_cell(terminal, start, end)?;
+    while start.1 < end.1 && row_prompt(terminal, start.1 as usize) != RowPrompt::None {
+        start = (0, start.1 + 1);
+    }
+    Some((
         TerminalTextPoint {
-            row: start_row,
-            col: start_col,
+            row: start.1,
+            col: start.0,
         },
         TerminalTextPoint {
-            row: end_row,
-            col: end_col,
+            row: end.1,
+            col: end.0,
         },
     ))
 }
@@ -482,6 +507,57 @@ mod tests {
         assert_eq!(
             shell.command_output_range(3),
             Err(CommandMarkError::NotFound)
+        );
+    }
+
+    /// zsh and fish fill the row with spaces before they draw a prompt, to
+    /// show a sign after output that ends without a newline. The spaces right
+    /// of the command line stay behind as written output cells.
+    #[test]
+    fn output_range_starts_below_a_command_line_that_was_padded_with_spaces() {
+        let mut terminal = Terminal::new(20, 8, 100).unwrap();
+        for (command, output) in [("first", "a1\r\na2\r\n"), ("second", "b1\r\n")] {
+            terminal.write(format!("%{}\r \r", " ".repeat(19)).as_bytes());
+            terminal.write(b"\x1b]133;A\x07\r$ ");
+            terminal.write(command.as_bytes());
+            terminal.write(b"\r\n\x1b]133;C\x07");
+            terminal.write(output.as_bytes());
+        }
+        terminal.write(format!("%{}\r \r", " ".repeat(19)).as_bytes());
+        terminal.write(b"\x1b]133;A\x07\r$ ");
+        let shell = pane(terminal);
+
+        assert_eq!(
+            shell.command_output_range(2),
+            Ok((point(1, 0), point(2, 1)))
+        );
+        assert_eq!(
+            shell.command_output_range(0),
+            Ok((point(1, 0), point(2, 1)))
+        );
+        assert_eq!(
+            shell.command_output_range(5),
+            Ok((point(4, 0), point(4, 1)))
+        );
+    }
+
+    /// The padding of the test above, after output that ends without a
+    /// newline: the spaces follow the output on its own row.
+    #[test]
+    fn output_range_ends_at_the_last_text_before_the_padding_spaces() {
+        let mut terminal = Terminal::new(20, 8, 100).unwrap();
+        terminal.write(b"\x1b]133;A\x07\r$ printf\r\n\x1b]133;C\x07t1\r\ntail");
+        terminal.write(format!("%{}\r \r", " ".repeat(19)).as_bytes());
+        terminal.write(b"\x1b]133;A\x07\r$ ");
+        let shell = pane(terminal);
+
+        assert_eq!(
+            shell.command_output_range(2),
+            Ok((point(1, 0), point(2, 4)))
+        );
+        assert_eq!(
+            shell.command_output_range(3),
+            Ok((point(1, 0), point(2, 4)))
         );
     }
 }

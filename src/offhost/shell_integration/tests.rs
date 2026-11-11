@@ -942,15 +942,44 @@ fn row_texts(terminal: &crate::ghostty::Terminal) -> Vec<String> {
         .collect()
 }
 
-/// Text of the command output the terminal finds at the row that starts with
-/// `line`. Why not the whole row: zsh and fish append their own sign to output
-/// that ends without a newline.
-fn command_output_at(terminal: &crate::ghostty::Terminal, line: &str) -> Option<String> {
-    let row = row_texts(terminal)
+/// Text of the command output a pane finds at the row that starts with
+/// `line`, after showing `output`. Why not the whole row: zsh and fish append
+/// their own sign to output that ends without a newline.
+fn command_output_at(output: &str, line: &str) -> Option<String> {
+    let terminal = terminal_showing(output);
+    let row = row_texts(&terminal)
         .iter()
         .position(|text| text.starts_with(line))? as u32;
-    let (start, end) = terminal.screen_command_output_range(0, row).ok()??;
-    terminal.read_text_screen(start, end, false).ok()
+    // The pane runtime starts a background task, which needs a runtime.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let (start, end) = runtime.block_on(async {
+        crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+            200,
+            24,
+            1_000_000,
+            output.as_bytes(),
+        )
+        .command_output_range(row)
+        .ok()
+    })?;
+    terminal
+        .read_text_screen((start.col, start.row), (end.col, end.row), false)
+        .ok()
+}
+
+/// bash sends the marks from 4.4 on, the first version with `PS0`. macOS
+/// ships 3.2 as `/bin/bash`.
+fn bash_sends_marks() -> bool {
+    Command::new("bash")
+        .args([
+            "-c",
+            "case $BASH_VERSION in [123].*|4.[0123].*) exit 1 ;; esac",
+        ])
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn prompt_row_count(terminal: &crate::ghostty::Terminal) -> usize {
@@ -994,12 +1023,12 @@ fn assert_each_command_output_is_bounded_by_its_prompts(shell: &str, rc_file: &s
     let terminal = terminal_showing(&out);
 
     assert_eq!(
-        command_output_at(&terminal, "one-b").as_deref(),
+        command_output_at(&out, "one-b").as_deref(),
         Some("one-a\none-b"),
         "{out:?}"
     );
     assert_eq!(
-        command_output_at(&terminal, "two").as_deref(),
+        command_output_at(&out, "two").as_deref(),
         Some("two"),
         "{out:?}"
     );
@@ -1008,7 +1037,7 @@ fn assert_each_command_output_is_bounded_by_its_prompts(shell: &str, rc_file: &s
 
 #[test]
 fn bash_marks_bound_the_output_of_each_command() {
-    if !installed("bash") {
+    if !bash_sends_marks() {
         return;
     }
     assert_each_command_output_is_bounded_by_its_prompts("bash", ".bashrc", "PS1='$ '\n");
@@ -1016,7 +1045,7 @@ fn bash_marks_bound_the_output_of_each_command() {
 
 #[test]
 fn bash_marks_bound_the_output_when_the_user_sets_a_prompt_command_and_ps0() {
-    if !installed("bash") {
+    if !bash_sends_marks() {
         return;
     }
     assert_each_command_output_is_bounded_by_its_prompts(
@@ -1028,7 +1057,7 @@ fn bash_marks_bound_the_output_when_the_user_sets_a_prompt_command_and_ps0() {
 
 #[test]
 fn bash_marks_bound_the_output_when_the_prompt_command_is_an_array() {
-    if !installed("bash") {
+    if !bash_sends_marks() {
         return;
     }
     assert_each_command_output_is_bounded_by_its_prompts(
@@ -1048,7 +1077,7 @@ fn zsh_marks_bound_the_output_of_each_command() {
 
 #[test]
 fn bash_marks_an_empty_command_line_as_one_more_prompt() {
-    if !installed("bash") {
+    if !bash_sends_marks() {
         return;
     }
     let out = run_marked_shell(
@@ -1057,15 +1086,14 @@ fn bash_marks_an_empty_command_line_as_one_more_prompt() {
         "PS1='$ '\n",
         "echo one\n\necho two\nexit",
     );
-    let terminal = terminal_showing(&out);
 
     assert_eq!(
-        command_output_at(&terminal, "one").as_deref(),
+        command_output_at(&out, "one").as_deref(),
         Some("one"),
         "{out:?}"
     );
     assert_eq!(
-        command_output_at(&terminal, "two").as_deref(),
+        command_output_at(&out, "two").as_deref(),
         Some("two"),
         "{out:?}"
     );
@@ -1099,7 +1127,7 @@ fn bash_under_tmux_sends_no_prompt_marks() {
 
 #[test]
 fn bash_marks_once_when_the_rc_file_already_holds_the_marks() {
-    if !installed("bash") {
+    if !bash_sends_marks() {
         return;
     }
     let rc = format!(
@@ -1120,20 +1148,19 @@ fn assert_output_without_a_final_newline_stays_with_its_command(shell: &str, rc_
         "PS1='$ '\n",
         "echo first\nprintf 'tail-a\\ntail-b'\necho last\nexit",
     );
-    let terminal = terminal_showing(&out);
 
-    let unterminated = command_output_at(&terminal, "tail-b").unwrap_or_default();
+    let unterminated = command_output_at(&out, "tail-b").unwrap_or_default();
     let lines: Vec<&str> = unterminated.lines().collect();
     assert_eq!(lines.len(), 2, "{out:?}");
     assert_eq!(lines[0], "tail-a", "{out:?}");
     assert!(lines[1].starts_with("tail-b"), "{out:?}");
     assert_eq!(
-        command_output_at(&terminal, "first").as_deref(),
+        command_output_at(&out, "first").as_deref(),
         Some("first"),
         "{out:?}"
     );
     assert_eq!(
-        command_output_at(&terminal, "last").as_deref(),
+        command_output_at(&out, "last").as_deref(),
         Some("last"),
         "{out:?}"
     );
@@ -1141,7 +1168,7 @@ fn assert_output_without_a_final_newline_stays_with_its_command(shell: &str, rc_
 
 #[test]
 fn bash_output_without_a_final_newline_stays_with_its_command() {
-    if !installed("bash") {
+    if !bash_sends_marks() {
         return;
     }
     assert_output_without_a_final_newline_stays_with_its_command("bash", ".bashrc");
@@ -1161,12 +1188,11 @@ fn zsh_marks_its_first_prompt() {
         return;
     }
     let out = run_marked_shell("zsh", ".zshrc", "PS1='$ '\n", "echo one\nexit");
-    let terminal = terminal_showing(&out);
 
     // The first prompt, where `echo one` is typed, bounds its output from above.
     assert_eq!(out.matches("\x1b]133;A").count(), 2, "{out:?}");
     assert_eq!(
-        command_output_at(&terminal, "one").as_deref(),
+        command_output_at(&out, "one").as_deref(),
         Some("one"),
         "{out:?}"
     );
@@ -1178,16 +1204,26 @@ fn fish_marks_bound_the_output_of_each_command() {
         return;
     }
     let out = run_marked_shell("fish", ".profile", "", "echo one\necho two\nexit");
-    let terminal = terminal_showing(&out);
 
     assert_eq!(
-        command_output_at(&terminal, "one").as_deref(),
+        command_output_at(&out, "one").as_deref(),
         Some("one"),
         "{out:?}"
     );
     assert_eq!(
-        command_output_at(&terminal, "two").as_deref(),
+        command_output_at(&out, "two").as_deref(),
         Some("two"),
         "{out:?}"
     );
+}
+
+#[test]
+fn bash_before_4_4_sends_no_prompt_marks_and_still_reports_its_directory() {
+    if !installed("bash") || bash_sends_marks() {
+        return;
+    }
+    let out = run_marked_shell("bash", ".bashrc", "PS1='$ '\n", "echo one\nexit");
+
+    assert!(!out.contains("\x1b]133;"), "{out:?}");
+    assert!(!osc7_paths(&out).is_empty(), "{out:?}");
 }
