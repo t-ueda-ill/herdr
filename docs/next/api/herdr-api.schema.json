@@ -2824,6 +2824,30 @@
           ],
           "type": "object"
         },
+        "PaneCommandOutputRangeParams": {
+          "description": "Asks for the output of the command at `cursor`: on an output row that\ncommand, on a prompt row the command typed at it. The prompt waiting for\ninput stands for the output directly above it.",
+          "properties": {
+            "content_revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cursor": {
+              "$ref": "#/schemas/request/$defs/PaneTextPoint"
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "cursor"
+          ],
+          "type": "object"
+        },
         "PaneCopyMotion": {
           "enum": [
             "line_end",
@@ -3444,6 +3468,41 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "PanePromptDirection": {
+          "enum": [
+            "previous",
+            "next"
+          ],
+          "type": "string"
+        },
+        "PanePromptMotionParams": {
+          "description": "Moves `cursor` to the shell prompt above or below it. Prompts are the rows\nthe pane's shell marks with OSC 133.",
+          "properties": {
+            "content_revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cursor": {
+              "$ref": "#/schemas/request/$defs/PaneTextPoint"
+            },
+            "direction": {
+              "$ref": "#/schemas/request/$defs/PanePromptDirection"
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "cursor",
+            "direction"
+          ],
           "type": "object"
         },
         "PaneReadParams": {
@@ -6856,6 +6915,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneCopySearchParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.prompt_motion",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PanePromptMotionParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.command_output_range",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneCommandOutputRangeParams"
             }
           },
           "required": [
@@ -12408,6 +12499,58 @@
                 "content_revision",
                 "matches",
                 "total"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "content_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "cursor": {
+                  "$ref": "#/schemas/success_response/$defs/PaneTextPoint"
+                },
+                "pane_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "pane_prompt_motion",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id",
+                "cursor",
+                "content_revision"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "content_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "pane_id": {
+                  "type": "string"
+                },
+                "range": {
+                  "$ref": "#/schemas/success_response/$defs/PaneTextRange"
+                },
+                "type": {
+                  "const": "pane_command_output_range",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id",
+                "range",
+                "content_revision"
               ],
               "type": "object"
             },

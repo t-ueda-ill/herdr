@@ -474,6 +474,20 @@ pub struct ScreenTextCell {
     pub graphemes: Vec<u32>,
 }
 
+/// How the shell marked a row with OSC 133.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowPrompt {
+    /// Output, or a row of a shell that sends no marks.
+    None,
+    /// First row of a prompt.
+    Start,
+    /// A further row of the same prompt or of the command typed at it.
+    Continuation,
+}
+
+/// `(col, row)` of the first and the last cell, in screen coordinates.
+pub type CommandOutputRange = ((u16, u32), (u16, u32));
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenTextRow {
     pub cells: Vec<ScreenTextCell>,
@@ -1346,6 +1360,70 @@ impl Terminal {
             });
         }
         Ok(rows)
+    }
+
+    /// The OSC 133 prompt mark of a screen row. A row past the written screen
+    /// is an error.
+    ///
+    /// Why no bounds check as in the other screen row readers: callers scan
+    /// the whole scrollback with this, and the check costs a second call per
+    /// row.
+    pub fn screen_row_prompt(&self, row: u32) -> Result<RowPrompt, Error> {
+        let grid_ref = self.grid_ref(ghostty_screen_point(0, row))?;
+        let mut raw_row = 0;
+        let mut prompt: ffi::GhosttyRowSemanticPrompt = 0;
+        unsafe {
+            ffi::ghostty_grid_ref_row(&grid_ref, &mut raw_row).into_result()?;
+            ffi::ghostty_row_get(
+                raw_row,
+                ffi::GhosttyRowData_GHOSTTY_ROW_DATA_SEMANTIC_PROMPT,
+                (&mut prompt as *mut ffi::GhosttyRowSemanticPrompt).cast(),
+            )
+            .into_result()?;
+        }
+        Ok(match prompt {
+            ffi::GhosttyRowSemanticPrompt_GHOSTTY_ROW_SEMANTIC_PROMPT => RowPrompt::Start,
+            ffi::GhosttyRowSemanticPrompt_GHOSTTY_ROW_SEMANTIC_PROMPT_CONTINUATION => {
+                RowPrompt::Continuation
+            }
+            _ => RowPrompt::None,
+        })
+    }
+
+    /// Screen cells `(col, row)` of the first and last cell of the command
+    /// output that contains the given screen cell, without trailing blanks.
+    /// `None` when the cell is prompt or typed input, or when no OSC 133 mark
+    /// bounds the output on either side.
+    pub fn screen_command_output_range(
+        &self,
+        x: u16,
+        y: u32,
+    ) -> Result<Option<CommandOutputRange>, Error> {
+        if y as usize >= self.total_rows()? {
+            return Ok(None);
+        }
+        let grid_ref = self.grid_ref(ghostty_screen_point(x, y))?;
+        let mut selection = ffi::GhosttySelection::default();
+        let result =
+            unsafe { ffi::ghostty_terminal_select_output(self.raw, grid_ref, &mut selection) };
+        if result == ffi::GhosttyResult_GHOSTTY_NO_VALUE {
+            return Ok(None);
+        }
+        result.into_result()?;
+        let point = |grid_ref: &ffi::GhosttyGridRef| -> Result<(u16, u32), Error> {
+            let mut out = ffi::GhosttyPointCoordinate::default();
+            unsafe {
+                ffi::ghostty_terminal_point_from_grid_ref(
+                    self.raw,
+                    grid_ref,
+                    ffi::GhosttyPointTag_GHOSTTY_POINT_TAG_SCREEN,
+                    &mut out,
+                )
+                .into_result()?;
+            }
+            Ok((out.x, out.y))
+        };
+        Ok(Some((point(&selection.start)?, point(&selection.end)?)))
     }
 
     fn viewport_graphemes_and_style(&self, x: u16, y: u32) -> Result<(Vec<u32>, CellStyle), Error> {
@@ -5075,5 +5153,103 @@ mod tests {
         assert!(basic.has_styling);
         assert_eq!(basic.style.fg_color, Some(CellColor::Palette(1)));
         assert!(!basic.has_hyperlink);
+    }
+
+    /// One shell command the way a shell with OSC 133 marks writes it:
+    /// prompt, typed command, output.
+    fn write_marked_command(terminal: &mut Terminal, command: &str, output_lines: &[&str]) {
+        terminal.write(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        terminal.write(command.as_bytes());
+        terminal.write(b"\r\n\x1b]133;C\x07");
+        for line in output_lines {
+            terminal.write(line.as_bytes());
+            terminal.write(b"\r\n");
+        }
+    }
+
+    fn prompt_rows(terminal: &Terminal) -> Vec<usize> {
+        (0..terminal.total_rows().unwrap())
+            .filter(|row| terminal.screen_row_prompt(*row as u32).unwrap() == RowPrompt::Start)
+            .collect()
+    }
+
+    #[test]
+    fn osc_133_prompt_rows_are_reported_for_the_screen_and_the_scrollback() {
+        let mut terminal = Terminal::new(20, 4, 1000).unwrap();
+        write_marked_command(&mut terminal, "first", &["a1", "a2", "a3"]);
+        write_marked_command(&mut terminal, "second", &["b1", "b2", "b3"]);
+        terminal.write(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+
+        assert!(terminal.scrollback_rows().unwrap() > 0);
+        assert_eq!(prompt_rows(&terminal), vec![0, 4, 8]);
+        assert_eq!(terminal.screen_row_prompt(1).unwrap(), RowPrompt::None);
+    }
+
+    #[test]
+    fn a_wrapped_command_line_continues_its_prompt_row() {
+        let mut terminal = Terminal::new(10, 6, 100).unwrap();
+        write_marked_command(&mut terminal, "0123456789abc", &["out"]);
+
+        assert_eq!(terminal.screen_row_prompt(0).unwrap(), RowPrompt::Start);
+        assert_eq!(
+            terminal.screen_row_prompt(1).unwrap(),
+            RowPrompt::Continuation
+        );
+        assert_eq!(terminal.screen_row_prompt(2).unwrap(), RowPrompt::None);
+    }
+
+    #[test]
+    fn command_output_range_spans_the_output_between_two_prompts() {
+        let mut terminal = Terminal::new(20, 4, 1000).unwrap();
+        write_marked_command(&mut terminal, "first", &["a1", "a2 tail", ""]);
+        write_marked_command(&mut terminal, "second", &["b1"]);
+        terminal.write(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+
+        // Row 2 is in the scrollback by now; trailing blank rows are left out.
+        let range = terminal.screen_command_output_range(0, 2).unwrap();
+        assert_eq!(range, Some(((0, 1), (6, 2))));
+        let ((start_col, start_row), (end_col, end_row)) = range.unwrap();
+        assert_eq!(
+            terminal
+                .read_text_screen((start_col, start_row), (end_col, end_row), false)
+                .unwrap(),
+            "a1\na2 tail"
+        );
+    }
+
+    #[test]
+    fn command_output_range_reaches_the_last_written_row_while_a_command_runs() {
+        let mut terminal = Terminal::new(20, 6, 100).unwrap();
+        write_marked_command(&mut terminal, "slow", &["partial 1", "partial 2"]);
+
+        assert_eq!(
+            terminal.screen_command_output_range(0, 1).unwrap(),
+            Some(((0, 1), (8, 2)))
+        );
+    }
+
+    #[test]
+    fn command_output_range_is_absent_on_a_prompt_row_and_without_marks() {
+        let mut marked = Terminal::new(20, 6, 100).unwrap();
+        write_marked_command(&mut marked, "first", &["a1"]);
+        assert_eq!(marked.screen_command_output_range(0, 0).unwrap(), None);
+
+        let mut unmarked = Terminal::new(20, 6, 100).unwrap();
+        unmarked.write(b"$ first\r\na1\r\n$ ");
+        assert_eq!(prompt_rows(&unmarked), Vec::<usize>::new());
+        assert_eq!(unmarked.screen_command_output_range(0, 1).unwrap(), None);
+    }
+
+    #[test]
+    fn command_output_range_starts_at_the_top_when_its_prompt_left_the_scrollback() {
+        let mut terminal = Terminal::new(20, 3, 0).unwrap();
+        write_marked_command(&mut terminal, "long", &["l1", "l2", "l3", "l4"]);
+        terminal.write(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+
+        assert_eq!(prompt_rows(&terminal), vec![2]);
+        assert_eq!(
+            terminal.screen_command_output_range(0, 1).unwrap(),
+            Some(((0, 0), (1, 1)))
+        );
     }
 }

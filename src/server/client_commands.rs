@@ -430,6 +430,23 @@ mod tests {
         }
         assert_eq!(download_actual, download, "download method shapes");
 
+        let command_marks: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-method-shapes-command-marks.json"
+        )))
+        .expect("command mark endpoint method shape fixture");
+        let mut command_marks_actual = BTreeMap::new();
+        for method in ["pane.command_output_range", "pane.prompt_motion"] {
+            command_marks_actual.insert(
+                method.to_owned(),
+                actual.remove(method).expect("command mark method"),
+            );
+        }
+        assert_eq!(
+            command_marks_actual, command_marks,
+            "command mark method shapes"
+        );
+
         let mut added = BTreeMap::new();
         for method in [
             "file.read",

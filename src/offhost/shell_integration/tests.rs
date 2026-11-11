@@ -920,3 +920,274 @@ fn zsh_announces_exit_and_returns_to_the_prompt_after_ctrl_c() {
     }
     assert_ctrl_c_ends_the_claim_and_returns_to_the_prompt("zsh");
 }
+
+/// The pty size of `run_in_pty`, so a terminal fed with its output lays the
+/// rows out the way the shell saw them.
+fn terminal_showing(output: &str) -> crate::ghostty::Terminal {
+    let mut terminal = crate::ghostty::Terminal::new(200, 24, 1000).expect("terminal");
+    terminal.write(output.as_bytes());
+    terminal
+}
+
+fn row_texts(terminal: &crate::ghostty::Terminal) -> Vec<String> {
+    let rows = terminal.total_rows().expect("rows") as u32;
+    (0..rows)
+        .map(|row| {
+            terminal
+                .read_text_screen((0, row), (199, row), false)
+                .unwrap_or_default()
+                .trim_end()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// Text of the command output the terminal finds at the row that starts with
+/// `line`. Why not the whole row: zsh and fish append their own sign to output
+/// that ends without a newline.
+fn command_output_at(terminal: &crate::ghostty::Terminal, line: &str) -> Option<String> {
+    let row = row_texts(terminal)
+        .iter()
+        .position(|text| text.starts_with(line))? as u32;
+    let (start, end) = terminal.screen_command_output_range(0, row).ok()??;
+    terminal.read_text_screen(start, end, false).ok()
+}
+
+fn prompt_row_count(terminal: &crate::ghostty::Terminal) -> usize {
+    let rows = terminal.total_rows().expect("rows") as u32;
+    (0..rows)
+        .filter(|row| {
+            terminal.screen_row_prompt(*row).ok() == Some(crate::ghostty::RowPrompt::Start)
+        })
+        .count()
+}
+
+fn run_marked_shell(shell: &str, rc_file: &str, rc_body: &str, input: &str) -> String {
+    let root = scratch(&format!("pty-marks-{shell}-{}", rc_body.len()));
+    let home = root.join("home");
+    let tmp = root.join("tmp");
+    for dir in [&home, &tmp] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(home.join(rc_file), rc_body).unwrap();
+    run_in_pty(
+        &[
+            root.to_str().unwrap(),
+            shell,
+            "0",
+            &injected_integration_posix(),
+            &injected_integration_fish(),
+        ],
+        &home,
+        &tmp,
+        input,
+    )
+}
+
+fn assert_each_command_output_is_bounded_by_its_prompts(shell: &str, rc_file: &str, rc_body: &str) {
+    let out = run_marked_shell(
+        shell,
+        rc_file,
+        rc_body,
+        "printf 'one-a\\none-b\\n'\necho two\nexit",
+    );
+    let terminal = terminal_showing(&out);
+
+    assert_eq!(
+        command_output_at(&terminal, "one-b").as_deref(),
+        Some("one-a\none-b"),
+        "{out:?}"
+    );
+    assert_eq!(
+        command_output_at(&terminal, "two").as_deref(),
+        Some("two"),
+        "{out:?}"
+    );
+    assert!(prompt_row_count(&terminal) >= 3, "{out:?}");
+}
+
+#[test]
+fn bash_marks_bound_the_output_of_each_command() {
+    if !installed("bash") {
+        return;
+    }
+    assert_each_command_output_is_bounded_by_its_prompts("bash", ".bashrc", "PS1='$ '\n");
+}
+
+#[test]
+fn bash_marks_bound_the_output_when_the_user_sets_a_prompt_command_and_ps0() {
+    if !installed("bash") {
+        return;
+    }
+    assert_each_command_output_is_bounded_by_its_prompts(
+        "bash",
+        ".bashrc",
+        "PS1='$ '\nPROMPT_COMMAND='true;'\nPS0=''\n",
+    );
+}
+
+#[test]
+fn bash_marks_bound_the_output_when_the_prompt_command_is_an_array() {
+    if !installed("bash") {
+        return;
+    }
+    assert_each_command_output_is_bounded_by_its_prompts(
+        "bash",
+        ".bashrc",
+        "PS1='$ '\nPROMPT_COMMAND=(true)\n",
+    );
+}
+
+#[test]
+fn zsh_marks_bound_the_output_of_each_command() {
+    if !installed("zsh") {
+        return;
+    }
+    assert_each_command_output_is_bounded_by_its_prompts("zsh", ".zshrc", "PS1='$ '\n");
+}
+
+#[test]
+fn bash_marks_an_empty_command_line_as_one_more_prompt() {
+    if !installed("bash") {
+        return;
+    }
+    let out = run_marked_shell(
+        "bash",
+        ".bashrc",
+        "PS1='$ '\n",
+        "echo one\n\necho two\nexit",
+    );
+    let terminal = terminal_showing(&out);
+
+    assert_eq!(
+        command_output_at(&terminal, "one").as_deref(),
+        Some("one"),
+        "{out:?}"
+    );
+    assert_eq!(
+        command_output_at(&terminal, "two").as_deref(),
+        Some("two"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn dash_sends_no_prompt_marks() {
+    if !installed("dash") {
+        return;
+    }
+    let out = run_marked_shell("dash", ".shrc", "", "echo one\nexit");
+
+    assert!(!out.contains("\x1b]133;"), "{out:?}");
+    assert!(out.contains("one"), "{out:?}");
+}
+
+#[test]
+fn bash_under_tmux_sends_no_prompt_marks() {
+    if !installed("bash") {
+        return;
+    }
+    let out = run_marked_shell(
+        "bash",
+        ".bashrc",
+        "TMUX=/tmp/tmux-0/default,1,0\n",
+        "echo one\nexit",
+    );
+
+    assert!(!out.contains("]133;"), "{out:?}");
+}
+
+#[test]
+fn bash_marks_once_when_the_rc_file_already_holds_the_marks() {
+    if !installed("bash") {
+        return;
+    }
+    let rc = format!(
+        "PS1='$ '\n{}",
+        crate::integration::prompt_marks_manual_install(RemoteShell::Bash)
+    );
+    let out = run_marked_shell("bash", ".bashrc", &rc, "echo one\nexit");
+
+    // One prompt before `echo one`, one before `exit`.
+    assert_eq!(out.matches("\x1b]133;A").count(), 2, "{out:?}");
+    assert_eq!(out.matches("\x1b]133;C").count(), 2, "{out:?}");
+}
+
+fn assert_output_without_a_final_newline_stays_with_its_command(shell: &str, rc_file: &str) {
+    let out = run_marked_shell(
+        shell,
+        rc_file,
+        "PS1='$ '\n",
+        "echo first\nprintf 'tail-a\\ntail-b'\necho last\nexit",
+    );
+    let terminal = terminal_showing(&out);
+
+    let unterminated = command_output_at(&terminal, "tail-b").unwrap_or_default();
+    let lines: Vec<&str> = unterminated.lines().collect();
+    assert_eq!(lines.len(), 2, "{out:?}");
+    assert_eq!(lines[0], "tail-a", "{out:?}");
+    assert!(lines[1].starts_with("tail-b"), "{out:?}");
+    assert_eq!(
+        command_output_at(&terminal, "first").as_deref(),
+        Some("first"),
+        "{out:?}"
+    );
+    assert_eq!(
+        command_output_at(&terminal, "last").as_deref(),
+        Some("last"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn bash_output_without_a_final_newline_stays_with_its_command() {
+    if !installed("bash") {
+        return;
+    }
+    assert_output_without_a_final_newline_stays_with_its_command("bash", ".bashrc");
+}
+
+#[test]
+fn zsh_output_without_a_final_newline_stays_with_its_command() {
+    if !installed("zsh") {
+        return;
+    }
+    assert_output_without_a_final_newline_stays_with_its_command("zsh", ".zshrc");
+}
+
+#[test]
+fn zsh_marks_its_first_prompt() {
+    if !installed("zsh") {
+        return;
+    }
+    let out = run_marked_shell("zsh", ".zshrc", "PS1='$ '\n", "echo one\nexit");
+    let terminal = terminal_showing(&out);
+
+    // The first prompt, where `echo one` is typed, bounds its output from above.
+    assert_eq!(out.matches("\x1b]133;A").count(), 2, "{out:?}");
+    assert_eq!(
+        command_output_at(&terminal, "one").as_deref(),
+        Some("one"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn fish_marks_bound_the_output_of_each_command() {
+    if !installed("fish") {
+        return;
+    }
+    let out = run_marked_shell("fish", ".profile", "", "echo one\necho two\nexit");
+    let terminal = terminal_showing(&out);
+
+    assert_eq!(
+        command_output_at(&terminal, "one").as_deref(),
+        Some("one"),
+        "{out:?}"
+    );
+    assert_eq!(
+        command_output_at(&terminal, "two").as_deref(),
+        Some("two"),
+        "{out:?}"
+    );
+}

@@ -767,11 +767,18 @@ impl ClientShellState {
             } => {
                 let mut outcome = ClientShellInput::default();
                 let (repaint, continue_queue) = match result {
-                    Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
-                        pane_id: returned_pane_id,
-                        cursor,
-                        content_revision,
-                    }) if returned_pane_id == pane_id => (
+                    Ok(
+                        crate::api::schema::ResponseResult::PaneCopyMotion {
+                            pane_id: returned_pane_id,
+                            cursor,
+                            content_revision,
+                        }
+                        | crate::api::schema::ResponseResult::PanePromptMotion {
+                            pane_id: returned_pane_id,
+                            cursor,
+                            content_revision,
+                        },
+                    ) if returned_pane_id == pane_id => (
                         self.apply_copy_motion_target(
                             &pane_id,
                             origin,
@@ -781,10 +788,50 @@ impl ClientShellState {
                         ),
                         true,
                     ),
-                    Ok(crate::api::schema::ResponseResult::PaneCopyMotion { .. }) => (false, false),
+                    Ok(
+                        crate::api::schema::ResponseResult::PaneCopyMotion { .. }
+                        | crate::api::schema::ResponseResult::PanePromptMotion { .. },
+                    ) => (false, false),
                     Ok(_) => {
                         self.set_endpoint_error(
                             "endpoint returned an unexpected copy-motion result",
+                        );
+                        (true, false)
+                    }
+                    Err(_) => (true, false),
+                };
+                self.complete_copy_operation(session_generation, continue_queue, &mut outcome);
+                return (repaint || outcome.repaint, outcome.actions);
+            }
+            PendingEndpointKind::CopyCommandOutput {
+                pane_id,
+                origin,
+                session_generation,
+            } => {
+                let mut outcome = ClientShellInput::default();
+                let (repaint, continue_queue) = match result {
+                    Ok(crate::api::schema::ResponseResult::PaneCommandOutputRange {
+                        pane_id: returned_pane_id,
+                        range,
+                        content_revision,
+                    }) if returned_pane_id == pane_id => {
+                        let applied = self.apply_copy_command_output(
+                            &pane_id,
+                            origin,
+                            range,
+                            content_revision,
+                            &mut outcome,
+                        );
+                        // A copy key queued behind a range that did not apply
+                        // would copy nothing or a stale selection.
+                        (applied, applied)
+                    }
+                    Ok(crate::api::schema::ResponseResult::PaneCommandOutputRange { .. }) => {
+                        (false, false)
+                    }
+                    Ok(_) => {
+                        self.set_endpoint_error(
+                            "endpoint returned an unexpected command-output result",
                         );
                         (true, false)
                     }

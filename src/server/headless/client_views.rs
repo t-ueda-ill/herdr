@@ -263,6 +263,8 @@ impl HeadlessServer {
                 | Method::PaneReconnect(_)
                 | Method::PaneCopyMotion(_)
                 | Method::PaneCopySearch(_)
+                | Method::PanePromptMotion(_)
+                | Method::PaneCommandOutputRange(_)
                 | Method::PaneEditScrollback(_)
                 | Method::PaneOpenEditor(_)
                 | Method::PaneOpenFile(_)

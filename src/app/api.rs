@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 mod agent_declare;
 mod agent_view;
 mod agents;
+mod command_marks;
 mod directory;
 mod files;
 mod inherit;
@@ -1341,6 +1342,12 @@ impl App {
             }
             Method::PaneCopySearch(params) => {
                 return self.handle_pane_copy_search(request.id, params);
+            }
+            Method::PanePromptMotion(params) => {
+                return self.handle_pane_prompt_motion(request.id, params);
+            }
+            Method::PaneCommandOutputRange(params) => {
+                return self.handle_pane_command_output_range(request.id, params);
             }
             Method::PaneList(params) => return self.handle_pane_list(request.id, params),
             Method::PaneCurrent(params) => return self.handle_pane_current(request.id, params),
