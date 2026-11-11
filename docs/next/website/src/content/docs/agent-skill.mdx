@@ -33,7 +33,7 @@ herdr skill install
 
 Without targets, Herdr installs the copy bundled with the binary for every supported agent whose config directory exists: `claude` (`~/.claude/skills`), `agents` (`~/.agents/skills`, read by Codex, Pi, and other Agent Skills readers), `opencode`, `cursor`, `copilot`, and `gemini`. Name targets to install for an agent that is not set up yet, such as `herdr skill install claude agents`. Rerun the command after `herdr update` to refresh the skill, and check where it is installed with `herdr skill status`. `herdr skill uninstall` removes only the copies Herdr wrote; name a target to also remove a symlinked skill there.
 
-Herdr records which copies it installed. It does not overwrite a symlinked skill, a copy that another tool or you placed at the same path, or a copy edited after Herdr installed it. Pass `--force` to replace one. `herdr skill uninstall` never removes a copy Herdr did not install or one edited since.
+Herdr records which copies it installed. It does not overwrite a symlinked skill, a copy that another tool or you placed at the same path, or a copy changed after Herdr installed it. Pass `--force` to replace one. `herdr skill uninstall` never removes a copy Herdr did not install or one changed since.
 
 You can also install the skill with `npx skills`:
 

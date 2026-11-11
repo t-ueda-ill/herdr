@@ -576,7 +576,7 @@ herdr skill status
 herdr skill print
 ```
 
-Targets are `claude`, `agents`, `opencode`, `cursor`, `copilot`, and `gemini`. `agents` writes `~/.agents/skills`, which Codex, Pi, and other agents following the shared Agent Skills layout read. Without targets, `skill install` writes the release-matched skill for every agent whose config directory exists, and `skill uninstall` removes only copies Herdr wrote. Herdr records which copies it installed and leaves the rest in place: a symlinked skill, such as one from `npx skills add`, a copy Herdr did not install, and a copy edited after Herdr installed it. `skill install --force` replaces any of them; `skill uninstall` with a named target removes only the symlink. See [Agent skill file](./agent-skill/).
+Targets are `claude`, `agents`, `opencode`, `cursor`, `copilot`, and `gemini`. `agents` writes `~/.agents/skills`, which Codex, Pi, and other agents following the shared Agent Skills layout read. Without targets, `skill install` writes the release-matched skill for every agent whose config directory exists, and `skill uninstall` removes only copies Herdr wrote. Herdr records which copies it installed and leaves the rest in place: a symlinked skill, such as one from `npx skills add`, a copy Herdr did not install, and a copy changed after Herdr installed it. `skill install --force` replaces any of them; `skill uninstall` with a named target removes only the symlink. See [Agent skill file](./agent-skill/).
 
 ## Plugins
 
