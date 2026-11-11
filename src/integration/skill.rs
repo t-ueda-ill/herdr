@@ -154,7 +154,7 @@ pub(crate) fn skill_state_at(skill_dir: &Path, bundled: &str) -> io::Result<Skil
     };
     // Ownership before freshness: another installer can swap in the very
     // release Herdr would install next, and that copy is still not Herdr's.
-    if crate::checksum::file_sha256(&skill_file)? != installed_digest {
+    if crate::checksum::bytes_sha256(&content) != installed_digest {
         return Ok(SkillState::Modified);
     }
     Ok(if content == bundled.as_bytes() {
@@ -190,8 +190,7 @@ pub(crate) fn install_skill_at(
     replace_file(skill_dir, SKILL_FILE_NAME, bundled.as_bytes())?;
     // Marker last, so an interrupted install never claims a copy Herdr did
     // not finish writing.
-    let digest = crate::checksum::file_sha256(&skill_dir.join(SKILL_FILE_NAME))?;
-    replace_file(skill_dir, INSTALL_MARKER_NAME, digest.as_bytes())?;
+    write_install_marker(skill_dir, bundled.as_bytes())?;
 
     Ok(match state {
         SkillState::NotInstalled | SkillState::Linked => InstallOutcome::Installed,
@@ -237,6 +236,13 @@ fn read_install_marker(skill_dir: &Path) -> io::Result<Option<String>> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err),
     }
+}
+
+/// Records the digest of the bytes Herdr wrote. Hashing the file on disk
+/// instead would adopt whatever another installer put there after the rename.
+fn write_install_marker(skill_dir: &Path, installed: &[u8]) -> io::Result<()> {
+    let digest = crate::checksum::bytes_sha256(installed);
+    replace_file(skill_dir, INSTALL_MARKER_NAME, digest.as_bytes())
 }
 
 /// Writes `dir/file_name` through a staging file and a rename, so an agent
@@ -630,6 +636,26 @@ mod tests {
         let forced = install_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
         assert_eq!(forced, InstallOutcome::Updated);
         assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), BUNDLED);
+    }
+
+    #[test]
+    fn the_marker_records_what_herdr_wrote_not_what_is_on_disk() {
+        let temp = TempSkills::new();
+        // Another installer replaces the copy between Herdr's write and its
+        // marker.
+        temp.write_skill(FOREIGN);
+
+        write_install_marker(&temp.skill_dir(), BUNDLED.as_bytes()).unwrap();
+
+        assert_eq!(
+            skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            SkillState::Modified
+        );
+        assert_eq!(
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
+            UninstallOutcome::Refused(SkillState::Modified)
+        );
+        assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), FOREIGN);
     }
 
     #[test]
