@@ -125,12 +125,7 @@ fn uninstall(targets: Vec<SkillTarget>) -> std::io::Result<i32> {
     for target in targets {
         let skill_dir = skill_dir_in(&target.skills_dir()?);
         let path = skill_file_in(&skill_dir);
-        // A symlink usually comes from `npx skills add`; only drop it when the
-        // user names the target, so a blanket uninstall never undoes that tool.
-        if !explicit && skill_state_at(&skill_dir, HERDR_SKILL)? == SkillState::Linked {
-            continue;
-        }
-        match uninstall_skill_at(&skill_dir, HERDR_SKILL) {
+        match uninstall_skill_at(&skill_dir, HERDR_SKILL, explicit) {
             Ok(outcome) => {
                 let Some((ok, message)) =
                     describe_uninstall(target, &path.display().to_string(), outcome, explicit)
@@ -154,17 +149,25 @@ fn uninstall(targets: Vec<SkillTarget>) -> std::io::Result<i32> {
 }
 
 fn status() -> std::io::Result<i32> {
+    let mut exit_code = 0;
     for target in SkillTarget::ALL {
         let skill_dir = skill_dir_in(&target.skills_dir()?);
-        let state = skill_state_at(&skill_dir, HERDR_SKILL)?;
-        println!(
-            "{}: {} ({})",
-            target.label(),
-            describe_state(state),
-            skill_file_in(&skill_dir).display()
-        );
+        let path = skill_file_in(&skill_dir);
+        // One unreadable skill must not hide the state of the other targets.
+        match skill_state_at(&skill_dir, HERDR_SKILL) {
+            Ok(state) => println!(
+                "{}: {} ({})",
+                target.label(),
+                describe_state(state),
+                path.display()
+            ),
+            Err(err) => {
+                eprintln!("{}: {err} ({})", target.label(), path.display());
+                exit_code = 1;
+            }
+        }
     }
-    Ok(0)
+    Ok(exit_code)
 }
 
 fn describe_state(state: SkillState) -> &'static str {
@@ -173,7 +176,7 @@ fn describe_state(state: SkillState) -> &'static str {
         SkillState::Current => "current",
         SkillState::Outdated => "outdated",
         SkillState::Linked => "symlink",
-        SkillState::Modified => "edited since herdr installed it",
+        SkillState::Modified => "changed since herdr installed it",
         SkillState::Foreign => "not installed by herdr",
     }
 }
@@ -273,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edited_copy_is_described_as_edited() {
+    fn a_changed_copy_is_described_as_changed() {
         let (ok, message) = describe_install(
             SkillTarget::Agents,
             "p",
@@ -283,7 +286,7 @@ mod tests {
         assert!(!ok);
         assert_eq!(
             message,
-            "agents: kept p (edited since herdr installed it); rerun with --force to replace it"
+            "agents: kept p (changed since herdr installed it); rerun with --force to replace it"
         );
     }
 

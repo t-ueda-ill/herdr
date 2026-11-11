@@ -106,7 +106,7 @@ pub(crate) enum SkillState {
     Outdated,
     /// A symlink, usually from `npx skills add`; its target belongs to that tool.
     Linked,
-    /// A copy Herdr installed and someone edited afterwards.
+    /// A copy Herdr installed that was edited or replaced afterwards.
     Modified,
     /// A copy Herdr did not install, whatever its content.
     Foreign,
@@ -150,12 +150,15 @@ pub(crate) fn skill_state_at(skill_dir: &Path, bundled: &str) -> io::Result<Skil
     let Some(installed_digest) = read_install_marker(skill_dir)? else {
         return Ok(SkillState::Foreign);
     };
+    // Ownership before freshness: another installer can swap in the very
+    // release Herdr would install next, and that copy is still not Herdr's.
+    if crate::checksum::file_sha256(&skill_file)? != installed_digest {
+        return Ok(SkillState::Modified);
+    }
     Ok(if content == bundled {
         SkillState::Current
-    } else if crate::checksum::file_sha256(&skill_file)? == installed_digest {
-        SkillState::Outdated
     } else {
-        SkillState::Modified
+        SkillState::Outdated
     })
 }
 
@@ -187,9 +190,16 @@ pub(crate) fn install_skill_at(
     })
 }
 
-pub(crate) fn uninstall_skill_at(skill_dir: &Path, bundled: &str) -> io::Result<UninstallOutcome> {
+/// `remove_links` is off for a blanket uninstall: a symlink usually comes from
+/// `npx skills add`, and only naming the target should undo that tool's work.
+pub(crate) fn uninstall_skill_at(
+    skill_dir: &Path,
+    bundled: &str,
+    remove_links: bool,
+) -> io::Result<UninstallOutcome> {
     let state = skill_state_at(skill_dir, bundled)?;
     match state {
+        SkillState::Linked if !remove_links => Ok(UninstallOutcome::Refused(state)),
         SkillState::NotInstalled => {
             // A marker can outlive a SKILL.md the user deleted by hand.
             remove_file_if_exists(&skill_dir.join(INSTALL_MARKER_NAME))?;
@@ -468,7 +478,7 @@ mod tests {
             InstallOutcome::Refused(SkillState::Foreign)
         );
         assert_eq!(
-            uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
             UninstallOutcome::Refused(SkillState::Foreign)
         );
         assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), BUNDLED);
@@ -487,7 +497,7 @@ mod tests {
             SkillState::Current
         );
         assert_eq!(
-            uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
             UninstallOutcome::Removed
         );
     }
@@ -507,7 +517,7 @@ mod tests {
             InstallOutcome::Refused(SkillState::Modified)
         );
         assert_eq!(
-            uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
             UninstallOutcome::Refused(SkillState::Modified)
         );
         assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), EDITED);
@@ -517,6 +527,35 @@ mod tests {
         assert_eq!(
             skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
             SkillState::Current
+        );
+    }
+
+    #[test]
+    fn a_replacement_identical_to_the_bundle_is_not_herdr_owned() {
+        let temp = TempSkills::new();
+        install_skill_at(&temp.skill_dir(), OLDER, false).unwrap();
+        // Another installer swaps in the release Herdr would install next.
+        fs::write(temp.skill_file(), BUNDLED).unwrap();
+
+        assert_eq!(
+            skill_state_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            SkillState::Modified
+        );
+        assert_eq!(
+            install_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
+            InstallOutcome::Refused(SkillState::Modified)
+        );
+        assert_eq!(
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
+            UninstallOutcome::Refused(SkillState::Modified)
+        );
+        assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), BUNDLED);
+
+        let forced = install_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
+        assert_eq!(forced, InstallOutcome::Updated);
+        assert_eq!(
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
+            UninstallOutcome::Removed
         );
     }
 
@@ -531,7 +570,7 @@ mod tests {
             SkillState::NotInstalled
         );
         assert_eq!(
-            uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
             UninstallOutcome::NotInstalled
         );
         assert!(!temp.skill_dir().exists());
@@ -575,7 +614,7 @@ mod tests {
             SkillState::NotInstalled
         );
         assert_eq!(
-            uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap(),
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap(),
             UninstallOutcome::NotInstalled
         );
     }
@@ -585,7 +624,7 @@ mod tests {
         let temp = TempSkills::new();
         install_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap();
 
-        let outcome = uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap();
+        let outcome = uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap();
 
         assert_eq!(outcome, UninstallOutcome::Removed);
         assert!(!temp.skill_dir().exists());
@@ -597,7 +636,7 @@ mod tests {
         install_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap();
         fs::write(temp.skill_dir().join("notes.md"), "keep").unwrap();
 
-        uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap();
+        uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap();
 
         assert!(!temp.skill_file().exists());
         assert!(!temp.skill_dir().join(INSTALL_MARKER_NAME).exists());
@@ -609,7 +648,7 @@ mod tests {
         let temp = TempSkills::new();
         temp.write_skill(FOREIGN);
 
-        let outcome = uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap();
+        let outcome = uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap();
 
         assert_eq!(outcome, UninstallOutcome::Refused(SkillState::Foreign));
         assert_eq!(fs::read_to_string(temp.skill_file()).unwrap(), FOREIGN);
@@ -665,11 +704,23 @@ mod tests {
         }
 
         #[test]
+        fn uninstall_leaves_a_link_unless_asked_to_remove_links() {
+            let temp = TempSkills::new();
+            let shared = link_skill_dir(&temp);
+
+            let outcome = uninstall_skill_at(&temp.skill_dir(), BUNDLED, false).unwrap();
+
+            assert_eq!(outcome, UninstallOutcome::Refused(SkillState::Linked));
+            assert!(fs::symlink_metadata(temp.skill_dir()).is_ok());
+            assert!(shared.join(SKILL_FILE_NAME).exists());
+        }
+
+        #[test]
         fn uninstall_removes_only_the_link() {
             let temp = TempSkills::new();
             let shared = link_skill_dir(&temp);
 
-            let outcome = uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap();
+            let outcome = uninstall_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
 
             assert_eq!(outcome, UninstallOutcome::Unlinked);
             assert!(fs::symlink_metadata(temp.skill_dir()).is_err());
@@ -687,7 +738,7 @@ mod tests {
             std::os::unix::fs::symlink(&shared, temp.skill_dir()).unwrap();
 
             install_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
-            uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap();
+            uninstall_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap();
 
             assert!(fs::symlink_metadata(shared.join(SKILL_FILE_NAME))
                 .unwrap()
@@ -744,7 +795,7 @@ mod tests {
                 SkillState::Linked
             );
             assert_eq!(
-                uninstall_skill_at(&temp.skill_dir(), BUNDLED).unwrap(),
+                uninstall_skill_at(&temp.skill_dir(), BUNDLED, true).unwrap(),
                 UninstallOutcome::Unlinked
             );
             assert!(shared.exists());
