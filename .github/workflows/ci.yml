@@ -87,12 +87,19 @@ jobs:
           - os: windows-latest
             kind: windows
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Not 15: hosted macOS runners vary about 2.5x on identical caches, and a
+    # master run cut off after its tests passed saves no caches for later runs.
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+
+      # Job logs otherwise cannot tell a slower machine from a contended one.
+      - name: Report macOS runner hardware
+        if: runner.os == 'macOS'
+        run: sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
 
       - name: Install Rust
         if: matrix.kind == 'unix'
@@ -200,9 +207,11 @@ jobs:
         if: runner.os == 'Linux'
         run: CARGO_INCREMENTAL=1 just ci-tests '${{ matrix.nextest_filter }}'
 
-      - name: Run macOS checks
+      # Not `just ci`: clippy runs in the parallel lint-macos job, off this
+      # job's critical path.
+      - name: Run macOS tests
         if: runner.os == 'macOS'
-        run: CARGO_INCREMENTAL=1 just ci '${{ matrix.nextest_filter }}'
+        run: CARGO_INCREMENTAL=1 just ci-tests '${{ matrix.nextest_filter }}'
 
       - name: Check scalar libghostty with runtime safety
         if: runner.os == 'Linux'
@@ -240,6 +249,79 @@ jobs:
         with:
           path: .zig-cache
           key: zig-build-v1-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ github.run_id }}-${{ github.run_attempt }}
+
+  lint-macos:
+    name: lint (macos-latest)
+    # Not plain `needs`: a failed detection must not skip the checks. Pushes
+    # still run so master saves the caches keyed on the new Cargo.lock.
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.version_only != 'true') }}
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+          components: rustfmt,clippy
+
+      - name: Install Rust tools
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: just
+
+      # Restore only: the check job saves the Zig compiler and build caches.
+      - name: Restore Zig compiler
+        id: zig-compiler
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/herdr-zig-0.16.0
+          key: zig-compiler-v1-${{ runner.os }}-${{ runner.arch }}-0.16.0
+
+      - name: Install Zig
+        if: steps.zig-compiler.outputs.cache-hit != 'true'
+        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
+        with:
+          version: 0.16.0
+
+      # Zig's C-header cache keys include the compiler installation path.
+      - name: Stabilize Zig installation path
+        env:
+          ZIG_RESTORED: ${{ steps.zig-compiler.outputs.cache-hit }}
+        run: |
+          stable_zig="$RUNNER_TEMP/herdr-zig-0.16.0"
+          if [ "$ZIG_RESTORED" != "true" ]; then
+            mv "$(dirname "$(command -v zig)")" "$stable_zig"
+          fi
+          echo "$stable_zig" >> "$GITHUB_PATH"
+          echo "ZIG=$stable_zig/zig" >> "$GITHUB_ENV"
+
+      - name: Restore Zig build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .zig-cache
+          key: zig-build-v1-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            zig-build-v1-${{ runner.os }}-${{ runner.arch }}-0.16.0-
+
+      # rust-cache adds the job id to its key, so these check-only dependency
+      # artifacts never replace the check job's built ones.
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          cache-bin: false
+          key: macos-latest
+          save-if: ${{ env.SAVE_CACHES }}
+
+      # No incremental compiler state: restoring it costs 10-50s here and a
+      # clippy-only copy would add to the repository cache limit.
+      - name: Run macOS lint
+        run: just lint
 
   windows-conpty-package:
     name: Windows ConPTY package
