@@ -39,6 +39,12 @@ class Run:
 
 
 @dataclass(frozen=True)
+class Attempt:
+    run_id: int
+    number: int
+
+
+@dataclass(frozen=True)
 class Decision:
     rerun: bool
     reason: str
@@ -50,17 +56,22 @@ def never_got_a_runner(job: Job) -> bool:
     return not job.runner_id and any(NOT_ACQUIRED in text for text in job.annotations)
 
 
-def decide(run: Run, latest_run_id: int | None) -> Decision:
-    """`latest_run_id` is the newest run of the same workflow, branch and
-    event; `None` when there is none."""
+def decide(run: Run, latest: Attempt | None) -> Decision:
+    """`latest` is the current attempt of the newest run of the same workflow,
+    branch and event; `None` when there is none."""
     if run.conclusion != "failure":
         return Decision(False, f"the run concluded {run.conclusion}, not failure")
     if run.attempt >= MAX_RUN_ATTEMPTS:
         return Decision(False, f"attempt {run.attempt} is the last one allowed")
     # A re-run joins the run's concurrency group, where CI cancels whatever is
     # in progress; an outdated run must not cancel the one that replaced it.
-    if latest_run_id != run.id:
-        return Decision(False, f"run {latest_run_id} replaced this one")
+    # Not the run id alone: this event can arrive after someone re-ran the run
+    # by hand, and the re-run request always acts on the run's current attempt.
+    if latest is None:
+        return Decision(False, "no run is listed for this branch and event")
+    if latest != Attempt(run.id, run.attempt):
+        newer = f"attempt {latest.number} of run {latest.run_id}"
+        return Decision(False, f"{newer} replaced this attempt")
 
     unsuccessful = [
         job for job in run.jobs if job.conclusion not in PASSING_CONCLUSIONS
@@ -88,7 +99,7 @@ def annotations(repo: str, job_id: int) -> tuple[str, ...]:
     return tuple(entry.get("message") or "" for entry in entries)
 
 
-def fetch(repo: str, run_id: int, attempt: int) -> tuple[Run, int | None]:
+def fetch(repo: str, run_id: int, attempt: int) -> tuple[Run, Attempt | None]:
     path = f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}"
     meta = gh_api(path)
     pages = gh_api(
@@ -120,7 +131,8 @@ def fetch(repo: str, run_id: int, attempt: int) -> tuple[Run, int | None]:
         "per_page=1",
     )["workflow_runs"]
     run = Run(run_id, attempt, meta["conclusion"], tuple(jobs))
-    return run, latest[0]["id"] if latest else None
+    newest = Attempt(latest[0]["id"], latest[0]["run_attempt"]) if latest else None
+    return run, newest
 
 
 def main(argv: list[str]) -> int:
@@ -131,8 +143,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    run, latest_run_id = fetch(args.repo, args.run_id, args.run_attempt)
-    decision = decide(run, latest_run_id)
+    run, latest = fetch(args.repo, args.run_id, args.run_attempt)
+    decision = decide(run, latest)
     print(f"{'rerun' if decision.rerun else 'skip'}: {decision.reason}")
     if decision.rerun and not args.dry_run:
         gh_api(
