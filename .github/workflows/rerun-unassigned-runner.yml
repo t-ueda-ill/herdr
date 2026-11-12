@@ -1,0 +1,34 @@
+name: Rerun unassigned runner jobs
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+
+jobs:
+  rerun:
+    name: rerun jobs that never got a runner
+    # A cheap first filter; scripts/rerun_unassigned_runner.py decides.
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Not the failed run's commit: this job's token can re-run workflows, so
+      # it only ever executes the default branch's copy of the script.
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Re-run a run whose only failure is a job without a runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: python3 scripts/rerun_unassigned_runner.py --repo "$REPO" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT"
