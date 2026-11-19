@@ -56,6 +56,14 @@ fn shell_source(shell: &'static [&'static str], root: &Path) -> OffHostSource {
     OffHostSource::new(root.to_str().unwrap().to_owned(), Box::new(run))
 }
 
+/// Why none off Unix: the scripts only ever run in ssh and container
+/// environments, which a Windows server does not open, and it has no `sh`.
+#[cfg(not(unix))]
+fn shells() -> Vec<&'static [&'static str]> {
+    Vec::new()
+}
+
+#[cfg(unix)]
 fn shells() -> Vec<&'static [&'static str]> {
     let mut shells: Vec<&'static [&'static str]> = vec![&["/bin/sh"]];
     if Command::new("busybox")
