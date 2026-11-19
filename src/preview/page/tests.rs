@@ -35,6 +35,9 @@ fn viewer_pages_allow_only_herdr_scripts() {
         .unwrap();
     assert_eq!(script, "script-src http://127.0.0.1:4321/__herdr/assets/");
     assert!(policy.contains("object-src 'none'"));
+    // Other loopback services are http origins; images may only come from
+    // this preview, https, or inline data.
+    assert!(policy.contains("img-src 'self' https: data: blob:"));
     assert!(policy.contains("frame-src 'none'"));
     assert!(policy.contains("base-uri 'none'"));
 }

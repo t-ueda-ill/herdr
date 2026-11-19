@@ -117,11 +117,13 @@ pub(crate) fn viewer_page(relative: &str, format: Format) -> String {
 /// markup, and the file's own folder may hold scripts it would load.
 ///
 /// Why styles stay inline-capable: mermaid writes its diagrams' styles inline.
-/// Why images from anywhere: README badges and screenshots link off-site.
+/// Why https images: README badges and screenshots link off-site. Why not
+/// plain http: another service on this machine's loopback is an http origin,
+/// and a request to it must not carry anything from the preview.
 pub(crate) fn viewer_policy(host: &str) -> String {
     format!(
         "default-src 'self'; script-src http://{host}/__herdr/assets/; \
-         style-src 'self' 'unsafe-inline'; img-src * data: blob:; font-src 'self' data:; \
+         style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; font-src 'self' data:; \
          connect-src 'self'; media-src 'self'; object-src 'none'; frame-src 'none'; \
          base-uri 'none'; form-action 'none'"
     )

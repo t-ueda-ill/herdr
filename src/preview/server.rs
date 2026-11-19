@@ -322,22 +322,27 @@ fn respond(request: &Request, shared: &Shared) -> Response {
             return Response::redirect(301, format!("{prefix}/"));
         }
         Access::Token { path } => path,
-        // A page loaded this way would lose the token for its own links.
-        Access::Referred if route::is_navigation(request) => {
+        // Why move every referred request under the token, not only pages: a
+        // page loaded without it loses the token for its own links, and a
+        // stylesheet or module does for what it loads in turn.
+        Access::Referred => {
             let query = request
                 .query
                 .as_deref()
                 .map(|query| format!("?{query}"))
                 .unwrap_or_default();
             return Response::redirect(
-                303,
+                if route::is_navigation(request) {
+                    303
+                } else {
+                    307
+                },
                 format!(
                     "{prefix}{}{query}",
                     http::percent_encode_path(&request.path)
                 ),
             );
         }
-        Access::Referred => request.path.clone(),
     };
     let Ok(relative) = route::relative_path(&path) else {
         return Response::message(403, "Outside the preview", &path);

@@ -166,21 +166,27 @@ fn the_url_opens_the_entry_under_the_token_and_sets_no_cookie() {
 }
 
 #[test]
-fn a_root_absolute_link_from_a_preview_page_is_served_and_a_navigation_keeps_the_token() {
+fn a_root_absolute_link_from_a_preview_page_moves_under_the_token() {
     let preview = Preview::start(site());
     let referer = format!(
         "Referer: http://127.0.0.1:{}/{}/index.html\r\n",
         preview.port(),
         preview.token
     );
+    // Why a redirect and not the file: what the stylesheet loads in turn
+    // names it as the referrer, so its URL must keep the token too.
     let style = send(
         preview.port(),
         &format!(
-            "GET /index.html HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nSec-Fetch-Mode: no-cors\r\n{referer}\r\n",
+            "GET /style.css HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nSec-Fetch-Mode: no-cors\r\n{referer}\r\n",
             preview.port()
         ),
     );
-    assert_eq!(style.status, 200);
+    assert_eq!(style.status, 307);
+    assert_eq!(
+        style.header("location"),
+        Some(format!("/{}/style.css", preview.token).as_str())
+    );
     let page = send(
         preview.port(),
         &format!(

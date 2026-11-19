@@ -127,6 +127,11 @@
     parsed.content.querySelectorAll('meta, base').forEach(function (node) {
       node.remove();
     });
+    // The page's same-origin referrer policy keeps the token in its URL from
+    // reaching other origins; an element must not loosen it for itself.
+    parsed.content.querySelectorAll('[referrerpolicy]').forEach(function (node) {
+      node.removeAttribute('referrerpolicy');
+    });
     view.className = 'markdown-body';
     view.replaceChildren(parsed.content);
     view.querySelectorAll('pre > code').forEach(function (code) {
