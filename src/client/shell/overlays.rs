@@ -4,6 +4,7 @@ mod file_viewer_overlay;
 mod list_picker_overlay;
 pub(in crate::client::shell) mod menu_widget;
 mod open_picker_overlays;
+mod preview_overlays;
 mod settings_overlay;
 mod worktree_overlays;
 
@@ -28,6 +29,7 @@ pub(crate) struct OverlayRender {
     pub(crate) file_viewer_buttons: Vec<(Rect, FileViewerButton)>,
     pub(crate) file_viewer_scroll: usize,
     pub(crate) favorite: Rect,
+    pub(crate) secondary: Rect,
     pub(crate) favorite_marks: Vec<(Rect, usize)>,
     pub(crate) help_popup: Rect,
     pub(crate) help_filter: Rect,
@@ -98,6 +100,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::WorktreeRemove(v) => {
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
+        ClientShellOverlay::Previews(v) => preview_overlays::render_previews_overlay(b, v, p),
         ClientShellOverlay::OpenPicker(v) => {
             open_picker_overlays::render_open_picker_overlay(b, v, p)
         }

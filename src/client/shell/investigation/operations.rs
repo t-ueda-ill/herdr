@@ -187,6 +187,7 @@ impl ClientShellState {
                 }
             }
             EDIT_FILE => self.investigation_open_file(OpenFileMode::Editor, outcome),
+            PREVIEW_IN_BROWSER => self.investigation_preview(at_root, outcome),
             VIEW_FILE => self.investigation_open_file(OpenFileMode::Pager, outcome),
             COPY_FILES | CUT_FILES if tab.paths().is_empty() => {
                 tab.notice = "select a file or folder first".into();
@@ -590,5 +591,64 @@ impl ClientShellState {
             self.workbench.editor_opening = false;
             self.workbench.terminal_requested = false;
         }
+    }
+
+    /// Whether a preview URL opens on this machine: the server listens on
+    /// its own loopback, which a browser elsewhere cannot reach.
+    pub(in crate::client::shell) fn preview_opens_here(&self) -> bool {
+        self.active_endpoint_id.is_local()
+            && std::env::var_os(crate::remote::REMOTE_PREFERENCES_ENV_VAR).is_none()
+    }
+
+    /// Asks the server to serve the tree root and opens the answer's URL. The
+    /// row's file or folder is the first page; empty tree space opens the root.
+    pub(in crate::client::shell) fn investigation_preview(
+        &mut self,
+        at_root: bool,
+        outcome: &mut ClientShellInput,
+    ) {
+        outcome.repaint = true;
+        // Why refuse: the server listens on its own loopback, which a browser
+        // on another machine cannot reach.
+        if !self.preview_opens_here() {
+            if let Some(tab) = self.investigation_mut() {
+                tab.notice = super::PREVIEW_ELSEWHERE.into();
+            }
+            return;
+        }
+        let Some(tab) = self.investigation() else {
+            return;
+        };
+        let Some(root) = tab.browser.root.clone() else {
+            return;
+        };
+        let entry = if at_root {
+            None
+        } else {
+            tab.paths().first().cloned()
+        };
+        let id = tab.id;
+        let pane_id = if tab.browser.location.is_some() {
+            match self.file_viewer_send_target() {
+                Ok(pane_id) => Some(pane_id),
+                Err(notice) => {
+                    if let Some(tab) = self.investigation_mut() {
+                        tab.notice = notice;
+                    }
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        self.push_endpoint_method_with_kind(
+            Method::PreviewStart(PreviewStartParams {
+                pane_id,
+                root,
+                entry,
+            }),
+            PendingEndpointKind::Investigation(FileRequest::Preview { id }),
+            outcome,
+        );
     }
 }

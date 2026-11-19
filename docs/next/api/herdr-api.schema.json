@@ -4717,6 +4717,43 @@
             }
           ]
         },
+        "PreviewStartParams": {
+          "description": "Without `pane_id`, or with a pane whose shell runs on this host, the folder\nis on the server's filesystem; with an ssh or container pane it is read in\nthat pane's environment.",
+          "properties": {
+            "entry": {
+              "description": "Absolute path under `root` the returned URL opens. Defaults to the root,\nwhich serves its `index.html`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "root": {
+              "description": "Absolute folder served as the site root. Starting the same folder in the\nsame place again returns the running preview.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "root"
+          ],
+          "type": "object"
+        },
+        "PreviewStopParams": {
+          "properties": {
+            "preview_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "preview_id"
+          ],
+          "type": "object"
+        },
         "ProductAnnouncementDismissParams": {
           "properties": {
             "id": {
@@ -7923,6 +7960,54 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneDeclareAgentParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "preview.start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PreviewStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "preview.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "preview.stop",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PreviewStopParams"
             }
           },
           "required": [
@@ -11608,6 +11693,44 @@
             }
           ]
         },
+        "PreviewInfo": {
+          "properties": {
+            "location": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/PaneLocation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Absent for the server's own filesystem."
+            },
+            "port": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "preview_id": {
+              "type": "string"
+            },
+            "root": {
+              "type": "string"
+            },
+            "url": {
+              "description": "Loopback URL that signs a browser in and opens the entry. It carries\nthe session token, so treat it as a secret.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "preview_id",
+            "root",
+            "port",
+            "url"
+          ],
+          "type": "object"
+        },
         "ReadFormat": {
           "enum": [
             "text",
@@ -13293,6 +13416,57 @@
               },
               "required": [
                 "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "preview": {
+                  "$ref": "#/schemas/success_response/$defs/PreviewInfo"
+                },
+                "type": {
+                  "const": "preview_started",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "preview"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "previews": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/PreviewInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "preview_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "previews"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "preview_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "preview_stopped",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "preview_id"
               ],
               "type": "object"
             }

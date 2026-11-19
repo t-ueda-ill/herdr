@@ -1540,6 +1540,9 @@ impl ClientShellState {
         if self.route_popup_menu_mouse(mouse.kind, point, outcome) {
             return;
         }
+        if self.route_previews_mouse(mouse.kind, point, outcome) {
+            return;
+        }
         if matches!(
             self.overlay,
             Some(

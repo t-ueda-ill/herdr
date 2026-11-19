@@ -104,7 +104,7 @@ Raw socket method names use dot notation:
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Container | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH hosts | `ssh.open`, `ssh.hosts` |
-| Files | `directory.list`, `directory.index`, `files.stat`, `pane.open_editor`, `pane.open_file`, `pane.directory.list`, `pane.directory.index`, `pane.directory.open_editor`, `pane.directory.open_file`, `pane.file.read`, `pane.file.stat`, `pane.upload.begin`, `pane.upload.write`, `pane.upload.finish`, `pane.upload.cancel`, `pane.download.begin`, `pane.download.read`, `pane.download.cancel` |
+| Files | `directory.list`, `directory.index`, `files.stat`, `pane.open_editor`, `pane.open_file`, `pane.directory.list`, `pane.directory.index`, `pane.directory.open_editor`, `pane.directory.open_file`, `pane.file.read`, `pane.file.stat`, `pane.upload.begin`, `pane.upload.write`, `pane.upload.finish`, `pane.upload.cancel`, `pane.download.begin`, `pane.download.read`, `pane.download.cancel`, `preview.start`, `preview.list`, `preview.stop` |
 | Tab | `tab.create`, `tab.create_inherit`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
 | Pane | `pane.split`, `pane.split_inherit`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.declare_agent`, `pane.close`, `pane.reconnect`, `pane.wait_for_output` |
 | Popup | `popup.close` |
@@ -654,6 +654,27 @@ Shell-mode TUI clients send these requests as `endpoint.upload.request.v1` endpo
 | `platform_unsupported` | a container or SSH source on a Windows server |
 
 Shell-mode TUI clients send these requests as `endpoint.download.request.v1` endpoint controls, with answers in `endpoint.download.response.v1`, and use them only when the server advertises all three methods and the `pane_download_control` capability. Without them the `download…` menu item says `this server cannot send files; update Herdr there`.
+
+### Previews
+
+`preview.start`, `preview.list`, and `preview.stop` serve a folder to a browser on the server's loopback with live reload; `herdr preview` and `preview in browser` in the file workbench use them.
+
+```json
+{ "id": "p1", "method": "preview.start", "params": { "pane_id": "w1:p2", "root": "/srv/site", "entry": "/srv/site/docs/README.md" } }
+```
+
+`start` takes an optional `pane_id`; without it, or for a pane whose shell runs on the server host, `root` is on the server's filesystem, and for a container or SSH pane it is read in that pane's environment. `root` is absolute; `entry` is an optional absolute path under it. It answers `preview_started` with `preview`: `preview_id`, `root`, `location` (absent for the server host), `port`, and `url`. The URL carries a session token in its path, so treat it as a secret. Starting the same root in the same place again answers with the running preview. `list` answers `preview_list` with `previews`; their `url` opens the root. `stop` takes `preview_id` and answers `preview_stopped`.
+
+| Code | Meaning |
+| --- | --- |
+| `invalid_params` | `root` is not absolute, contains `..`, or is not a folder on the server host, or `entry` is not under `root` |
+| `not_found` | `root` does not exist on the server host |
+| `pane_not_found`, `pane_not_live` | the pane is unknown or has no running shell |
+| `preview_not_found` | no running preview has that id |
+| `preview_failed` | the server could not listen on loopback |
+| `platform_unsupported` | a container or SSH pane on a Windows server |
+
+Read failures in a container or over SSH show in the browser as the page, not as API errors.
 
 ## Agent view queries
 

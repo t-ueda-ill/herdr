@@ -818,6 +818,7 @@ impl ClientShellState {
                 self.hits.file_viewer_buttons = rendered.file_viewer_buttons;
                 self.hits.file_viewer_scroll = rendered.file_viewer_scroll;
                 self.hits.overlay_favorite = rendered.favorite;
+                self.hits.overlay_secondary = rendered.secondary;
                 self.hits.open_picker_favorites = rendered.favorite_marks;
                 self.hits.help_popup = rendered.help_popup;
                 self.hits.help_filter = rendered.help_filter;

@@ -361,6 +361,15 @@ pub enum ResponseResult {
     PaneUploadFinished(super::pane_upload::PaneUploadFinished),
     PaneDownloadStarted(super::pane_download::PaneDownloadStarted),
     PaneDownloadChunk(super::pane_download::PaneDownloadChunk),
+    PreviewStarted {
+        preview: super::preview::PreviewInfo,
+    },
+    PreviewList {
+        previews: Vec<super::preview::PreviewInfo>,
+    },
+    PreviewStopped {
+        preview_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

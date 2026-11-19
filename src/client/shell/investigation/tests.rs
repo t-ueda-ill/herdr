@@ -2701,6 +2701,97 @@ mod offhost {
             )
         );
     }
+
+    fn preview_info(port: u16) -> crate::api::schema::PreviewInfo {
+        crate::api::schema::PreviewInfo {
+            preview_id: "preview-1".into(),
+            root: "/work".into(),
+            location: None,
+            port,
+            url: format!("http://127.0.0.1:{port}/t/a.txt"),
+        }
+    }
+
+    #[test]
+    fn preview_in_an_off_host_tab_reads_through_the_focused_pane_of_its_location() {
+        let mut state = offhost_state();
+        with_selected_file(&mut state);
+        let mut outcome = ClientShellInput::default();
+
+        state.investigation_menu_action(PREVIEW_IN_BROWSER, &mut outcome);
+
+        let sent = requests(&outcome);
+        assert_eq!(
+            sent.iter()
+                .map(|(_, method)| method.clone())
+                .collect::<Vec<_>>(),
+            vec![Method::PreviewStart(
+                crate::api::schema::PreviewStartParams {
+                    pane_id: Some("pane_1".into()),
+                    root: "/work".into(),
+                    entry: Some("/work/a.txt".into()),
+                }
+            )]
+        );
+        let (_, actions) = state.handle_endpoint_result(
+            "boot-1",
+            &sent[0].0,
+            Ok(ResponseResult::PreviewStarted {
+                preview: preview_info(40123),
+            }),
+        );
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            ClientShellAction::OpenSafeWebUrl(url)
+                if url == "http://127.0.0.1:40123/t/a.txt"
+        )));
+        assert_eq!(
+            state.investigation().unwrap().notice,
+            "preview at http://127.0.0.1:40123"
+        );
+    }
+
+    #[test]
+    fn preview_from_empty_tree_space_opens_the_root() {
+        let mut state = offhost_state();
+        with_selected_file(&mut state);
+        state.investigation_mut().unwrap().dialog =
+            Some(Dialog::menu(MenuTarget::Tree, MenuPlacement::Selection));
+        let mut outcome = ClientShellInput::default();
+
+        state.investigation_menu_action(PREVIEW_IN_BROWSER, &mut outcome);
+
+        assert!(matches!(
+            &requests(&outcome)[..],
+            [(_, Method::PreviewStart(params))] if params.entry.is_none() && params.root == "/work"
+        ));
+    }
+
+    #[test]
+    fn a_failed_preview_says_why_and_opens_nothing() {
+        let mut state = offhost_state();
+        with_selected_file(&mut state);
+        let mut outcome = ClientShellInput::default();
+        state.investigation_menu_action(PREVIEW_IN_BROWSER, &mut outcome);
+        let id = requests(&outcome)[0].0.clone();
+
+        let (_, actions) = state.handle_endpoint_result(
+            "boot-1",
+            &id,
+            Err(ClientShellEndpointError {
+                code: Some("invalid_params".into()),
+                message: "/elsewhere is not under /work".into(),
+            }),
+        );
+
+        assert!(!actions
+            .iter()
+            .any(|action| matches!(action, ClientShellAction::OpenSafeWebUrl(_))));
+        assert_eq!(
+            state.investigation().unwrap().notice,
+            "/elsewhere is not under /work"
+        );
+    }
 }
 
 // ---- saving selected entries on this machine (download design §5) ----
@@ -6152,3 +6243,42 @@ mod details {
 }
 
 mod keyboard;
+
+#[test]
+fn preview_in_a_host_tab_serves_its_root_without_a_pane() {
+    let mut state = state();
+    let mut outcome = ClientShellInput::default();
+
+    state.investigation_menu_action(PREVIEW_IN_BROWSER, &mut outcome);
+
+    assert_eq!(
+        sent_methods(&outcome),
+        vec![crate::api::schema::Method::PreviewStart(
+            crate::api::schema::PreviewStartParams {
+                pane_id: None,
+                root: "/repo".into(),
+                entry: Some("/repo/a.txt".into()),
+            }
+        )]
+    );
+}
+
+#[test]
+fn preview_menus_offer_the_item_on_files_folders_tree_and_details() {
+    for target in [
+        MenuTarget::File,
+        MenuTarget::Directory,
+        MenuTarget::Tree,
+        MenuTarget::Details,
+    ] {
+        assert!(
+            target
+                .labels(false, FilesPresentation::Split, FilesDock::Left)
+                .contains(&PREVIEW_IN_BROWSER),
+            "{target:?}"
+        );
+    }
+    assert!(MenuTarget::File
+        .labels(true, FilesPresentation::Full, FilesDock::Right)
+        .contains(&PREVIEW_IN_BROWSER));
+}

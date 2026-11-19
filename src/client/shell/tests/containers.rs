@@ -303,7 +303,7 @@ fn container_picker_on_a_server_without_container_list_only_disables_the_action(
 }
 
 #[test]
-fn global_menu_ends_with_files_container_ssh_host_and_detach() {
+fn global_menu_ends_with_files_container_ssh_host_previews_and_detach() {
     let snapshot = snapshot();
     let labels: Vec<&str> = super::super::global_menu::global_menu_items(&snapshot)
         .into_iter()
@@ -311,7 +311,13 @@ fn global_menu_ends_with_files_container_ssh_host_and_detach() {
         .collect();
 
     assert!(
-        labels.ends_with(&["open files", "open container", "open ssh host", "detach"]),
+        labels.ends_with(&[
+            "open files",
+            "open container",
+            "open ssh host",
+            "previews",
+            "detach"
+        ]),
         "{labels:?}"
     );
     // Both entries list ssh hosts first; only the container one falls back

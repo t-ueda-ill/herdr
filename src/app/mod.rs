@@ -137,6 +137,7 @@ pub struct App {
     pub(crate) worktree_read_slots: std::sync::Arc<tokio::sync::Semaphore>,
     pub(crate) file_service: std::sync::Arc<api::FileService>,
     pub(crate) directory_read_slots: std::sync::Arc<tokio::sync::Semaphore>,
+    pub(crate) previews: crate::preview::registry::PreviewRegistry,
     pub(crate) upload_sessions: crate::upload::registry::UploadRegistry,
     pub(crate) download_sessions: crate::download::DownloadRegistry,
     pub(crate) pending_api_worktree_removes: HashMap<String, u64>,
@@ -653,6 +654,7 @@ impl App {
             directory_read_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(
                 api::DIRECTORY_READ_SLOTS,
             )),
+            previews: crate::preview::registry::PreviewRegistry::default(),
             upload_sessions: crate::upload::registry::UploadRegistry::default(),
             download_sessions: crate::download::DownloadRegistry::default(),
             pending_api_worktree_removes: HashMap::new(),

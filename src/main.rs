@@ -39,6 +39,7 @@ mod metadata_tokens;
 mod noninteractive_process;
 mod offhost;
 mod pane;
+mod preview;
 use ghostty_vt::pane_graphics_files;
 mod persist;
 mod platform;

@@ -430,6 +430,20 @@ mod tests {
         }
         assert_eq!(download_actual, download, "download method shapes");
 
+        let preview: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-method-shapes-preview.json"
+        )))
+        .expect("preview endpoint method shape fixture");
+        let mut preview_actual = BTreeMap::new();
+        for method in ["preview.list", "preview.start", "preview.stop"] {
+            preview_actual.insert(
+                method.to_owned(),
+                actual.remove(method).expect("preview method"),
+            );
+        }
+        assert_eq!(preview_actual, preview, "preview method shapes");
+
         let command_marks: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/endpoint-method-shapes-command-marks.json"

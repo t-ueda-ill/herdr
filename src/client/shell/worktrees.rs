@@ -546,7 +546,9 @@ impl ClientShellState {
                 | PendingEndpointKind::PaneLinkResolve { .. }
                 | PendingEndpointKind::CopyMotion { .. }
                 | PendingEndpointKind::CopySearch { .. }
-                | PendingEndpointKind::CopyCommandOutput { .. },
+                | PendingEndpointKind::CopyCommandOutput { .. }
+                | PendingEndpointKind::PreviewList
+                | PendingEndpointKind::PreviewStop { .. },
                 Err(_),
             ) => true,
         }

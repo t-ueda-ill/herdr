@@ -447,6 +447,7 @@ impl ClientShellState {
 
     pub(super) fn insert_overlay_text(&mut self, text: &str) -> bool {
         if self.insert_worktree_overlay_text(text)
+            || self.insert_previews_overlay_text(text)
             || self.insert_open_picker_overlay_text(text)
             || self.insert_file_viewer_overlay_text(text)
         {
@@ -585,6 +586,7 @@ impl ClientShellState {
         // lookup finds that tab's tree, which must not take another
         // overlay's keys.
         if self.route_worktree_overlay_key(key, outcome)
+            || self.route_previews_overlay_key(key, outcome)
             || self.route_open_picker_overlay_key(key, outcome)
             || matches!(self.overlay, Some(ClientShellOverlay::FileViewer(_)))
                 && self.route_file_viewer_overlay_key(key, outcome)

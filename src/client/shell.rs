@@ -35,6 +35,7 @@ mod open_picker_memory;
 mod overlay_input;
 mod popup_menu;
 mod preferences;
+mod previews;
 mod render;
 mod scroll;
 mod settings;

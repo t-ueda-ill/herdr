@@ -439,6 +439,24 @@ In the TUI, choose `open ssh host` from the global menu or `ssh host…` under t
 
 Clipboard images pasted into an SSH pane are copied over the pane's own SSH connection, so they require SSH connection sharing (ControlMaster); without it, the paste is rejected with a notice.
 
+## Previews
+
+```bash
+herdr preview start ROOT [--entry PATH] [--pane PANE] [--open] [--json]
+herdr preview list [--json]
+herdr preview stop PREVIEW_ID [--json]
+```
+
+`preview start` serves the folder `ROOT` to a browser on this machine, like a live server: the Herdr server listens on a random `127.0.0.1` port, and an open page reloads when a file under `ROOT` is added, removed, or written. It prints the preview id and a URL; `--open` also opens the URL in the default browser. The URL carries a session token as its first path segment (`http://127.0.0.1:PORT/TOKEN/...`), so treat it as a secret. Herdr sets no cookie, because a browser sends loopback cookies to every port of `127.0.0.1`. A root-absolute link such as `/style.css` on a preview page is redirected under the token, because the browser names that page as its referrer; responses carry `Referrer-Policy: same-origin`, so the token never leaves the preview. Requests without the token, or with a `Host` other than `127.0.0.1`, `localhost`, or `[::1]` on that port, are refused. `--entry` names the file or folder the URL opens (default `ROOT`); a folder serves its `index.html`. On this host, relative paths resolve against the current directory.
+
+With `--pane PANE` whose shell runs in a container or over SSH, `ROOT` and `--entry` are absolute paths there, and every file is read in that environment with POSIX `sh`, like the off-host file workbench; nothing needs to be installed there. A link that leads outside `ROOT` is refused. Starting the same `ROOT` in the same place again returns the running preview.
+
+Opened as a page, Markdown, Mermaid (`.mmd`), CSV, TSV, JSON, YAML, TOML, and common source files are rendered by Herdr's viewer: Markdown with tables, task lists, footnotes, heading anchors, highlighted code, and `mermaid` blocks as diagrams. The viewer page runs only Herdr's own scripts, so script tags and inline handlers inside a Markdown file never run, `<meta>` tags and `referrerpolicy` attributes in it are dropped so it can neither move to another page nor send the token elsewhere, and its images load only from the preview, `https:`, or `data:`; HTML files run their own scripts as usual. HTML, images, PDF, audio, and video are served as they are, with byte ranges for media. Add `?herdr-raw=1` to a URL to get the file's bytes.
+
+`preview list` prints a table with `id`, `port`, `place`, and `root`. `preview stop` stops the server of that preview; previews also end when the Herdr server stops. Change checks run only while a page is open and look only at the files the browser has asked for, including ones that were not found yet, up to 500: every 0.5 seconds on this host, every second in a container or over SSH. Other files under `ROOT`, such as build output, never trigger a reload.
+
+In the TUI, `preview in browser` in the file workbench menus starts a preview of the tree root and opens the chosen file or folder (the root from empty tree space). It is available only when the Herdr server runs on the same machine as the TUI; with a remote server it says `preview needs the herdr server on this machine`. `previews` in the global menu lists the running previews with their place and address: Enter or a click on `↵ open` opens the selected one in the browser, and Delete or `del stop` stops it. `/` filters by root, place, or port.
+
 ## Agents
 
 For the pane-versus-agent model and complete orchestration examples, see [Agent automation](/docs/agent-automation/).
