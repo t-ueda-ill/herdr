@@ -181,8 +181,9 @@ esac
 /// `enoent`, or `sum` and the checksum of each existing path's change time,
 /// size and name; a missing path simply leaves its line out.
 ///
-/// Why `stat -c` with a fallback: GNU and BusyBox give sub-second times that
-/// way; elsewhere `ls -ln` still notices size changes and minute changes.
+/// Why `stat -c`, then `stat -f`, then a listing: GNU and BusyBox give
+/// sub-second times with `-c`, BSD and macOS with `-f '%Fm'`; elsewhere
+/// `ls -ln` still notices size changes and minute changes.
 /// Why `-L`: a served link shows its target, so the target is what changes.
 pub(crate) const FINGERPRINT_SCRIPT: &str = r#"
 printf 'HERDR-PREVIEW-1\0'
@@ -191,6 +192,8 @@ shift
 printf 'sum\0'
 if stat -c '%y' . >/dev/null 2>&1; then
   stat -L -c '%y %s %n' -- "$@" 2>/dev/null
+elif stat -f '%Fm' . >/dev/null 2>&1; then
+  stat -L -f '%Fm %z %N' -- "$@" 2>/dev/null
 else
   ls -lnL -- "$@" 2>/dev/null
 fi | cksum

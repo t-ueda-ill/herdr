@@ -147,8 +147,17 @@ pub(super) fn run_preview_command(args: &[String]) -> std::io::Result<i32> {
         Err(ParseError::Clap(error)) => return super::print_clap_error(&error),
     };
     let response = super::send_request(&parsed.request)?;
+    // Why before choosing the printer: `--open` is its own request and must
+    // not depend on whether the answer is printed as JSON or as text.
+    let opened = match started_url(&response).filter(|_| parsed.open) {
+        Some(url) => crate::platform::open_url(&url).map(|_| ()).map_err(|err| {
+            eprintln!("could not open the browser: {err}");
+        }),
+        None => Ok(()),
+    };
     if parsed.json || response.get("error").is_some() {
-        return super::print_response(&response);
+        let code = super::print_response(&response)?;
+        return Ok(if opened.is_err() { 1 } else { code });
     }
     let result = serde_json::from_value::<SuccessResponse>(response.clone())
         .map_err(std::io::Error::other)?
@@ -156,18 +165,26 @@ pub(super) fn run_preview_command(args: &[String]) -> std::io::Result<i32> {
     match result {
         ResponseResult::PreviewStarted { preview } => {
             println!("{}  {}", preview.preview_id, preview.url);
-            if parsed.open {
-                if let Err(err) = crate::platform::open_url(&preview.url) {
-                    eprintln!("could not open the browser: {err}");
-                    return Ok(1);
-                }
-            }
         }
         ResponseResult::PreviewList { previews } => print!("{}", format_previews(&previews)),
         ResponseResult::PreviewStopped { preview_id } => println!("stopped {preview_id}"),
         _ => return super::print_response(&response),
     }
+    if opened.is_err() {
+        return Ok(1);
+    }
     Ok(0)
+}
+
+/// The URL of a successful `preview.start` answer.
+fn started_url(response: &serde_json::Value) -> Option<String> {
+    match serde_json::from_value::<SuccessResponse>(response.clone())
+        .ok()?
+        .result
+    {
+        ResponseResult::PreviewStarted { preview } => Some(preview.url),
+        _ => None,
+    }
 }
 
 fn place(preview: &PreviewInfo) -> String {

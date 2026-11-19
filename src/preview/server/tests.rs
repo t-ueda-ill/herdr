@@ -450,6 +450,44 @@ fn open_events(preview: &Preview, timeout: Duration) -> BufReader<TcpStream> {
 }
 
 #[test]
+fn a_watcher_that_cannot_start_leaves_no_listener_behind() {
+    let root = site();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    crate::thread_spawn::test_hook::fail_spawns_after(1, 1);
+    let started = PreviewServer::start_on(
+        listener,
+        Box::new(LocalSource::new(root.path()).unwrap()),
+        Duration::from_millis(100),
+    );
+    assert!(started.is_err());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        assert!(Instant::now() < deadline, "the accept thread still listens");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_folder_redirect_does_not_watch_the_folder_itself() {
+    let root = site();
+    let unrelated = root.path().join("docs/unloaded.txt");
+    let preview = Preview::start(root);
+    assert_eq!(preview.get("/index.html", "").status, 200);
+    assert_eq!(preview.get("/docs", "").status, 301);
+    let mut reader = open_events(&preview, Duration::from_millis(1800));
+    std::thread::sleep(Duration::from_millis(400));
+    std::fs::write(&unrelated, b"never requested").unwrap();
+    let mut received = String::new();
+    let mut line = String::new();
+    while reader.read_line(&mut line).is_ok_and(|read| read > 0) {
+        received.push_str(&line);
+        line.clear();
+    }
+    assert!(!received.contains("data: reload"), "{received}");
+}
+
+#[test]
 fn a_stopped_preview_refuses_new_connections() {
     let preview = Preview::start(site());
     let port = preview.port();

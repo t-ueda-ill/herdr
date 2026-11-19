@@ -39,6 +39,14 @@ struct Shared {
 }
 
 impl Shared {
+    /// Drops a path that turned out to be a folder: its own metadata changes
+    /// with every file added inside, which the page never loaded.
+    fn forget(&self, path: &str) {
+        if let Ok(mut served) = self.served.lock() {
+            served.retain(|known| known != path);
+        }
+    }
+
     fn remember(&self, path: &str) {
         let Ok(mut served) = self.served.lock() else {
             return;
@@ -58,26 +66,40 @@ pub(crate) struct PreviewServer {
 impl PreviewServer {
     pub(crate) fn start(source: Box<dyn FileSource>, watch_every: Duration) -> io::Result<Self> {
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+        Self::start_on(listener, source, watch_every)
+    }
+
+    /// Serves on a listener the caller bound.
+    pub(crate) fn start_on(
+        listener: TcpListener,
+        source: Box<dyn FileSource>,
+        watch_every: Duration,
+    ) -> io::Result<Self> {
         let port = listener.local_addr()?.port();
-        let shared = Arc::new(Shared {
-            source,
-            port,
-            token: new_token(),
-            watch_every,
-            generation: Mutex::new(0),
-            changed: Condvar::new(),
-            stopping: AtomicBool::new(false),
-            connections: AtomicUsize::new(0),
-            listeners: AtomicUsize::new(0),
-            served: Mutex::new(Vec::new()),
-        });
-        let accept = Arc::clone(&shared);
+        // Why own the server before any thread starts: if a later spawn
+        // fails, dropping it stops and wakes the threads already running,
+        // instead of leaving a listener nothing can stop.
+        let server = Self {
+            shared: Arc::new(Shared {
+                source,
+                port,
+                token: new_token(),
+                watch_every,
+                generation: Mutex::new(0),
+                changed: Condvar::new(),
+                stopping: AtomicBool::new(false),
+                connections: AtomicUsize::new(0),
+                listeners: AtomicUsize::new(0),
+                served: Mutex::new(Vec::new()),
+            }),
+        };
+        let accept = Arc::clone(&server.shared);
         crate::thread_spawn::spawn_named("herdr-preview-accept", move || {
             accept_loop(&listener, &accept);
         })?;
-        let watch = Arc::clone(&shared);
+        let watch = Arc::clone(&server.shared);
         crate::thread_spawn::spawn_named("herdr-preview-watch", move || watch_loop(&watch))?;
-        Ok(Self { shared })
+        Ok(server)
     }
 
     pub(crate) fn port(&self) -> u16 {
@@ -366,7 +388,7 @@ fn respond(request: &Request, shared: &Shared) -> Response {
                         .push(("Content-Security-Policy", page::viewer_policy(host)));
                     response
                 }
-                Err(error) => read_failure(error, &location, &file, page),
+                Err(error) => read_failure(shared, error, &location, &file, page),
             };
         }
     }
@@ -376,7 +398,7 @@ fn respond(request: &Request, shared: &Shared) -> Response {
     if let Some(range_header) = range_header {
         let size = match shared.source.read(&file, Window::Probe) {
             Ok(probe) => probe.size,
-            Err(error) => return read_failure(error, &location, &file, page),
+            Err(error) => return read_failure(shared, error, &location, &file, page),
         };
         return match http::parse_range(Some(range_header), size) {
             ByteRange::Unsatisfiable => {
@@ -407,7 +429,7 @@ fn respond(request: &Request, shared: &Shared) -> Response {
                         response.headers.push(("Accept-Ranges", "bytes".into()));
                         response
                     }
-                    Err(error) => read_failure(error, &location, &file, page),
+                    Err(error) => read_failure(shared, error, &location, &file, page),
                 }
             }
         };
@@ -435,7 +457,7 @@ fn whole_file(
             response.headers.push(("Accept-Ranges", "bytes".into()));
             response
         }
-        Err(error) => read_failure(error, location, file, page),
+        Err(error) => read_failure(shared, error, location, file, page),
     }
 }
 
@@ -446,7 +468,16 @@ struct Location {
     path: String,
 }
 
-fn read_failure(error: ReadError, location: &Location, file: &str, page: bool) -> Response {
+fn read_failure(
+    shared: &Shared,
+    error: ReadError,
+    location: &Location,
+    file: &str,
+    page: bool,
+) -> Response {
+    if error == ReadError::Directory {
+        shared.forget(file);
+    }
     match error {
         ReadError::Directory if !location.path.ends_with('/') => Response::redirect(
             301,

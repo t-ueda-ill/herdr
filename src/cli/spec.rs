@@ -50,7 +50,8 @@ pub(super) fn command() -> Command {
         .subcommand(session_command())
         .subcommand(integration_command())
         .subcommand(skill_command())
-        .subcommand(plugin_command());
+        .subcommand(plugin_command())
+        .subcommand(preview_command());
     configure_help(command, 0)
 }
 
@@ -363,6 +364,10 @@ fn plugin_command() -> Command {
     super::plugin::command()
 }
 
+fn preview_command() -> Command {
+    super::preview::command()
+}
+
 fn integration_target_arg() -> Arg {
     Arg::new("target")
         .value_name("TARGET")
@@ -487,6 +492,22 @@ mod tests {
     fn spec_describes_all_completion_commands() {
         let cmd = super::command();
         assert_command_descriptions(&cmd, &mut Vec::new());
+    }
+
+    #[test]
+    fn spec_offers_preview_commands_for_completion() {
+        let cmd = super::command();
+        let start = command_path(&cmd, &["preview", "start"]);
+        for option in ["entry", "pane", "open", "json"] {
+            assert!(
+                start
+                    .get_arguments()
+                    .any(|argument| argument.get_long() == Some(option)),
+                "{option}"
+            );
+        }
+        command_path(&cmd, &["preview", "list"]);
+        command_path(&cmd, &["preview", "stop"]);
     }
 
     #[test]

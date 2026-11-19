@@ -102,3 +102,28 @@ fn the_list_names_where_each_folder_lives() {
     );
     assert_eq!(format_previews(&[]), "No previews running.\n");
 }
+
+#[test]
+fn a_started_preview_names_its_url_in_either_output_mode() {
+    let started = serde_json::json!({
+        "id": "cli:preview:start",
+        "result": {
+            "type": "preview_started",
+            "preview": {
+                "preview_id": "preview-1",
+                "root": "/site",
+                "port": 4000,
+                "url": "http://127.0.0.1:4000/t/"
+            }
+        }
+    });
+    assert_eq!(
+        started_url(&started).as_deref(),
+        Some("http://127.0.0.1:4000/t/")
+    );
+    let failed = serde_json::json!({
+        "id": "cli:preview:start",
+        "error": {"code": "not_found", "message": "/site: missing"}
+    });
+    assert_eq!(started_url(&failed), None);
+}
