@@ -74,7 +74,8 @@ impl ClientShellState {
             | FileRequest::Plan { id, .. }
             | FileRequest::Operate { id }
             | FileRequest::Editor { id, .. }
-            | FileRequest::EditorCheck { id, .. } => *id,
+            | FileRequest::EditorCheck { id, .. }
+            | FileRequest::Preview { id } => *id,
         };
         if matches!(request, FileRequest::Editor { .. }) {
             // Cleared before the tab lookup: a tab closed meanwhile would
@@ -319,6 +320,16 @@ impl ClientShellState {
                     }
                 }
             }
+            FileRequest::Preview { .. } => match result {
+                Ok(ResponseResult::PreviewStarted { preview }) => {
+                    tab.notice = format!("preview at http://127.0.0.1:{}", preview.port);
+                    outcome
+                        .actions
+                        .push(ClientShellAction::OpenSafeWebUrl(preview.url));
+                }
+                Err(error) => tab.notice = error.message,
+                _ => tab.notice = "unexpected preview response".into(),
+            },
             FileRequest::Editor { .. } => {
                 self.workbench.editor_opening = false;
                 match result {

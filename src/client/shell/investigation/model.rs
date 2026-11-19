@@ -619,6 +619,10 @@ pub(in crate::client::shell) enum FileRequest {
         id: u64,
         pane: String,
     },
+    /// Starts a preview; the answer's URL opens in the browser.
+    Preview {
+        id: u64,
+    },
 }
 impl FileRequest {
     /// Answers that are not failures the user should hear about: the details
@@ -670,6 +674,11 @@ pub(in crate::client::shell) const COPY_PATH: &str = "copy path";
 pub(in crate::client::shell) const SEND_PATH: &str = "send path to terminal…";
 pub(in crate::client::shell) const EDIT_FILE: &str = "edit file";
 pub(in crate::client::shell) const VIEW_FILE: &str = "view file";
+/// Serves the tree root to the browser on this machine and opens the item.
+pub(in crate::client::shell) const PREVIEW_IN_BROWSER: &str = "preview in browser";
+/// Why a preview cannot open: the server listens on another machine.
+pub(in crate::client::shell) const PREVIEW_ELSEWHERE: &str =
+    "preview needs the herdr server on this machine";
 pub(in crate::client::shell) const TOGGLE_DETAILS: &str = "toggle details";
 pub(in crate::client::shell) const COPY_FILES: &str = "copy files";
 pub(in crate::client::shell) const CUT_FILES: &str = "cut files";
@@ -733,6 +742,7 @@ const FILE_ITEMS: &[&str] = &[
     SEND_PATH,
     EDIT_FILE,
     VIEW_FILE,
+    PREVIEW_IN_BROWSER,
     COPY_FILES,
     CUT_FILES,
     RENAME,
@@ -745,6 +755,7 @@ const MATCH_ITEMS: &[&str] = &[
     SEND_PATH,
     EDIT_FILE,
     VIEW_FILE,
+    PREVIEW_IN_BROWSER,
     COPY_FILES,
     CUT_FILES,
     RENAME,
@@ -755,6 +766,7 @@ const MATCH_ITEMS: &[&str] = &[
 ];
 const DIRECTORY_ITEMS: &[&str] = &[
     OPEN_AS_ROOT,
+    PREVIEW_IN_BROWSER,
     COPY_PATH,
     COPY_FILES,
     CUT_FILES,
@@ -774,6 +786,7 @@ const TREE_SPLIT_LEFT: &[&str] = &[
     NEW_DIRECTORY,
     PASTE_FILES,
     REFRESH_FILES,
+    PREVIEW_IN_BROWSER,
     SHOW_IGNORED,
     TOGGLE_DETAILS,
     CHANGE_ROOT,
@@ -788,6 +801,7 @@ const TREE_SPLIT_RIGHT: &[&str] = &[
     NEW_DIRECTORY,
     PASTE_FILES,
     REFRESH_FILES,
+    PREVIEW_IN_BROWSER,
     SHOW_IGNORED,
     TOGGLE_DETAILS,
     CHANGE_ROOT,
@@ -802,6 +816,7 @@ const TREE_SPLIT_BOTTOM: &[&str] = &[
     NEW_DIRECTORY,
     PASTE_FILES,
     REFRESH_FILES,
+    PREVIEW_IN_BROWSER,
     SHOW_IGNORED,
     TOGGLE_DETAILS,
     CHANGE_ROOT,
@@ -816,6 +831,7 @@ const TREE_FULL_LEFT: &[&str] = &[
     NEW_DIRECTORY,
     PASTE_FILES,
     REFRESH_FILES,
+    PREVIEW_IN_BROWSER,
     SHOW_IGNORED,
     TOGGLE_DETAILS,
     CHANGE_ROOT,
@@ -830,6 +846,7 @@ const TREE_FULL_RIGHT: &[&str] = &[
     NEW_DIRECTORY,
     PASTE_FILES,
     REFRESH_FILES,
+    PREVIEW_IN_BROWSER,
     SHOW_IGNORED,
     TOGGLE_DETAILS,
     CHANGE_ROOT,
@@ -844,6 +861,7 @@ const TREE_FULL_BOTTOM: &[&str] = &[
     NEW_DIRECTORY,
     PASTE_FILES,
     REFRESH_FILES,
+    PREVIEW_IN_BROWSER,
     SHOW_IGNORED,
     TOGGLE_DETAILS,
     CHANGE_ROOT,
@@ -862,7 +880,13 @@ const SEARCH_ITEMS: &[&str] = &[
     UNDO_REPLACEMENT,
     REFRESH_SEARCH,
 ];
-const DETAILS_ITEMS: &[&str] = &[COPY_PATH, EDIT_FILE, VIEW_FILE, SEND_PATH];
+const DETAILS_ITEMS: &[&str] = &[
+    COPY_PATH,
+    EDIT_FILE,
+    VIEW_FILE,
+    PREVIEW_IN_BROWSER,
+    SEND_PATH,
+];
 
 impl MenuTarget {
     /// Labels shown for this target; a file row lists the match toggle only

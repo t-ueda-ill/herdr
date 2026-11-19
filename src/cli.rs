@@ -29,6 +29,7 @@ mod machine;
 pub(crate) mod notification;
 pub(crate) mod pane;
 pub(crate) mod plugin;
+mod preview;
 pub(crate) mod projection;
 mod protocol_guard;
 mod server;
@@ -141,6 +142,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,
         "plugin" => plugin::run_plugin_command(&args[2..])?,
+        "preview" => preview::run_preview_command(&args[2..])?,
         "integration" => integration::run_integration_command(&args[2..])?,
         "skill" => skill::run_skill_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
@@ -163,6 +165,7 @@ fn api_group(name: &str) -> Option<clap::Command> {
         "agent" => agent::command(),
         "pane" => pane::command(),
         "plugin" => plugin::command(),
+        "preview" => preview::command(),
         _ => return None,
     })
 }

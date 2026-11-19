@@ -55,6 +55,7 @@ pub(super) fn render_open_picker_overlay(
             opening: open.opening,
             error: open.error.as_deref(),
             favorites: true,
+            action: None,
         },
         |index| {
             let entry = &open.entries[index];

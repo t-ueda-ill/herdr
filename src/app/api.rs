@@ -7,6 +7,7 @@ mod command_marks;
 mod directory;
 mod files;
 mod inherit;
+mod preview;
 pub(crate) use files::FileService;
 mod env;
 mod integrations;
@@ -1380,6 +1381,9 @@ impl App {
             Method::PaneDeclareAgent(params) => {
                 return self.handle_pane_declare_agent(request.id, params);
             }
+            Method::PreviewStart(params) => return self.handle_preview_start(request.id, params),
+            Method::PreviewList(_) => return self.handle_preview_list(request.id),
+            Method::PreviewStop(params) => return self.handle_preview_stop(request.id, params),
             Method::PaneSendText(params) => return self.handle_pane_send_text(request.id, params),
             Method::PaneSendInput(params) => {
                 return self.handle_pane_send_input(request.id, params);

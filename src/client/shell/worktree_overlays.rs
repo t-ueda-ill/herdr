@@ -127,6 +127,7 @@ pub(super) fn render_worktree_open_overlay(
             opening: open.opening,
             error: open.error.as_deref(),
             favorites: false,
+            action: None,
         },
         |index| {
             let entry = &open.entries[index];

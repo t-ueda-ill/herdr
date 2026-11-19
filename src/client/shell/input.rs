@@ -676,6 +676,10 @@ impl ClientShellState {
                     opening: false,
                     ..
                 }))
+                | Some(ClientShellOverlay::Previews(ClientPreviewsOverlay {
+                    search_focused: true,
+                    ..
+                }))
                 | Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
                     search_focused: true,
                     ..

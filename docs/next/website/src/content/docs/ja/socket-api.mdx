@@ -100,7 +100,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | コンテナ | `container.open`, `container.list`, `ssh.container.open`, `ssh.container.list` |
 | SSH ホスト | `ssh.open`, `ssh.hosts` |
-| ファイル | `directory.list`、`directory.index`、`files.stat`、`pane.open_editor`、`pane.open_file`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.directory.open_file`、`pane.file.read`、`pane.file.stat`、`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel`、`pane.download.begin`、`pane.download.read`、`pane.download.cancel` |
+| ファイル | `directory.list`、`directory.index`、`files.stat`、`pane.open_editor`、`pane.open_file`、`pane.directory.list`、`pane.directory.index`、`pane.directory.open_editor`、`pane.directory.open_file`、`pane.file.read`、`pane.file.stat`、`pane.upload.begin`、`pane.upload.write`、`pane.upload.finish`、`pane.upload.cancel`、`pane.download.begin`、`pane.download.read`、`pane.download.cancel`、`preview.start`、`preview.list`、`preview.stop` |
 | タブ | `tab.create`、`tab.create_inherit`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
 | ペイン | `pane.split`、`pane.split_inherit`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.declare_agent`、`pane.close`、`pane.reconnect`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
@@ -579,6 +579,27 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 | `platform_unsupported` | Windows のサーバーでコンテナか SSH を取り出し元にした |
 
 シェルモードの TUI クライアントは、これらの要求を endpoint control の `endpoint.download.request.v1` で送り、応答は `endpoint.download.response.v1` で受けます。使うのは、サーバーが 3 つのメソッドと `pane_download_control` capability をすべて advertise しているときだけです。無ければ、`download…` は `this server cannot send files; update Herdr there` と表示します。
+
+### プレビュー
+
+`preview.start`、`preview.list`、`preview.stop` は、サーバーのループバックでフォルダをブラウザに配信し、変更時に再読込させます。`herdr preview` と、ファイルワークベンチの `preview in browser` が使います。
+
+```json
+{ "id": "p1", "method": "preview.start", "params": { "pane_id": "w1:p2", "root": "/srv/site", "entry": "/srv/site/docs/README.md" } }
+```
+
+`start` は省略可能な `pane_id` を取ります。無いとき、またはシェルがサーバーのホストで動くペインのときは `root` はサーバーのファイルシステムにあり、コンテナか SSH のペインではそのペインの環境で読みます。`root` は絶対パスで、`entry` はその下の絶対パスです（省略可）。応答は `preview_started` で、`preview` に `preview_id`、`root`、`location`（サーバーのホストでは無し）、`port`、`url` を持ちます。URL はトークンでブラウザをログインさせるので、秘密として扱ってください。同じ場所の同じ root をもう一度始めると、動いているプレビューを返します。`list` は `preview_list` で `previews` を返し、その `url` はルートを開きます。`stop` は `preview_id` を取り、`preview_stopped` を返します。
+
+| コード | 意味 |
+| --- | --- |
+| `invalid_params` | `root` が絶対パスでない、`..` を含む、サーバーのホストでフォルダでない、または `entry` が `root` の下にない |
+| `not_found` | サーバーのホストに `root` が無い |
+| `pane_not_found`、`pane_not_live` | ペインが無い、またはシェルが動いていない |
+| `preview_not_found` | その id のプレビューが動いていない |
+| `preview_failed` | サーバーがループバックで待ち受けられなかった |
+| `platform_unsupported` | Windows サーバーでのコンテナまたは SSH のペイン |
+
+コンテナや SSH で読み出しに失敗したときは、API のエラーではなく、ブラウザのページとして表示します。
 
 ## エージェントビューのクエリ
 

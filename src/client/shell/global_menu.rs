@@ -10,6 +10,7 @@ pub(super) const GLOBAL_MENU_LOOK: MenuLook = MenuLook {
 pub(super) enum ClientGlobalMenuAction {
     Binding(crate::input::KeybindAction),
     WhatsNew,
+    Previews,
 }
 
 pub(super) fn global_menu_attention(snapshot: &ClientShellSnapshot) -> bool {
@@ -66,6 +67,7 @@ pub(super) fn global_menu_items(
         "open ssh host",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenSshWorkspace),
     ));
+    items.push(("previews", ClientGlobalMenuAction::Previews));
     items.push((
         "detach",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::Detach),
@@ -122,6 +124,7 @@ impl ClientShellState {
                 self.record_binding(crate::input::KeybindMatch::Action(binding), outcome)
             }
             ClientGlobalMenuAction::WhatsNew => self.open_release_notes(),
+            ClientGlobalMenuAction::Previews => self.open_previews(outcome),
         }
         outcome.repaint = true;
     }

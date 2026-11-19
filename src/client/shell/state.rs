@@ -145,6 +145,8 @@ pub(super) struct ShellHitMap {
     pub(super) file_viewer_buttons: Vec<(Rect, FileViewerButton)>,
     pub(super) file_viewer_scroll: usize,
     pub(super) overlay_favorite: Rect,
+    /// A list picker's extra action button, such as stopping a preview.
+    pub(super) overlay_secondary: Rect,
     pub(super) open_picker_favorites: Vec<(Rect, usize)>,
     pub(super) help_popup: Rect,
     pub(super) help_filter: Rect,
@@ -317,6 +319,7 @@ pub(super) enum ClientShellOverlayKind {
     WorktreeCreate,
     WorktreeOpen,
     WorktreeRemove,
+    Previews,
     OpenPicker,
     FileViewer,
     ContextMenu,
@@ -519,6 +522,67 @@ impl ClientWorktreeOpenEntry {
             )
             .to_lowercase()
             .contains(&query)
+    }
+}
+
+/// The running previews of the active server, from `preview.list`.
+#[derive(Debug)]
+pub(super) struct ClientPreviewsOverlay {
+    pub(super) entries: Vec<crate::api::schema::PreviewInfo>,
+    pub(super) selected: usize,
+    pub(super) query: TextEditor,
+    pub(super) search_focused: bool,
+    /// A stop is waiting for its answer.
+    pub(super) stopping: bool,
+    pub(super) error: Option<String>,
+}
+
+impl ClientPreviewsOverlay {
+    pub(super) fn new(entries: Vec<crate::api::schema::PreviewInfo>) -> Self {
+        Self {
+            entries,
+            selected: 0,
+            query: TextEditor::default(),
+            search_focused: false,
+            stopping: false,
+            error: None,
+        }
+    }
+
+    pub(super) fn filtered_indices(&self) -> Vec<usize> {
+        let query = self.query.trim().to_lowercase();
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                query.is_empty()
+                    || format!("{} {} {}", entry.root, preview_place(entry), entry.port)
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub(super) fn selected_entry_index(&self) -> Option<usize> {
+        let filtered = self.filtered_indices();
+        filtered
+            .contains(&self.selected)
+            .then_some(self.selected)
+            .or_else(|| filtered.first().copied())
+    }
+}
+
+/// Where a preview's folder lives, as the picker names it.
+pub(super) fn preview_place(preview: &crate::api::schema::PreviewInfo) -> String {
+    let Some(location) = &preview.location else {
+        return "this host".into();
+    };
+    match (&location.container, &location.ssh_host) {
+        (Some(container), Some(host)) => format!("{container} on {host}"),
+        (Some(container), None) => container.clone(),
+        (None, Some(host)) => host.clone(),
+        (None, None) => String::new(),
     }
 }
 
@@ -926,6 +990,7 @@ pub(super) enum ClientShellOverlay {
     WorktreeCreate(ClientWorktreeCreateOverlay),
     WorktreeOpen(ClientWorktreeOpenOverlay),
     WorktreeRemove(ClientWorktreeRemoveOverlay),
+    Previews(ClientPreviewsOverlay),
     OpenPicker(ClientOpenPickerOverlay),
     FileViewer(Box<ClientFileViewerOverlay>),
     ContextMenu(ClientContextMenuOverlay),
@@ -948,6 +1013,7 @@ impl ClientShellOverlay {
             Self::WorktreeCreate(_) => ClientShellOverlayKind::WorktreeCreate,
             Self::WorktreeOpen(_) => ClientShellOverlayKind::WorktreeOpen,
             Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
+            Self::Previews(_) => ClientShellOverlayKind::Previews,
             Self::OpenPicker(_) => ClientShellOverlayKind::OpenPicker,
             Self::FileViewer(_) => ClientShellOverlayKind::FileViewer,
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
@@ -984,6 +1050,11 @@ pub(super) enum PendingEndpointKind {
     WorktreeOpen,
     WorktreeRemove {
         forced: bool,
+    },
+    /// Opens the previews picker with the answer.
+    PreviewList,
+    PreviewStop {
+        preview_id: String,
     },
     PrepareOpenPicker(OpenPickerSource),
     /// Lists one docker host's containers for the second picker stage.

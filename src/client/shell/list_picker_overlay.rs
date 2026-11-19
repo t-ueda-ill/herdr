@@ -33,6 +33,9 @@ pub(super) struct ListPicker<'a> {
     /// Adds a ★ column on every row and a favorite button. Why not on every
     /// picker: only the open pickers remember favorites.
     pub(super) favorites: bool,
+    /// A button between open and cancel for an action on the selected row,
+    /// such as `" del stop "`. Ignored when `favorites` takes that place.
+    pub(super) action: Option<&'a str>,
 }
 
 /// Cells of the ★ column, counted from the row's left edge. The cell after
@@ -223,8 +226,10 @@ pub(super) fn render_list_picker_overlay<'a>(
         );
     }
     let button_row = inner.height.saturating_sub(1);
-    let (primary, favorite, cancel) = if picker.favorites {
-        let buttons = row(inner, &[10, 12, 12], 2, button_row);
+    let action = picker.action.filter(|_| !picker.favorites);
+    let (primary, favorite, cancel) = if picker.favorites || action.is_some() {
+        let middle = action.map_or(12, display_width);
+        let buttons = row(inner, &[10, middle, 12], 2, button_row);
         let [primary, favorite, cancel] = buttons.as_slice() else {
             return None;
         };
@@ -252,6 +257,9 @@ pub(super) fn render_list_picker_overlay<'a>(
     if picker.favorites {
         button(b, favorite, " * favorite ", secondary);
     }
+    if let Some(label) = action {
+        button(b, favorite, label, secondary);
+    }
     button(b, cancel, " esc cancel ", secondary);
     Some(OverlayRender {
         area: popup,
@@ -263,7 +271,16 @@ pub(super) fn render_list_picker_overlay<'a>(
         navigator_rows: Vec::new(),
         worktree_search: search,
         worktree_rows: row_hits,
-        favorite,
+        favorite: if picker.favorites {
+            favorite
+        } else {
+            Rect::default()
+        },
+        secondary: if action.is_some() {
+            favorite
+        } else {
+            Rect::default()
+        },
         favorite_marks,
         cursor: cursor.filter(|_| !picker.opening),
         ..OverlayRender::default()

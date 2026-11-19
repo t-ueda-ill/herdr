@@ -14,6 +14,7 @@ pub mod pane_download;
 pub mod pane_upload;
 pub mod panes;
 pub mod plugins;
+pub mod preview;
 pub mod response;
 pub mod server;
 pub mod session;
@@ -35,6 +36,7 @@ pub use pane_download::*;
 pub use pane_upload::*;
 pub use panes::*;
 pub use plugins::*;
+pub use preview::*;
 pub use response::*;
 pub use server::*;
 pub use session::*;
@@ -195,6 +197,9 @@ operations::define_operations! {
     PaneDownloadCancel(PaneDownloadCancelParams) => "pane.download.cancel", false, true;
     PaneDownloadRead(PaneDownloadReadParams) => "pane.download.read", false, true;
     PaneDeclareAgent(PaneDeclareAgentParams) => "pane.declare_agent", true, false;
+    PreviewStart(PreviewStartParams) => "preview.start", false, true;
+    PreviewList(EmptyParams) => "preview.list", false, true;
+    PreviewStop(PreviewStopParams) => "preview.stop", false, true;
 }
 
 #[cfg(test)]
@@ -226,6 +231,9 @@ impl Method {
                 | Self::PaneDownloadBegin(_)
                 | Self::PaneDownloadCancel(_)
                 | Self::PaneDownloadRead(_)
+                | Self::PreviewStart(_)
+                | Self::PreviewList(_)
+                | Self::PreviewStop(_)
         )
     }
 }

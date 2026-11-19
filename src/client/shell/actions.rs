@@ -969,6 +969,12 @@ impl ClientShellState {
                 let repaint = self.handle_open_picker_endpoint_result(kind, result, &mut outcome);
                 return (repaint || outcome.repaint, outcome.actions);
             }
+            kind @ (PendingEndpointKind::PreviewList | PendingEndpointKind::PreviewStop { .. }) => {
+                return (
+                    self.handle_preview_endpoint_result(kind, result),
+                    Vec::new(),
+                );
+            }
             kind => {
                 let mut outcome = ClientShellInput::default();
                 let repaint = self.handle_worktree_endpoint_result(kind, result, &mut outcome);
