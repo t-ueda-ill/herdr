@@ -85,7 +85,7 @@ fn send(port: u16, request: &str) -> Reply {
 
 struct Preview {
     server: PreviewServer,
-    cookie: String,
+    token: String,
     _root: TempDir,
 }
 
@@ -95,14 +95,14 @@ impl Preview {
         let server = PreviewServer::start(Box::new(source), Duration::from_millis(100)).unwrap();
         let token = server
             .url("")
-            .split_once("herdr-token=")
+            .trim_start_matches("http://127.0.0.1:")
+            .split('/')
+            .nth(1)
             .unwrap()
-            .1
             .to_owned();
-        let cookie = format!("herdr-preview-{}={token}", server.port());
         Self {
             server,
-            cookie,
+            token,
             _root: root,
         }
     }
@@ -115,9 +115,9 @@ impl Preview {
         send(
             self.port(),
             &format!(
-                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}\r\n{extra}\r\n",
-                self.port(),
-                self.cookie
+                "GET /{}{path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{extra}\r\n",
+                self.token,
+                self.port()
             ),
         )
     }
@@ -135,26 +135,68 @@ fn site() -> TempDir {
 }
 
 #[test]
-fn the_url_signs_the_browser_in_with_a_cookie_and_drops_the_token() {
+fn the_url_opens_the_entry_under_the_token_and_sets_no_cookie() {
     let preview = Preview::start(site());
     let url = preview.server.url("docs/README.md");
-    let path = url.split_once(&format!("{}", preview.port())).unwrap().1;
-    let reply = send(
+    assert_eq!(
+        url,
+        format!(
+            "http://127.0.0.1:{}/{}/docs/README.md",
+            preview.port(),
+            preview.token
+        )
+    );
+    let reply = preview.get("/docs/README.md?herdr-raw=1", "");
+    assert_eq!(reply.status, 200);
+    assert!(reply.header("set-cookie").is_none());
+    assert_eq!(reply.header("referrer-policy"), Some("same-origin"));
+    let bare = send(
         preview.port(),
         &format!(
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            "GET /{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            preview.token,
             preview.port()
         ),
     );
-    assert_eq!(reply.status, 303);
-    assert_eq!(reply.header("location"), Some("/docs/README.md"));
-    let cookie = reply.header("set-cookie").unwrap();
-    assert!(cookie.starts_with(&preview.cookie), "{cookie}");
-    assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"));
+    assert_eq!(bare.status, 301);
+    assert_eq!(
+        bare.header("location"),
+        Some(format!("/{}/", preview.token).as_str())
+    );
 }
 
 #[test]
-fn a_browser_without_the_cookie_or_from_another_host_is_turned_away() {
+fn a_root_absolute_link_from_a_preview_page_is_served_and_a_navigation_keeps_the_token() {
+    let preview = Preview::start(site());
+    let referer = format!(
+        "Referer: http://127.0.0.1:{}/{}/index.html\r\n",
+        preview.port(),
+        preview.token
+    );
+    let style = send(
+        preview.port(),
+        &format!(
+            "GET /index.html HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nSec-Fetch-Mode: no-cors\r\n{referer}\r\n",
+            preview.port()
+        ),
+    );
+    assert_eq!(style.status, 200);
+    let page = send(
+        preview.port(),
+        &format!(
+            "GET /docs/README.md?x=1 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nSec-Fetch-Mode: navigate\r\n{referer}\r\n",
+            preview.port()
+        ),
+    );
+    assert_eq!(page.status, 303);
+    assert_eq!(
+        page.header("location"),
+        Some(format!("/{}/docs/README.md?x=1", preview.token).as_str())
+    );
+}
+
+#[test]
+fn a_browser_without_the_token_or_from_another_host_is_turned_away() {
     let preview = Preview::start(site());
     let stranger = send(
         preview.port(),
@@ -164,12 +206,21 @@ fn a_browser_without_the_cookie_or_from_another_host_is_turned_away() {
         ),
     );
     assert_eq!(stranger.status, 403);
+    let other_port = send(
+        preview.port(),
+        &format!(
+            "GET /index.html HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nReferer: http://127.0.0.1:1/{}/\r\n\r\n",
+            preview.port(),
+            preview.token
+        ),
+    );
+    assert_eq!(other_port.status, 403);
     let rebound = send(
         preview.port(),
         &format!(
-            "GET / HTTP/1.1\r\nHost: evil.example:{}\r\nCookie: {}\r\n\r\n",
-            preview.port(),
-            preview.cookie
+            "GET /{}/ HTTP/1.1\r\nHost: evil.example:{}\r\n\r\n",
+            preview.token,
+            preview.port()
         ),
     );
     assert_eq!(rebound.status, 403);
@@ -233,7 +284,10 @@ fn a_folder_redirects_to_its_slash_and_a_missing_page_waits_for_the_file() {
     let preview = Preview::start(site());
     let folder = preview.get("/docs", "Sec-Fetch-Dest: document\r\n");
     assert_eq!(folder.status, 301);
-    assert_eq!(folder.header("location"), Some("/docs/"));
+    assert_eq!(
+        folder.header("location"),
+        Some(format!("/{}/docs/", preview.token).as_str())
+    );
     let missing = preview.get("/docs/", "Sec-Fetch-Dest: document\r\n");
     assert_eq!(missing.status, 404);
     assert!(missing.text().contains(crate::preview::page::RELOAD_TAG));
@@ -242,15 +296,21 @@ fn a_folder_redirects_to_its_slash_and_a_missing_page_waits_for_the_file() {
 #[test]
 fn herdr_assets_are_served_and_a_head_request_has_no_body() {
     let preview = Preview::start(site());
-    let asset = preview.get("/__herdr/assets/viewer.js", "");
+    let asset = send(
+        preview.port(),
+        &format!(
+            "GET /__herdr/assets/viewer.js HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            preview.port()
+        ),
+    );
     assert_eq!(asset.status, 200);
     assert!(!asset.body.is_empty());
     let head = send(
         preview.port(),
         &format!(
-            "HEAD / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}\r\n\r\n",
-            preview.port(),
-            preview.cookie
+            "HEAD /{}/ HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            preview.token,
+            preview.port()
         ),
     );
     assert_eq!(head.status, 200);
@@ -276,9 +336,9 @@ fn an_open_page_is_told_to_reload_when_a_file_changes() {
     stream
         .write_all(
             format!(
-                "GET /__herdr/events HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}\r\n\r\n",
-                preview.port(),
-                preview.cookie
+                "GET /{}/__herdr/events HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                preview.token,
+                preview.port()
             )
             .as_bytes(),
         )
@@ -318,9 +378,9 @@ fn a_change_to_a_file_no_page_loaded_does_not_reload() {
     stream
         .write_all(
             format!(
-                "GET /__herdr/events HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}\r\n\r\n",
-                preview.port(),
-                preview.cookie
+                "GET /{}/__herdr/events HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                preview.token,
+                preview.port()
             )
             .as_bytes(),
         )
@@ -366,9 +426,9 @@ fn open_events(preview: &Preview, timeout: Duration) -> BufReader<TcpStream> {
     stream
         .write_all(
             format!(
-                "GET /__herdr/events HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}\r\n\r\n",
-                preview.port(),
-                preview.cookie
+                "GET /{}/__herdr/events HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                preview.token,
+                preview.port()
             )
             .as_bytes(),
         )

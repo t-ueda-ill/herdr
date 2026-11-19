@@ -39,6 +39,16 @@ fn an_entry_outside_the_root_is_refused() {
 }
 
 #[test]
+fn a_host_entry_is_relative_by_path_components_on_any_platform() {
+    let root = std::env::temp_dir().join("site");
+    let nested = root.join("docs").join("a b.md");
+    assert_eq!(host_entry_relative(&root, &nested).unwrap(), "docs/a b.md");
+    assert_eq!(host_entry_relative(&root, &root).unwrap(), "");
+    let outside = std::env::temp_dir().join("sitemap").join("a.md");
+    assert!(host_entry_relative(&root, &outside).is_err());
+}
+
+#[test]
 fn the_same_folder_in_the_same_place_is_found_again() {
     let mut registry = PreviewRegistry::default();
     let started = registry.insert("/site/", Some(container()), server(), "");
@@ -47,7 +57,7 @@ fn the_same_folder_in_the_same_place_is_found_again() {
         .unwrap();
     assert_eq!(again.preview_id, started.preview_id);
     assert_eq!(again.port, started.port);
-    assert!(again.url.contains("/docs/a.md?herdr-token="));
+    assert!(again.url.ends_with("/docs/a.md"), "{}", again.url);
     assert!(registry.find("/site", None, "").is_none());
     assert!(registry.find("/other", Some(&container()), "").is_none());
 }

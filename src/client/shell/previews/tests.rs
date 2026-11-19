@@ -10,7 +10,7 @@ fn preview(id: &str, root: &str, port: u16, location: Option<PaneLocation>) -> P
         root: root.into(),
         location,
         port,
-        url: format!("http://127.0.0.1:{port}/?herdr-token=t{port}"),
+        url: format!("http://127.0.0.1:{port}/secret{port}/"),
     }
 }
 
@@ -136,7 +136,7 @@ fn the_picker_lists_each_preview_with_its_place_and_address() {
     ] {
         assert!(text.contains(expected), "missing {expected:?}\n{text}");
     }
-    assert!(!text.contains("herdr-token"), "the token stays off screen");
+    assert!(!text.contains("secret"), "the token stays off screen");
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn enter_opens_the_selected_preview_in_the_browser_and_closes() {
     let outcome = key(&mut state, KeyCode::Enter);
     assert!(outcome.actions.iter().any(|action| matches!(
         action,
-        ClientShellAction::OpenSafeWebUrl(url) if url == "http://127.0.0.1:40002/?herdr-token=t40002"
+        ClientShellAction::OpenSafeWebUrl(url) if url == "http://127.0.0.1:40002/secret40002/"
     )));
     assert!(state.overlay.is_none());
 }

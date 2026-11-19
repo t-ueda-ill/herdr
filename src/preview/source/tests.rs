@@ -225,6 +225,29 @@ fn the_fingerprint_follows_only_the_files_the_browser_loaded() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn the_fingerprint_follows_a_link_to_the_file_it_serves() {
+    let root = TempDir::new("watch-link");
+    root.file("real/page.html", b"one");
+    std::os::unix::fs::symlink(
+        root.path().join("real/page.html"),
+        root.path().join("alias.html"),
+    )
+    .unwrap();
+    let watched = ["alias.html".to_owned()];
+    for (name, source) in sources(root.path()) {
+        let before = source.fingerprint(&watched).unwrap();
+        root.file("real/page.html", b"two, longer");
+        assert_ne!(
+            source.fingerprint(&watched).unwrap(),
+            before,
+            "{name}: the target changed"
+        );
+        root.file("real/page.html", b"one");
+    }
+}
+
 #[test]
 fn a_missing_root_has_no_fingerprint() {
     let root = TempDir::new("gone");

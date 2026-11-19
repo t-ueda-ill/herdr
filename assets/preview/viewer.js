@@ -118,10 +118,17 @@
       }
     });
     if (window.markdownitFootnote) md.use(window.markdownitFootnote);
-    // Why innerHTML: elements inserted this way never run their <script>,
-    // and the page policy blocks inline handlers such as onerror.
+    // Why parse into a template first: its content is inert, so a <meta>
+    // refresh in the file never navigates to the repository's own HTML (which
+    // runs scripts) before it is removed. <script> never runs from markup
+    // inserted this way, and the page policy blocks handlers such as onerror.
+    var parsed = document.createElement('template');
+    parsed.innerHTML = md.render(stripFrontMatter(text));
+    parsed.content.querySelectorAll('meta, base').forEach(function (node) {
+      node.remove();
+    });
     view.className = 'markdown-body';
-    view.innerHTML = md.render(stripFrontMatter(text));
+    view.replaceChildren(parsed.content);
     view.querySelectorAll('pre > code').forEach(function (code) {
       code.classList.add('hljs');
     });
@@ -224,10 +231,47 @@
     rendered();
   }
 
+  // Re-indents JSON without parsing values, so numbers keep every digit
+  // (JSON.parse would round 9007199254740993). Text that is not valid JSON
+  // is shown as written.
+  function indentJson(text) {
+    try { JSON.parse(text); } catch (e) { return text; }
+    var out = '';
+    var depth = 0;
+    var inString = false;
+    var pad = function () { return '\n' + '  '.repeat(depth); };
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (inString) {
+        out += ch;
+        if (ch === '\\') { out += text[++i]; }
+        else if (ch === '"') { inString = false; }
+        continue;
+      }
+      if (/\s/.test(ch)) continue;
+      if (ch === '"') { inString = true; out += ch; continue; }
+      if (ch === '{' || ch === '[') {
+        var close = ch === '{' ? '}' : ']';
+        var next = text.slice(i + 1).search(/\S/);
+        if (next >= 0 && text[i + 1 + next] === close) {
+          out += ch + close;
+          i += 1 + next;
+          continue;
+        }
+        depth++;
+        out += ch + pad();
+        continue;
+      }
+      if (ch === '}' || ch === ']') { depth--; out += pad() + ch; continue; }
+      if (ch === ',') { out += ',' + pad(); continue; }
+      if (ch === ':') { out += ': '; continue; }
+      out += ch;
+    }
+    return out;
+  }
+
   function renderJson(text) {
-    var pretty = text;
-    try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (e) { /* shown as written */ }
-    renderCode(pretty, 'json');
+    renderCode(indentJson(text), 'json');
   }
 
   function render(text) {

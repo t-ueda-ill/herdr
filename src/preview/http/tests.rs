@@ -59,14 +59,6 @@ fn query_parameters_are_looked_up_by_name() {
 }
 
 #[test]
-fn cookies_are_looked_up_by_name() {
-    let request =
-        parse("GET / HTTP/1.1\r\nCookie: theme=dark; herdr-preview-9=tok\r\n\r\n").unwrap();
-    assert_eq!(request.cookie("herdr-preview-9"), Some("tok"));
-    assert_eq!(request.cookie("other"), None);
-}
-
-#[test]
 fn ranges_resolve_against_the_file_length() {
     assert_eq!(parse_range(None, 10), ByteRange::Full);
     assert_eq!(

@@ -588,7 +588,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 { "id": "p1", "method": "preview.start", "params": { "pane_id": "w1:p2", "root": "/srv/site", "entry": "/srv/site/docs/README.md" } }
 ```
 
-`start` は省略可能な `pane_id` を取ります。無いとき、またはシェルがサーバーのホストで動くペインのときは `root` はサーバーのファイルシステムにあり、コンテナか SSH のペインではそのペインの環境で読みます。`root` は絶対パスで、`entry` はその下の絶対パスです（省略可）。応答は `preview_started` で、`preview` に `preview_id`、`root`、`location`（サーバーのホストでは無し）、`port`、`url` を持ちます。URL はトークンでブラウザをログインさせるので、秘密として扱ってください。同じ場所の同じ root をもう一度始めると、動いているプレビューを返します。`list` は `preview_list` で `previews` を返し、その `url` はルートを開きます。`stop` は `preview_id` を取り、`preview_stopped` を返します。
+`start` は省略可能な `pane_id` を取ります。無いとき、またはシェルがサーバーのホストで動くペインのときは `root` はサーバーのファイルシステムにあり、コンテナか SSH のペインではそのペインの環境で読みます。`root` は絶対パスで、`entry` はその下の絶対パスです（省略可）。応答は `preview_started` で、`preview` に `preview_id`、`root`、`location`（サーバーのホストでは無し）、`port`、`url` を持ちます。URL のパスにはセッションのトークンが入っているので、秘密として扱ってください。同じ場所の同じ root をもう一度始めると、動いているプレビューを返します。`list` は `preview_list` で `previews` を返し、その `url` はルートを開きます。`stop` は `preview_id` を取り、`preview_stopped` を返します。
 
 | コード | 意味 |
 | --- | --- |

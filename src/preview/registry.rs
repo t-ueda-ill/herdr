@@ -49,6 +49,23 @@ pub(crate) fn entry_relative(root: &str, entry: Option<&str>) -> Result<String, 
         .ok_or_else(|| format!("{entry} is not under {root}"))
 }
 
+/// `entry` below `root`, both on this host, as a `/`-separated path for the
+/// URL. Why by components: Windows paths use `\` and a `\\?\` prefix, which
+/// the string form of [`entry_relative`] would read as outside the root.
+pub(crate) fn host_entry_relative(
+    root: &std::path::Path,
+    entry: &std::path::Path,
+) -> Result<String, String> {
+    let below = entry
+        .strip_prefix(root)
+        .map_err(|_| format!("{} is not under {}", entry.display(), root.display()))?;
+    let parts: Vec<String> = below
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    Ok(parts.join("/"))
+}
+
 impl Entry {
     fn info(&self, entry: &str) -> PreviewInfo {
         PreviewInfo {

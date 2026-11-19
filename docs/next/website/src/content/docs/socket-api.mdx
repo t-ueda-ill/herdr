@@ -663,7 +663,7 @@ Shell-mode TUI clients send these requests as `endpoint.download.request.v1` end
 { "id": "p1", "method": "preview.start", "params": { "pane_id": "w1:p2", "root": "/srv/site", "entry": "/srv/site/docs/README.md" } }
 ```
 
-`start` takes an optional `pane_id`; without it, or for a pane whose shell runs on the server host, `root` is on the server's filesystem, and for a container or SSH pane it is read in that pane's environment. `root` is absolute; `entry` is an optional absolute path under it. It answers `preview_started` with `preview`: `preview_id`, `root`, `location` (absent for the server host), `port`, and `url`. The URL signs a browser in with a token, so treat it as a secret. Starting the same root in the same place again answers with the running preview. `list` answers `preview_list` with `previews`; their `url` opens the root. `stop` takes `preview_id` and answers `preview_stopped`.
+`start` takes an optional `pane_id`; without it, or for a pane whose shell runs on the server host, `root` is on the server's filesystem, and for a container or SSH pane it is read in that pane's environment. `root` is absolute; `entry` is an optional absolute path under it. It answers `preview_started` with `preview`: `preview_id`, `root`, `location` (absent for the server host), `port`, and `url`. The URL carries a session token in its path, so treat it as a secret. Starting the same root in the same place again answers with the running preview. `list` answers `preview_list` with `previews`; their `url` opens the root. `stop` takes `preview_id` and answers `preview_stopped`.
 
 | Code | Meaning |
 | --- | --- |

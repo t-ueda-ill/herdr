@@ -36,17 +36,6 @@ impl Request {
             (key == name).then(|| percent_decode(value).unwrap_or_default())
         })
     }
-
-    pub(crate) fn cookie(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .filter(|(key, _)| key == "cookie")
-            .flat_map(|(_, value)| value.split(';'))
-            .find_map(|pair| {
-                let (key, value) = pair.trim().split_once('=')?;
-                (key == name).then_some(value)
-            })
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

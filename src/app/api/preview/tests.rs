@@ -118,12 +118,13 @@ fn a_host_folder_is_served_on_loopback_and_reused_when_started_again() {
     assert!(first.location.is_none());
     assert!(first
         .url
-        .starts_with(&format!("http://127.0.0.1:{}/?herdr-token=", first.port)));
+        .starts_with(&format!("http://127.0.0.1:{}/", first.port)));
+    assert!(first.url.ends_with('/'), "{}", first.url);
 
     let entry = root.join("docs/a.md");
     let again = started(&start(&mut app, None, root.str(), entry.to_str()));
     assert_eq!(again.preview_id, first.preview_id);
-    assert!(again.url.contains("/docs/a.md?herdr-token="));
+    assert!(again.url.ends_with("/docs/a.md"), "{}", again.url);
     assert_eq!(listed(&mut app).len(), 1);
 }
 
@@ -182,7 +183,7 @@ async fn a_container_pane_serves_its_own_folder_without_running_anything_yet() {
     let location = preview.location.unwrap();
     assert_eq!(location.kind, PaneLocationKind::Container);
     assert_eq!(location.container.as_deref(), Some("web"));
-    assert!(preview.url.contains("/index.html?herdr-token="));
+    assert!(preview.url.ends_with("/index.html"), "{}", preview.url);
 }
 
 #[tokio::test]

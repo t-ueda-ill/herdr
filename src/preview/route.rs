@@ -170,34 +170,59 @@ pub(crate) fn host_allowed(request: &Request, port: u16) -> bool {
     }
 }
 
-pub(crate) const TOKEN_QUERY: &str = "herdr-token";
-
-pub(crate) fn cookie_name(port: u16) -> String {
-    format!("herdr-preview-{port}")
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Access {
-    /// The token came in the URL; answer with a cookie and drop it from the URL.
-    SignIn,
-    Allowed,
+    /// The path starts with `/<token>`; `path` is the rest, below the root.
+    Token {
+        path: String,
+    },
+    /// A page under `/<token>/` asked for a root-absolute path such as
+    /// `/style.css`, which its links cannot know to prefix.
+    Referred,
     Denied,
 }
 
-/// Why a cookie rather than a path prefix: pages use root-absolute links like
-/// `/style.css`, which a token in the path would break.
-pub(crate) fn access(request: &Request, port: u16, token: &str) -> Access {
-    if let Some(offered) = request.query_param(TOKEN_QUERY) {
-        return if offered == token {
-            Access::SignIn
-        } else {
-            Access::Denied
+/// Why the token sits in the path and not in a cookie: a browser sends a
+/// loopback cookie to every port of `127.0.0.1`, so any other local service
+/// the user visits would receive it. A path is only ever sent to this port,
+/// and `Referrer-Policy: same-origin` keeps it from leaving the origin.
+pub(crate) fn access(request: &Request, token: &str) -> Access {
+    if let Some(path) = token_path(&request.path, token) {
+        return Access::Token {
+            path: path.to_owned(),
         };
     }
-    if request.cookie(&cookie_name(port)) == Some(token) {
-        Access::Allowed
+    let referred = request
+        .header("referer")
+        .and_then(|referer| referer.strip_prefix("http://"))
+        .and_then(|rest| {
+            let (host, path) = rest.split_at(rest.find('/')?);
+            (Some(host) == request.header("host")).then_some(path)
+        })
+        .is_some_and(|path| {
+            let path = path.split(['?', '#']).next().unwrap_or(path);
+            token_path(path, token).is_some()
+        });
+    if referred {
+        Access::Referred
     } else {
         Access::Denied
+    }
+}
+
+/// The part of `path` after `/<token>`, when `path` is that or below it.
+fn token_path<'a>(path: &'a str, token: &str) -> Option<&'a str> {
+    let rest = path.strip_prefix('/')?.strip_prefix(token)?;
+    (rest.is_empty() || rest.starts_with('/')).then_some(rest)
+}
+
+/// A top-level page load, which should land on a URL that keeps the token.
+pub(crate) fn is_navigation(request: &Request) -> bool {
+    match request.header("sec-fetch-mode") {
+        Some(mode) => mode == "navigate",
+        None => request
+            .header("accept")
+            .is_some_and(|accept| accept.starts_with("text/html")),
     }
 }
 

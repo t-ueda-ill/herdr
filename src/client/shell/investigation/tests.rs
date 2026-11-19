@@ -2708,7 +2708,7 @@ mod offhost {
             root: "/work".into(),
             location: None,
             port,
-            url: format!("http://127.0.0.1:{port}/a.txt?herdr-token=t"),
+            url: format!("http://127.0.0.1:{port}/t/a.txt"),
         }
     }
 
@@ -2743,7 +2743,7 @@ mod offhost {
         assert!(actions.iter().any(|action| matches!(
             action,
             ClientShellAction::OpenSafeWebUrl(url)
-                if url == "http://127.0.0.1:40123/a.txt?herdr-token=t"
+                if url == "http://127.0.0.1:40123/t/a.txt"
         )));
         assert_eq!(
             state.investigation().unwrap().notice,

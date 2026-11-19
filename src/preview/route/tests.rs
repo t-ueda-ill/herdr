@@ -92,15 +92,69 @@ fn only_this_machines_loopback_names_may_be_the_host() {
 }
 
 #[test]
-fn the_token_query_signs_in_and_the_cookie_keeps_the_session() {
-    let port = 4321;
+fn the_token_prefix_grants_the_path_after_it() {
     let token = "secret";
-    let signing_in = request("GET /a.md?herdr-token=secret HTTP/1.1\r\n\r\n");
-    let signed_in = request("GET /a.md HTTP/1.1\r\nCookie: herdr-preview-4321=secret\r\n\r\n");
-    let wrong = request("GET /a.md?herdr-token=guess HTTP/1.1\r\n\r\n");
-    let stranger = request("GET /a.md HTTP/1.1\r\n\r\n");
-    assert_eq!(access(&signing_in, port, token), Access::SignIn);
-    assert_eq!(access(&signed_in, port, token), Access::Allowed);
-    assert_eq!(access(&wrong, port, token), Access::Denied);
-    assert_eq!(access(&stranger, port, token), Access::Denied);
+    let granted = |head: &str| access(&request(head), token);
+    assert_eq!(
+        granted("GET /secret/docs/a.md HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n"),
+        Access::Token {
+            path: "/docs/a.md".into()
+        }
+    );
+    assert_eq!(
+        granted("GET /secret HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n"),
+        Access::Token { path: "".into() }
+    );
+    assert_eq!(
+        granted("GET /secretive/a.md HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n"),
+        Access::Denied
+    );
+    assert_eq!(
+        granted("GET /guess/a.md HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n"),
+        Access::Denied
+    );
+}
+
+#[test]
+fn a_root_absolute_link_from_a_preview_page_is_granted_by_its_referer() {
+    let token = "secret";
+    let granted = |head: &str| access(&request(head), token);
+    assert_eq!(
+        granted(
+            "GET /style.css HTTP/1.1\r\nHost: 127.0.0.1:9\r\nReferer: http://127.0.0.1:9/secret/index.html\r\n\r\n"
+        ),
+        Access::Referred
+    );
+    // Another site, or another loopback port, never carries the token.
+    for referer in [
+        "http://evil.example/secret/index.html",
+        "http://127.0.0.1:10/secret/index.html",
+        "http://127.0.0.1:9/other/index.html",
+        "http://127.0.0.1:9/secretive/index.html",
+    ] {
+        assert_eq!(
+            granted(&format!(
+                "GET /style.css HTTP/1.1\r\nHost: 127.0.0.1:9\r\nReferer: {referer}\r\n\r\n"
+            )),
+            Access::Denied,
+            "{referer}"
+        );
+    }
+    assert_eq!(
+        granted("GET /style.css HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n"),
+        Access::Denied
+    );
+}
+
+#[test]
+fn a_page_navigation_is_told_apart_from_a_subresource() {
+    assert!(is_navigation(&request(
+        "GET /a HTTP/1.1\r\nSec-Fetch-Mode: navigate\r\n\r\n"
+    )));
+    assert!(!is_navigation(&request(
+        "GET /a.css HTTP/1.1\r\nSec-Fetch-Mode: no-cors\r\n\r\n"
+    )));
+    assert!(is_navigation(&request(
+        "GET /a HTTP/1.1\r\nAccept: text/html\r\n\r\n"
+    )));
 }

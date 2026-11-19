@@ -183,15 +183,16 @@ esac
 ///
 /// Why `stat -c` with a fallback: GNU and BusyBox give sub-second times that
 /// way; elsewhere `ls -ln` still notices size changes and minute changes.
+/// Why `-L`: a served link shows its target, so the target is what changes.
 pub(crate) const FINGERPRINT_SCRIPT: &str = r#"
 printf 'HERDR-PREVIEW-1\0'
 cd -- "$1" 2>/dev/null || { printf 'enoent\0'; exit 0; }
 shift
 printf 'sum\0'
 if stat -c '%y' . >/dev/null 2>&1; then
-  stat -c '%y %s %n' -- "$@" 2>/dev/null
+  stat -L -c '%y %s %n' -- "$@" 2>/dev/null
 else
-  ls -ln -- "$@" 2>/dev/null
+  ls -lnL -- "$@" 2>/dev/null
 fi | cksum
 "#;
 

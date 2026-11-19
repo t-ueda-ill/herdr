@@ -11,7 +11,7 @@ use crate::api::schema::{PreviewInfo, PreviewStartParams, PreviewStopParams, Res
 use crate::app::App;
 use crate::offhost::exec::{run_script_with, Programs};
 use crate::offhost::PaneEnvironment;
-use crate::preview::registry::{entry_relative, normalize_root};
+use crate::preview::registry::{entry_relative, host_entry_relative, normalize_root};
 use crate::preview::server::PreviewServer;
 use crate::preview::source::{FileSource, LocalSource, OffHostSource};
 use crate::server::client_shell::running_pane_off_host_shell;
@@ -106,36 +106,31 @@ impl App {
     fn start_preview(&mut self, params: PreviewStartParams) -> Result<PreviewInfo, Failure> {
         let environment = self.preview_environment(params.pane_id.as_deref())?;
         let invalid = |message: String| ("invalid_params", message);
-        let root = match &environment {
+        let (root, entry) = match &environment {
             None => {
                 if !Path::new(&params.root).is_absolute() {
                     return Err(invalid(format!("root must be absolute: {:?}", params.root)));
                 }
-                std::fs::canonicalize(&params.root)
-                    .map_err(|err| ("not_found", format!("{}: {err}", params.root)))?
-                    .to_string_lossy()
-                    .into_owned()
+                let root = std::fs::canonicalize(&params.root)
+                    .map_err(|err| ("not_found", format!("{}: {err}", params.root)))?;
+                // The root is canonical, so the entry must be too to compare.
+                let entry = match params.entry.as_deref() {
+                    None => String::new(),
+                    Some(entry) => {
+                        let entry = std::fs::canonicalize(entry)
+                            .unwrap_or_else(|_| Path::new(entry).to_path_buf());
+                        host_entry_relative(&root, &entry).map_err(invalid)?
+                    }
+                };
+                (crate::platform::file_path_display(&root), entry)
             }
             Some(_) => {
                 crate::offhost::ops::validate_path(&params.root)?;
-                normalize_root(&params.root)
+                let root = normalize_root(&params.root);
+                let entry = entry_relative(&root, params.entry.as_deref()).map_err(invalid)?;
+                (root, entry)
             }
         };
-        let entry = entry_relative(
-            &root,
-            params
-                .entry
-                .as_deref()
-                .map(|entry| match &environment {
-                    // The host root is canonical, so the entry must be too.
-                    None => std::fs::canonicalize(entry)
-                        .map(|path| path.to_string_lossy().into_owned())
-                        .unwrap_or_else(|_| entry.to_owned()),
-                    Some(_) => entry.to_owned(),
-                })
-                .as_deref(),
-        )
-        .map_err(invalid)?;
         let location = environment.as_ref().map(PaneEnvironment::location);
         if let Some(running) = self.previews.find(&root, location.as_ref(), &entry) {
             return Ok(running);

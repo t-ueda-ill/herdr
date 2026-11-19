@@ -84,15 +84,14 @@ impl PreviewServer {
         self.shared.port
     }
 
-    /// The address that signs the browser in and opens `entry`, a path below
-    /// the root (`""` for the root itself).
+    /// The address that opens `entry`, a path below the root (`""` for the
+    /// root itself). It carries the session token, so it is a secret.
     pub(crate) fn url(&self, entry: &str) -> String {
         format!(
-            "http://127.0.0.1:{}/{}?{}={}",
+            "http://127.0.0.1:{}/{}/{}",
             self.shared.port,
-            http::percent_encode_path(entry),
-            route::TOKEN_QUERY,
-            self.shared.token
+            self.shared.token,
+            http::percent_encode_path(entry)
         )
     }
 
@@ -231,10 +230,12 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
             return;
         }
     };
-    if request.path == EVENTS_PATH
-        && route::host_allowed(&request, shared.port)
-        && route::access(&request, shared.port, &shared.token) == Access::Allowed
-    {
+    let events = match route::access(&request, &shared.token) {
+        Access::Token { path } => path == EVENTS_PATH,
+        Access::Referred => request.path == EVENTS_PATH,
+        Access::Denied => false,
+    };
+    if events && route::host_allowed(&request, shared.port) {
         stream_events(stream, shared);
         return;
     }
@@ -256,6 +257,8 @@ impl Response {
                 ("Content-Type", content_type.to_owned()),
                 ("Cache-Control", "no-store".into()),
                 ("X-Content-Type-Options", "nosniff".into()),
+                // Keeps the token in the URL from leaving this origin.
+                ("Referrer-Policy", "same-origin".into()),
             ],
             body,
         }
@@ -305,7 +308,8 @@ fn respond(request: &Request, shared: &Shared) -> Response {
             None => Response::new(404, "text/plain; charset=utf-8", b"not found".to_vec()),
         };
     }
-    match route::access(request, shared.port, &shared.token) {
+    let prefix = format!("/{}", shared.token);
+    let path = match route::access(request, &shared.token) {
         Access::Denied => {
             return Response::message(
                 403,
@@ -313,25 +317,34 @@ fn respond(request: &Request, shared: &Shared) -> Response {
                 "Open the preview again from herdr.",
             )
         }
-        Access::SignIn => {
-            let mut response = Response::redirect(303, http::percent_encode_path(&request.path));
-            response.headers.push((
-                "Set-Cookie",
-                format!(
-                    "{}={}; Path=/; HttpOnly; SameSite=Strict",
-                    route::cookie_name(shared.port),
-                    shared.token
-                ),
-            ));
-            return response;
+        // Why redirect the bare token: relative links need the trailing slash.
+        Access::Token { path } if path.is_empty() => {
+            return Response::redirect(301, format!("{prefix}/"));
         }
-        Access::Allowed => {}
-    }
-    let Ok(relative) = route::relative_path(&request.path) else {
-        return Response::message(403, "Outside the preview", &request.path);
+        Access::Token { path } => path,
+        // A page loaded this way would lose the token for its own links.
+        Access::Referred if route::is_navigation(request) => {
+            let query = request
+                .query
+                .as_deref()
+                .map(|query| format!("?{query}"))
+                .unwrap_or_default();
+            return Response::redirect(
+                303,
+                format!(
+                    "{prefix}{}{query}",
+                    http::percent_encode_path(&request.path)
+                ),
+            );
+        }
+        Access::Referred => request.path.clone(),
+    };
+    let Ok(relative) = route::relative_path(&path) else {
+        return Response::message(403, "Outside the preview", &path);
     };
     let file = route::file_to_serve(&relative);
     shared.remember(&file);
+    let location = Location { prefix, path };
     let page = route::wants_page(request);
     if page {
         if let Some(format) = route::format_of(&file) {
@@ -348,7 +361,7 @@ fn respond(request: &Request, shared: &Shared) -> Response {
                         .push(("Content-Security-Policy", page::viewer_policy(host)));
                     response
                 }
-                Err(error) => read_failure(error, request, &file, page),
+                Err(error) => read_failure(error, &location, &file, page),
             };
         }
     }
@@ -358,7 +371,7 @@ fn respond(request: &Request, shared: &Shared) -> Response {
     if let Some(range_header) = range_header {
         let size = match shared.source.read(&file, Window::Probe) {
             Ok(probe) => probe.size,
-            Err(error) => return read_failure(error, request, &file, page),
+            Err(error) => return read_failure(error, &location, &file, page),
         };
         return match http::parse_range(Some(range_header), size) {
             ByteRange::Unsatisfiable => {
@@ -368,7 +381,9 @@ fn respond(request: &Request, shared: &Shared) -> Response {
                     .push(("Content-Range", format!("bytes */{size}")));
                 response
             }
-            ByteRange::Full => whole_file(shared, request, &file, content_type, false, page),
+            ByteRange::Full => {
+                whole_file(shared, request, &location, &file, content_type, false, page)
+            }
             ByteRange::Partial { start, end } => {
                 match shared.source.read(
                     &file,
@@ -387,17 +402,18 @@ fn respond(request: &Request, shared: &Shared) -> Response {
                         response.headers.push(("Accept-Ranges", "bytes".into()));
                         response
                     }
-                    Err(error) => read_failure(error, request, &file, page),
+                    Err(error) => read_failure(error, &location, &file, page),
                 }
             }
         };
     }
-    whole_file(shared, request, &file, content_type, html, page)
+    whole_file(shared, request, &location, &file, content_type, html, page)
 }
 
 fn whole_file(
     shared: &Shared,
     request: &Request,
+    location: &Location,
     file: &str,
     content_type: &str,
     html: bool,
@@ -414,15 +430,26 @@ fn whole_file(
             response.headers.push(("Accept-Ranges", "bytes".into()));
             response
         }
-        Err(error) => read_failure(error, request, file, page),
+        Err(error) => read_failure(error, location, file, page),
     }
 }
 
-fn read_failure(error: ReadError, request: &Request, file: &str, page: bool) -> Response {
+/// Where a request landed: the URL prefix that keeps the token, and the path
+/// below the root, for redirects that must keep both.
+struct Location {
+    prefix: String,
+    path: String,
+}
+
+fn read_failure(error: ReadError, location: &Location, file: &str, page: bool) -> Response {
     match error {
-        ReadError::Directory if !request.path.ends_with('/') => Response::redirect(
+        ReadError::Directory if !location.path.ends_with('/') => Response::redirect(
             301,
-            format!("{}/", http::percent_encode_path(&request.path)),
+            format!(
+                "{}{}/",
+                location.prefix,
+                http::percent_encode_path(&location.path)
+            ),
         ),
         ReadError::Directory | ReadError::NotFound if page => Response::message(
             404,
