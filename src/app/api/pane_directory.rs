@@ -401,6 +401,7 @@ impl App {
                 ));
             }
             let login = crate::pane::current_target_uses_login_shell(self.state.shell_mode);
+            let environment = environment.prepared_for_spawn();
             // Why not always `open_argv`: `pane.directory.open_editor` keeps
             // the exact command it has always run.
             let mut argv = if line.is_none() && mode == OpenFileMode::Editor {

@@ -830,30 +830,10 @@ mod tests {
 /// belonging to another uid, a symlink, or a directory accessible by others.
 pub(crate) fn shared_ssh_control_path(namespace: &Path, target: &str) -> std::io::Result<PathBuf> {
     use sha2::{Digest, Sha256};
-    use std::os::unix::{
-        ffi::OsStrExt,
-        fs::{DirBuilderExt, MetadataExt},
-    };
+    use std::os::unix::ffi::OsStrExt;
 
-    // Validate the resolved system temp directory, but retain the short /tmp
-    // spelling for sockets. On macOS /tmp resolves to /private/tmp; those extra
-    // bytes would consume the space OpenSSH needs for its staging suffix.
-    let base = Path::new("/tmp");
-    let resolved_base = std::fs::canonicalize(base)?;
-    let metadata = std::fs::symlink_metadata(&resolved_base)?;
-    if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o1000 == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "unsafe SSH control directory parent",
-        ));
-    }
-    let dir = base.join(format!("hssh-{}", unsafe { libc::geteuid() }));
-    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
-    validate_shared_ssh_dir(&dir)?;
+    let dir = shared_ssh_dir()?;
+    create_private_ssh_dir(&dir)?;
     let namespace = if namespace.is_absolute() {
         namespace.to_owned()
     } else {
@@ -879,6 +859,58 @@ pub(crate) fn shared_ssh_control_path(namespace: &Path, target: &str) -> std::io
         ));
     }
     Ok(path)
+}
+
+/// Makes the directory of a `ControlPath` from [`shared_ssh_control_path`]
+/// usable again after a `/tmp` cleaner removed it, so OpenSSH can bind the
+/// master socket there.
+///
+/// Why not trust a saved path and create its parent: a pane keeps the path
+/// across reconnects and cold restores, and a path outside this user's herdr
+/// directory is one herdr cannot vouch for.
+pub(crate) fn ensure_shared_ssh_control_dir(control_path: &Path) -> std::io::Result<()> {
+    ensure_ssh_control_dir_in(&shared_ssh_dir()?, control_path)
+}
+
+fn ensure_ssh_control_dir_in(dir: &Path, control_path: &Path) -> std::io::Result<()> {
+    if control_path.parent() != Some(dir) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "SSH control path is outside the herdr control directory",
+        ));
+    }
+    create_private_ssh_dir(dir)
+}
+
+/// `/tmp/hssh-<euid>`, once `/tmp` itself is a root-owned sticky directory.
+fn shared_ssh_dir() -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    // Validate the resolved system temp directory, but retain the short /tmp
+    // spelling for sockets. On macOS /tmp resolves to /private/tmp; those extra
+    // bytes would consume the space OpenSSH needs for its staging suffix.
+    let base = Path::new("/tmp");
+    let resolved_base = std::fs::canonicalize(base)?;
+    let metadata = std::fs::symlink_metadata(&resolved_base)?;
+    if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o1000 == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "unsafe SSH control directory parent",
+        ));
+    }
+    Ok(base.join(format!("hssh-{}", unsafe { libc::geteuid() })))
+}
+
+/// Creates `dir` with mode 0700 unless it exists, then refuses it unless it
+/// is private to the current user.
+fn create_private_ssh_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    validate_shared_ssh_dir(dir)
 }
 
 fn validate_shared_ssh_dir(dir: &Path) -> std::io::Result<()> {
@@ -1068,6 +1100,76 @@ mod shared_ssh_tests {
             std::io::ErrorKind::PermissionDenied
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_removed_control_directory_is_recreated_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = create_remote_ssh_config_dir("ctl").unwrap();
+        let dir = parent.join("hssh");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+
+        ensure_ssh_control_dir_in(&dir, &dir.join("abc-%C")).unwrap();
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o7777, 0o700);
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn an_existing_private_control_directory_is_kept_with_its_sockets() {
+        let parent = create_remote_ssh_config_dir("ctl").unwrap();
+        let dir = parent.join("hssh");
+        ensure_ssh_control_dir_in(&dir, &dir.join("abc-%C")).unwrap();
+        let socket = dir.join("abc-live");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+
+        ensure_ssh_control_dir_in(&dir, &dir.join("abc-%C")).unwrap();
+
+        assert!(socket.exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn an_unsafe_control_directory_is_refused() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let parent = create_remote_ssh_config_dir("ctl").unwrap();
+        let public = parent.join("public");
+        std::fs::create_dir(&public).unwrap();
+        std::fs::set_permissions(&public, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = parent.join("link");
+        symlink(&parent, &link).unwrap();
+
+        for dir in [&public, &link] {
+            assert_eq!(
+                ensure_ssh_control_dir_in(dir, &dir.join("abc-%C"))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+        }
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn a_control_path_outside_the_herdr_directory_is_refused_untouched() {
+        let parent = create_remote_ssh_config_dir("ctl").unwrap();
+        let dir = parent.join("hssh");
+        let elsewhere = parent.join("elsewhere");
+
+        let err = ensure_ssh_control_dir_in(&dir, &elsewhere.join("abc-%C")).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!dir.exists() && !elsewhere.exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn the_control_path_herdr_computes_is_ready_to_use() {
+        let path = shared_ssh_control_path(Path::new("/config/one"), "user@host").unwrap();
+
+        ensure_shared_ssh_control_dir(&path).unwrap();
     }
 }
 

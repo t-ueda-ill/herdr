@@ -106,7 +106,8 @@ impl EnvironmentLauncher {
 
 impl OffhostLauncher for EnvironmentLauncher {
     fn launch(&self, args: &[&str]) -> Result<StreamingChild, Failure> {
-        let (program, argv) = script_argv(&self.env, self.transfer, self.script, args)?;
+        let env = self.env.prepared_for_spawn();
+        let (program, argv) = script_argv(&env, self.transfer, self.script, args)?;
         let over_ssh = program == "ssh";
         let path = if over_ssh { &self.ssh } else { &self.docker };
         spawn_streaming(path, &argv).map_err(|error| match error {
@@ -184,5 +185,35 @@ impl OffhostLauncher for LocalShellLauncher {
 
     fn begin_budget(&self) -> Duration {
         self.budget
+    }
+}
+
+#[cfg(test)]
+mod prepared_tests {
+    use super::*;
+
+    #[test]
+    fn a_transfer_whose_control_directory_cannot_be_made_safe_is_refused_before_ssh_runs() {
+        let launch = crate::ssh_host::SshLaunch::new(
+            "deploy@devbox".into(),
+            Some("/nonexistent/hssh-1/abc-%C".into()),
+        )
+        .unwrap();
+        let launcher = EnvironmentLauncher {
+            env: PaneEnvironment::Ssh(launch),
+            docker: PathBuf::from("/nonexistent/docker"),
+            ssh: PathBuf::from("/nonexistent/ssh"),
+            script: "true",
+            transfer: Transfer::UPLOAD,
+        };
+
+        let Err(failure) = launcher.launch(&[]) else {
+            panic!("the transfer must not start");
+        };
+
+        assert_eq!(
+            failure,
+            connection_not_shared(Transfer::UPLOAD, "deploy@devbox")
+        );
     }
 }

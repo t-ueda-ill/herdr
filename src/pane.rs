@@ -2500,6 +2500,29 @@ fn pane_shell_spawn_command_for_target(
     Ok(cmd)
 }
 
+/// [`pane_shell_spawn_command_for_target`] after preparing the ssh control
+/// directory the pane multiplexes through, as respawns, reconnects and cold
+/// restores need.
+fn prepared_pane_shell_command(
+    shell_config: PaneShellConfig<'_>,
+    target: ShellLaunchTarget,
+    cwd: &Path,
+    launch_env: &PaneLaunchEnv,
+) -> io::Result<CommandBuilder> {
+    let ssh = shell_config
+        .ssh
+        .map(crate::ssh_host::control::prepare_launch);
+    let container = shell_config
+        .container
+        .map(crate::ssh_host::control::prepare_container_launch);
+    let shell_config = PaneShellConfig {
+        ssh: ssh.as_ref(),
+        container: container.as_ref(),
+        ..shell_config
+    };
+    pane_shell_spawn_command_for_target(shell_config, target, cwd, launch_env)
+}
+
 /// True when panes launch an interactive PowerShell directly on Windows.
 /// Gates the prompt-based cwd reporting pipeline and the agent-exit shell
 /// respawn recovery.
@@ -2759,7 +2782,7 @@ impl PaneRuntime {
     ) -> std::io::Result<Self> {
         let windows_powershell_prompt_cwd_reporting =
             uses_windows_powershell_pane_shell(shell_config);
-        let cmd = pane_shell_spawn_command_for_target(
+        let cmd = prepared_pane_shell_command(
             shell_config,
             ShellLaunchTarget::current(),
             &cwd,
@@ -6286,6 +6309,72 @@ mod tests {
             pwsh.with_container(Some(&launch)),
             ShellLaunchTarget::Windows
         ));
+    }
+
+    fn prepared_argv(shell_config: PaneShellConfig<'_>) -> Vec<String> {
+        let cmd = prepared_pane_shell_command(
+            shell_config,
+            ShellLaunchTarget::OtherUnix,
+            &std::env::temp_dir(),
+            &PaneLaunchEnv::from_extra(Vec::new()),
+        )
+        .unwrap();
+        argv_strings(&cmd)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_spawned_ssh_pane_multiplexes_through_the_control_path_herdr_computed() {
+        let control_path = crate::ssh_host::control::test_control_path("prod");
+        let launch =
+            crate::ssh_host::SshLaunch::new("prod".into(), Some(control_path.clone())).unwrap();
+
+        let argv = prepared_argv(
+            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin)
+                .with_ssh(Some(&launch)),
+        );
+
+        assert_eq!(
+            &argv[..4],
+            ["ssh", "-C", "-S", &*control_path.to_string_lossy()]
+        );
+    }
+
+    #[test]
+    fn a_spawned_ssh_pane_whose_control_directory_cannot_be_made_safe_logs_in_without_multiplexing()
+    {
+        let launch = crate::ssh_host::SshLaunch::new(
+            "prod".into(),
+            Some("/nonexistent/hssh-1/abc-%C".into()),
+        )
+        .unwrap();
+
+        let argv = prepared_argv(
+            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin)
+                .with_ssh(Some(&launch)),
+        );
+
+        assert_eq!(argv, ["ssh", "-C", "-t", "prod"]);
+    }
+
+    #[test]
+    fn a_spawned_remote_container_pane_whose_control_directory_cannot_be_made_safe_runs_docker_without_multiplexing(
+    ) {
+        let launch = crate::container::ContainerLaunch {
+            ssh: crate::ssh_host::SshLaunch::new(
+                "deploy@prod".into(),
+                Some("/nonexistent/hssh-1/abc-%C".into()),
+            ),
+            ..test_container_launch()
+        };
+
+        let argv = prepared_argv(
+            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::Login)
+                .with_container(Some(&launch)),
+        );
+
+        assert_eq!(&argv[..2], ["ssh", "-C"]);
+        assert!(!argv.iter().any(|arg| arg == "-S"), "{argv:?}");
     }
 
     fn test_ssh_launch() -> crate::ssh_host::SshLaunch {

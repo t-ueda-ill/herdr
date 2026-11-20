@@ -231,7 +231,8 @@ pub(crate) struct FileIdentity {
 
 #[cfg(unix)]
 pub(crate) use unix_common::{
-    classify_child_exit, poll_fd_readable, read_fd, shared_ssh_control_path,
+    classify_child_exit, ensure_shared_ssh_control_dir, poll_fd_readable, read_fd,
+    shared_ssh_control_path,
 };
 #[cfg(unix)]
 pub(crate) use unix_common::{
@@ -1034,5 +1035,15 @@ pub(crate) fn shared_ssh_control_path(
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "interactive SSH recovery requires Unix OpenSSH multiplexing",
+    ))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn ensure_shared_ssh_control_dir(
+    _control_path: &std::path::Path,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "SSH control directories require Unix OpenSSH multiplexing",
     ))
 }
