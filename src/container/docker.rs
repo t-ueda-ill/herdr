@@ -190,7 +190,11 @@ pub(super) fn run_docker_with(
         DockerHost::Local => run_with_deadline(program, args, stdin, deadline),
         DockerHost::Ssh { host, control_path } => run_with_deadline(
             program,
-            &ssh_docker_argv(host, control_path.as_deref(), args),
+            &ssh_docker_argv(
+                host,
+                crate::ssh_host::control::prepare_control_path(control_path.as_deref()).as_deref(),
+                args,
+            ),
             stdin,
             deadline,
         ),
@@ -471,7 +475,10 @@ pub(super) mod tests {
                 fixture.display()
             ),
         );
-        let host = prod(Some("/tmp/ctl-%C"));
+        let host = DockerHost::Ssh {
+            host: "deploy@prod".into(),
+            control_path: Some(crate::ssh_host::control::test_control_path("prod")),
+        };
 
         let infos = list_running_containers_with(shim.program(), &host, secs(5)).unwrap();
 
@@ -485,6 +492,19 @@ pub(super) mod tests {
             logged.contains("docker 'inspect' '--type' 'container' 'abc123'"),
             "{logged}"
         );
+    }
+
+    #[test]
+    fn docker_over_ssh_whose_control_directory_cannot_be_made_safe_runs_without_multiplexing() {
+        let (shim, log) = remote_shim("unsafe-control", "echo");
+        let host = prod(Some("/nonexistent/hssh-1/abc-%C"));
+
+        let _ = list_running_containers_with(shim.program(), &host, secs(5));
+
+        let logged = std::fs::read_to_string(&log).unwrap();
+        let _ = std::fs::remove_file(&log);
+        assert!(!logged.contains("ControlMaster"), "{logged}");
+        assert!(logged.contains("deploy@prod"), "{logged}");
     }
 
     #[test]

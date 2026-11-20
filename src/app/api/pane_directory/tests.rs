@@ -357,6 +357,46 @@ async fn a_successful_probe_answers_with_the_editor_overlay_pane() {
 }
 
 #[tokio::test]
+async fn an_ssh_editor_whose_control_directory_cannot_be_made_safe_logs_in_without_multiplexing() {
+    let (mut app, pane, _) =
+        app_with_pane(PaneKind::Ssh(ssh(Some("/nonexistent/hssh-1/abc-%C"))), None);
+    let environment = app.pane_target(&pane).unwrap().environment;
+    let (result, rx) = probed(&app, &pane, environment, Ok(()));
+    let log = std::env::temp_dir().join(format!(
+        "herdr-editor-unsafe-control-{}.log",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&log);
+    let ssh = crate::noninteractive_process::fake_program::FakeProgram::new(
+        "ssh",
+        "editor-unsafe-control",
+        &format!("printf '%s\\n' \"$@\" > {}; sleep 30", log.display()),
+    );
+    let ssh_path = ssh.program();
+    let programs = Programs {
+        docker: std::path::Path::new("/nonexistent/docker"),
+        ssh: &ssh_path,
+    };
+
+    let opened = app.handle_pane_editor_probed_with(result, &programs);
+
+    assert!(opened, "{}", rx.try_recv().unwrap());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let logged = loop {
+        match std::fs::read_to_string(&log) {
+            Ok(logged) if !logged.is_empty() => break logged,
+            _ if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            other => panic!("the editor never ran ssh: {other:?}"),
+        }
+    };
+    let _ = std::fs::remove_file(&log);
+    assert!(!logged.lines().any(|arg| arg == "-S"), "{logged}");
+    assert!(logged.lines().any(|arg| arg == "devbox"), "{logged}");
+}
+
+#[tokio::test]
 async fn a_probe_for_a_pane_that_moved_to_another_environment_is_stale() {
     let (mut app, pane, _) = app_with_pane(PaneKind::Container(launch(Some("/work"))), None);
     let elsewhere = PaneEnvironment::Ssh(ssh(Some("/tmp/c")));

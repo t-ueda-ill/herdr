@@ -56,6 +56,16 @@ impl PaneEnvironment {
             _ => REMOTE_DOCKER_TIMEOUT,
         }
     }
+
+    /// This environment with its ssh host prepared by
+    /// [`crate::ssh_host::control::prepare_launch`], for spawning now.
+    pub(crate) fn prepared_for_spawn(&self) -> Self {
+        use crate::ssh_host::control::{prepare_container_launch, prepare_launch};
+        match self {
+            Self::Container(launch) => Self::Container(Box::new(prepare_container_launch(launch))),
+            Self::Ssh(launch) => Self::Ssh(prepare_launch(launch)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,7 +235,7 @@ pub(crate) fn run_script_with(
     args: &[&str],
     deadline: Instant,
 ) -> Result<Vec<u8>, ExecError> {
-    let (program, argv) = command_argv(env, script, args)?;
+    let (program, argv) = command_argv(&env.prepared_for_spawn(), script, args)?;
     let over_ssh = program == "ssh";
     let path = if over_ssh {
         programs.ssh
@@ -349,6 +359,14 @@ mod tests {
 
     fn ssh_launch(control_path: Option<&str>) -> SshLaunch {
         SshLaunch::new("deploy@devbox".into(), control_path.map(Into::into)).unwrap()
+    }
+
+    fn ssh_launch_through_its_master() -> SshLaunch {
+        SshLaunch::new(
+            "deploy@devbox".into(),
+            Some(crate::ssh_host::control::test_control_path("devbox")),
+        )
+        .unwrap()
     }
 
     fn strings(argv: Vec<OsString>) -> Vec<String> {
@@ -608,8 +626,22 @@ mod tests {
     }
 
     #[test]
+    fn an_ssh_pane_whose_control_directory_cannot_be_made_safe_is_refused_before_ssh_runs() {
+        let env = PaneEnvironment::Ssh(ssh_launch(Some("/nonexistent/hssh-1/abc-%C")));
+
+        let result = run_with_fakes(&env, "unsafe-control", "exit 0", Duration::from_secs(5));
+
+        assert_eq!(
+            result,
+            Err(ExecError::SshControlUnavailable {
+                host: "deploy@devbox".into()
+            })
+        );
+    }
+
+    #[test]
     fn ssh_login_failures_ask_the_user_to_open_an_ssh_pane() {
-        let env = PaneEnvironment::Ssh(ssh_launch(Some("/tmp/c")));
+        let env = PaneEnvironment::Ssh(ssh_launch_through_its_master());
 
         let result = run_with_fakes(
             &env,
@@ -633,7 +665,7 @@ mod tests {
 
     #[test]
     fn other_ssh_failures_report_the_first_stderr_line() {
-        let env = PaneEnvironment::Ssh(ssh_launch(Some("/tmp/c")));
+        let env = PaneEnvironment::Ssh(ssh_launch_through_its_master());
 
         let result = run_with_fakes(
             &env,
@@ -667,7 +699,7 @@ mod tests {
 
     #[test]
     fn a_remote_without_sh_reports_offhost_shell_unavailable() {
-        let env = PaneEnvironment::Ssh(ssh_launch(Some("/tmp/c")));
+        let env = PaneEnvironment::Ssh(ssh_launch_through_its_master());
 
         let result = run_with_fakes(
             &env,
@@ -715,7 +747,7 @@ mod tests {
         let docker = run_script_with(&missing, &container(None, None), "true", &[], deadline);
         let ssh = run_script_with(
             &missing,
-            &PaneEnvironment::Ssh(ssh_launch(Some("/tmp/c"))),
+            &PaneEnvironment::Ssh(ssh_launch_through_its_master()),
             "true",
             &[],
             deadline,
