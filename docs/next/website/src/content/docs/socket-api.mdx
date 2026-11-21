@@ -699,7 +699,7 @@ With `"result_file": true`, Herdr adds one line to the prompt that asks the agen
 { "id": "3", "method": "task.result", "params": { "task_id": "t_4" } }
 ```
 
-`requested_by` names the pane that asks; the CLI fills it from `HERDR_PANE_ID`. Herdr records that pane's terminal as `requester_terminal_id` and, when the pane runs a task at that time, that task as `parent_task_id`. A pane Herdr does not know records nothing. `task.submit` fails with `task_cycle` when the target is the asking pane, or already waits through running tasks for it, because neither task could then start.
+`requested_by` names the pane that asks; the CLI fills it from `HERDR_PANE_ID`. Herdr records that pane's terminal as `requester_terminal_id` and, when the pane runs a task at that time, that task as `parent_task_id`. A pane Herdr does not know records nothing. `task.submit` fails with `task_cycle` when the target is the asking pane, or already waits for it through running or queued tasks, because neither task could then start.
 
 | `state` | Meaning |
 | --- | --- |

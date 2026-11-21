@@ -1,7 +1,7 @@
 //! Prompt tasks: pure bookkeeping, no PTY and no clock. The App feeds agent
 //! status changes and time in, and runs the returned effects.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{AgentStatus, Location, TaskEvidence, TaskState};
@@ -382,24 +382,30 @@ impl TaskTable {
         Ok(effects)
     }
 
-    /// True when `target` already waits, through running tasks, for `requester`:
-    /// sending would leave both waiting on each other.
+    /// True when `target` already waits, through running or queued tasks, for
+    /// `requester`: sending would leave both waiting on each other.
     pub(crate) fn would_cycle(&self, target: &TerminalId, requester: Option<&TerminalId>) -> bool {
-        let mut cursor = requester;
-        // Why a step limit: a chain longer than all lanes must repeat.
-        for _ in 0..=self.lanes.len() {
-            let Some(terminal) = cursor else {
-                return false;
-            };
+        let mut pending: Vec<&TerminalId> = requester.into_iter().collect();
+        let mut seen: HashSet<&TerminalId> = HashSet::new();
+        while let Some(terminal) = pending.pop() {
             if terminal == target {
                 return true;
             }
-            // Why not parent tasks: a chief that a person drives has no task.
-            cursor = self
-                .lanes
-                .get(terminal)
-                .and_then(|lane| self.tasks.get(&lane.active?))
-                .and_then(|task| task.requester.as_ref());
+            if !seen.insert(terminal) {
+                continue;
+            }
+            let Some(lane) = self.lanes.get(terminal) else {
+                continue;
+            };
+            // Why queued tasks too: a busy agent's queue holds the requests
+            // that its requesters wait for. Why not parent tasks: a chief that
+            // a person drives has no task.
+            pending.extend(
+                lane.active
+                    .iter()
+                    .chain(lane.queue.iter())
+                    .filter_map(|id| self.tasks.get(id)?.requester.as_ref()),
+            );
         }
         false
     }

@@ -848,3 +848,42 @@ fn dropping_a_remote_task_leaves_its_result_file_to_the_remote() {
         .iter()
         .any(|effect| matches!(effect, Effect::RemoveResultFile(_))));
 }
+
+#[test]
+fn asking_back_a_busy_agent_that_queued_a_task_for_you_is_a_cycle() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    // b works on its own; a's task for b waits in b's queue.
+    let (queued, _) = table.submit(
+        asked_by("b", "check this", "a"),
+        agent(AgentStatus::Working, 3),
+        clock.at(0),
+    );
+    assert_eq!(state(&table, queued), TaskState::Queued);
+
+    assert!(table.would_cycle(&terminal("a"), Some(&terminal("b"))));
+    assert!(!table.would_cycle(&terminal("c"), Some(&terminal("b"))));
+}
+
+#[test]
+fn a_cycle_is_found_through_any_of_several_requesters() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    table.submit(
+        asked_by("b", "one", "x"),
+        agent(AgentStatus::Working, 3),
+        clock.at(0),
+    );
+    table.submit(
+        asked_by("b", "two", "a"),
+        agent(AgentStatus::Working, 3),
+        clock.at(10),
+    );
+    table.submit(
+        asked_by("a", "three", "y"),
+        agent(AgentStatus::Working, 3),
+        clock.at(20),
+    );
+
+    assert!(table.would_cycle(&terminal("y"), Some(&terminal("b"))));
+}
