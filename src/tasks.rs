@@ -282,10 +282,9 @@ impl TaskTable {
         let Some(lane) = self.lanes.get_mut(terminal) else {
             return;
         };
-        let ready = matches!(
-            lane.agent.status,
-            AgentStatus::Idle | AgentStatus::Done | AgentStatus::Unknown
-        );
+        // Why not also `unknown`: the prompt could land in a turn that is
+        // still running, and the task would then claim that turn's end.
+        let ready = matches!(lane.agent.status, AgentStatus::Idle | AgentStatus::Done);
         if lane.active.is_some() || !ready {
             return;
         }
@@ -343,7 +342,8 @@ impl TaskTable {
         }
     }
 
-    /// True while the terminal has, or had, a task; other terminals skip all task work.
+    /// True from the first task of the terminal until the terminal is gone,
+    /// even when all its tasks are finished. Other terminals skip all task work.
     pub(crate) fn has_lane(&self, terminal: &TerminalId) -> bool {
         self.lanes.contains_key(terminal)
     }

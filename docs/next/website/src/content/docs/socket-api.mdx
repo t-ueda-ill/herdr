@@ -689,7 +689,7 @@ The result is `task_info` with a `task` object: `task_id` (`t_<n>`, numbers rest
 
 | `state` | Meaning |
 | --- | --- |
-| `queued` | The agent is working or another task is ahead; nothing was sent yet |
+| `queued` | The agent is not `idle` or `done`, or another task is ahead; nothing was sent yet |
 | `submitted` | Written to the pane; waiting for the agent to react |
 | `running` | The agent became `working` after the send |
 | `needs_input` | The agent became `blocked` after the send |
