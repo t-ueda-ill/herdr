@@ -117,10 +117,10 @@ operations::define_operations! {
     AgentStart(AgentStartParams) => "agent.start", true, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
-    TaskSubmit(TaskSubmitParams) => "task.submit", false, false;
+    TaskSubmit(TaskSubmitParams) => "task.submit", true, false;
     TaskGet(TaskTarget) => "task.get", false, false;
     TaskList(TaskListParams) => "task.list", false, false;
-    TaskCancel(TaskTarget) => "task.cancel", false, false;
+    TaskCancel(TaskTarget) => "task.cancel", true, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;
     PaneSplitInherit(PaneSplitParams) => "pane.split_inherit", true, true;
     PaneSwap(PaneSwapParams) => "pane.swap", true, true;
