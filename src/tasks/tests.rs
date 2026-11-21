@@ -37,6 +37,8 @@ fn task(terminal_name: &str, text: &str) -> NewTask {
         location: Location::new(None, None),
         text: text.into(),
         key: None,
+        result_dir: None,
+        result_place: super::ResultPlace::Host,
     }
 }
 
@@ -329,6 +331,10 @@ fn a_failed_write_loses_the_task_and_sends_the_next() {
     let lost = table.get(first).unwrap();
     assert_eq!(lost.state, TaskState::Lost);
     assert_eq!(lost.reason.as_deref(), Some("pty closed"));
+    assert_eq!(
+        lost.submitted_at_ms, None,
+        "the prompt never reached the pane"
+    );
     assert!(effects.contains(&Effect::Submit(second)));
 }
 
@@ -628,4 +634,106 @@ fn a_key_is_forgotten_with_its_dropped_task() {
         .unwrap();
 
     assert_ne!(fresh, old);
+}
+
+#[test]
+fn a_result_dir_names_one_result_file_per_task_and_asks_for_it_in_the_prompt() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let new = NewTask {
+        result_dir: Some("/tmp/herdr-task/boot1".into()),
+        ..task("a", "plan the fix")
+    };
+
+    let (id, _) = table.submit(new, agent(AgentStatus::Idle, 3), clock.at(0));
+
+    let task = table.get(id).unwrap();
+    let path = format!("/tmp/herdr-task/boot1/{}.md", id.public());
+    assert_eq!(task.result_path.as_deref(), Some(path.as_str()));
+    assert_eq!(task.text, "plan the fix");
+    let prompt = task.prompt();
+    assert!(prompt.starts_with("plan the fix\n\n"), "{prompt}");
+    assert!(prompt.contains(&path), "{prompt}");
+}
+
+#[test]
+fn without_a_result_dir_the_prompt_is_the_text_as_given() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+
+    let (id, _) = table.submit(task("a", "fix"), agent(AgentStatus::Idle, 3), clock.at(0));
+
+    let task = table.get(id).unwrap();
+    assert_eq!(task.result_path, None);
+    assert_eq!(task.prompt(), "fix");
+}
+
+#[test]
+fn the_first_saved_screen_tail_of_a_task_stays() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (id, _) = table.submit(task("a", "fix"), agent(AgentStatus::Idle, 3), clock.at(0));
+
+    table.save_screen_tail(id, "at the end".into());
+    table.save_screen_tail(id, "later".into());
+
+    assert_eq!(
+        table.get(id).unwrap().screen_tail.as_deref(),
+        Some("at the end")
+    );
+}
+
+#[test]
+fn dropping_a_finished_task_removes_its_local_result_file() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let local = NewTask {
+        result_dir: Some("/tmp/herdr-task-x".into()),
+        ..task("a", "plan")
+    };
+    let (old, _) = table.submit(local, agent(AgentStatus::Working, 3), clock.at(0));
+    table.cancel(old, clock.at(0)).unwrap();
+
+    let mut effects = Vec::new();
+    for n in 1..=FINISHED_TASKS_KEPT {
+        let (id, _) = table.submit(
+            task("a", "x"),
+            agent(AgentStatus::Working, 3),
+            clock.at(n as u64),
+        );
+        effects.extend(table.cancel(id, clock.at(n as u64)).unwrap());
+    }
+
+    let path = format!("/tmp/herdr-task-x/{}.md", old.public());
+    assert!(effects.contains(&Effect::RemoveResultFile(path)));
+    // The folder is the task's own, so it goes with the file.
+}
+
+#[test]
+fn dropping_a_remote_task_leaves_its_result_file_to_the_remote() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let remote = NewTask {
+        result_dir: Some("/tmp/herdr-task-y".into()),
+        result_place: super::ResultPlace::OffHost(Box::new(crate::offhost::PaneEnvironment::Ssh(
+            crate::ssh_host::SshLaunch::new("devbox".into(), None).expect("ssh launch"),
+        ))),
+        ..task("a", "plan")
+    };
+    let (old, _) = table.submit(remote, agent(AgentStatus::Working, 3), clock.at(0));
+    table.cancel(old, clock.at(0)).unwrap();
+
+    let mut effects = Vec::new();
+    for n in 1..=FINISHED_TASKS_KEPT {
+        let (id, _) = table.submit(
+            task("a", "x"),
+            agent(AgentStatus::Working, 3),
+            clock.at(n as u64),
+        );
+        effects.extend(table.cancel(id, clock.at(n as u64)).unwrap());
+    }
+
+    assert!(!effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::RemoveResultFile(_))));
 }

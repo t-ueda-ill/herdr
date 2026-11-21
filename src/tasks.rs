@@ -37,6 +37,8 @@ pub(crate) enum Effect {
     Submit(TaskId),
     /// Publish `task.updated` for the task.
     Emit(TaskId),
+    /// Delete the local result file of a task the table no longer keeps.
+    RemoveResultFile(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +48,17 @@ pub(crate) struct NewTask {
     pub(crate) location: Location,
     pub(crate) text: String,
     pub(crate) key: Option<String>,
+    /// Folder on the task's location for its result file; none asks for no file.
+    pub(crate) result_dir: Option<String>,
+    /// Where the pane's shell ran at submit, so the file stays readable later.
+    pub(crate) result_place: ResultPlace,
+}
+
+/// Where `task.result` reads the result file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResultPlace {
+    Host,
+    OffHost(Box<crate::offhost::PaneEnvironment>),
 }
 
 /// The agent as the App sees it at one moment.
@@ -72,8 +85,27 @@ pub(crate) struct Task {
     pub(crate) finished_at_ms: Option<u64>,
     pub(crate) reason: Option<String>,
     pub(crate) key: Option<String>,
+    pub(crate) result_path: Option<String>,
+    pub(crate) result_place: ResultPlace,
+    /// The end of the pane when the task finished; the fallback result.
+    pub(crate) screen_tail: Option<String>,
     submit_seq: u64,
     accept_deadline: Option<Instant>,
+}
+
+impl Task {
+    /// The text written to the pane: the caller's text, then the result-file line.
+    pub(crate) fn prompt(&self) -> std::borrow::Cow<'_, str> {
+        match &self.result_path {
+            // Why not localized: Herdr does not know which language the agent uses.
+            Some(path) => format!(
+                "{}\n\nWhen you finish, write only your result to {path} (if the folder is missing, create it so that only you can read it).",
+                self.text
+            )
+            .into(),
+            None => self.text.as_str().into(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -103,6 +135,18 @@ struct Lane {
     active: Option<TaskId>,
     queue: VecDeque<TaskId>,
     agent: AgentSnapshot,
+}
+
+/// 128 bits from SipHash keys that std seeds from the OS: another user on the
+/// host must not guess a result folder and create it first.
+pub(crate) fn unguessable_name() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let half = || {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u32(std::process::id());
+        hasher.finish()
+    };
+    format!("{:016x}{:016x}", half(), half())
 }
 
 impl TaskTable {
@@ -167,6 +211,11 @@ impl TaskTable {
                 finished_at_ms: None,
                 reason: None,
                 key: new.key,
+                result_path: new
+                    .result_dir
+                    .map(|dir| format!("{dir}/{}.md", id.public())),
+                result_place: new.result_place,
+                screen_tail: None,
                 submit_seq: 0,
                 accept_deadline: None,
             },
@@ -195,6 +244,10 @@ impl TaskTable {
             return effects;
         }
         let terminal = task.terminal.clone();
+        if let Some(task) = self.tasks.get_mut(&id) {
+            // The prompt never reached the pane.
+            task.submitted_at_ms = None;
+        }
         self.finish(id, TaskState::Lost, Some(reason), now, &mut effects);
         self.release_lane(&terminal, id, now, &mut effects);
         effects
@@ -318,6 +371,13 @@ impl TaskTable {
         Ok(effects)
     }
 
+    /// Keeps the first tail only: a later read can show the next task's turn.
+    pub(crate) fn save_screen_tail(&mut self, id: TaskId, tail: String) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.screen_tail.get_or_insert(tail);
+        }
+    }
+
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         self.lanes
             .values()
@@ -385,8 +445,17 @@ impl TaskTable {
         self.finished.push_back(id);
         while self.finished.len() > FINISHED_TASKS_KEPT {
             if let Some(old) = self.finished.pop_front() {
-                if let Some(key) = self.tasks.remove(&old).and_then(|task| task.key) {
+                let Some(dropped) = self.tasks.remove(&old) else {
+                    continue;
+                };
+                if let Some(key) = dropped.key {
                     self.keys.remove(&key);
+                }
+                // Why not remote files: removing them needs the remote; the
+                // temp cleaner there removes them.
+                if let (Some(path), ResultPlace::Host) = (dropped.result_path, dropped.result_place)
+                {
+                    effects.push(Effect::RemoveResultFile(path));
                 }
             }
         }

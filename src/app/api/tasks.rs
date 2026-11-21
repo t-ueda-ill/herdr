@@ -6,7 +6,9 @@ use crate::api::schema::{
     TaskListParams, TaskSubmitParams, TaskTarget,
 };
 use crate::app::App;
-use crate::tasks::{AgentSnapshot, CancelError, Effect, KeyConflict, NewTask, Now, TaskId};
+use crate::tasks::{
+    AgentSnapshot, CancelError, Effect, KeyConflict, NewTask, Now, ResultPlace, TaskId,
+};
 use crate::terminal::TerminalId;
 
 use super::super::api_helpers::pane_agent_status;
@@ -62,11 +64,40 @@ impl App {
             .pane_info(validated.ws_idx, validated.pane_id)
             .and_then(|pane| pane.location)
             .unwrap_or_else(|| Location::new(None, None));
+        // Why not `location`: it comes from saved metadata, and a cold-restored
+        // pane can run a host shell while it still names its old container.
+        let result_place = match crate::server::client_shell::running_pane_off_host_shell(
+            self,
+            validated.ws_idx,
+            validated.pane_id,
+        ) {
+            Some(crate::server::client_shell::RunningOffHostShell::Container(launch)) => {
+                ResultPlace::OffHost(Box::new(crate::offhost::PaneEnvironment::Container(
+                    Box::new(launch.clone()),
+                )))
+            }
+            Some(crate::server::client_shell::RunningOffHostShell::Ssh(launch)) => {
+                ResultPlace::OffHost(Box::new(crate::offhost::PaneEnvironment::Ssh(
+                    launch.clone(),
+                )))
+            }
+            None => ResultPlace::Host,
+        };
+        let result_dir = if params.result_file {
+            match task_result_dir(&result_place) {
+                Ok(dir) => Some(dir),
+                Err(message) => return encode_error(id, "task_result_folder_unsafe", message),
+            }
+        } else {
+            None
+        };
         let key = params.key.clone();
         let submitted = self.state.tasks.submit_idempotent(
             NewTask {
                 terminal,
                 target: params.target,
+                result_dir,
+                result_place,
                 location,
                 text: params.text,
                 key: params.key,
@@ -200,6 +231,7 @@ impl App {
         while let Some(effect) = pending.pop_front() {
             match effect {
                 Effect::Emit(task) => {
+                    self.save_finished_screen_tail(task);
                     if let Some(task) = self.task_info(task) {
                         self.emit_event(EventEnvelope {
                             event: EventKind::TaskUpdated,
@@ -212,7 +244,38 @@ impl App {
                         pending.extend(self.state.tasks.submit_failed(task, reason, task_now()));
                     }
                 }
+                // Why on this thread: one unlink in the local temp folder, and
+                // only when a finished task leaves the kept list.
+                Effect::RemoveResultFile(path) => {
+                    let path = std::path::Path::new(&path);
+                    let _ = std::fs::remove_file(path);
+                    // The folder belongs to this task alone.
+                    if let Some(folder) = path.parent() {
+                        let _ = std::fs::remove_dir(folder);
+                    }
+                }
             }
+        }
+    }
+
+    /// Runs before the next queued task is written, so the tail is this task's.
+    fn save_finished_screen_tail(&mut self, task: TaskId) {
+        let Some((terminal, finished, sent, saved)) = self.state.tasks.get(task).map(|task| {
+            (
+                task.terminal.clone(),
+                task.state.is_finished(),
+                task.submitted_at_ms.is_some(),
+                task.screen_tail.is_some(),
+            )
+        }) else {
+            return;
+        };
+        // Why not a task cancelled in the queue: the screen shows another task.
+        if !finished || !sent || saved {
+            return;
+        }
+        if let Some(tail) = self.task_screen_tail(&terminal) {
+            self.state.tasks.save_screen_tail(task, tail);
         }
     }
 
@@ -222,7 +285,7 @@ impl App {
             .state
             .tasks
             .get(task)
-            .map(|task| (task.terminal.clone(), task.text.clone()))
+            .map(|task| (task.terminal.clone(), task.prompt().into_owned()))
             .ok_or_else(|| "task was dropped".to_string())?;
         let pane = self
             .terminal_public_pane_id(&terminal)
@@ -283,15 +346,19 @@ impl App {
             finished_at_ms: task.finished_at_ms,
             reason: task.reason.clone(),
             key: task.key.clone(),
+            result_path: task.result_path.clone(),
         })
     }
 
-    fn terminal_pane(&self, terminal: &TerminalId) -> Option<(usize, crate::layout::PaneId)> {
+    pub(super) fn terminal_pane(
+        &self,
+        terminal: &TerminalId,
+    ) -> Option<(usize, crate::layout::PaneId)> {
         self.terminal_target_for_terminal_id(terminal.as_str())
             .map(|target| (target.ws_idx, target.pane_id))
     }
 
-    fn terminal_public_pane_id(&self, terminal: &TerminalId) -> Option<String> {
+    pub(super) fn terminal_public_pane_id(&self, terminal: &TerminalId) -> Option<String> {
         let (ws_idx, pane_id) = self.terminal_pane(terminal)?;
         self.public_pane_id(ws_idx, pane_id)
     }
@@ -308,6 +375,31 @@ fn task_key_conflict(id: String, key: &str, conflict: KeyConflict) -> String {
             conflict.existing.public()
         ),
     )
+}
+
+/// A new folder directly in the temp folder for each task. Why new: an
+/// existing folder could be another user's. Why not a shared parent such as
+/// `/tmp/herdr-task/`: its owner could swap our folder, while the sticky temp
+/// folder lets only us remove ours. Why per task: task numbers restart with
+/// the server, so an old run's `t_1.md` must not answer for a new `t_1`.
+fn task_result_dir(place: &ResultPlace) -> Result<String, String> {
+    match place {
+        ResultPlace::Host => {
+            let dir = std::env::temp_dir()
+                .join(format!("herdr-task-{}", crate::tasks::unguessable_name()));
+            crate::platform::create_private_dir(&dir)
+                .map_err(|err| format!("cannot create the task result folder: {err}"))?;
+            Ok(dir.display().to_string())
+        }
+        ResultPlace::OffHost(_) => Ok(remote_result_dir()),
+    }
+}
+
+/// One folder per task: other users of the remote host must neither share it
+/// nor learn its name. Why not the pane's directory: the result must not land
+/// in the repository.
+fn remote_result_dir() -> String {
+    format!("/tmp/herdr-task-{}", crate::tasks::unguessable_name())
 }
 
 fn task_not_found(id: String, task_id: &str) -> String {
@@ -342,7 +434,9 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
-    use crate::api::schema::{ErrorResponse, SuccessResponse, TaskEvidence, TaskState};
+    use crate::api::schema::{
+        ErrorResponse, SuccessResponse, TaskEvidence, TaskResult, TaskResultSource, TaskState,
+    };
     use crate::config::Config;
     use crate::detect::{Agent, AgentState};
     use crate::events::AppEvent;
@@ -388,20 +482,30 @@ mod tests {
             self.submit_keyed(text, None)
         }
 
-        fn submit_raw(&mut self, text: &str, key: Option<&str>) -> String {
+        fn submit_raw(&mut self, text: &str, key: Option<&str>, result_file: bool) -> String {
             self.app.handle_task_submit(
                 "req".into(),
                 TaskSubmitParams {
                     target: "reviewer".into(),
                     text: text.into(),
                     key: key.map(str::to_string),
+                    result_file,
                 },
             )
         }
 
+        fn submit_with(&mut self, text: &str, result_file: bool) -> TaskInfo {
+            let response = self.submit_raw(text, None, result_file);
+            Self::task_of(&response)
+        }
+
         fn submit_keyed(&mut self, text: &str, key: Option<&str>) -> TaskInfo {
-            let response = self.submit_raw(text, key);
-            let success: SuccessResponse = serde_json::from_str(&response)
+            let response = self.submit_raw(text, key, false);
+            Self::task_of(&response)
+        }
+
+        fn task_of(response: &str) -> TaskInfo {
+            let success: SuccessResponse = serde_json::from_str(response)
                 .unwrap_or_else(|_| panic!("task.submit failed: {response}"));
             let ResponseResult::TaskInfo { task } = success.result else {
                 panic!("expected task info: {response}");
@@ -448,6 +552,39 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
             written
+        }
+
+        fn result(&mut self, task_id: &str) -> Result<TaskResult, ErrorResponse> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handled = self.app.handle_deferred_task_api_request(
+                crate::api::schema::Request {
+                    id: "req".into(),
+                    method: crate::api::schema::Method::TaskResult(TaskTarget {
+                        task_id: task_id.into(),
+                    }),
+                },
+                tx,
+            );
+            assert!(handled, "task.result was not taken");
+            let response = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("task.result answered");
+            match serde_json::from_str::<SuccessResponse>(&response) {
+                Ok(success) => match success.result {
+                    ResponseResult::TaskResult { result } => Ok(result),
+                    _ => panic!("expected task result: {response}"),
+                },
+                Err(_) => Err(serde_json::from_str(&response)
+                    .unwrap_or_else(|_| panic!("unexpected response: {response}"))),
+            }
+        }
+
+        fn pane_prints(&self, bytes: &[u8]) {
+            self.app
+                .state
+                .runtime_for_pane_in_workspace(&self.app.terminal_runtimes, 0, self.pane_id)
+                .expect("pane runtime")
+                .test_process_pty_bytes(bytes);
         }
 
         fn task_events(&self) -> Vec<TaskInfo> {
@@ -533,6 +670,7 @@ mod tests {
                 target: "reviewer".into(),
                 text: "x".into(),
                 key: None,
+                result_file: false,
             },
         );
 
@@ -659,7 +797,7 @@ mod tests {
         let mut fixture = fixture(AgentState::Idle);
         let first = fixture.submit_keyed("fix", Some("run/1"));
 
-        let response = fixture.submit_raw("something else", Some("run/1"));
+        let response = fixture.submit_raw("something else", Some("run/1"), false);
 
         let error: ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(error.error.code, "task_key_conflict");
@@ -670,9 +808,193 @@ mod tests {
     async fn an_empty_key_is_refused() {
         let mut fixture = fixture(AgentState::Idle);
 
-        let response = fixture.submit_raw("fix", Some(""));
+        let response = fixture.submit_raw("fix", Some(""), false);
 
         let error: ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(error.error.code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn a_result_file_task_asks_for_its_file_in_the_prompt() {
+        let mut fixture = fixture(AgentState::Idle);
+
+        let task = fixture.submit_with("plan the fix", true);
+
+        let path = task.result_path.clone().expect("result path");
+        let folder = std::path::Path::new(&path).parent().expect("result folder");
+        assert_eq!(folder.parent(), Some(std::env::temp_dir().as_path()));
+        let name = folder.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("herdr-task-"), "{name}");
+        assert!(path.ends_with(&format!("{}.md", task.task_id)), "{path}");
+        let written = String::from_utf8_lossy(&fixture.written_text()).into_owned();
+        assert!(written.starts_with("plan the fix"), "{written:?}");
+        assert!(written.contains(&path), "{written:?}");
+        assert_eq!(task.text, "plan the fix");
+    }
+
+    #[tokio::test]
+    async fn the_result_of_an_unfinished_task_is_refused() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit("fix");
+
+        let error = fixture.result(&task.task_id).unwrap_err();
+
+        assert_eq!(error.error.code, "task_not_finished");
+    }
+
+    #[tokio::test]
+    async fn the_result_of_an_unknown_task_is_not_found() {
+        let mut fixture = fixture(AgentState::Idle);
+
+        let error = fixture.result("t_404").unwrap_err();
+
+        assert_eq!(error.error.code, "task_not_found");
+    }
+
+    #[tokio::test]
+    async fn a_finished_task_returns_the_text_of_its_result_file() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit_with("plan", true);
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+        let path = std::path::PathBuf::from(task.result_path.clone().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "## plan\n1. fix the token check\n").unwrap();
+
+        let result = fixture.result(&task.task_id);
+        let _ = std::fs::remove_file(&path);
+
+        let result = result.expect("task result");
+        assert_eq!(result.source, TaskResultSource::File);
+        assert_eq!(result.text, "## plan\n1. fix the token check\n");
+        assert_eq!(result.path.as_deref(), task.result_path.as_deref());
+    }
+
+    #[tokio::test]
+    async fn a_finished_task_without_a_result_file_returns_the_screen_tail() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit("fix");
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+
+        let result = fixture.result(&task.task_id).expect("task result");
+
+        assert_eq!(result.source, TaskResultSource::Screen);
+        assert_eq!(result.path, None);
+    }
+
+    #[tokio::test]
+    async fn a_missing_result_file_falls_back_to_the_screen_tail() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit_with("plan", true);
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+
+        let result = fixture.result(&task.task_id).expect("task result");
+
+        assert_eq!(result.source, TaskResultSource::Screen);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_local_result_folder_is_made_for_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut fixture = fixture(AgentState::Idle);
+
+        let task = fixture.submit_with("plan", true);
+
+        let path = std::path::PathBuf::from(task.result_path.unwrap());
+        let folder = path.parent().unwrap();
+        let mode = std::fs::metadata(folder).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_dir(folder);
+        assert_eq!(mode, 0o700);
+    }
+
+    #[tokio::test]
+    async fn the_screen_fallback_is_the_tail_saved_when_the_task_finished() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit("fix");
+        fixture.pane_prints(b"answer of the first task\r\n");
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+        fixture.pane_prints(b"output of a later turn\r\n");
+
+        let result = fixture.result(&task.task_id).expect("task result");
+
+        assert_eq!(result.source, TaskResultSource::Screen);
+        assert!(
+            result.text.contains("answer of the first task"),
+            "{:?}",
+            result.text
+        );
+        assert!(!result.text.contains("later turn"), "{:?}", result.text);
+    }
+
+    #[tokio::test]
+    async fn a_result_read_waits_for_a_free_read_slot() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit_with("plan", true);
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+        let slots = fixture.app.directory_read_slots.clone();
+        let _held = slots
+            .clone()
+            .try_acquire_many_owned(slots.available_permits() as u32)
+            .unwrap();
+
+        let error = fixture.result(&task.task_id).unwrap_err();
+
+        assert_eq!(error.error.code, "directory_busy");
+    }
+
+    #[tokio::test]
+    async fn a_task_cancelled_before_it_was_sent_has_no_result() {
+        let mut fixture = fixture(AgentState::Idle);
+        fixture.submit("first");
+        fixture.agent_becomes(AgentState::Working);
+        let queued = fixture.submit("second");
+        assert_eq!(queued.state, TaskState::Queued);
+        fixture.pane_prints(b"output of the first task\r\n");
+
+        let response = fixture.app.handle_task_cancel(
+            "req".into(),
+            TaskTarget {
+                task_id: queued.task_id.clone(),
+            },
+        );
+        assert!(response.contains("cancelled"), "{response}");
+
+        let error = fixture.result(&queued.task_id).unwrap_err();
+        assert_eq!(error.error.code, "task_result_unavailable");
+    }
+
+    #[test]
+    fn each_remote_task_gets_its_own_unguessable_result_folder() {
+        let first = remote_result_dir();
+        let second = remote_result_dir();
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("/tmp/herdr-task-"), "{first}");
+        assert_eq!(first.len(), "/tmp/herdr-task-".len() + 32);
+    }
+
+    #[tokio::test]
+    async fn each_local_task_gets_its_own_new_result_folder() {
+        let mut fixture = fixture(AgentState::Idle);
+        let first = fixture.submit_with("one", true);
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+        let second = fixture.submit_with("two", true);
+
+        let folder = |task: &TaskInfo| {
+            std::path::PathBuf::from(task.result_path.clone().unwrap())
+                .parent()
+                .unwrap()
+                .to_path_buf()
+        };
+        let (first, second) = (folder(&first), folder(&second));
+        let _ = std::fs::remove_dir(&first);
+        let _ = std::fs::remove_dir(&second);
+        assert_ne!(first, second);
     }
 }

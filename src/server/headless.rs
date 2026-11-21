@@ -3447,6 +3447,12 @@ impl HeadlessServer {
                 .handle_deferred_pane_directory_api_request(msg.request, msg.respond_to);
             return changed;
         }
+        // Read-only: a worker may read the result file and answers `respond_to` itself.
+        if matches!(&msg.request.method, api::schema::Method::TaskResult(_)) {
+            self.app
+                .handle_deferred_task_api_request(msg.request, msg.respond_to);
+            return changed;
+        }
         if matches!(
             &msg.request.method,
             api::schema::Method::PaneUploadBegin(_)

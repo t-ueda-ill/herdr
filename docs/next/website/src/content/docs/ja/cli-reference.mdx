@@ -478,14 +478,15 @@ herdr agent explain --file PATH --agent LABEL [--json|--verbose]
 タスクは、Herdr が送ったあとも追跡するプロンプトです。状態は [ソケット API](/ja/docs/socket-api/#プロンプトタスク) を参照してください。
 
 ```bash
-herdr task submit <target> <text> [--key KEY] [--wait] [--until STATE]... [--timeout MS]
+herdr task submit <target> <text> [--key KEY] [--result-file] [--wait] [--until STATE]... [--timeout MS]
 herdr task get <task_id>
 herdr task list [--location ID]
 herdr task wait <task_id> [--until STATE]... [--timeout MS]
 herdr task cancel <task_id>
+herdr task result <task_id>
 ```
 
-`agent prompt --wait` の振る舞いは変わりません。ターンを追跡しないので、送る前から動いていたターンの終わりで返ることがあります。送ったプロンプトのターンを追うときは `task submit --wait` を使います。`task submit` は `agent prompt` と同じターゲットを受け取り、`agent prompt` が断る場合は同じように断ります。エージェントが作業中のときは、`idle` か `done` になるまでタスクを `queued` のまま待たせます。`--wait` を付けると、タスクが終わるまで、または `--until` で指定した状態（`running` や `needs_input` など）になるまで待ちます。結果としてタスクを出力し、`completed` か指定した状態なら終了コード 0、`stalled`・`lost`・`cancelled` で終わったら 1 を返します。`--timeout` が切れると `timeout` エラーを返しますが、タスクはそのまま続きます。`task cancel` が効くのは `queued` の間だけです。`--key` を付けると、同じ `task submit` をもう一度実行しても、プロンプトを二重に送らず最初のタスクを出力します。接続が切れたときや `--timeout` の後に、スクリプトから安全に再送できます。やり直すときは新しいキーを使います。
+`agent prompt --wait` の振る舞いは変わりません。ターンを追跡しないので、送る前から動いていたターンの終わりで返ることがあります。送ったプロンプトのターンを追うときは `task submit --wait` を使います。`task submit` は `agent prompt` と同じターゲットを受け取り、`agent prompt` が断る場合は同じように断ります。エージェントが作業中のときは、`idle` か `done` になるまでタスクを `queued` のまま待たせます。`--wait` を付けると、タスクが終わるまで、または `--until` で指定した状態（`running` や `needs_input` など）になるまで待ちます。結果としてタスクを出力し、`completed` か指定した状態なら終了コード 0、`stalled`・`lost`・`cancelled` で終わったら 1 を返します。`--timeout` が切れると `timeout` エラーを返しますが、タスクはそのまま続きます。`task cancel` が効くのは `queued` の間だけです。`--key` を付けると、同じ `task submit` をもう一度実行しても、プロンプトを二重に送らず最初のタスクを出力します。接続が切れたときや `--timeout` の後に、スクリプトから安全に再送できます。やり直すときは新しいキーを使います。`task result` は終わったタスクの結果を出力します。`--result-file` でエージェントに書かせたファイルがあればその内容を、無ければタスクが終わった時点のペインの末尾 40 行を返します。どちらかは出力の `source` でわかります。
 
 ## ダイレクトターミナルアタッチ
 
