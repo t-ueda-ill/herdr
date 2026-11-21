@@ -429,3 +429,20 @@ fn task_ids_round_trip_through_their_public_form() {
     assert_eq!(TaskId::parse("12"), None);
     assert_eq!(TaskId::parse("t_x"), None);
 }
+
+#[test]
+fn an_agent_in_an_unknown_state_keeps_the_task_queued_until_it_is_idle() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+
+    let (id, effects) = table.submit(
+        task("a", "fix"),
+        agent(AgentStatus::Unknown, 3),
+        clock.at(0),
+    );
+    assert_eq!(effects, vec![Effect::Emit(id)]);
+    assert_eq!(state(&table, id), TaskState::Queued);
+
+    table.on_agent_status(&terminal("a"), agent(AgentStatus::Idle, 4), clock.at(100));
+    assert_eq!(state(&table, id), TaskState::Submitted);
+}
