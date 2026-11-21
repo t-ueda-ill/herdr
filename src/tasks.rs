@@ -50,6 +50,15 @@ pub(crate) struct NewTask {
     pub(crate) result_dir: Option<String>,
     /// Terminal of the pane that asked for the task.
     pub(crate) requester: Option<TerminalId>,
+    /// Where the pane's shell ran at submit, so the file stays readable later.
+    pub(crate) result_place: ResultPlace,
+}
+
+/// Where `task.result` reads the result file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResultPlace {
+    Host,
+    OffHost(Box<crate::offhost::PaneEnvironment>),
 }
 
 /// The agent as the App sees it at one moment.
@@ -80,6 +89,9 @@ pub(crate) struct Task {
     pub(crate) requester: Option<TerminalId>,
     /// The task the requester ran when it asked.
     pub(crate) parent: Option<TaskId>,
+    pub(crate) result_place: ResultPlace,
+    /// The end of the pane when the task finished; the fallback result.
+    pub(crate) screen_tail: Option<String>,
     submit_seq: u64,
     accept_deadline: Option<Instant>,
 }
@@ -232,6 +244,8 @@ impl TaskTable {
                     .map(|dir| format!("{dir}/{}.md", id.public())),
                 requester: new.requester,
                 parent,
+                result_place: new.result_place,
+                screen_tail: None,
                 submit_seq: 0,
                 accept_deadline: None,
             },
@@ -403,6 +417,13 @@ impl TaskTable {
                 .and_then(|task| task.requester.as_ref());
         }
         false
+    }
+
+    /// Keeps the first tail only: a later read can show the next task's turn.
+    pub(crate) fn save_screen_tail(&mut self, id: TaskId, tail: String) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.screen_tail.get_or_insert(tail);
+        }
     }
 
     pub(crate) fn next_deadline(&self) -> Option<Instant> {

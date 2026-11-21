@@ -39,6 +39,7 @@ fn task(terminal_name: &str, text: &str) -> NewTask {
         key: None,
         result_dir: None,
         requester: None,
+        result_place: super::ResultPlace::Host,
     }
 }
 
@@ -782,4 +783,19 @@ fn a_finished_task_no_longer_links_its_terminal_to_the_requester() {
     );
 
     assert!(!table.would_cycle(&terminal("chief"), Some(&terminal("planner"))));
+}
+
+#[test]
+fn the_first_saved_screen_tail_of_a_task_stays() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (id, _) = table.submit(task("a", "fix"), agent(AgentStatus::Idle, 3), clock.at(0));
+
+    table.save_screen_tail(id, "at the end".into());
+    table.save_screen_tail(id, "later".into());
+
+    assert_eq!(
+        table.get(id).unwrap().screen_tail.as_deref(),
+        Some("at the end")
+    );
 }

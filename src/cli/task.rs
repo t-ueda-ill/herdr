@@ -129,7 +129,7 @@ pub(crate) fn command() -> Command {
             Command::new("result")
                 .about("Print the result of a finished task")
                 .arg(task_id_arg())
-                .after_help("The text comes from the result file of a --result-file task, or else from the last 40 lines of the agent pane. source tells which."),
+                .after_help("The text comes from the result file of a --result-file task, or else from the last 40 lines of the agent pane when the task ended. source tells which."),
         )
 }
 

@@ -6,7 +6,9 @@ use crate::api::schema::{
     TaskListParams, TaskSubmitParams, TaskTarget,
 };
 use crate::app::App;
-use crate::tasks::{AgentSnapshot, CancelError, Effect, KeyConflict, NewTask, Now, TaskId};
+use crate::tasks::{
+    AgentSnapshot, CancelError, Effect, KeyConflict, NewTask, Now, ResultPlace, TaskId,
+};
 use crate::terminal::TerminalId;
 
 use super::super::api_helpers::pane_agent_status;
@@ -79,6 +81,25 @@ impl App {
             .pane_info(validated.ws_idx, validated.pane_id)
             .and_then(|pane| pane.location)
             .unwrap_or_else(|| Location::new(None, None));
+        // Why not `location`: it comes from saved metadata, and a cold-restored
+        // pane can run a host shell while it still names its old container.
+        let result_place = match crate::server::client_shell::running_pane_off_host_shell(
+            self,
+            validated.ws_idx,
+            validated.pane_id,
+        ) {
+            Some(crate::server::client_shell::RunningOffHostShell::Container(launch)) => {
+                ResultPlace::OffHost(Box::new(crate::offhost::PaneEnvironment::Container(
+                    Box::new(launch.clone()),
+                )))
+            }
+            Some(crate::server::client_shell::RunningOffHostShell::Ssh(launch)) => {
+                ResultPlace::OffHost(Box::new(crate::offhost::PaneEnvironment::Ssh(
+                    launch.clone(),
+                )))
+            }
+            None => ResultPlace::Host,
+        };
         let key = params.key.clone();
         let submitted = self.state.tasks.submit_idempotent(
             NewTask {
@@ -86,7 +107,8 @@ impl App {
                 target: params.target,
                 result_dir: params
                     .result_file
-                    .then(|| task_result_dir(&location, self.state.tasks.run_id())),
+                    .then(|| task_result_dir(&result_place, self.state.tasks.run_id())),
+                result_place,
                 location,
                 text: params.text,
                 key: params.key,
@@ -221,6 +243,7 @@ impl App {
         while let Some(effect) = pending.pop_front() {
             match effect {
                 Effect::Emit(task) => {
+                    self.save_finished_screen_tail(task);
                     if let Some(task) = self.task_info(task) {
                         self.emit_event(EventEnvelope {
                             event: EventKind::TaskUpdated,
@@ -234,6 +257,25 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// Runs before the next queued task is written, so the tail is this task's.
+    fn save_finished_screen_tail(&mut self, task: TaskId) {
+        let Some((terminal, finished, saved)) = self.state.tasks.get(task).map(|task| {
+            (
+                task.terminal.clone(),
+                task.state.is_finished(),
+                task.screen_tail.is_some(),
+            )
+        }) else {
+            return;
+        };
+        if !finished || saved {
+            return;
+        }
+        if let Some(tail) = self.task_screen_tail(&terminal) {
+            self.state.tasks.save_screen_tail(task, tail);
         }
     }
 
@@ -340,9 +382,9 @@ fn task_key_conflict(id: String, key: &str, conflict: KeyConflict) -> String {
 /// A folder directly in the temp folder: a shared parent such as
 /// `/tmp/herdr-task/` could belong to another user, who could then swap our
 /// folder; the sticky temp folder lets only us remove ours.
-fn task_result_dir(location: &Location, run: &str) -> String {
-    match location.kind {
-        crate::api::schema::PaneLocationKind::Host => {
+fn task_result_dir(place: &ResultPlace, run: &str) -> String {
+    match place {
+        ResultPlace::Host => {
             let dir = std::env::temp_dir().join(format!("herdr-task-{run}"));
             match crate::platform::create_private_dir(&dir) {
                 Ok(()) => {}
@@ -542,6 +584,14 @@ mod tests {
                 Err(_) => Err(serde_json::from_str(&response)
                     .unwrap_or_else(|_| panic!("unexpected response: {response}"))),
             }
+        }
+
+        fn pane_prints(&self, bytes: &[u8]) {
+            self.app
+                .state
+                .runtime_for_pane_in_workspace(&self.app.terminal_runtimes, 0, self.pane_id)
+                .expect("pane runtime")
+                .test_process_pty_bytes(bytes);
         }
 
         fn task_events(&self) -> Vec<TaskInfo> {
@@ -901,5 +951,42 @@ mod tests {
         let task = Fixture::task_of(&response);
         assert_eq!(task.requester_terminal_id, None);
         assert_eq!(task.parent_task_id, None);
+    }
+
+    #[tokio::test]
+    async fn the_screen_fallback_is_the_tail_saved_when_the_task_finished() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit("fix");
+        fixture.pane_prints(b"answer of the first task\r\n");
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+        fixture.pane_prints(b"output of a later turn\r\n");
+
+        let result = fixture.result(&task.task_id).expect("task result");
+
+        assert_eq!(result.source, TaskResultSource::Screen);
+        assert!(
+            result.text.contains("answer of the first task"),
+            "{:?}",
+            result.text
+        );
+        assert!(!result.text.contains("later turn"), "{:?}", result.text);
+    }
+
+    #[tokio::test]
+    async fn a_result_read_waits_for_a_free_read_slot() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit_with("plan", true);
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+        let slots = fixture.app.directory_read_slots.clone();
+        let _held = slots
+            .clone()
+            .try_acquire_many_owned(slots.available_permits() as u32)
+            .unwrap();
+
+        let error = fixture.result(&task.task_id).unwrap_err();
+
+        assert_eq!(error.error.code, "directory_busy");
     }
 }

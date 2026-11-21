@@ -92,15 +92,18 @@ impl PaneReadJob {
 }
 
 /// Reads one text file through the pane's container or ssh; blocks until it ends.
-pub(super) fn read_off_host_text(target: &PaneTarget, path: &str) -> Result<String, Failure> {
+pub(super) fn read_off_host_text(
+    environment: &PaneEnvironment,
+    path: &str,
+) -> Result<String, Failure> {
+    ensure_platform_supported()?;
     ops::validate_path(path)?;
     let runner = EnvironmentRunner {
         programs: Programs::system(),
-        env: &target.environment,
-        deadline: Instant::now() + target.environment.deadline_budget(false),
+        env: environment,
+        deadline: Instant::now() + environment.deadline_budget(false),
     };
-    ops::read(&runner, target.environment.location(), path, None)
-        .map(|content| content.document.text)
+    ops::read(&runner, environment.location(), path, None).map(|content| content.document.text)
 }
 
 fn ensure_platform_supported() -> Result<(), Failure> {
@@ -233,7 +236,7 @@ impl App {
         }
     }
 
-    fn try_acquire_directory_slot(
+    pub(super) fn try_acquire_directory_slot(
         &self,
         id: &str,
         respond_to: &Sender<String>,
