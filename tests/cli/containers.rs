@@ -78,6 +78,26 @@ impl FakeDocker {
             .unwrap_or_default()
     }
 
+    /// The first call logged after the first `since` calls that starts with
+    /// `prefix`. Waits, because the shim logs `exec` from the pane process.
+    fn wait_for_call_after(&self, since: usize, prefix: &str) -> String {
+        let mut found = None;
+        let logged = wait_until(Duration::from_secs(5), Duration::from_millis(25), || {
+            found = self
+                .calls()
+                .into_iter()
+                .skip(since)
+                .find(|line| line.starts_with(prefix));
+            found.is_some()
+        });
+        assert!(
+            logged,
+            "docker log has no `{prefix}` after call {since}; calls: {:#?}",
+            self.calls()
+        );
+        found.unwrap()
+    }
+
     /// The shim logs `exec` from the pane process, after the API response.
     fn wait_for_last_call_starting_with(&self, prefix: &str) -> String {
         let mut last = None;
@@ -416,6 +436,9 @@ fn container_launch_survives_session_snapshot_and_reconnects_to_the_recreated_co
     let mut recreated = compose_container("shop", "web", &project);
     recreated["Id"] = RUN_ID.into();
     test.docker.set_running(&[recreated]);
+    // Why not the last call: until the restored pane runs, the log still ends
+    // with the first server's `exec` into the saved id.
+    let calls_before_restart = test.docker.calls().len();
     let restarted = test.start_server();
     let panes = test.cli_json(&["pane", "list"]);
     let restored: Vec<&serde_json::Value> = panes["result"]["panes"]
@@ -429,7 +452,9 @@ fn container_launch_survives_session_snapshot_and_reconnects_to_the_recreated_co
         vec!["shop/web"],
         "the restored pane keeps its container reference"
     );
-    let exec = test.docker.wait_for_last_call_starting_with("exec ");
+    let exec = test
+        .docker
+        .wait_for_call_after(calls_before_restart, "exec ");
     assert!(
         exec.contains(RUN_ID) && !exec.contains(COMPOSE_ID),
         "cold restore enters the running container, not the saved id: {exec}"
