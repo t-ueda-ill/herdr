@@ -1,7 +1,7 @@
 //! Prompt tasks: pure bookkeeping, no PTY and no clock. The App feeds agent
 //! status changes and time in, and runs the returned effects.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{AgentStatus, Location, TaskEvidence, TaskState};
@@ -50,6 +50,8 @@ pub(crate) struct NewTask {
     pub(crate) key: Option<String>,
     /// Folder on the task's location for its result file; none asks for no file.
     pub(crate) result_dir: Option<String>,
+    /// Terminal of the pane that asked for the task.
+    pub(crate) requester: Option<TerminalId>,
     /// Where the pane's shell ran at submit, so the file stays readable later.
     pub(crate) result_place: ResultPlace,
 }
@@ -86,6 +88,9 @@ pub(crate) struct Task {
     pub(crate) reason: Option<String>,
     pub(crate) key: Option<String>,
     pub(crate) result_path: Option<String>,
+    pub(crate) requester: Option<TerminalId>,
+    /// The task the requester ran when it asked.
+    pub(crate) parent: Option<TaskId>,
     pub(crate) result_place: ResultPlace,
     /// The end of the pane when the task finished; the fallback result.
     pub(crate) screen_tail: Option<String>,
@@ -193,6 +198,10 @@ impl TaskTable {
         self.next_id += 1;
         let id = TaskId(self.next_id);
         let terminal = new.terminal.clone();
+        let parent = new
+            .requester
+            .as_ref()
+            .and_then(|requester| self.lanes.get(requester)?.active);
         if let Some(key) = &new.key {
             self.keys.insert(key.clone(), id);
         }
@@ -214,6 +223,8 @@ impl TaskTable {
                 result_path: new
                     .result_dir
                     .map(|dir| format!("{dir}/{}.md", id.public())),
+                requester: new.requester,
+                parent,
                 result_place: new.result_place,
                 screen_tail: None,
                 submit_seq: 0,
@@ -369,6 +380,34 @@ impl TaskTable {
         let mut effects = Vec::new();
         self.finish(id, TaskState::Cancelled, None, now, &mut effects);
         Ok(effects)
+    }
+
+    /// True when `target` already waits, through running or queued tasks, for
+    /// `requester`: sending would leave both waiting on each other.
+    pub(crate) fn would_cycle(&self, target: &TerminalId, requester: Option<&TerminalId>) -> bool {
+        let mut pending: Vec<&TerminalId> = requester.into_iter().collect();
+        let mut seen: HashSet<&TerminalId> = HashSet::new();
+        while let Some(terminal) = pending.pop() {
+            if terminal == target {
+                return true;
+            }
+            if !seen.insert(terminal) {
+                continue;
+            }
+            let Some(lane) = self.lanes.get(terminal) else {
+                continue;
+            };
+            // Why queued tasks too: a busy agent's queue holds the requests
+            // that its requesters wait for. Why not parent tasks: a chief that
+            // a person drives has no task.
+            pending.extend(
+                lane.active
+                    .iter()
+                    .chain(lane.queue.iter())
+                    .filter_map(|id| self.tasks.get(id)?.requester.as_ref()),
+            );
+        }
+        false
     }
 
     /// Keeps the first tail only: a later read can show the next task's turn.

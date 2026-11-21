@@ -610,7 +610,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 { "id": "1", "method": "task.submit", "params": { "target": "reviewer", "text": "fix the failing test" } }
 ```
 
-結果は `task_info` で、`task` オブジェクトを含みます。フィールドは `task_id`（`t_<n>`。番号はサーバーの再起動でやり直し）、`state`、`target`、`terminal_id`、`pane_id`、`location`、`text`、`evidence`、`created_at_ms`、`submitted_at_ms`、`finished_at_ms`、`reason`、`key`、`result_path` です。`agent.prompt` が断る場合は `task.submit` も同じエラーコードで断り、何も記録しません。
+結果は `task_info` で、`task` オブジェクトを含みます。フィールドは `task_id`（`t_<n>`。番号はサーバーの再起動でやり直し）、`state`、`target`、`terminal_id`、`pane_id`、`location`、`text`、`evidence`、`created_at_ms`、`submitted_at_ms`、`finished_at_ms`、`reason`、`key`、`result_path`、`requester_terminal_id`、`parent_task_id` です。`agent.prompt` が断る場合は `task.submit` も同じエラーコードで断り、何も記録しません。
 
 接続が切れたときやタイムアウトしたときに安全に再送するには、`key`（1〜256 バイト）を渡します。同じ `key`・`target`・`text` でもう一度 `task.submit` すると、最初のタスクを返し、何も送りません。エージェントが入力待ちになっていても、ペインが閉じていても同じです。同じ `key` で `target` か `text` が違うと `task_key_conflict` で断ります。Herdr はタスクを残している間だけキーを覚えます。
 
@@ -623,6 +623,8 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 ```json
 { "id": "3", "method": "task.result", "params": { "task_id": "t_4" } }
 ```
+
+`requested_by` は依頼したペインです。CLI は `HERDR_PANE_ID` から埋めます。Herdr はそのペインのターミナルを `requester_terminal_id` に記録し、そのペインがその時点でタスクを実行していれば、そのタスクを `parent_task_id` に記録します。Herdr が知らないペインなら何も記録しません。ターゲットが依頼したペイン自身のとき、または実行中またはキュー待ちのタスクを通じてすでにそのペインを待っているときは、どちらのタスクも始まらないので `task_cycle` で断ります。
 
 | `state` | 意味 |
 | --- | --- |

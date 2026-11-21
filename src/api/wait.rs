@@ -986,6 +986,8 @@ mod tests {
                     reason: None,
                     key: None,
                     result_path: None,
+                    requester_terminal_id: None,
+                    parent_task_id: None,
                 },
             },
         }
