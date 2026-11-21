@@ -6,7 +6,7 @@ use crate::api::schema::{
     TaskListParams, TaskSubmitParams, TaskTarget,
 };
 use crate::app::App;
-use crate::tasks::{AgentSnapshot, CancelError, Effect, NewTask, Now, TaskId};
+use crate::tasks::{AgentSnapshot, CancelError, Effect, KeyConflict, NewTask, Now, TaskId};
 use crate::terminal::TerminalId;
 
 use super::super::api_helpers::pane_agent_status;
@@ -14,6 +14,26 @@ use super::responses::{encode_error, encode_success};
 
 impl App {
     pub(super) fn handle_task_submit(&mut self, id: String, params: TaskSubmitParams) -> String {
+        if let Some(key) = &params.key {
+            if key.is_empty() || key.len() > MAX_TASK_KEY_LEN {
+                return encode_error(
+                    id,
+                    "invalid_params",
+                    format!("task key must be 1 to {MAX_TASK_KEY_LEN} bytes"),
+                );
+            }
+            // Why before the agent checks: a retry must get its task back even
+            // when the agent now waits for input or its pane is gone.
+            match self
+                .state
+                .tasks
+                .find_by_key(key, &params.target, &params.text)
+            {
+                Ok(Some(task)) => return self.task_response(id, task),
+                Ok(None) => {}
+                Err(conflict) => return task_key_conflict(id, key, conflict),
+            }
+        }
         let prompt = AgentPromptParams {
             target: params.target.clone(),
             text: params.text.clone(),
@@ -42,17 +62,29 @@ impl App {
             .pane_info(validated.ws_idx, validated.pane_id)
             .and_then(|pane| pane.location)
             .unwrap_or_else(|| Location::new(None, None));
-        let (task, effects) = self.state.tasks.submit(
+        let key = params.key.clone();
+        let submitted = self.state.tasks.submit_idempotent(
             NewTask {
                 terminal,
                 target: params.target,
                 location,
                 text: params.text,
+                key: params.key,
             },
             agent,
             task_now(),
         );
+        let (task, effects) = match submitted {
+            Ok(submitted) => submitted,
+            Err(conflict) => {
+                return task_key_conflict(id, key.as_deref().unwrap_or_default(), conflict)
+            }
+        };
         self.run_task_effects(effects);
+        self.task_response(id, task)
+    }
+
+    fn task_response(&self, id: String, task: TaskId) -> String {
         match self.task_info(task) {
             Some(task) => encode_success(id, ResponseResult::TaskInfo { task }),
             None => encode_error(id, "task_not_found", "task was dropped"),
@@ -250,6 +282,7 @@ impl App {
             submitted_at_ms: task.submitted_at_ms,
             finished_at_ms: task.finished_at_ms,
             reason: task.reason.clone(),
+            key: task.key.clone(),
         })
     }
 
@@ -262,6 +295,19 @@ impl App {
         let (ws_idx, pane_id) = self.terminal_pane(terminal)?;
         self.public_pane_id(ws_idx, pane_id)
     }
+}
+
+const MAX_TASK_KEY_LEN: usize = 256;
+
+fn task_key_conflict(id: String, key: &str, conflict: KeyConflict) -> String {
+    encode_error(
+        id,
+        "task_key_conflict",
+        format!(
+            "key {key} belongs to {} with another target or text",
+            conflict.existing.public()
+        ),
+    )
 }
 
 fn task_not_found(id: String, task_id: &str) -> String {
@@ -339,13 +385,22 @@ mod tests {
 
     impl Fixture {
         fn submit(&mut self, text: &str) -> TaskInfo {
-            let response = self.app.handle_task_submit(
+            self.submit_keyed(text, None)
+        }
+
+        fn submit_raw(&mut self, text: &str, key: Option<&str>) -> String {
+            self.app.handle_task_submit(
                 "req".into(),
                 TaskSubmitParams {
                     target: "reviewer".into(),
                     text: text.into(),
+                    key: key.map(str::to_string),
                 },
-            );
+            )
+        }
+
+        fn submit_keyed(&mut self, text: &str, key: Option<&str>) -> TaskInfo {
+            let response = self.submit_raw(text, key);
             let success: SuccessResponse = serde_json::from_str(&response)
                 .unwrap_or_else(|_| panic!("task.submit failed: {response}"));
             let ResponseResult::TaskInfo { task } = success.result else {
@@ -477,6 +532,7 @@ mod tests {
             TaskSubmitParams {
                 target: "reviewer".into(),
                 text: "x".into(),
+                key: None,
             },
         );
 
@@ -567,5 +623,56 @@ mod tests {
 
         let error: ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(error.error.code, "task_not_found");
+    }
+
+    #[tokio::test]
+    async fn retrying_with_the_same_key_writes_the_prompt_once() {
+        let mut fixture = fixture(AgentState::Idle);
+        let first = fixture.submit_keyed("fix", Some("run/1"));
+        assert_eq!(fixture.written_text(), b"fix\r");
+
+        let again = fixture.submit_keyed("fix", Some("run/1"));
+
+        assert_eq!(again.task_id, first.task_id);
+        assert_eq!(again.key.as_deref(), Some("run/1"));
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            fixture.pty.try_recv().is_err(),
+            "the prompt was written twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn retrying_while_the_agent_is_blocked_returns_the_waiting_task() {
+        let mut fixture = fixture(AgentState::Idle);
+        let first = fixture.submit_keyed("fix", Some("run/1"));
+        fixture.agent_becomes(AgentState::Blocked);
+
+        let again = fixture.submit_keyed("fix", Some("run/1"));
+
+        assert_eq!(again.task_id, first.task_id);
+        assert_eq!(again.state, TaskState::NeedsInput);
+    }
+
+    #[tokio::test]
+    async fn a_key_reused_for_another_prompt_is_refused() {
+        let mut fixture = fixture(AgentState::Idle);
+        let first = fixture.submit_keyed("fix", Some("run/1"));
+
+        let response = fixture.submit_raw("something else", Some("run/1"));
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "task_key_conflict");
+        assert!(error.error.message.contains(&first.task_id), "{response}");
+    }
+
+    #[tokio::test]
+    async fn an_empty_key_is_refused() {
+        let mut fixture = fixture(AgentState::Idle);
+
+        let response = fixture.submit_raw("fix", Some(""));
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "invalid_params");
     }
 }

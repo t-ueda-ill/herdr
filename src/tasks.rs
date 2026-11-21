@@ -45,6 +45,7 @@ pub(crate) struct NewTask {
     pub(crate) target: String,
     pub(crate) location: Location,
     pub(crate) text: String,
+    pub(crate) key: Option<String>,
 }
 
 /// The agent as the App sees it at one moment.
@@ -70,6 +71,7 @@ pub(crate) struct Task {
     pub(crate) submitted_at_ms: Option<u64>,
     pub(crate) finished_at_ms: Option<u64>,
     pub(crate) reason: Option<String>,
+    pub(crate) key: Option<String>,
     submit_seq: u64,
     accept_deadline: Option<Instant>,
 }
@@ -80,10 +82,18 @@ pub(crate) enum CancelError {
     AlreadySent(TaskState),
 }
 
+/// The key already names a task with another target or text.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct KeyConflict {
+    pub(crate) existing: TaskId,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct TaskTable {
     next_id: u64,
     tasks: HashMap<TaskId, Task>,
+    /// Kept as long as the task is kept.
+    keys: HashMap<String, TaskId>,
     lanes: HashMap<TerminalId, Lane>,
     finished: VecDeque<TaskId>,
 }
@@ -96,6 +106,40 @@ struct Lane {
 }
 
 impl TaskTable {
+    /// The task an earlier submit with this key made, if it is still kept.
+    pub(crate) fn find_by_key(
+        &self,
+        key: &str,
+        target: &str,
+        text: &str,
+    ) -> Result<Option<TaskId>, KeyConflict> {
+        let Some(&id) = self.keys.get(key) else {
+            return Ok(None);
+        };
+        // Why not compare terminals: the retry must still find a task whose
+        // pane is gone, and the caller repeats the target it sent.
+        match self.tasks.get(&id) {
+            Some(task) if task.target == target && task.text == text => Ok(Some(id)),
+            Some(_) => Err(KeyConflict { existing: id }),
+            None => Ok(None),
+        }
+    }
+
+    /// `submit`, except that a known key returns its task and sends nothing.
+    pub(crate) fn submit_idempotent(
+        &mut self,
+        new: NewTask,
+        agent: AgentSnapshot,
+        now: Now,
+    ) -> Result<(TaskId, Vec<Effect>), KeyConflict> {
+        if let Some(key) = &new.key {
+            if let Some(id) = self.find_by_key(key, &new.target, &new.text)? {
+                return Ok((id, Vec::new()));
+            }
+        }
+        Ok(self.submit(new, agent, now))
+    }
+
     pub(crate) fn submit(
         &mut self,
         new: NewTask,
@@ -105,6 +149,9 @@ impl TaskTable {
         self.next_id += 1;
         let id = TaskId(self.next_id);
         let terminal = new.terminal.clone();
+        if let Some(key) = &new.key {
+            self.keys.insert(key.clone(), id);
+        }
         self.tasks.insert(
             id,
             Task {
@@ -119,6 +166,7 @@ impl TaskTable {
                 submitted_at_ms: None,
                 finished_at_ms: None,
                 reason: None,
+                key: new.key,
                 submit_seq: 0,
                 accept_deadline: None,
             },
@@ -337,7 +385,9 @@ impl TaskTable {
         self.finished.push_back(id);
         while self.finished.len() > FINISHED_TASKS_KEPT {
             if let Some(old) = self.finished.pop_front() {
-                self.tasks.remove(&old);
+                if let Some(key) = self.tasks.remove(&old).and_then(|task| task.key) {
+                    self.keys.remove(&key);
+                }
             }
         }
     }

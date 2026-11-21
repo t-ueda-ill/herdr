@@ -984,6 +984,7 @@ mod tests {
                     submitted_at_ms: None,
                     finished_at_ms: None,
                     reason: None,
+                    key: None,
                 },
             },
         }

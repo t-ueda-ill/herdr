@@ -685,7 +685,13 @@ Read failures in a container or over SSH show in the browser as the page, not as
 { "id": "1", "method": "task.submit", "params": { "target": "reviewer", "text": "fix the failing test" } }
 ```
 
-The result is `task_info` with a `task` object: `task_id` (`t_<n>`, numbers restart with the server), `state`, `target`, `terminal_id`, `pane_id`, `location`, `text`, `evidence`, `created_at_ms`, `submitted_at_ms`, `finished_at_ms`, and `reason`. `task.submit` refuses what `agent.prompt` refuses, with the same error codes, and records nothing then.
+The result is `task_info` with a `task` object: `task_id` (`t_<n>`, numbers restart with the server), `state`, `target`, `terminal_id`, `pane_id`, `location`, `text`, `evidence`, `created_at_ms`, `submitted_at_ms`, `finished_at_ms`, `reason`, and `key`. `task.submit` refuses what `agent.prompt` refuses, with the same error codes, and records nothing then.
+
+To retry safely after a lost connection or a timeout, pass a `key` (1 to 256 bytes). A second `task.submit` with the same `key`, `target`, and `text` returns the first task and sends nothing, even when the agent now waits for input or its pane is gone. The same `key` with another `target` or `text` fails with `task_key_conflict`. Herdr keeps a key as long as it keeps its task.
+
+```json
+{ "id": "2", "method": "task.submit", "params": { "target": "reviewer", "text": "fix the failing test", "key": "run42/fix" } }
+```
 
 | `state` | Meaning |
 | --- | --- |

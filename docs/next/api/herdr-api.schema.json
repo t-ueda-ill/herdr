@@ -1236,6 +1236,12 @@
                 "null"
               ]
             },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "location": {
               "$ref": "#/schemas/event/$defs/Location"
             },
@@ -5739,6 +5745,13 @@
         },
         "TaskSubmitParams": {
           "properties": {
+            "key": {
+              "description": "Retry key. A second submit with the same key, target, and text returns\nthe first task and sends nothing; another target or text is a conflict.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "target": {
               "description": "Agent name, terminal id, or pane id, as `agent.prompt` takes it.",
               "type": "string"
@@ -14229,6 +14242,12 @@
               "minimum": 0,
               "type": [
                 "integer",
+                "null"
+              ]
+            },
+            "key": {
+              "type": [
+                "string",
                 "null"
               ]
             },
