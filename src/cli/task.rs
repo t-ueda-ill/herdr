@@ -70,6 +70,12 @@ pub(crate) fn command() -> Command {
                         .allow_hyphen_values(true),
                 )
                 .arg(
+                    Arg::new("key")
+                        .long("key")
+                        .value_name("KEY")
+                        .help("Retry key: the same key, target, and text returns the first task instead of sending again"),
+                )
+                .arg(
                     Arg::new("wait")
                         .long("wait")
                         .action(ArgAction::SetTrue)
@@ -142,6 +148,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Operation, clap::Error> {
                     .get_one::<String>("text")
                     .cloned()
                     .unwrap_or_default(),
+                key: matches.get_one::<String>("key").cloned(),
             },
             wait: matches.get_flag("wait").then(|| WaitOptions {
                 until: until(matches),
@@ -268,6 +275,7 @@ mod tests {
                 params: TaskSubmitParams {
                     target: "reviewer".into(),
                     text: "--fix this".into(),
+                    key: None,
                 },
                 wait: None,
             }
@@ -287,6 +295,7 @@ mod tests {
                 params: TaskSubmitParams {
                     target: "reviewer".into(),
                     text: "fix".into(),
+                    key: None,
                 },
                 wait: Some(WaitOptions {
                     until: vec![TaskState::NeedsInput],
@@ -294,6 +303,16 @@ mod tests {
                 }),
             }
         );
+    }
+
+    #[test]
+    fn submit_passes_the_key_for_a_safe_retry() {
+        let Operation::Submit { params, .. } =
+            parse_args(&["submit", "reviewer", "fix", "--key", "run42/impl1"])
+        else {
+            panic!("expected submit");
+        };
+        assert_eq!(params.key.as_deref(), Some("run42/impl1"));
     }
 
     #[test]

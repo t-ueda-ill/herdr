@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use super::{
-    AgentSnapshot, CancelError, Effect, NewTask, Now, TaskId, TaskTable, ACCEPT_TIMEOUT,
-    FINISHED_TASKS_KEPT,
+    AgentSnapshot, CancelError, Effect, KeyConflict, NewTask, Now, TaskId, TaskTable,
+    ACCEPT_TIMEOUT, FINISHED_TASKS_KEPT,
 };
 use crate::api::schema::{AgentStatus, Location, TaskEvidence, TaskState};
 use crate::terminal::TerminalId;
@@ -36,6 +36,14 @@ fn task(terminal_name: &str, text: &str) -> NewTask {
         target: "reviewer".into(),
         location: Location::new(None, None),
         text: text.into(),
+        key: None,
+    }
+}
+
+fn keyed(terminal_name: &str, text: &str, key: &str) -> NewTask {
+    NewTask {
+        key: Some(key.into()),
+        ..task(terminal_name, text)
     }
 }
 
@@ -445,4 +453,179 @@ fn an_agent_in_an_unknown_state_keeps_the_task_queued_until_it_is_idle() {
 
     table.on_agent_status(&terminal("a"), agent(AgentStatus::Idle, 4), clock.at(100));
     assert_eq!(state(&table, id), TaskState::Submitted);
+}
+
+#[test]
+fn a_repeated_key_for_the_same_prompt_returns_the_first_task_and_sends_nothing() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (first, _) = table
+        .submit_idempotent(
+            keyed("a", "fix", "run/1"),
+            agent(AgentStatus::Idle, 3),
+            clock.at(0),
+        )
+        .unwrap();
+
+    let (again, effects) = table
+        .submit_idempotent(
+            keyed("a", "fix", "run/1"),
+            agent(AgentStatus::Idle, 3),
+            clock.at(10),
+        )
+        .unwrap();
+
+    assert_eq!(again, first);
+    assert!(effects.is_empty());
+    assert_eq!(table.iter().count(), 1);
+    assert_eq!(table.get(first).unwrap().key.as_deref(), Some("run/1"));
+}
+
+#[test]
+fn a_repeated_key_after_the_task_finished_still_returns_it() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (first, _) = table
+        .submit_idempotent(
+            keyed("a", "fix", "run/1"),
+            agent(AgentStatus::Working, 3),
+            clock.at(0),
+        )
+        .unwrap();
+    table.cancel(first, clock.at(5)).unwrap();
+
+    let (again, effects) = table
+        .submit_idempotent(
+            keyed("a", "fix", "run/1"),
+            agent(AgentStatus::Idle, 4),
+            clock.at(10),
+        )
+        .unwrap();
+
+    assert_eq!(again, first);
+    assert!(effects.is_empty());
+    assert_eq!(state(&table, first), TaskState::Cancelled);
+}
+
+#[test]
+fn a_repeated_key_with_another_prompt_is_a_conflict() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (first, _) = table
+        .submit_idempotent(
+            keyed("a", "fix", "run/1"),
+            agent(AgentStatus::Idle, 3),
+            clock.at(0),
+        )
+        .unwrap();
+
+    let result = table.submit_idempotent(
+        keyed("a", "other", "run/1"),
+        agent(AgentStatus::Idle, 3),
+        clock.at(10),
+    );
+
+    assert_eq!(result.unwrap_err(), KeyConflict { existing: first });
+    assert_eq!(table.iter().count(), 1);
+}
+
+#[test]
+fn a_repeated_key_for_another_target_is_a_conflict() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (first, _) = table
+        .submit_idempotent(
+            keyed("a", "fix", "run/1"),
+            agent(AgentStatus::Idle, 3),
+            clock.at(0),
+        )
+        .unwrap();
+    let other_target = NewTask {
+        target: "implementer".into(),
+        ..keyed("b", "fix", "run/1")
+    };
+
+    let result = table.submit_idempotent(other_target, agent(AgentStatus::Idle, 3), clock.at(10));
+
+    assert_eq!(result.unwrap_err(), KeyConflict { existing: first });
+}
+
+#[test]
+fn a_key_is_found_without_the_terminal_of_its_task() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (first, _) = table
+        .submit_idempotent(
+            keyed("a", "fix", "run/1"),
+            agent(AgentStatus::Idle, 3),
+            clock.at(0),
+        )
+        .unwrap();
+    table.on_terminal_gone(&terminal("a"), "pane closed", clock.at(5));
+
+    assert_eq!(
+        table.find_by_key("run/1", "reviewer", "fix"),
+        Ok(Some(first))
+    );
+    assert_eq!(table.find_by_key("run/2", "reviewer", "fix"), Ok(None));
+    assert_eq!(
+        table.find_by_key("run/1", "reviewer", "other"),
+        Err(KeyConflict { existing: first })
+    );
+}
+
+#[test]
+fn tasks_without_a_key_are_never_merged() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+
+    let (first, _) = table
+        .submit_idempotent(
+            task("a", "fix"),
+            agent(AgentStatus::Working, 3),
+            clock.at(0),
+        )
+        .unwrap();
+    let (second, _) = table
+        .submit_idempotent(
+            task("a", "fix"),
+            agent(AgentStatus::Working, 3),
+            clock.at(10),
+        )
+        .unwrap();
+
+    assert_ne!(first, second);
+}
+
+#[test]
+fn a_key_is_forgotten_with_its_dropped_task() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (old, _) = table
+        .submit_idempotent(
+            keyed("a", "x", "run/old"),
+            agent(AgentStatus::Working, 3),
+            clock.at(0),
+        )
+        .unwrap();
+    table.cancel(old, clock.at(0)).unwrap();
+    for n in 1..=FINISHED_TASKS_KEPT {
+        let (id, _) = table.submit(
+            task("a", "x"),
+            agent(AgentStatus::Working, 3),
+            clock.at(n as u64),
+        );
+        table.cancel(id, clock.at(n as u64)).unwrap();
+    }
+    assert!(table.get(old).is_none());
+
+    let (fresh, _) = table
+        .submit_idempotent(
+            keyed("a", "other", "run/old"),
+            agent(AgentStatus::Working, 3),
+            clock.at(9_999),
+        )
+        .unwrap();
+
+    assert_ne!(fresh, old);
 }

@@ -72,6 +72,8 @@ pub struct TaskInfo {
     /// Why the task stalled, was lost, or was cancelled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -79,6 +81,10 @@ pub struct TaskSubmitParams {
     /// Agent name, terminal id, or pane id, as `agent.prompt` takes it.
     pub target: String,
     pub text: String,
+    /// Retry key. A second submit with the same key, target, and text returns
+    /// the first task and sends nothing; another target or text is a conflict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
