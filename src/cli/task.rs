@@ -1,8 +1,8 @@
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::api::schema::{
-    Method, Request, ResponseResult, SuccessResponse, TaskListParams, TaskState, TaskSubmitParams,
-    TaskTarget, TaskWaitParams,
+    Method, Request, ResponseResult, SuccessResponse, TaskInfo, TaskListParams, TaskState,
+    TaskSubmitParams, TaskTarget, TaskWaitParams,
 };
 
 const STATES: &[&str] = &[
@@ -23,7 +23,10 @@ pub(crate) enum Operation {
         wait: Option<WaitOptions>,
     },
     Get(TaskTarget),
-    List(TaskListParams),
+    List {
+        params: TaskListParams,
+        tree: bool,
+    },
     Wait(TaskWaitParams),
     Cancel(TaskTarget),
     Result(TaskTarget),
@@ -94,12 +97,20 @@ pub(crate) fn command() -> Command {
         )
         .subcommand(Command::new("get").about("Show a task").arg(task_id_arg()))
         .subcommand(
-            Command::new("list").about("List tasks, oldest first").arg(
-                Arg::new("location")
-                    .long("location")
-                    .value_name("LOCATION")
-                    .help("Only tasks at this location; ssh:HOST also lists its containers"),
-            ),
+            Command::new("list")
+                .about("List tasks, oldest first")
+                .arg(
+                    Arg::new("location")
+                        .long("location")
+                        .value_name("LOCATION")
+                        .help("Only tasks at this location; ssh:HOST also lists its containers"),
+                )
+                .arg(
+                    Arg::new("tree")
+                        .long("tree")
+                        .action(ArgAction::SetTrue)
+                        .help("Print tasks under the task or pane that asked for them"),
+                ),
         )
         .subcommand(
             Command::new("wait")
@@ -163,6 +174,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Operation, clap::Error> {
                     .unwrap_or_default(),
                 key: matches.get_one::<String>("key").cloned(),
                 result_file: matches.get_flag("result_file"),
+                requested_by: None,
             },
             wait: matches.get_flag("wait").then(|| WaitOptions {
                 until: until(matches),
@@ -170,9 +182,12 @@ pub(crate) fn parse(args: &[String]) -> Result<Operation, clap::Error> {
             }),
         },
         "get" => Operation::Get(target(matches)),
-        "list" => Operation::List(TaskListParams {
-            location: matches.get_one::<String>("location").cloned(),
-        }),
+        "list" => Operation::List {
+            params: TaskListParams {
+                location: matches.get_one::<String>("location").cloned(),
+            },
+            tree: matches.get_flag("tree"),
+        },
         "wait" => Operation::Wait(TaskWaitParams {
             task_id: target(matches).task_id,
             until: until(matches),
@@ -204,6 +219,80 @@ fn wait_exit_code(response: &serde_json::Value, until: &[TaskState]) -> i32 {
     }
 }
 
+/// Tasks under the task that asked for them; tasks asked from a pane without a
+/// task go under that pane's terminal.
+fn render_tree(tasks: &[TaskInfo]) -> String {
+    use std::collections::HashSet;
+    use std::fmt::Write;
+
+    fn line(task: &TaskInfo) -> String {
+        let state = serde_json::to_value(task.state)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        format!(
+            "{} {} {} {state}",
+            task.task_id, task.target, task.location.id
+        )
+    }
+    fn children<'a>(tasks: &'a [TaskInfo], parent: &str) -> Vec<&'a TaskInfo> {
+        tasks
+            .iter()
+            .filter(|task| task.parent_task_id.as_deref() == Some(parent))
+            .collect()
+    }
+    fn branch(out: &mut String, tasks: &[TaskInfo], items: &[&TaskInfo], indent: &str) {
+        for (index, task) in items.iter().enumerate() {
+            let last = index + 1 == items.len();
+            let _ = writeln!(
+                out,
+                "{indent}{} {}",
+                if last { "└" } else { "├" },
+                line(task)
+            );
+            let next = format!("{indent}{}", if last { "  " } else { "│ " });
+            branch(out, tasks, &children(tasks, &task.task_id), &next);
+        }
+    }
+
+    let known: HashSet<&str> = tasks.iter().map(|task| task.task_id.as_str()).collect();
+    let mut out = String::new();
+    let mut pane_roots: Vec<&str> = Vec::new();
+    for task in tasks {
+        // A parent dropped from the list leaves its child at the top.
+        let has_parent = task
+            .parent_task_id
+            .as_deref()
+            .is_some_and(|parent| known.contains(parent));
+        if has_parent {
+            continue;
+        }
+        match task.requester_terminal_id.as_deref() {
+            Some(requester) if task.parent_task_id.is_none() => {
+                if !pane_roots.contains(&requester) {
+                    pane_roots.push(requester);
+                }
+            }
+            _ => {
+                let _ = writeln!(out, "{}", line(task));
+                branch(&mut out, tasks, &children(tasks, &task.task_id), "");
+            }
+        }
+    }
+    for requester in pane_roots {
+        let _ = writeln!(out, "{requester} (no task)");
+        let items: Vec<&TaskInfo> = tasks
+            .iter()
+            .filter(|task| {
+                task.parent_task_id.is_none()
+                    && task.requester_terminal_id.as_deref() == Some(requester)
+            })
+            .collect();
+        branch(&mut out, tasks, &items, "");
+    }
+    out
+}
+
 fn request(id: &str, method: Method) -> Request {
     Request {
         id: format!("cli:task:{id}"),
@@ -228,7 +317,9 @@ pub(super) fn run_task_command(args: &[String]) -> std::io::Result<i32> {
         Err(error) => return super::print_clap_error(&error),
     };
     match operation {
-        Operation::Submit { params, wait } => {
+        Operation::Submit { mut params, wait } => {
+            // Why here and not in parse: parsing stays free of the environment.
+            params.requested_by = super::target::caller_pane_id();
             let submitted = super::send_request(&request("submit", Method::TaskSubmit(params)))?;
             let Some(wait) = wait else {
                 return super::print_response(&submitted);
@@ -250,10 +341,16 @@ pub(super) fn run_task_command(args: &[String]) -> std::io::Result<i32> {
             "get",
             Method::TaskGet(target),
         ))?),
-        Operation::List(params) => super::print_response(&super::send_request(&request(
-            "list",
-            Method::TaskList(params),
-        ))?),
+        Operation::List { params, tree } => {
+            let listed = super::send_request(&request("list", Method::TaskList(params)))?;
+            if !tree || listed.get("error").is_some() {
+                return super::print_response(&listed);
+            }
+            let tasks: Vec<TaskInfo> =
+                serde_json::from_value(listed["result"]["tasks"].clone()).unwrap_or_default();
+            print!("{}", render_tree(&tasks));
+            Ok(0)
+        }
         Operation::Wait(params) => {
             let until = params.until.clone();
             print_wait(
@@ -296,6 +393,7 @@ mod tests {
                     text: "--fix this".into(),
                     key: None,
                     result_file: false,
+                    requested_by: None,
                 },
                 wait: None,
             }
@@ -317,6 +415,7 @@ mod tests {
                     text: "fix".into(),
                     key: None,
                     result_file: false,
+                    requested_by: None,
                 },
                 wait: Some(WaitOptions {
                     until: vec![TaskState::NeedsInput],
@@ -383,9 +482,12 @@ mod tests {
         );
         assert_eq!(
             parse_args(&["list", "--location", "ssh:devbox"]),
-            Operation::List(TaskListParams {
-                location: Some("ssh:devbox".into()),
-            })
+            Operation::List {
+                params: TaskListParams {
+                    location: Some("ssh:devbox".into()),
+                },
+                tree: false,
+            }
         );
         assert_eq!(
             parse_args(&["get", "t_1"]),
@@ -440,6 +542,83 @@ mod tests {
         assert_eq!(
             wait_exit_code(&response("needs_input"), &[TaskState::NeedsInput]),
             0
+        );
+    }
+
+    fn info(
+        id: &str,
+        target: &str,
+        state: TaskState,
+        requester: Option<&str>,
+        parent: Option<&str>,
+    ) -> TaskInfo {
+        TaskInfo {
+            task_id: id.into(),
+            state,
+            target: target.into(),
+            terminal_id: format!("term_{target}"),
+            pane_id: None,
+            location: crate::api::schema::Location::new(Some("devbox"), None),
+            text: String::new(),
+            evidence: None,
+            created_at_ms: 0,
+            submitted_at_ms: None,
+            finished_at_ms: None,
+            reason: None,
+            key: None,
+            result_path: None,
+            requester_terminal_id: requester.map(str::to_string),
+            parent_task_id: parent.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn tree_puts_delegated_tasks_under_their_requester() {
+        let tasks = vec![
+            info("t_1", "chief", TaskState::Running, None, None),
+            info(
+                "t_2",
+                "planner",
+                TaskState::Completed,
+                Some("term_chief"),
+                Some("t_1"),
+            ),
+            info(
+                "t_3",
+                "implementer",
+                TaskState::Running,
+                Some("term_chief"),
+                Some("t_1"),
+            ),
+            info("t_4", "reviewer", TaskState::Queued, Some("term_9"), None),
+            info(
+                "t_5",
+                "helper",
+                TaskState::Running,
+                Some("term_implementer"),
+                Some("t_3"),
+            ),
+        ];
+
+        assert_eq!(
+            render_tree(&tasks),
+            "t_1 chief ssh:devbox running\n\
+             ├ t_2 planner ssh:devbox completed\n\
+             └ t_3 implementer ssh:devbox running\n\
+             \u{20} └ t_5 helper ssh:devbox running\n\
+             term_9 (no task)\n\
+             └ t_4 reviewer ssh:devbox queued\n"
+        );
+    }
+
+    #[test]
+    fn list_takes_tree() {
+        assert_eq!(
+            parse_args(&["list", "--tree"]),
+            Operation::List {
+                params: TaskListParams { location: None },
+                tree: true,
+            }
         );
     }
 }

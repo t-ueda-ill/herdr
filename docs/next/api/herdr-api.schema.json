@@ -1251,8 +1251,22 @@
                 "null"
               ]
             },
+            "parent_task_id": {
+              "description": "The task the requester ran when it asked.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "reason": {
               "description": "Why the task stalled, was lost, or was cancelled.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "requester_terminal_id": {
+              "description": "Terminal of the pane that asked for the task.",
               "type": [
                 "string",
                 "null"
@@ -5754,6 +5768,13 @@
           "properties": {
             "key": {
               "description": "Retry key. A second submit with the same key, target, and text returns\nthe first task and sends nothing; another target or text is a conflict.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "requested_by": {
+              "description": "Pane of the caller; the CLI fills it from `HERDR_PANE_ID`.",
               "type": [
                 "string",
                 "null"
@@ -14303,8 +14324,22 @@
                 "null"
               ]
             },
+            "parent_task_id": {
+              "description": "The task the requester ran when it asked.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "reason": {
               "description": "Why the task stalled, was lost, or was cancelled.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "requester_terminal_id": {
+              "description": "Terminal of the pane that asked for the task.",
               "type": [
                 "string",
                 "null"

@@ -77,6 +77,12 @@ pub struct TaskInfo {
     /// Where the agent was asked to write its result, on the task's location.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_path: Option<String>,
+    /// Terminal of the pane that asked for the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester_terminal_id: Option<String>,
+    /// The task the requester ran when it asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
 }
 
 /// Where the text of `task.result` came from.
@@ -112,6 +118,9 @@ pub struct TaskSubmitParams {
     /// Append a line that asks the agent to write its result to `result_path`.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub result_file: bool,
+    /// Pane of the caller; the CLI fills it from `HERDR_PANE_ID`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

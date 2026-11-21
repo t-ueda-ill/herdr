@@ -58,6 +58,23 @@ impl App {
         else {
             return encode_error(id, "agent_not_found", "agent terminal is gone");
         };
+        // Why ignore an unknown pane: the caller may run in a pane of another server.
+        let requester = params
+            .requested_by
+            .as_deref()
+            .and_then(|pane| self.parse_pane_id(pane))
+            .and_then(|(ws_idx, pane)| self.state.workspaces.get(ws_idx)?.terminal_id(pane))
+            .cloned();
+        if self.state.tasks.would_cycle(&terminal, requester.as_ref()) {
+            return encode_error(
+                id,
+                "task_cycle",
+                format!(
+                    "{} already waits for the asking pane; the task would never start",
+                    params.target
+                ),
+            );
+        }
         let location = self
             .pane_info(validated.ws_idx, validated.pane_id)
             .and_then(|pane| pane.location)
@@ -73,6 +90,7 @@ impl App {
                 location,
                 text: params.text,
                 key: params.key,
+                requester,
             },
             agent,
             task_now(),
@@ -287,6 +305,8 @@ impl App {
             reason: task.reason.clone(),
             key: task.key.clone(),
             result_path: task.result_path.clone(),
+            requester_terminal_id: task.requester.as_ref().map(ToString::to_string),
+            parent_task_id: task.parent.map(TaskId::public),
         })
     }
 
@@ -420,15 +440,23 @@ mod tests {
         }
 
         fn submit_raw(&mut self, text: &str, key: Option<&str>, result_file: bool) -> String {
-            self.app.handle_task_submit(
-                "req".into(),
-                TaskSubmitParams {
-                    target: "reviewer".into(),
-                    text: text.into(),
-                    key: key.map(str::to_string),
-                    result_file,
-                },
-            )
+            self.submit_params(TaskSubmitParams {
+                target: "reviewer".into(),
+                text: text.into(),
+                key: key.map(str::to_string),
+                result_file,
+                requested_by: None,
+            })
+        }
+
+        fn submit_params(&mut self, params: TaskSubmitParams) -> String {
+            self.app.handle_task_submit("req".into(), params)
+        }
+
+        fn own_pane(&self) -> String {
+            self.app
+                .public_pane_id(0, self.pane_id)
+                .expect("public pane id")
         }
 
         fn submit_with(&mut self, text: &str, result_file: bool) -> TaskInfo {
@@ -600,6 +628,7 @@ mod tests {
                 text: "x".into(),
                 key: None,
                 result_file: false,
+                requested_by: None,
             },
         );
 
@@ -837,5 +866,40 @@ mod tests {
         let mode = std::fs::metadata(folder).unwrap().permissions().mode() & 0o777;
         let _ = std::fs::remove_dir(folder);
         assert_eq!(mode, 0o700);
+    }
+
+    #[tokio::test]
+    async fn an_agent_asking_its_own_pane_is_refused_as_a_cycle() {
+        let mut fixture = fixture(AgentState::Idle);
+        let own = fixture.own_pane();
+
+        let response = fixture.submit_params(TaskSubmitParams {
+            target: "reviewer".into(),
+            text: "fix".into(),
+            key: None,
+            result_file: false,
+            requested_by: Some(own),
+        });
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "task_cycle");
+        assert!(fixture.task_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_requester_pane_records_no_requester() {
+        let mut fixture = fixture(AgentState::Idle);
+
+        let response = fixture.submit_params(TaskSubmitParams {
+            target: "reviewer".into(),
+            text: "fix".into(),
+            key: None,
+            result_file: false,
+            requested_by: Some("w_missing:p_9".into()),
+        });
+
+        let task = Fixture::task_of(&response);
+        assert_eq!(task.requester_terminal_id, None);
+        assert_eq!(task.parent_task_id, None);
     }
 }

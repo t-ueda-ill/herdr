@@ -139,4 +139,37 @@ herdr ssh hosts --json | jq -r '.result.hosts[].alias'
 herdr pane split --current --direction right --ssh prod
 ```
 
+計画・実装・レビューの 3 役をスクリプトで回せます。スクリプトが知っているのは役割名だけなので、役割の製品や場所を替えても `agent start` の行が変わるだけです。`--key` で各段の再送を安全にし、`--result-file` で各段の結果を次のプロンプトに渡します。
+
+```bash
+set -o pipefail
+open_pane() { herdr pane split --current --direction right --no-focus "$@" | jq -r '.result.pane.pane_id'; }
+# The product and the place of each role are chosen here only.
+herdr agent start planner --kind claude --pane "$(open_pane)"
+herdr agent start implementer --kind codex --pane "$(open_pane --ssh devbox)"
+herdr agent start reviewer --kind opencode --pane "$(open_pane --ssh devbox)"
+
+run=${RUN:-$(date +%s)}
+branch="crew/$run"   # Herdr does not copy files between places; git carries the code.
+step() {             # role, key, text -> result text
+  local id
+  id=$(herdr task submit "$1" "$3" --key "$run/$2" --result-file \
+         --wait --timeout 1800000 | jq -r '.result.task.task_id') || return 1
+  herdr task result "$id" | jq -r '.result.result.text'
+}
+
+plan=$(step planner plan "Plan this change: $GOAL") || exit 1
+notes=""
+for round in 1 2 3; do
+  step implementer "impl$round" "Implement this plan and push it to $branch: $plan $notes" >/dev/null || exit 1
+  review=$(step reviewer "review$round" \
+    "Review $branch against origin/master. Start with VERDICT: approve or VERDICT: changes.") || exit 1
+  head -1 <<<"$review" | grep -q '^VERDICT: approve' && exit 0
+  notes="Review notes: $review"
+done
+exit 1
+```
+
+エージェントが入力を求めたら、そのペインで答えます。タスクは `running` に戻り、待ちは続きます。エージェント自身が同じスクリプトを実行することもできます。エージェントのペインから送ったタスクにはそのエージェントが依頼元として記録され（`task list --tree` で見えます）、2 つのエージェントが互いを待つことになるタスクを Herdr は断ります。
+
 コマンドとオプションの完全な一覧は [CLI リファレンス](/ja/docs/cli-reference/) を参照してください。シェル補完でも同じコマンドツリーを対話的に確認できます。
