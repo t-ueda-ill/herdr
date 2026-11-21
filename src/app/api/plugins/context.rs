@@ -142,6 +142,8 @@ impl App {
             EventData::PaneCreated { pane } | EventData::PaneUpdated { pane } => {
                 self.plugin_context_for_pane_info(pane, correlation_id)
             }
+            // Why not a pane context: `task.updated` is not a plugin hook event.
+            EventData::TaskUpdated { .. } => empty_plugin_context(correlation_id),
             EventData::PaneMoved { pane, .. } => {
                 self.plugin_context_for_pane_info(pane.as_ref(), correlation_id)
             }

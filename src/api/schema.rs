@@ -21,6 +21,7 @@ pub mod server;
 pub mod session;
 pub mod ssh_hosts;
 pub mod tabs;
+pub mod tasks;
 pub mod workspaces;
 pub mod worktrees;
 
@@ -44,6 +45,7 @@ pub use server::*;
 pub use session::*;
 pub use ssh_hosts::*;
 pub use tabs::*;
+pub use tasks::*;
 pub use workspaces::*;
 pub use worktrees::*;
 
@@ -115,6 +117,10 @@ operations::define_operations! {
     AgentStart(AgentStartParams) => "agent.start", true, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
+    TaskSubmit(TaskSubmitParams) => "task.submit", true, false;
+    TaskGet(TaskTarget) => "task.get", false, false;
+    TaskList(TaskListParams) => "task.list", false, false;
+    TaskCancel(TaskTarget) => "task.cancel", true, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;
     PaneSplitInherit(PaneSplitParams) => "pane.split_inherit", true, true;
     PaneSwap(PaneSwapParams) => "pane.swap", true, true;

@@ -106,6 +106,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
+| タスク | `task.submit`、`task.get`、`task.list`、`task.cancel` |
 | イベント | `events.subscribe`、`events.wait` |
 | インテグレーション | `integration.install`、`integration.uninstall` |
 | プラグイン | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
@@ -600,6 +601,33 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 | `platform_unsupported` | Windows サーバーでのコンテナまたは SSH のペイン |
 
 コンテナや SSH で読み出しに失敗したときは、API のエラーではなく、ブラウザのページとして表示します。
+
+## プロンプトタスク
+
+`agent.prompt` が知らせるのは、テキストがペインに届いたことだけです。エージェントが受け取ったかどうかはわかりません。`task.submit` は同じ `target` と `text` を受け取ってタスクを返し、Herdr はエージェントのターンが終わるまでそれを追跡します。
+
+```json
+{ "id": "1", "method": "task.submit", "params": { "target": "reviewer", "text": "fix the failing test" } }
+```
+
+結果は `task_info` で、`task` オブジェクトを含みます。フィールドは `task_id`（`t_<n>`。番号はサーバーの再起動でやり直し）、`state`、`target`、`terminal_id`、`pane_id`、`location`、`text`、`evidence`、`created_at_ms`、`submitted_at_ms`、`finished_at_ms`、`reason` です。`agent.prompt` が断る場合は `task.submit` も同じエラーコードで断り、何も記録しません。
+
+| `state` | 意味 |
+| --- | --- |
+| `queued` | エージェントが作業中か、先のタスクがある。まだ何も送っていない |
+| `submitted` | ペインに書き込んだ。エージェントの反応を待っている |
+| `running` | 送信後にエージェントが `working` になった |
+| `needs_input` | 送信後にエージェントが `blocked` になった |
+| `completed` | 受け取ったあとでエージェントが `idle` か `done` になった |
+| `stalled` | 5 秒以内に `working` も `blocked` もなかった。次のタスクに進める |
+| `lost` | 書き込みに失敗した、ペインが閉じた、またはエージェントが終了した |
+| `cancelled` | 送る前にキューから取り除いた |
+
+1 つのエージェントのターミナルで同時に動くタスクは 1 つです。後のタスクは順番に待ち、エージェントが `idle` か `done` になると送られます。送信後の状態変化だけを数えるので、前のターンの終わりでタスクが完了することはありません。`evidence` は、その変化を公式インテグレーションのライフサイクルフックが報告したときは `hook`、画面検出が報告したときは `screen` です。`completed` はターンが終わったことだけを示し、作業の正しさは判断しません。`stalled` になったタスクは、遅れて反応があっても戻りません。
+
+`task.get` は `task_id` を受け取ります。`task.list` は古い順にタスクを返します。`location` を渡すと、その場所 ID のタスクだけを返します。`ssh:<alias>` はそのホスト経由のコンテナも含みます。`task.cancel` は `task_id` を受け取り、`queued` のタスクにだけ効きます。ほかの状態では `task_already_sent` を返します。不明な ID には `task_not_found` を返します。Herdr は終わったタスクを直近 200 件だけメモリに残し、サーバーが止まるとすべて忘れます。
+
+`task.updated` を購読すると、変化のたびに `task` オブジェクトを受け取れます。
 
 ## エージェントビューのクエリ
 

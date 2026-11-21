@@ -829,6 +829,8 @@ pub struct AppState {
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
     pub sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub next_agent_state_change_seq: u64,
+    /// Prompts sent through `task.submit`, by agent terminal.
+    pub tasks: crate::tasks::TaskTable,
     pub confirm_close: bool,
     pub pane_borders: crate::config::PaneBordersConfig,
     pub pane_outer_borders: bool,
@@ -1100,6 +1102,7 @@ impl AppState {
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
             next_agent_state_change_seq: 0,
+            tasks: crate::tasks::TaskTable::default(),
             confirm_close: true,
             pane_borders: crate::config::PaneBordersConfig::Auto,
             pane_outer_borders: true,

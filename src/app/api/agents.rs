@@ -137,7 +137,7 @@ impl App {
     }
 
     /// Runs every check that can reject a prompt without touching the pane.
-    fn validate_agent_prompt(
+    pub(super) fn validate_agent_prompt(
         &self,
         id: String,
         params: &AgentPromptParams,
@@ -208,7 +208,7 @@ impl App {
         })
     }
 
-    fn submit_agent_prompt(
+    pub(super) fn submit_agent_prompt(
         &mut self,
         validated: ValidatedAgentPrompt,
         params: &AgentPromptParams,
@@ -431,10 +431,10 @@ impl App {
     }
 }
 
-struct ValidatedAgentPrompt {
+pub(super) struct ValidatedAgentPrompt {
     id: String,
-    ws_idx: usize,
-    pane_id: crate::layout::PaneId,
+    pub(super) ws_idx: usize,
+    pub(super) pane_id: crate::layout::PaneId,
     expected_agent: crate::detect::Agent,
     agent: crate::api::schema::AgentInfo,
 }

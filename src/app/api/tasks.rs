@@ -1,0 +1,571 @@
+//! `task.*` methods and the glue that drives `TaskTable` from agent status
+//! changes. The table holds the rules; this file only runs its effects.
+
+use crate::api::schema::{
+    AgentPromptParams, EventData, EventEnvelope, EventKind, Location, ResponseResult, TaskInfo,
+    TaskListParams, TaskSubmitParams, TaskTarget,
+};
+use crate::app::App;
+use crate::tasks::{AgentSnapshot, CancelError, Effect, NewTask, Now, TaskId};
+use crate::terminal::TerminalId;
+
+use super::super::api_helpers::pane_agent_status;
+use super::responses::{encode_error, encode_success};
+
+impl App {
+    pub(super) fn handle_task_submit(&mut self, id: String, params: TaskSubmitParams) -> String {
+        let prompt = AgentPromptParams {
+            target: params.target.clone(),
+            text: params.text.clone(),
+            wait: None,
+        };
+        // Why not a separate check: a task must refuse exactly what `agent.prompt` refuses.
+        let validated = match self.validate_agent_prompt(id.clone(), &prompt) {
+            Ok(validated) => validated,
+            Err(response) => return response,
+        };
+        let Some(terminal) = self
+            .state
+            .workspaces
+            .get(validated.ws_idx)
+            .and_then(|workspace| workspace.terminal_id(validated.pane_id))
+            .cloned()
+        else {
+            return encode_error(id, "agent_not_found", "agent terminal is gone");
+        };
+        let Some(agent) =
+            self.task_agent_snapshot_at(validated.ws_idx, validated.pane_id, &terminal)
+        else {
+            return encode_error(id, "agent_not_found", "agent terminal is gone");
+        };
+        let location = self
+            .pane_info(validated.ws_idx, validated.pane_id)
+            .and_then(|pane| pane.location)
+            .unwrap_or_else(|| Location::new(None, None));
+        let (task, effects) = self.state.tasks.submit(
+            NewTask {
+                terminal,
+                target: params.target,
+                location,
+                text: params.text,
+            },
+            agent,
+            task_now(),
+        );
+        self.run_task_effects(effects);
+        match self.task_info(task) {
+            Some(task) => encode_success(id, ResponseResult::TaskInfo { task }),
+            None => encode_error(id, "task_not_found", "task was dropped"),
+        }
+    }
+
+    pub(super) fn handle_task_get(&mut self, id: String, target: TaskTarget) -> String {
+        match TaskId::parse(&target.task_id).and_then(|task| self.task_info(task)) {
+            Some(task) => encode_success(id, ResponseResult::TaskInfo { task }),
+            None => task_not_found(id, &target.task_id),
+        }
+    }
+
+    pub(super) fn handle_task_list(&mut self, id: String, params: TaskListParams) -> String {
+        let tasks = self
+            .state
+            .tasks
+            .iter()
+            .filter(|task| {
+                params
+                    .location
+                    .as_deref()
+                    .is_none_or(|filter| Location::id_matches(&task.location.id, filter))
+            })
+            .map(|task| task.id)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|task| self.task_info(task))
+            .collect();
+        encode_success(id, ResponseResult::TaskList { tasks })
+    }
+
+    pub(super) fn handle_task_cancel(&mut self, id: String, target: TaskTarget) -> String {
+        let Some(task) = TaskId::parse(&target.task_id) else {
+            return task_not_found(id, &target.task_id);
+        };
+        match self.state.tasks.cancel(task, task_now()) {
+            Ok(effects) => self.run_task_effects(effects),
+            Err(CancelError::NotFound) => return task_not_found(id, &target.task_id),
+            Err(CancelError::AlreadySent(state)) => {
+                return encode_error(
+                    id,
+                    "task_already_sent",
+                    format!(
+                        "task {} is {state:?}; only queued tasks can be cancelled",
+                        target.task_id
+                    ),
+                );
+            }
+        }
+        match self.task_info(task) {
+            Some(task) => encode_success(id, ResponseResult::TaskInfo { task }),
+            None => task_not_found(id, &target.task_id),
+        }
+    }
+
+    /// Called for every agent status change. Why not look the pane up from the
+    /// terminal: this runs on the detection path, so it must stay O(1).
+    pub(crate) fn advance_tasks_for_pane(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
+        let Some(terminal) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|workspace| workspace.terminal_id(pane_id))
+            .cloned()
+        else {
+            return;
+        };
+        if !self.state.tasks.has_lane(&terminal) {
+            return;
+        }
+        let Some(agent) = self.task_agent_snapshot_at(ws_idx, pane_id, &terminal) else {
+            return;
+        };
+        let effects = self
+            .state
+            .tasks
+            .on_agent_status(&terminal, agent, task_now());
+        self.run_task_effects(effects);
+    }
+
+    pub(crate) fn end_tasks_for_terminal(&mut self, terminal: &TerminalId, reason: &str) {
+        let effects = self
+            .state
+            .tasks
+            .on_terminal_gone(terminal, reason, task_now());
+        self.run_task_effects(effects);
+    }
+
+    pub(crate) fn expire_due_tasks(&mut self, now: std::time::Instant) {
+        if self
+            .state
+            .tasks
+            .next_deadline()
+            .is_none_or(|deadline| deadline > now)
+        {
+            return;
+        }
+        let effects = self.state.tasks.on_tick(Now {
+            at: now,
+            unix_ms: unix_ms(),
+        });
+        self.run_task_effects(effects);
+    }
+
+    pub(crate) fn fail_task_submission(&mut self, task: TaskId, reason: String) {
+        let effects = self.state.tasks.submit_failed(task, reason, task_now());
+        self.run_task_effects(effects);
+    }
+
+    fn run_task_effects(&mut self, effects: Vec<crate::tasks::Effect>) {
+        let mut pending = std::collections::VecDeque::from(effects);
+        while let Some(effect) = pending.pop_front() {
+            match effect {
+                Effect::Emit(task) => {
+                    if let Some(task) = self.task_info(task) {
+                        self.emit_event(EventEnvelope {
+                            event: EventKind::TaskUpdated,
+                            data: EventData::TaskUpdated { task },
+                        });
+                    }
+                }
+                Effect::Submit(task) => {
+                    if let Err(reason) = self.write_task_prompt(task) {
+                        pending.extend(self.state.tasks.submit_failed(task, reason, task_now()));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Writes the prompt with the same checks and encoding as `agent.prompt`.
+    fn write_task_prompt(&mut self, task: TaskId) -> Result<(), String> {
+        let (terminal, text) = self
+            .state
+            .tasks
+            .get(task)
+            .map(|task| (task.terminal.clone(), task.text.clone()))
+            .ok_or_else(|| "task was dropped".to_string())?;
+        let pane = self
+            .terminal_public_pane_id(&terminal)
+            .ok_or_else(|| "agent pane is gone".to_string())?;
+        let prompt = AgentPromptParams {
+            target: pane,
+            text,
+            wait: None,
+        };
+        let validated = self
+            .validate_agent_prompt(task.public(), &prompt)
+            .map_err(|response| response_error_message(&response))?;
+        let (_, _, completion) = self
+            .submit_agent_prompt(validated, &prompt)
+            .map_err(|response| response_error_message(&response))?;
+        let event_tx = self.event_tx.clone();
+        crate::thread_spawn::spawn_named("herdr-task-submit", move || {
+            let reason = match completion.recv() {
+                Ok(Ok(())) => return,
+                Ok(Err(err)) => err.to_string(),
+                Err(_) => "pty actor closed".to_string(),
+            };
+            let _ =
+                event_tx.blocking_send(crate::events::AppEvent::TaskSubmitFailed { task, reason });
+        })
+        .map(|_| ())
+        .map_err(|err| format!("could not watch the prompt write: {err}"))
+    }
+
+    fn task_agent_snapshot_at(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        terminal: &TerminalId,
+    ) -> Option<AgentSnapshot> {
+        let state = self.state.terminals.get(terminal)?;
+        let seen = self.state.workspaces.get(ws_idx)?.pane_state(pane_id)?.seen;
+        Some(AgentSnapshot {
+            status: pane_agent_status(state.state, seen),
+            seq: state.last_agent_state_change_seq.unwrap_or(0),
+            hook: state.full_lifecycle_hook_authority_active(),
+        })
+    }
+
+    fn task_info(&self, task: TaskId) -> Option<TaskInfo> {
+        let task = self.state.tasks.get(task)?;
+        Some(TaskInfo {
+            task_id: task.id.public(),
+            state: task.state,
+            target: task.target.clone(),
+            terminal_id: task.terminal.to_string(),
+            pane_id: self.terminal_public_pane_id(&task.terminal),
+            location: task.location.clone(),
+            text: task.text.clone(),
+            evidence: task.evidence,
+            created_at_ms: task.created_at_ms,
+            submitted_at_ms: task.submitted_at_ms,
+            finished_at_ms: task.finished_at_ms,
+            reason: task.reason.clone(),
+        })
+    }
+
+    fn terminal_pane(&self, terminal: &TerminalId) -> Option<(usize, crate::layout::PaneId)> {
+        self.terminal_target_for_terminal_id(terminal.as_str())
+            .map(|target| (target.ws_idx, target.pane_id))
+    }
+
+    fn terminal_public_pane_id(&self, terminal: &TerminalId) -> Option<String> {
+        let (ws_idx, pane_id) = self.terminal_pane(terminal)?;
+        self.public_pane_id(ws_idx, pane_id)
+    }
+}
+
+fn task_not_found(id: String, task_id: &str) -> String {
+    encode_error(id, "task_not_found", format!("no task {task_id}"))
+}
+
+fn response_error_message(response: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(response)
+        .ok()
+        .and_then(|value| value["error"]["message"].as_str().map(str::to_string))
+        .unwrap_or_else(|| response.to_string())
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn task_now() -> Now {
+    Now {
+        at: std::time::Instant::now(),
+        unix_ms: unix_ms(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::api::schema::{ErrorResponse, SuccessResponse, TaskEvidence, TaskState};
+    use crate::config::Config;
+    use crate::detect::{Agent, AgentState};
+    use crate::events::AppEvent;
+    use crate::workspace::Workspace;
+
+    struct Fixture {
+        app: App,
+        pane_id: crate::layout::PaneId,
+        pty: tokio::sync::mpsc::Receiver<Bytes>,
+    }
+
+    fn fixture(state: AgentState) -> Fixture {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("agent")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = crate::app::Mode::Terminal;
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let state_ref = app.state.terminals.get_mut(&terminal).unwrap();
+        state_ref.set_agent_name("reviewer".into());
+        state_ref.set_detected_state(Some(Agent::OpenCode), state);
+        let (runtime, pty) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, b"", 8,
+            );
+        app.state.insert_test_runtime(pane_id, runtime);
+        Fixture { app, pane_id, pty }
+    }
+
+    impl Fixture {
+        fn submit(&mut self, text: &str) -> TaskInfo {
+            let response = self.app.handle_task_submit(
+                "req".into(),
+                TaskSubmitParams {
+                    target: "reviewer".into(),
+                    text: text.into(),
+                },
+            );
+            let success: SuccessResponse = serde_json::from_str(&response)
+                .unwrap_or_else(|_| panic!("task.submit failed: {response}"));
+            let ResponseResult::TaskInfo { task } = success.result else {
+                panic!("expected task info: {response}");
+            };
+            task
+        }
+
+        fn get(&mut self, task_id: &str) -> TaskInfo {
+            let response = self.app.handle_task_get(
+                "req".into(),
+                TaskTarget {
+                    task_id: task_id.into(),
+                },
+            );
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::TaskInfo { task } = success.result else {
+                panic!("expected task info: {response}");
+            };
+            task
+        }
+
+        fn agent_becomes(&mut self, state: AgentState) {
+            self.app.handle_internal_event(AppEvent::StateChanged {
+                pane_id: self.pane_id,
+                agent: Some(Agent::OpenCode),
+                state,
+                visible_blocker: state == AgentState::Blocked,
+                visible_working: state == AgentState::Working,
+                process_exited: false,
+                observed_at: std::time::Instant::now(),
+            });
+        }
+
+        fn written_text(&mut self) -> Vec<u8> {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let mut written = Vec::new();
+            while std::time::Instant::now() < deadline {
+                while let Ok(bytes) = self.pty.try_recv() {
+                    written.extend_from_slice(&bytes);
+                }
+                if written.ends_with(b"\r") {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            written
+        }
+
+        fn task_events(&self) -> Vec<TaskInfo> {
+            self.app
+                .event_hub
+                .events_after(0)
+                .into_iter()
+                .filter_map(|(_, event)| match event.data {
+                    EventData::TaskUpdated { task } => Some(task),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_task_for_an_idle_agent_writes_the_prompt_and_reports_submitted() {
+        let mut fixture = fixture(AgentState::Idle);
+
+        let task = fixture.submit("fix the test");
+
+        assert_eq!(task.state, TaskState::Submitted);
+        assert_eq!(task.location.id, "local");
+        assert!(task.task_id.starts_with("t_"));
+        assert_eq!(fixture.written_text(), b"fix the test\r");
+        assert_eq!(
+            fixture.task_events().last().map(|task| task.state),
+            Some(TaskState::Submitted)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_agent_working_then_idle_runs_then_completes_the_task() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit("fix");
+
+        fixture.agent_becomes(AgentState::Working);
+        let running = fixture.get(&task.task_id);
+        assert_eq!(running.state, TaskState::Running);
+        assert_eq!(running.evidence, Some(TaskEvidence::Screen));
+
+        fixture.agent_becomes(AgentState::Idle);
+        assert_eq!(fixture.get(&task.task_id).state, TaskState::Completed);
+        let states: Vec<_> = fixture
+            .task_events()
+            .into_iter()
+            .map(|task| task.state)
+            .collect();
+        assert_eq!(
+            states,
+            [
+                TaskState::Submitted,
+                TaskState::Running,
+                TaskState::Completed
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_task_for_a_working_agent_waits_until_the_agent_is_idle() {
+        let mut fixture = fixture(AgentState::Working);
+
+        let task = fixture.submit("next");
+        assert_eq!(task.state, TaskState::Queued);
+        assert!(
+            fixture.pty.try_recv().is_err(),
+            "nothing is written while queued"
+        );
+
+        fixture.agent_becomes(AgentState::Idle);
+
+        assert_eq!(fixture.get(&task.task_id).state, TaskState::Submitted);
+        assert_eq!(fixture.written_text(), b"next\r");
+    }
+
+    #[tokio::test]
+    async fn a_blocked_agent_refuses_the_task_like_agent_prompt() {
+        let mut fixture = fixture(AgentState::Blocked);
+
+        let response = fixture.app.handle_task_submit(
+            "req".into(),
+            TaskSubmitParams {
+                target: "reviewer".into(),
+                text: "x".into(),
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "agent_blocked");
+        assert_eq!(fixture.app.state.tasks.iter().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn no_reaction_in_five_seconds_stalls_the_task() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit("fix");
+
+        fixture
+            .app
+            .expire_due_tasks(std::time::Instant::now() + crate::tasks::ACCEPT_TIMEOUT);
+
+        let stalled = fixture.get(&task.task_id);
+        assert_eq!(stalled.state, TaskState::Stalled);
+        assert!(stalled.reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn closing_the_pane_loses_the_task() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit("fix");
+        let pane = fixture.app.public_pane_id(0, fixture.pane_id).unwrap();
+
+        fixture.app.handle_pane_close(
+            "req".into(),
+            crate::api::schema::PaneTarget { pane_id: pane },
+        );
+
+        let lost = fixture.get(&task.task_id);
+        assert_eq!(lost.state, TaskState::Lost);
+        assert_eq!(lost.reason.as_deref(), Some("pane closed"));
+    }
+
+    #[tokio::test]
+    async fn a_sent_task_cannot_be_cancelled() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit("fix");
+
+        let response = fixture.app.handle_task_cancel(
+            "req".into(),
+            TaskTarget {
+                task_id: task.task_id,
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "task_already_sent");
+    }
+
+    #[tokio::test]
+    async fn task_list_keeps_only_the_requested_location() {
+        let mut fixture = fixture(AgentState::Working);
+        fixture.submit("one");
+
+        let list = |fixture: &mut Fixture, location: &str| {
+            let response = fixture.app.handle_task_list(
+                "req".into(),
+                TaskListParams {
+                    location: Some(location.into()),
+                },
+            );
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::TaskList { tasks } = success.result else {
+                panic!("expected task list");
+            };
+            tasks.len()
+        };
+
+        assert_eq!(list(&mut fixture, "local"), 1);
+        assert_eq!(list(&mut fixture, "ssh:devbox"), 0);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_task_id_is_not_found() {
+        let mut fixture = fixture(AgentState::Idle);
+
+        let response = fixture.app.handle_task_get(
+            "req".into(),
+            TaskTarget {
+                task_id: "t_99".into(),
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "task_not_found");
+    }
+}
