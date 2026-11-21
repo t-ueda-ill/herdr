@@ -67,6 +67,9 @@ impl App {
             NewTask {
                 terminal,
                 target: params.target,
+                result_dir: params
+                    .result_file
+                    .then(|| task_result_dir(&location, self.state.tasks.run_id())),
                 location,
                 text: params.text,
                 key: params.key,
@@ -222,7 +225,7 @@ impl App {
             .state
             .tasks
             .get(task)
-            .map(|task| (task.terminal.clone(), task.text.clone()))
+            .map(|task| (task.terminal.clone(), task.prompt().into_owned()))
             .ok_or_else(|| "task was dropped".to_string())?;
         let pane = self
             .terminal_public_pane_id(&terminal)
@@ -283,15 +286,19 @@ impl App {
             finished_at_ms: task.finished_at_ms,
             reason: task.reason.clone(),
             key: task.key.clone(),
+            result_path: task.result_path.clone(),
         })
     }
 
-    fn terminal_pane(&self, terminal: &TerminalId) -> Option<(usize, crate::layout::PaneId)> {
+    pub(super) fn terminal_pane(
+        &self,
+        terminal: &TerminalId,
+    ) -> Option<(usize, crate::layout::PaneId)> {
         self.terminal_target_for_terminal_id(terminal.as_str())
             .map(|target| (target.ws_idx, target.pane_id))
     }
 
-    fn terminal_public_pane_id(&self, terminal: &TerminalId) -> Option<String> {
+    pub(super) fn terminal_public_pane_id(&self, terminal: &TerminalId) -> Option<String> {
         let (ws_idx, pane_id) = self.terminal_pane(terminal)?;
         self.public_pane_id(ws_idx, pane_id)
     }
@@ -308,6 +315,18 @@ fn task_key_conflict(id: String, key: &str, conflict: KeyConflict) -> String {
             conflict.existing.public()
         ),
     )
+}
+
+fn task_result_dir(location: &Location, run: &str) -> String {
+    match location.kind {
+        crate::api::schema::PaneLocationKind::Host => std::env::temp_dir()
+            .join("herdr-task")
+            .join(run)
+            .display()
+            .to_string(),
+        // Why not the pane's directory: the result must not land in the repository.
+        _ => format!("/tmp/herdr-task/{run}"),
+    }
 }
 
 fn task_not_found(id: String, task_id: &str) -> String {
@@ -342,7 +361,9 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
-    use crate::api::schema::{ErrorResponse, SuccessResponse, TaskEvidence, TaskState};
+    use crate::api::schema::{
+        ErrorResponse, SuccessResponse, TaskEvidence, TaskResult, TaskResultSource, TaskState,
+    };
     use crate::config::Config;
     use crate::detect::{Agent, AgentState};
     use crate::events::AppEvent;
@@ -388,20 +409,30 @@ mod tests {
             self.submit_keyed(text, None)
         }
 
-        fn submit_raw(&mut self, text: &str, key: Option<&str>) -> String {
+        fn submit_raw(&mut self, text: &str, key: Option<&str>, result_file: bool) -> String {
             self.app.handle_task_submit(
                 "req".into(),
                 TaskSubmitParams {
                     target: "reviewer".into(),
                     text: text.into(),
                     key: key.map(str::to_string),
+                    result_file,
                 },
             )
         }
 
+        fn submit_with(&mut self, text: &str, result_file: bool) -> TaskInfo {
+            let response = self.submit_raw(text, None, result_file);
+            Self::task_of(&response)
+        }
+
         fn submit_keyed(&mut self, text: &str, key: Option<&str>) -> TaskInfo {
-            let response = self.submit_raw(text, key);
-            let success: SuccessResponse = serde_json::from_str(&response)
+            let response = self.submit_raw(text, key, false);
+            Self::task_of(&response)
+        }
+
+        fn task_of(response: &str) -> TaskInfo {
+            let success: SuccessResponse = serde_json::from_str(response)
                 .unwrap_or_else(|_| panic!("task.submit failed: {response}"));
             let ResponseResult::TaskInfo { task } = success.result else {
                 panic!("expected task info: {response}");
@@ -448,6 +479,31 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
             written
+        }
+
+        fn result(&mut self, task_id: &str) -> Result<TaskResult, ErrorResponse> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handled = self.app.handle_deferred_task_api_request(
+                crate::api::schema::Request {
+                    id: "req".into(),
+                    method: crate::api::schema::Method::TaskResult(TaskTarget {
+                        task_id: task_id.into(),
+                    }),
+                },
+                tx,
+            );
+            assert!(handled, "task.result was not taken");
+            let response = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("task.result answered");
+            match serde_json::from_str::<SuccessResponse>(&response) {
+                Ok(success) => match success.result {
+                    ResponseResult::TaskResult { result } => Ok(result),
+                    _ => panic!("expected task result: {response}"),
+                },
+                Err(_) => Err(serde_json::from_str(&response)
+                    .unwrap_or_else(|_| panic!("unexpected response: {response}"))),
+            }
         }
 
         fn task_events(&self) -> Vec<TaskInfo> {
@@ -533,6 +589,7 @@ mod tests {
                 target: "reviewer".into(),
                 text: "x".into(),
                 key: None,
+                result_file: false,
             },
         );
 
@@ -659,7 +716,7 @@ mod tests {
         let mut fixture = fixture(AgentState::Idle);
         let first = fixture.submit_keyed("fix", Some("run/1"));
 
-        let response = fixture.submit_raw("something else", Some("run/1"));
+        let response = fixture.submit_raw("something else", Some("run/1"), false);
 
         let error: ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(error.error.code, "task_key_conflict");
@@ -670,9 +727,92 @@ mod tests {
     async fn an_empty_key_is_refused() {
         let mut fixture = fixture(AgentState::Idle);
 
-        let response = fixture.submit_raw("fix", Some(""));
+        let response = fixture.submit_raw("fix", Some(""), false);
 
         let error: ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(error.error.code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn a_result_file_task_asks_for_its_file_in_the_prompt() {
+        let mut fixture = fixture(AgentState::Idle);
+
+        let task = fixture.submit_with("plan the fix", true);
+
+        let path = task.result_path.clone().expect("result path");
+        let dir = std::env::temp_dir().join("herdr-task");
+        assert!(
+            std::path::Path::new(&path).starts_with(&dir),
+            "{path} is not under {}",
+            dir.display()
+        );
+        assert!(path.ends_with(&format!("{}.md", task.task_id)), "{path}");
+        let written = String::from_utf8_lossy(&fixture.written_text()).into_owned();
+        assert!(written.starts_with("plan the fix"), "{written:?}");
+        assert!(written.contains(&path), "{written:?}");
+        assert_eq!(task.text, "plan the fix");
+    }
+
+    #[tokio::test]
+    async fn the_result_of_an_unfinished_task_is_refused() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit("fix");
+
+        let error = fixture.result(&task.task_id).unwrap_err();
+
+        assert_eq!(error.error.code, "task_not_finished");
+    }
+
+    #[tokio::test]
+    async fn the_result_of_an_unknown_task_is_not_found() {
+        let mut fixture = fixture(AgentState::Idle);
+
+        let error = fixture.result("t_404").unwrap_err();
+
+        assert_eq!(error.error.code, "task_not_found");
+    }
+
+    #[tokio::test]
+    async fn a_finished_task_returns_the_text_of_its_result_file() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit_with("plan", true);
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+        let path = std::path::PathBuf::from(task.result_path.clone().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "## plan\n1. fix the token check\n").unwrap();
+
+        let result = fixture.result(&task.task_id);
+        let _ = std::fs::remove_file(&path);
+
+        let result = result.expect("task result");
+        assert_eq!(result.source, TaskResultSource::File);
+        assert_eq!(result.text, "## plan\n1. fix the token check\n");
+        assert_eq!(result.path.as_deref(), task.result_path.as_deref());
+    }
+
+    #[tokio::test]
+    async fn a_finished_task_without_a_result_file_returns_the_screen_tail() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit("fix");
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+
+        let result = fixture.result(&task.task_id).expect("task result");
+
+        assert_eq!(result.source, TaskResultSource::Screen);
+        assert_eq!(result.path, None);
+    }
+
+    #[tokio::test]
+    async fn a_missing_result_file_falls_back_to_the_screen_tail() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit_with("plan", true);
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+
+        let result = fixture.result(&task.task_id).expect("task result");
+
+        assert_eq!(result.source, TaskResultSource::Screen);
     }
 }

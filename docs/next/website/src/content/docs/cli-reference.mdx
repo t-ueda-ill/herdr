@@ -499,14 +499,15 @@ Use `pane send-text`, `pane send-keys`, `pane run`, and `terminal attach` for or
 A task is a prompt that Herdr follows after it sends it. See [Socket API](/docs/socket-api/#prompt-tasks) for the states.
 
 ```bash
-herdr task submit <target> <text> [--key KEY] [--wait] [--until STATE]... [--timeout MS]
+herdr task submit <target> <text> [--key KEY] [--result-file] [--wait] [--until STATE]... [--timeout MS]
 herdr task get <task_id>
 herdr task list [--location ID]
 herdr task wait <task_id> [--until STATE]... [--timeout MS]
 herdr task cancel <task_id>
+herdr task result <task_id>
 ```
 
-`agent prompt --wait` keeps its behavior: it does not track turns, so the end of a turn that was already running can satisfy it. Use `task submit --wait` to follow the turn of the prompt you sent. `task submit` takes the same target as `agent prompt` and refuses what it refuses. A working agent keeps the task `queued` until it is `idle` or `done`. With `--wait`, the command waits until the task finishes, or until it reaches a state given with `--until` (`running` or `needs_input`, for example). It prints the task and exits with 0 when the task is `completed` or at a requested state, and with 1 when it ended `stalled`, `lost`, or `cancelled`. A `--timeout` that runs out returns the `timeout` error and leaves the task running. `task cancel` works only while the task is `queued`. With `--key`, running the same `task submit` again prints the first task instead of sending the prompt twice, so a script can retry after a dropped connection or a `--timeout`. Use a new key for a new attempt.
+`agent prompt --wait` keeps its behavior: it does not track turns, so the end of a turn that was already running can satisfy it. Use `task submit --wait` to follow the turn of the prompt you sent. `task submit` takes the same target as `agent prompt` and refuses what it refuses. A working agent keeps the task `queued` until it is `idle` or `done`. With `--wait`, the command waits until the task finishes, or until it reaches a state given with `--until` (`running` or `needs_input`, for example). It prints the task and exits with 0 when the task is `completed` or at a requested state, and with 1 when it ended `stalled`, `lost`, or `cancelled`. A `--timeout` that runs out returns the `timeout` error and leaves the task running. `task cancel` works only while the task is `queued`. With `--key`, running the same `task submit` again prints the first task instead of sending the prompt twice, so a script can retry after a dropped connection or a `--timeout`. Use a new key for a new attempt. `task result` prints the result of a finished task: the file that `--result-file` asked the agent to write, or else the last 40 lines of its pane. `source` in the output tells which.
 
 ## Direct terminal attach
 

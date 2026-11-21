@@ -26,6 +26,7 @@ pub(crate) enum Operation {
     List(TaskListParams),
     Wait(TaskWaitParams),
     Cancel(TaskTarget),
+    Result(TaskTarget),
 }
 
 #[derive(Debug, PartialEq)]
@@ -76,6 +77,12 @@ pub(crate) fn command() -> Command {
                         .help("Retry key: the same key, target, and text returns the first task instead of sending again"),
                 )
                 .arg(
+                    Arg::new("result_file")
+                        .long("result-file")
+                        .action(ArgAction::SetTrue)
+                        .help("Ask the agent to write its result to a file that task result reads"),
+                )
+                .arg(
                     Arg::new("wait")
                         .long("wait")
                         .action(ArgAction::SetTrue)
@@ -106,6 +113,12 @@ pub(crate) fn command() -> Command {
             Command::new("cancel")
                 .about("Remove a queued task before it is sent")
                 .arg(task_id_arg()),
+        )
+        .subcommand(
+            Command::new("result")
+                .about("Print the result of a finished task")
+                .arg(task_id_arg())
+                .after_help("The text comes from the result file of a --result-file task, or else from the last 40 lines of the agent pane. source tells which."),
         )
 }
 
@@ -149,6 +162,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Operation, clap::Error> {
                     .cloned()
                     .unwrap_or_default(),
                 key: matches.get_one::<String>("key").cloned(),
+                result_file: matches.get_flag("result_file"),
             },
             wait: matches.get_flag("wait").then(|| WaitOptions {
                 until: until(matches),
@@ -165,6 +179,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Operation, clap::Error> {
             timeout_ms: matches.get_one::<u64>("timeout").copied(),
         }),
         "cancel" => Operation::Cancel(target(matches)),
+        "result" => Operation::Result(target(matches)),
         _ => {
             return Err(command().error(
                 clap::error::ErrorKind::InvalidSubcommand,
@@ -250,6 +265,10 @@ pub(super) fn run_task_command(args: &[String]) -> std::io::Result<i32> {
             "cancel",
             Method::TaskCancel(target),
         ))?),
+        Operation::Result(target) => super::print_response(&super::send_request(&request(
+            "result",
+            Method::TaskResult(target),
+        ))?),
     }
 }
 
@@ -276,6 +295,7 @@ mod tests {
                     target: "reviewer".into(),
                     text: "--fix this".into(),
                     key: None,
+                    result_file: false,
                 },
                 wait: None,
             }
@@ -296,6 +316,7 @@ mod tests {
                     target: "reviewer".into(),
                     text: "fix".into(),
                     key: None,
+                    result_file: false,
                 },
                 wait: Some(WaitOptions {
                     until: vec![TaskState::NeedsInput],
@@ -313,6 +334,22 @@ mod tests {
             panic!("expected submit");
         };
         assert_eq!(params.key.as_deref(), Some("run42/impl1"));
+    }
+
+    #[test]
+    fn submit_asks_for_a_result_file_and_result_reads_it() {
+        let Operation::Submit { params, .. } =
+            parse_args(&["submit", "planner", "plan", "--result-file"])
+        else {
+            panic!("expected submit");
+        };
+        assert!(params.result_file);
+        assert_eq!(
+            parse_args(&["result", "t_4"]),
+            Operation::Result(TaskTarget {
+                task_id: "t_4".into()
+            })
+        );
     }
 
     #[test]

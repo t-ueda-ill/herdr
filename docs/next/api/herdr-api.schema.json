@@ -1258,6 +1258,13 @@
                 "null"
               ]
             },
+            "result_path": {
+              "description": "Where the agent was asked to write its result, on the task's location.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "state": {
               "$ref": "#/schemas/event/$defs/TaskState"
             },
@@ -5752,6 +5759,10 @@
                 "null"
               ]
             },
+            "result_file": {
+              "description": "Append a line that asks the agent to write its result to `result_path`.",
+              "type": "boolean"
+            },
             "target": {
               "description": "Agent name, terminal id, or pane id, as `agent.prompt` takes it.",
               "type": "string"
@@ -7063,6 +7074,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TaskWaitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.result",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskTarget"
             }
           },
           "required": [
@@ -12792,6 +12819,22 @@
             },
             {
               "properties": {
+                "result": {
+                  "$ref": "#/schemas/success_response/$defs/TaskResult"
+                },
+                "type": {
+                  "const": "task_result",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "result"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "active": {
                   "type": "boolean"
                 },
@@ -14267,6 +14310,13 @@
                 "null"
               ]
             },
+            "result_path": {
+              "description": "Where the agent was asked to write its result, on the task's location.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "state": {
               "$ref": "#/schemas/success_response/$defs/TaskState"
             },
@@ -14303,6 +14353,52 @@
             "created_at_ms"
           ],
           "type": "object"
+        },
+        "TaskResult": {
+          "properties": {
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "$ref": "#/schemas/success_response/$defs/TaskResultSource"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id",
+            "source",
+            "text"
+          ],
+          "type": "object"
+        },
+        "TaskResultSource": {
+          "description": "Where the text of `task.result` came from.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "file",
+              "description": "The result file the prompt asked for.",
+              "type": "string"
+            },
+            {
+              "const": "screen",
+              "description": "The last lines of the agent's pane.",
+              "type": "string"
+            }
+          ]
         },
         "TaskState": {
           "description": "Lifecycle of one prompt sent through `task.submit`. Separate from\n`AgentStatus`, which describes the agent and not this prompt.",

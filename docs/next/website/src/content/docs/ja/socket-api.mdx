@@ -106,7 +106,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
-| タスク | `task.submit`、`task.get`、`task.list`、`task.wait`、`task.cancel` |
+| タスク | `task.submit`、`task.get`、`task.list`、`task.wait`、`task.cancel`、`task.result` |
 | イベント | `events.subscribe`、`events.wait` |
 | インテグレーション | `integration.install`、`integration.uninstall` |
 | プラグイン | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
@@ -610,12 +610,18 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 { "id": "1", "method": "task.submit", "params": { "target": "reviewer", "text": "fix the failing test" } }
 ```
 
-結果は `task_info` で、`task` オブジェクトを含みます。フィールドは `task_id`（`t_<n>`。番号はサーバーの再起動でやり直し）、`state`、`target`、`terminal_id`、`pane_id`、`location`、`text`、`evidence`、`created_at_ms`、`submitted_at_ms`、`finished_at_ms`、`reason`、`key` です。`agent.prompt` が断る場合は `task.submit` も同じエラーコードで断り、何も記録しません。
+結果は `task_info` で、`task` オブジェクトを含みます。フィールドは `task_id`（`t_<n>`。番号はサーバーの再起動でやり直し）、`state`、`target`、`terminal_id`、`pane_id`、`location`、`text`、`evidence`、`created_at_ms`、`submitted_at_ms`、`finished_at_ms`、`reason`、`key`、`result_path` です。`agent.prompt` が断る場合は `task.submit` も同じエラーコードで断り、何も記録しません。
 
 接続が切れたときやタイムアウトしたときに安全に再送するには、`key`（1〜256 バイト）を渡します。同じ `key`・`target`・`text` でもう一度 `task.submit` すると、最初のタスクを返し、何も送りません。エージェントが入力待ちになっていても、ペインが閉じていても同じです。同じ `key` で `target` か `text` が違うと `task_key_conflict` で断ります。Herdr はタスクを残している間だけキーを覚えます。
 
 ```json
 { "id": "2", "method": "task.submit", "params": { "target": "reviewer", "text": "fix the failing test", "key": "run42/fix" } }
+```
+
+`"result_file": true` を付けると、Herdr はプロンプトの末尾に 1 行を足し、結果だけを `result_path` に書くようエージェントに頼みます。`result_path` はタスクの実行場所にあるファイルです（ローカルのペインならシステムの一時フォルダ、ssh やコンテナなら `/tmp/herdr-task/`）。`text` は送ったテキストのままです。タスクが終わったら、`task.result` が `task_id`・`source`・`path`・`text` を持つ `task_result` を返します。結果ファイルを読めたら `source` は `file` です。ファイルを頼んでいないときやエージェントが書かなかったときは、エージェントのペインの末尾 40 行を返し、`source` は `screen` になります。タスクが動いている間は `task_not_finished`、ファイルが無くペインも閉じているときは `task_result_unavailable` で断ります。
+
+```json
+{ "id": "3", "method": "task.result", "params": { "task_id": "t_4" } }
 ```
 
 | `state` | 意味 |

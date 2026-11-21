@@ -91,6 +91,18 @@ impl PaneReadJob {
     }
 }
 
+/// Reads one text file through the pane's container or ssh; blocks until it ends.
+pub(super) fn read_off_host_text(target: &PaneTarget, path: &str) -> Result<String, Failure> {
+    ops::validate_path(path)?;
+    let runner = EnvironmentRunner {
+        programs: Programs::system(),
+        env: &target.environment,
+        deadline: Instant::now() + target.environment.deadline_budget(false),
+    };
+    ops::read(&runner, target.environment.location(), path, None)
+        .map(|content| content.document.text)
+}
+
 fn ensure_platform_supported() -> Result<(), Failure> {
     if !crate::platform::OFFHOST_FILE_VIEWER_SUPPORTED {
         return Err((

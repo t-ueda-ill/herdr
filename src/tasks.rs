@@ -46,6 +46,8 @@ pub(crate) struct NewTask {
     pub(crate) location: Location,
     pub(crate) text: String,
     pub(crate) key: Option<String>,
+    /// Folder on the task's location for its result file; none asks for no file.
+    pub(crate) result_dir: Option<String>,
 }
 
 /// The agent as the App sees it at one moment.
@@ -72,8 +74,24 @@ pub(crate) struct Task {
     pub(crate) finished_at_ms: Option<u64>,
     pub(crate) reason: Option<String>,
     pub(crate) key: Option<String>,
+    pub(crate) result_path: Option<String>,
     submit_seq: u64,
     accept_deadline: Option<Instant>,
+}
+
+impl Task {
+    /// The text written to the pane: the caller's text, then the result-file line.
+    pub(crate) fn prompt(&self) -> std::borrow::Cow<'_, str> {
+        match &self.result_path {
+            // Why not localized: Herdr does not know which language the agent uses.
+            Some(path) => format!(
+                "{}\n\nWhen you finish, write only your result to {path} (create the folder if it is missing).",
+                self.text
+            )
+            .into(),
+            None => self.text.as_str().into(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -88,8 +106,11 @@ pub(crate) struct KeyConflict {
     pub(crate) existing: TaskId,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct TaskTable {
+    /// Names the result folder of this table. Task numbers restart with each
+    /// table, so an old run's `t_1.md` must not answer for a new `t_1`.
+    run_id: String,
     next_id: u64,
     tasks: HashMap<TaskId, Task>,
     /// Kept as long as the task is kept.
@@ -105,7 +126,33 @@ struct Lane {
     agent: AgentSnapshot,
 }
 
+impl Default for TaskTable {
+    fn default() -> Self {
+        static TABLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let started = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or(0);
+        Self {
+            run_id: format!(
+                "{}-{started:x}-{}",
+                std::process::id(),
+                TABLES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
+            next_id: 0,
+            tasks: HashMap::new(),
+            keys: HashMap::new(),
+            lanes: HashMap::new(),
+            finished: VecDeque::new(),
+        }
+    }
+}
+
 impl TaskTable {
+    pub(crate) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
     /// The task an earlier submit with this key made, if it is still kept.
     pub(crate) fn find_by_key(
         &self,
@@ -167,6 +214,9 @@ impl TaskTable {
                 finished_at_ms: None,
                 reason: None,
                 key: new.key,
+                result_path: new
+                    .result_dir
+                    .map(|dir| format!("{dir}/{}.md", id.public())),
                 submit_seq: 0,
                 accept_deadline: None,
             },

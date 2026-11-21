@@ -159,6 +159,9 @@ pub enum ResponseResult {
     TaskList {
         tasks: Vec<super::tasks::TaskInfo>,
     },
+    TaskResult {
+        result: super::tasks::TaskResult,
+    },
     AgentView {
         active: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
