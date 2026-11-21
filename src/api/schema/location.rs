@@ -16,22 +16,21 @@ pub struct Location {
 
 impl Location {
     pub fn new(ssh_host: Option<&str>, container: Option<&str>) -> Self {
-        let parts: Vec<String> = ssh_host
-            .map(|host| format!("ssh:{host}"))
-            .into_iter()
-            .chain(container.map(|container| format!("container:{container}")))
-            .collect();
+        let (id, kind) = match (ssh_host, container) {
+            (Some(host), Some(container)) => (
+                format!("ssh:{host}/container:{container}"),
+                PaneLocationKind::Container,
+            ),
+            (None, Some(container)) => (
+                format!("container:{container}"),
+                PaneLocationKind::Container,
+            ),
+            (Some(host), None) => (format!("ssh:{host}"), PaneLocationKind::Ssh),
+            (None, None) => ("local".to_string(), PaneLocationKind::Host),
+        };
         Self {
-            id: if parts.is_empty() {
-                "local".to_string()
-            } else {
-                parts.join("/")
-            },
-            kind: match (ssh_host, container) {
-                (_, Some(_)) => PaneLocationKind::Container,
-                (Some(_), None) => PaneLocationKind::Ssh,
-                (None, None) => PaneLocationKind::Host,
-            },
+            id,
+            kind,
             ssh_host: ssh_host.map(str::to_string),
             container: container.map(str::to_string),
         }

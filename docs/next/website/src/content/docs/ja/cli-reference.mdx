@@ -297,7 +297,7 @@ herdr pane declare-agent <pane_id> --clear
 
 公式インテグレーションがネイティブセッション参照を報告している場合、`pane get`、`pane list`、`agent get`、`agent list` は読み取り専用の `agent_session` オブジェクトを含みます。ネイティブセッション参照が保存されていない場合、このフィールドは省略されます。
 
-これらは、ペインのシェルが動く場所を表す `location`（`{ "id", "kind", "ssh_host"?, "container"? }`）も含みます。`kind` と 2 つの名前は `pane.directory.*` の結果の `location` と同じです。`id` は `local`、`ssh:<alias>`、`container:<name>`、ssh ホスト経由のコンテナでは `ssh:<alias>/container:<name>` です。`herdr agent list --location <id>` はその場所のエージェントだけを表示します。`ssh:<alias>` を指定すると、そのホスト経由のコンテナも含みます。
+これらは、ペインのシェルが動く場所を表す `location`（`{ "id", "kind", "ssh_host"?, "container"? }`）も含みます。`kind` と 2 つの名前は `pane.directory.*` の結果の `location` と同じです。`id` は `local`、`ssh:<alias>`、`container:<ref>`、ssh ホスト経由のコンテナでは `ssh:<alias>/container:<ref>` です。`<ref>` はコンテナ名で、Compose のコンテナでは `project/service` なので `/` を含むことがあります。`herdr agent list --location <id>` はその場所のエージェントだけを表示します。`ssh:<alias>` を指定すると、そのホスト経由のコンテナも含みます。
 
 これらのコマンドは、ペインを制御しているフォアグラウンドプロセスの cwd を解決できる場合に `foreground_cwd` を含みます。既存の `cwd` フィールドは、ラベルと follow-cwd 挙動に使われるペイン/ワークスペースの cwd のままです。
 
