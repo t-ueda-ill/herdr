@@ -262,6 +262,11 @@ impl App {
                         pending.extend(self.state.tasks.submit_failed(task, reason, task_now()));
                     }
                 }
+                // Why on this thread: one unlink in the local temp folder, and
+                // only when a finished task leaves the kept list.
+                Effect::RemoveResultFile(path) => {
+                    let _ = std::fs::remove_file(path);
+                }
             }
         }
     }
@@ -398,9 +403,15 @@ fn task_result_dir(place: &ResultPlace, tasks: &crate::tasks::TaskTable) -> Resu
                 .map_err(|err| format!("cannot use the task result folder: {err}"))?;
             Ok(dir.display().to_string())
         }
-        // Why not the pane's directory: the result must not land in the repository.
-        ResultPlace::OffHost(_) => Ok(format!("/tmp/herdr-task-{}", tasks.remote_run_id())),
+        ResultPlace::OffHost(_) => Ok(remote_result_dir()),
     }
+}
+
+/// One folder per task: other users of the remote host must neither share it
+/// nor learn its name. Why not the pane's directory: the result must not land
+/// in the repository.
+fn remote_result_dir() -> String {
+    format!("/tmp/herdr-task-{}", crate::tasks::unguessable_run_id())
 }
 
 fn task_not_found(id: String, task_id: &str) -> String {
@@ -1011,5 +1022,15 @@ mod tests {
 
         let error = fixture.result(&queued.task_id).unwrap_err();
         assert_eq!(error.error.code, "task_result_unavailable");
+    }
+
+    #[test]
+    fn each_remote_task_gets_its_own_unguessable_result_folder() {
+        let first = remote_result_dir();
+        let second = remote_result_dir();
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("/tmp/herdr-task-"), "{first}");
+        assert_eq!(first.len(), "/tmp/herdr-task-".len() + 32);
     }
 }

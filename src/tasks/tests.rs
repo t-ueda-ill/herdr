@@ -339,6 +339,10 @@ fn a_failed_write_loses_the_task_and_sends_the_next() {
     let lost = table.get(first).unwrap();
     assert_eq!(lost.state, TaskState::Lost);
     assert_eq!(lost.reason.as_deref(), Some("pty closed"));
+    assert_eq!(
+        lost.submitted_at_ms, None,
+        "the prompt never reached the pane"
+    );
     assert!(effects.contains(&Effect::Submit(second)));
 }
 
@@ -680,9 +684,6 @@ fn each_table_names_its_own_unguessable_result_folder() {
     assert_ne!(first.run_id(), second.run_id());
     assert_eq!(first.run_id().len(), 32);
     assert!(first.run_id().chars().all(|c| c.is_ascii_hexdigit()));
-    // A remote prompt must not reveal the name of the local folder.
-    assert_ne!(first.run_id(), first.remote_run_id());
-    assert_eq!(first.remote_run_id().len(), 32);
 }
 
 #[test]
@@ -801,4 +802,58 @@ fn the_first_saved_screen_tail_of_a_task_stays() {
         table.get(id).unwrap().screen_tail.as_deref(),
         Some("at the end")
     );
+}
+
+#[test]
+fn dropping_a_finished_task_removes_its_local_result_file() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let local = NewTask {
+        result_dir: Some("/tmp/herdr-task-x".into()),
+        ..task("a", "plan")
+    };
+    let (old, _) = table.submit(local, agent(AgentStatus::Working, 3), clock.at(0));
+    table.cancel(old, clock.at(0)).unwrap();
+
+    let mut effects = Vec::new();
+    for n in 1..=FINISHED_TASKS_KEPT {
+        let (id, _) = table.submit(
+            task("a", "x"),
+            agent(AgentStatus::Working, 3),
+            clock.at(n as u64),
+        );
+        effects.extend(table.cancel(id, clock.at(n as u64)).unwrap());
+    }
+
+    let path = format!("/tmp/herdr-task-x/{}.md", old.public());
+    assert!(effects.contains(&Effect::RemoveResultFile(path)));
+}
+
+#[test]
+fn dropping_a_remote_task_leaves_its_result_file_to_the_remote() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let remote = NewTask {
+        result_dir: Some("/tmp/herdr-task-y".into()),
+        result_place: super::ResultPlace::OffHost(Box::new(crate::offhost::PaneEnvironment::Ssh(
+            crate::ssh_host::SshLaunch::new("devbox".into(), None).expect("ssh launch"),
+        ))),
+        ..task("a", "plan")
+    };
+    let (old, _) = table.submit(remote, agent(AgentStatus::Working, 3), clock.at(0));
+    table.cancel(old, clock.at(0)).unwrap();
+
+    let mut effects = Vec::new();
+    for n in 1..=FINISHED_TASKS_KEPT {
+        let (id, _) = table.submit(
+            task("a", "x"),
+            agent(AgentStatus::Working, 3),
+            clock.at(n as u64),
+        );
+        effects.extend(table.cancel(id, clock.at(n as u64)).unwrap());
+    }
+
+    assert!(!effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::RemoveResultFile(_))));
 }
