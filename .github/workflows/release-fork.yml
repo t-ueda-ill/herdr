@@ -293,7 +293,11 @@ jobs:
           git add distribution/latest.json
           git diff --cached --quiet && { echo "nothing to commit"; exit 0; }
           git switch -c "$BRANCH"
-          git commit -m "release: synchronize distribution manifest for v$VERSION"
+          # Why not let CI run: the PR is merged and its branch deleted within seconds,
+          # so the pull_request run starts after both and fails before any job.
+          # The squash commit on master keeps this body, so its push run is skipped too;
+          # the change is only the manifest.
+          git commit -m "release: synchronize distribution manifest for v$VERSION" -m "[skip ci]"
           # Force so a rerun can overwrite a leftover branch; it is not master, so the ruleset does not apply.
           git push --force origin "HEAD:refs/heads/$BRANCH"
           if [ -n "$(gh pr list --head "$BRANCH" --base master --state open --json number --jq '.[].number')" ]; then
