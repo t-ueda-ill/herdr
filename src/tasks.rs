@@ -124,6 +124,9 @@ pub(crate) struct TaskTable {
     /// table, so an old run's `t_1.md` must not answer for a new `t_1`, and
     /// the name is random so nobody else can prepare the folder.
     run_id: String,
+    /// The same for folders on ssh and in containers. Separate, because a
+    /// remote prompt can reach another user of this host.
+    remote_run_id: String,
     next_id: u64,
     tasks: HashMap<TaskId, Task>,
     /// Kept as long as the task is kept.
@@ -155,6 +158,7 @@ impl Default for TaskTable {
     fn default() -> Self {
         Self {
             run_id: unguessable_run_id(),
+            remote_run_id: unguessable_run_id(),
             next_id: 0,
             tasks: HashMap::new(),
             keys: HashMap::new(),
@@ -167,6 +171,10 @@ impl Default for TaskTable {
 impl TaskTable {
     pub(crate) fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    pub(crate) fn remote_run_id(&self) -> &str {
+        &self.remote_run_id
     }
 
     /// The task an earlier submit with this key made, if it is still kept.
