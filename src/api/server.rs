@@ -447,6 +447,17 @@ fn handle_connection_with_stop(
             }
             result
         }
+        Method::TaskWait(params) => {
+            let response = crate::api::wait::wait_for_task(
+                request_id.clone(),
+                params,
+                &mut stream,
+                api_tx,
+                event_hub,
+                running,
+            )?;
+            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+        }
         Method::EventsWait(params) => {
             let response = wait_for_event(
                 request_id.clone(),

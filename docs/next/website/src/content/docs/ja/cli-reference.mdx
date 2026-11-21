@@ -473,6 +473,20 @@ herdr agent explain --file PATH --agent LABEL [--json|--verbose]
 
 通常のターミナル、サーバー、テスト、シェル、低レベルなターミナル制御には `pane send-text`、`pane send-keys`、`pane run`、`terminal attach` を使ってください。Enter 付きでコマンドを送信したいときは `pane run` を使います。
 
+## タスク
+
+タスクは、Herdr が送ったあとも追跡するプロンプトです。状態は [ソケット API](/ja/docs/socket-api/#プロンプトタスク) を参照してください。
+
+```bash
+herdr task submit <target> <text> [--wait] [--until STATE]... [--timeout MS]
+herdr task get <task_id>
+herdr task list [--location ID]
+herdr task wait <task_id> [--until STATE]... [--timeout MS]
+herdr task cancel <task_id>
+```
+
+`agent prompt --wait` の振る舞いは変わりません。ターンを追跡しないので、送る前から動いていたターンの終わりで返ることがあります。送ったプロンプトのターンを追うときは `task submit --wait` を使います。`task submit` は `agent prompt` と同じターゲットを受け取り、`agent prompt` が断る場合は同じように断ります。エージェントが作業中のときは、`idle` か `done` になるまでタスクを `queued` のまま待たせます。`--wait` を付けると、タスクが終わるまで、または `--until` で指定した状態（`running` や `needs_input` など）になるまで待ちます。結果としてタスクを出力し、`completed` か指定した状態なら終了コード 0、`stalled`・`lost`・`cancelled` で終わったら 1 を返します。`--timeout` が切れると `timeout` エラーを返しますが、タスクはそのまま続きます。`task cancel` が効くのは `queued` の間だけです。
+
 ## ダイレクトターミナルアタッチ
 
 ```bash

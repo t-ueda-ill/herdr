@@ -28,6 +28,16 @@ pub enum TaskState {
     Unknown,
 }
 
+impl TaskState {
+    /// No later change can happen.
+    pub fn is_finished(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Stalled | Self::Lost | Self::Cancelled
+        )
+    }
+}
+
 /// What showed that the agent took the prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -81,4 +91,14 @@ pub struct TaskListParams {
     /// Keeps tasks at this location id; `ssh:<alias>` also keeps its containers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TaskWaitParams {
+    pub task_id: String,
+    /// States that end the wait early. A finished task always ends it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub until: Vec<TaskState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }

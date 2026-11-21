@@ -121,6 +121,7 @@ operations::define_operations! {
     TaskGet(TaskTarget) => "task.get", false, false;
     TaskList(TaskListParams) => "task.list", false, false;
     TaskCancel(TaskTarget) => "task.cancel", true, false;
+    TaskWait(TaskWaitParams) => "task.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;
     PaneSplitInherit(PaneSplitParams) => "pane.split_inherit", true, true;
     PaneSwap(PaneSwapParams) => "pane.swap", true, true;

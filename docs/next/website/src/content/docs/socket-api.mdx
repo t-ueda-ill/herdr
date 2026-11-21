@@ -110,7 +110,7 @@ Raw socket method names use dot notation:
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
-| Task | `task.submit`, `task.get`, `task.list`, `task.cancel` |
+| Task | `task.submit`, `task.get`, `task.list`, `task.wait`, `task.cancel` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
@@ -700,7 +700,7 @@ The result is `task_info` with a `task` object: `task_id` (`t_<n>`, numbers rest
 
 Each agent terminal runs one task at a time; later ones wait in order and go out when the agent is `idle` or `done`. Only a state change after the send counts, so the end of an earlier turn never completes a task. `evidence` is `hook` when a lifecycle hook of an official integration reported that change and `screen` when screen detection did. `completed` means the turn ended; it does not judge the work. A late reaction does not revive a `stalled` task.
 
-`task.get` takes `task_id`. `task.list` returns the tasks oldest first; `location` keeps the tasks at that location id, where `ssh:<alias>` also keeps the containers reached through it. `task.cancel` takes `task_id` and works only on a `queued` task; other states return `task_already_sent`. An unknown id returns `task_not_found`. Herdr keeps the last 200 finished tasks in memory and forgets all tasks when the server stops.
+`task.wait` takes `task_id`, optional `until` (a list of states), and optional `timeout_ms`. It answers `task_info` when the task finishes or reaches a state in `until`, and `timeout` when the time runs out first; the task itself keeps going. `task.get` takes `task_id`. `task.list` returns the tasks oldest first; `location` keeps the tasks at that location id, where `ssh:<alias>` also keeps the containers reached through it. `task.cancel` takes `task_id` and works only on a `queued` task; other states return `task_already_sent`. An unknown id returns `task_not_found`. Herdr keeps the last 200 finished tasks in memory and forgets all tasks when the server stops.
 
 Subscribe to `task.updated` to receive the `task` object on each change.
 

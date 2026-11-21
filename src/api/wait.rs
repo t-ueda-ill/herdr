@@ -19,6 +19,96 @@ use crate::ipc::LocalStream;
 
 const AGENT_PROMPT_EFFECT_TIMEOUT_MS: u64 = 5_000;
 
+/// The wait ends at a requested state or at any finished state.
+pub(super) fn task_wait_ends(
+    state: crate::api::schema::TaskState,
+    until: &[crate::api::schema::TaskState],
+) -> bool {
+    state.is_finished() || until.contains(&state)
+}
+
+/// The newest `task.updated` for `task_id` among `events`, and the last sequence seen.
+pub(super) fn latest_task_update(
+    events: Vec<(u64, EventEnvelope)>,
+    task_id: &str,
+    after: u64,
+) -> (Option<crate::api::schema::TaskInfo>, u64) {
+    let mut last = after;
+    let mut latest = None;
+    for (sequence, event) in events {
+        last = last.max(sequence);
+        if let EventData::TaskUpdated { task } = event.data {
+            if task.task_id == task_id {
+                latest = Some(task);
+            }
+        }
+    }
+    (latest, last)
+}
+
+pub(super) fn wait_for_task(
+    request_id: String,
+    params: crate::api::schema::TaskWaitParams,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    let deadline = params
+        .timeout_ms
+        .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    // Why read the sequence before the task: an update between the two is then replayed.
+    let mut sequence = event_hub.current_sequence();
+    let response = dispatch_to_app_with_timeout(
+        Request {
+            id: request_id.clone(),
+            method: Method::TaskGet(crate::api::schema::TaskTarget {
+                task_id: params.task_id.clone(),
+            }),
+        },
+        api_tx,
+        None,
+    );
+    let Ok(success) = serde_json::from_str::<SuccessResponse>(&response) else {
+        return Ok(Some(response));
+    };
+    let ResponseResult::TaskInfo { mut task } = success.result else {
+        return Ok(Some(response));
+    };
+    loop {
+        if task_wait_ends(task.state, &params.until) {
+            return serde_json::to_string(&SuccessResponse {
+                id: request_id,
+                result: ResponseResult::TaskInfo { task },
+            })
+            .map(Some)
+            .map_err(std::io::Error::other);
+        }
+        if should_stop_connection(stream, running)? {
+            return Ok(None);
+        }
+        let (latest, last) =
+            latest_task_update(event_hub.events_after(sequence), &params.task_id, sequence);
+        sequence = last;
+        if let Some(latest) = latest {
+            task = latest;
+            continue;
+        }
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            return serde_json::to_string(&ErrorResponse {
+                id: request_id,
+                error: ErrorBody {
+                    code: "timeout".into(),
+                    message: format!("task {} is still {:?}", params.task_id, task.state),
+                },
+            })
+            .map(Some)
+            .map_err(std::io::Error::other);
+        }
+        std::thread::sleep(CONNECTION_POLL_INTERVAL);
+    }
+}
+
 pub(super) fn wait_for_output(
     request_id: String,
     params: crate::api::schema::PaneWaitForOutputParams,
@@ -823,6 +913,86 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn task_update(task_id: &str, state: crate::api::schema::TaskState) -> EventEnvelope {
+        EventEnvelope {
+            event: EventKind::TaskUpdated,
+            data: EventData::TaskUpdated {
+                task: crate::api::schema::TaskInfo {
+                    task_id: task_id.into(),
+                    state,
+                    target: "reviewer".into(),
+                    terminal_id: "term_1".into(),
+                    pane_id: None,
+                    location: crate::api::schema::Location::new(None, None),
+                    text: "fix".into(),
+                    evidence: None,
+                    created_at_ms: 0,
+                    submitted_at_ms: None,
+                    finished_at_ms: None,
+                    reason: None,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn a_task_wait_without_until_ends_only_at_a_finished_state() {
+        use crate::api::schema::TaskState;
+        assert!(!super::task_wait_ends(TaskState::Running, &[]));
+        assert!(!super::task_wait_ends(TaskState::NeedsInput, &[]));
+        for state in [
+            TaskState::Completed,
+            TaskState::Stalled,
+            TaskState::Lost,
+            TaskState::Cancelled,
+        ] {
+            assert!(super::task_wait_ends(state, &[]), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn a_task_wait_also_ends_at_a_requested_state() {
+        use crate::api::schema::TaskState;
+        assert!(super::task_wait_ends(
+            TaskState::NeedsInput,
+            &[TaskState::NeedsInput]
+        ));
+        assert!(!super::task_wait_ends(
+            TaskState::Running,
+            &[TaskState::NeedsInput]
+        ));
+        assert!(super::task_wait_ends(
+            TaskState::Lost,
+            &[TaskState::NeedsInput]
+        ));
+    }
+
+    #[test]
+    fn the_newest_update_of_the_waited_task_wins() {
+        use crate::api::schema::TaskState;
+        let events = vec![
+            (5, task_update("t_1", TaskState::Running)),
+            (6, task_update("t_2", TaskState::Completed)),
+            (7, task_update("t_1", TaskState::Completed)),
+        ];
+
+        let (latest, last) = super::latest_task_update(events, "t_1", 4);
+
+        assert_eq!(latest.map(|task| task.state), Some(TaskState::Completed));
+        assert_eq!(last, 7);
+    }
+
+    #[test]
+    fn updates_of_other_tasks_only_move_the_sequence() {
+        use crate::api::schema::TaskState;
+        let events = vec![(9, task_update("t_2", TaskState::Running))];
+
+        let (latest, last) = super::latest_task_update(events, "t_1", 8);
+
+        assert!(latest.is_none());
+        assert_eq!(last, 9);
+    }
+
     use super::*;
 
     #[test]

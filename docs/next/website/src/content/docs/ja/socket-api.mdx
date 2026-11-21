@@ -106,7 +106,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
-| タスク | `task.submit`、`task.get`、`task.list`、`task.cancel` |
+| タスク | `task.submit`、`task.get`、`task.list`、`task.wait`、`task.cancel` |
 | イベント | `events.subscribe`、`events.wait` |
 | インテグレーション | `integration.install`、`integration.uninstall` |
 | プラグイン | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
@@ -625,7 +625,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 
 1 つのエージェントのターミナルで同時に動くタスクは 1 つです。後のタスクは順番に待ち、エージェントが `idle` か `done` になると送られます。送信後の状態変化だけを数えるので、前のターンの終わりでタスクが完了することはありません。`evidence` は、その変化を公式インテグレーションのライフサイクルフックが報告したときは `hook`、画面検出が報告したときは `screen` です。`completed` はターンが終わったことだけを示し、作業の正しさは判断しません。`stalled` になったタスクは、遅れて反応があっても戻りません。
 
-`task.get` は `task_id` を受け取ります。`task.list` は古い順にタスクを返します。`location` を渡すと、その場所 ID のタスクだけを返します。`ssh:<alias>` はそのホスト経由のコンテナも含みます。`task.cancel` は `task_id` を受け取り、`queued` のタスクにだけ効きます。ほかの状態では `task_already_sent` を返します。不明な ID には `task_not_found` を返します。Herdr は終わったタスクを直近 200 件だけメモリに残し、サーバーが止まるとすべて忘れます。
+`task.wait` は `task_id` と、省略可能な `until`（状態のリスト）と `timeout_ms` を受け取ります。タスクが終わるか `until` の状態になると `task_info` を返し、先に時間が切れると `timeout` を返します。タスク自体は続きます。`task.get` は `task_id` を受け取ります。`task.list` は古い順にタスクを返します。`location` を渡すと、その場所 ID のタスクだけを返します。`ssh:<alias>` はそのホスト経由のコンテナも含みます。`task.cancel` は `task_id` を受け取り、`queued` のタスクにだけ効きます。ほかの状態では `task_already_sent` を返します。不明な ID には `task_not_found` を返します。Herdr は終わったタスクを直近 200 件だけメモリに残し、サーバーが止まるとすべて忘れます。
 
 `task.updated` を購読すると、変化のたびに `task` オブジェクトを受け取れます。
 
