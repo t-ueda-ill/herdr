@@ -37,6 +37,8 @@ pub(crate) enum Effect {
     Submit(TaskId),
     /// Publish `task.updated` for the task.
     Emit(TaskId),
+    /// Delete the local result file of a task the table no longer keeps.
+    RemoveResultFile(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,9 +126,6 @@ pub(crate) struct TaskTable {
     /// table, so an old run's `t_1.md` must not answer for a new `t_1`, and
     /// the name is random so nobody else can prepare the folder.
     run_id: String,
-    /// The same for folders on ssh and in containers. Separate, because a
-    /// remote prompt can reach another user of this host.
-    remote_run_id: String,
     next_id: u64,
     tasks: HashMap<TaskId, Task>,
     /// Kept as long as the task is kept.
@@ -144,7 +143,7 @@ struct Lane {
 
 /// 128 bits from SipHash keys that std seeds from the OS: another user on the
 /// host must not guess the result folder and create it first.
-fn unguessable_run_id() -> String {
+pub(crate) fn unguessable_run_id() -> String {
     use std::hash::{BuildHasher, Hasher};
     let half = || {
         let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
@@ -158,7 +157,6 @@ impl Default for TaskTable {
     fn default() -> Self {
         Self {
             run_id: unguessable_run_id(),
-            remote_run_id: unguessable_run_id(),
             next_id: 0,
             tasks: HashMap::new(),
             keys: HashMap::new(),
@@ -171,10 +169,6 @@ impl Default for TaskTable {
 impl TaskTable {
     pub(crate) fn run_id(&self) -> &str {
         &self.run_id
-    }
-
-    pub(crate) fn remote_run_id(&self) -> &str {
-        &self.remote_run_id
     }
 
     /// The task an earlier submit with this key made, if it is still kept.
@@ -271,6 +265,10 @@ impl TaskTable {
             return effects;
         }
         let terminal = task.terminal.clone();
+        if let Some(task) = self.tasks.get_mut(&id) {
+            // The prompt never reached the pane.
+            task.submitted_at_ms = None;
+        }
         self.finish(id, TaskState::Lost, Some(reason), now, &mut effects);
         self.release_lane(&terminal, id, now, &mut effects);
         effects
@@ -468,8 +466,17 @@ impl TaskTable {
         self.finished.push_back(id);
         while self.finished.len() > FINISHED_TASKS_KEPT {
             if let Some(old) = self.finished.pop_front() {
-                if let Some(key) = self.tasks.remove(&old).and_then(|task| task.key) {
+                let Some(dropped) = self.tasks.remove(&old) else {
+                    continue;
+                };
+                if let Some(key) = dropped.key {
                     self.keys.remove(&key);
+                }
+                // Why not remote files: removing them needs the remote; the
+                // temp cleaner there removes them.
+                if let (Some(path), ResultPlace::Host) = (dropped.result_path, dropped.result_place)
+                {
+                    effects.push(Effect::RemoveResultFile(path));
                 }
             }
         }
