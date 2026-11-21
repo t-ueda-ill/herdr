@@ -60,6 +60,7 @@ mod server;
 mod session;
 mod sound;
 mod ssh_host;
+mod tasks;
 mod terminal;
 mod terminal_effects;
 mod terminal_modes;

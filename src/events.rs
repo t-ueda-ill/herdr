@@ -164,6 +164,11 @@ pub enum AppEvent {
     },
     /// A worktree-removal runtime could not be restored normally.
     WorktreeRuntimeRestoreFailed { pane_id: PaneId, operation_id: u64 },
+    /// The PTY write of a task's prompt failed after it was queued.
+    TaskSubmitFailed {
+        task: crate::tasks::TaskId,
+        reason: String,
+    },
     /// Process detection identified an agent before its screen state was confirmed.
     AgentProcessDetected {
         pane_id: PaneId,

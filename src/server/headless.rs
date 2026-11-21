@@ -3750,6 +3750,8 @@ impl HeadlessServer {
             self.app.start_restored_worktree_validation(now);
         }
 
+        self.app.expire_due_tasks(now);
+
         if self.git_refresh_scheduled() {
             self.app.start_git_status_refresh_if_due(now);
         }

@@ -723,6 +723,22 @@
                 "layout"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "task": {
+                  "$ref": "#/schemas/event/$defs/TaskInfo"
+                },
+                "type": {
+                  "const": "task_updated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "task"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -753,7 +769,8 @@
             "pane_exited",
             "pane_agent_detected",
             "pane_agent_status_changed",
-            "layout_updated"
+            "layout_updated",
+            "task_updated"
           ],
           "type": "string"
         },
@@ -1172,6 +1189,155 @@
             "agent_status"
           ],
           "type": "object"
+        },
+        "TaskEvidence": {
+          "description": "What showed that the agent took the prompt.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "hook",
+              "description": "A lifecycle hook of an official integration reported the state.",
+              "type": "string"
+            },
+            {
+              "const": "screen",
+              "description": "Screen detection reported the state.",
+              "type": "string"
+            }
+          ]
+        },
+        "TaskInfo": {
+          "properties": {
+            "created_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/TaskEvidence"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "finished_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "location": {
+              "$ref": "#/schemas/event/$defs/Location"
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reason": {
+              "description": "Why the task stalled, was lost, or was cancelled.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/schemas/event/$defs/TaskState"
+            },
+            "submitted_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "target": {
+              "description": "The agent target as the caller gave it.",
+              "type": "string"
+            },
+            "task_id": {
+              "description": "`t_<n>`; numbers restart with the server.",
+              "type": "string"
+            },
+            "terminal_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id",
+            "state",
+            "target",
+            "terminal_id",
+            "location",
+            "text",
+            "created_at_ms"
+          ],
+          "type": "object"
+        },
+        "TaskState": {
+          "description": "Lifecycle of one prompt sent through `task.submit`. Separate from\n`AgentStatus`, which describes the agent and not this prompt.",
+          "oneOf": [
+            {
+              "const": "queued",
+              "description": "Waiting in Herdr's queue; nothing was sent yet.",
+              "type": "string"
+            },
+            {
+              "const": "submitted",
+              "description": "Written to the pane; waiting for the agent to react.",
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "The agent showed `working` after the send.",
+              "type": "string"
+            },
+            {
+              "const": "needs_input",
+              "description": "The agent showed `blocked` after the send.",
+              "type": "string"
+            },
+            {
+              "const": "completed",
+              "description": "The agent became idle or done after it took the prompt.",
+              "type": "string"
+            },
+            {
+              "const": "stalled",
+              "description": "No reaction within the acceptance window.",
+              "type": "string"
+            },
+            {
+              "const": "lost",
+              "description": "The write failed, the pane closed, or the agent ended.",
+              "type": "string"
+            },
+            {
+              "const": "cancelled",
+              "description": "Removed from the queue before it was sent.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state a newer server adds.",
+              "type": "string"
+            }
+          ]
         },
         "WorkspaceInfo": {
           "properties": {
@@ -5366,6 +5532,18 @@
                 "type"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "task.updated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -5494,6 +5672,45 @@
           },
           "required": [
             "tab_id"
+          ],
+          "type": "object"
+        },
+        "TaskListParams": {
+          "properties": {
+            "location": {
+              "description": "Keeps tasks at this location id; `ssh:<alias>` also keeps its containers.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "TaskSubmitParams": {
+          "properties": {
+            "target": {
+              "description": "Agent name, terminal id, or pane id, as `agent.prompt` takes it.",
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "text"
+          ],
+          "type": "object"
+        },
+        "TaskTarget": {
+          "properties": {
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
           ],
           "type": "object"
         },
@@ -6677,6 +6894,70 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentWaitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.submit",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskSubmitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.cancel",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskTarget"
             }
           },
           "required": [
@@ -9337,6 +9618,22 @@
                 "layout"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "task": {
+                  "$ref": "#/schemas/success_response/$defs/TaskInfo"
+                },
+                "type": {
+                  "const": "task_updated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "task"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -9382,7 +9679,8 @@
             "pane_exited",
             "pane_agent_detected",
             "pane_agent_status_changed",
-            "layout_updated"
+            "layout_updated",
+            "task_updated"
           ],
           "type": "string"
         },
@@ -12354,6 +12652,41 @@
             },
             {
               "properties": {
+                "task": {
+                  "$ref": "#/schemas/success_response/$defs/TaskInfo"
+                },
+                "type": {
+                  "const": "task_info",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "task"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "tasks": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/TaskInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "task_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "tasks"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "active": {
                   "type": "boolean"
                 },
@@ -13760,6 +14093,155 @@
             "agent_status"
           ],
           "type": "object"
+        },
+        "TaskEvidence": {
+          "description": "What showed that the agent took the prompt.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "hook",
+              "description": "A lifecycle hook of an official integration reported the state.",
+              "type": "string"
+            },
+            {
+              "const": "screen",
+              "description": "Screen detection reported the state.",
+              "type": "string"
+            }
+          ]
+        },
+        "TaskInfo": {
+          "properties": {
+            "created_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TaskEvidence"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "finished_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "location": {
+              "$ref": "#/schemas/success_response/$defs/Location"
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reason": {
+              "description": "Why the task stalled, was lost, or was cancelled.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/TaskState"
+            },
+            "submitted_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "target": {
+              "description": "The agent target as the caller gave it.",
+              "type": "string"
+            },
+            "task_id": {
+              "description": "`t_<n>`; numbers restart with the server.",
+              "type": "string"
+            },
+            "terminal_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id",
+            "state",
+            "target",
+            "terminal_id",
+            "location",
+            "text",
+            "created_at_ms"
+          ],
+          "type": "object"
+        },
+        "TaskState": {
+          "description": "Lifecycle of one prompt sent through `task.submit`. Separate from\n`AgentStatus`, which describes the agent and not this prompt.",
+          "oneOf": [
+            {
+              "const": "queued",
+              "description": "Waiting in Herdr's queue; nothing was sent yet.",
+              "type": "string"
+            },
+            {
+              "const": "submitted",
+              "description": "Written to the pane; waiting for the agent to react.",
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "The agent showed `working` after the send.",
+              "type": "string"
+            },
+            {
+              "const": "needs_input",
+              "description": "The agent showed `blocked` after the send.",
+              "type": "string"
+            },
+            {
+              "const": "completed",
+              "description": "The agent became idle or done after it took the prompt.",
+              "type": "string"
+            },
+            {
+              "const": "stalled",
+              "description": "No reaction within the acceptance window.",
+              "type": "string"
+            },
+            {
+              "const": "lost",
+              "description": "The write failed, the pane closed, or the agent ended.",
+              "type": "string"
+            },
+            {
+              "const": "cancelled",
+              "description": "Removed from the queue before it was sent.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state a newer server adds.",
+              "type": "string"
+            }
+          ]
         },
         "WorkspaceInfo": {
           "properties": {

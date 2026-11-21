@@ -21,6 +21,7 @@ pub(crate) mod plugins;
 pub(super) mod responses;
 mod session;
 mod tabs;
+mod tasks;
 mod workspaces;
 mod worktrees;
 
@@ -129,6 +130,10 @@ impl App {
     ) -> Vec<crate::app::actions::PaneStateUpdate> {
         let mut worktree_restore_failed = false;
         let ev = match ev {
+            AppEvent::TaskSubmitFailed { task, reason } => {
+                self.fail_task_submission(task, reason);
+                return Vec::new();
+            }
             AppEvent::WorktreeRuntimeRestoreFailed {
                 pane_id,
                 operation_id,
@@ -820,6 +825,19 @@ impl App {
                 },
             });
         }
+        if update.agent_released {
+            if let Some(terminal) = self
+                .state
+                .workspaces
+                .get(update.ws_idx)
+                .and_then(|workspace| workspace.terminal_id(update.pane_id))
+                .cloned()
+            {
+                self.end_tasks_for_terminal(&terminal, "agent ended");
+            }
+        } else {
+            self.advance_tasks_for_pane(update.ws_idx, update.pane_id);
+        }
     }
 
     pub(crate) fn sync_toast_deadline(
@@ -1268,6 +1286,10 @@ impl App {
             Method::TabMove(params) => return self.handle_tab_move(request.id, params),
             Method::TabClose(target) => return self.handle_tab_close(request.id, target),
             Method::AgentList(_) => return self.handle_agent_list(request.id),
+            Method::TaskSubmit(params) => return self.handle_task_submit(request.id, params),
+            Method::TaskGet(target) => return self.handle_task_get(request.id, target),
+            Method::TaskList(params) => return self.handle_task_list(request.id, params),
+            Method::TaskCancel(target) => return self.handle_task_cancel(request.id, target),
             Method::AgentGet(target) => return self.handle_agent_get(request.id, target),
             Method::AgentFocus(target) => return self.handle_agent_focus(request.id, target),
             Method::AgentRename(params) => return self.handle_agent_rename(request.id, params),
