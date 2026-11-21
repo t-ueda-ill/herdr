@@ -5687,6 +5687,56 @@
           },
           "type": "object"
         },
+        "TaskState": {
+          "description": "Lifecycle of one prompt sent through `task.submit`. Separate from\n`AgentStatus`, which describes the agent and not this prompt.",
+          "oneOf": [
+            {
+              "const": "queued",
+              "description": "Waiting in Herdr's queue; nothing was sent yet.",
+              "type": "string"
+            },
+            {
+              "const": "submitted",
+              "description": "Written to the pane; waiting for the agent to react.",
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "The agent showed `working` after the send.",
+              "type": "string"
+            },
+            {
+              "const": "needs_input",
+              "description": "The agent showed `blocked` after the send.",
+              "type": "string"
+            },
+            {
+              "const": "completed",
+              "description": "The agent became idle or done after it took the prompt.",
+              "type": "string"
+            },
+            {
+              "const": "stalled",
+              "description": "No reaction within the acceptance window.",
+              "type": "string"
+            },
+            {
+              "const": "lost",
+              "description": "The write failed, the pane closed, or the agent ended.",
+              "type": "string"
+            },
+            {
+              "const": "cancelled",
+              "description": "Removed from the queue before it was sent.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state a newer server adds.",
+              "type": "string"
+            }
+          ]
+        },
         "TaskSubmitParams": {
           "properties": {
             "target": {
@@ -5707,6 +5757,32 @@
           "properties": {
             "task_id": {
               "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "type": "object"
+        },
+        "TaskWaitParams": {
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "timeout_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "until": {
+              "description": "States that end the wait early. A finished task always ends it.",
+              "items": {
+                "$ref": "#/schemas/request/$defs/TaskState"
+              },
+              "type": "array"
             }
           },
           "required": [
@@ -6958,6 +7034,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TaskTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.wait",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskWaitParams"
             }
           },
           "required": [

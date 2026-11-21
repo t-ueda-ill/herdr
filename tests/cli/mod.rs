@@ -13,4 +13,5 @@ mod protocol_guard;
 mod sessions;
 mod ssh_hosts;
 mod surface;
+mod tasks;
 mod workspace;

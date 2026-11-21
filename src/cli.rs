@@ -40,6 +40,7 @@ mod ssh;
 mod status;
 pub(crate) mod tab;
 mod target;
+mod task;
 mod title;
 mod workspace;
 pub(crate) mod workspace_bindings;
@@ -139,6 +140,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "tab" => tab::run_tab_command(&args[2..])?,
         "notification" => notification::run_notification_command(&args[2..])?,
         "agent" => agent::run_agent_command(&args[2..])?,
+        "task" => task::run_task_command(&args[2..])?,
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,
         "plugin" => plugin::run_plugin_command(&args[2..])?,
@@ -163,6 +165,7 @@ fn api_group(name: &str) -> Option<clap::Command> {
         "tab" => tab::command(),
         "notification" => notification::command(),
         "agent" => agent::command(),
+        "task" => task::command(),
         "pane" => pane::command(),
         "plugin" => plugin::command(),
         "preview" => preview::command(),

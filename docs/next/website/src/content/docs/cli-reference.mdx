@@ -494,6 +494,20 @@ A successful start returns only after the expected agent owns the same terminal 
 
 Use `pane send-text`, `pane send-keys`, `pane run`, and `terminal attach` for ordinary terminals, servers, tests, shells, or low-level terminal control. Use `pane run` when you want to submit a command with Enter.
 
+## Tasks
+
+A task is a prompt that Herdr follows after it sends it. See [Socket API](/docs/socket-api/#prompt-tasks) for the states.
+
+```bash
+herdr task submit <target> <text> [--wait] [--until STATE]... [--timeout MS]
+herdr task get <task_id>
+herdr task list [--location ID]
+herdr task wait <task_id> [--until STATE]... [--timeout MS]
+herdr task cancel <task_id>
+```
+
+`agent prompt --wait` keeps its behavior: it does not track turns, so the end of a turn that was already running can satisfy it. Use `task submit --wait` to follow the turn of the prompt you sent. `task submit` takes the same target as `agent prompt` and refuses what it refuses. A working agent keeps the task `queued` until it is `idle` or `done`. With `--wait`, the command waits until the task finishes, or until it reaches a state given with `--until` (`running` or `needs_input`, for example). It prints the task and exits with 0 when the task is `completed` or at a requested state, and with 1 when it ended `stalled`, `lost`, or `cancelled`. A `--timeout` that runs out returns the `timeout` error and leaves the task running. `task cancel` works only while the task is `queued`.
+
 ## Direct terminal attach
 
 ```bash
