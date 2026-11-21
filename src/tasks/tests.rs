@@ -669,16 +669,6 @@ fn without_a_result_dir_the_prompt_is_the_text_as_given() {
 }
 
 #[test]
-fn each_table_names_its_own_unguessable_result_folder() {
-    let first = TaskTable::default();
-    let second = TaskTable::default();
-
-    assert_ne!(first.run_id(), second.run_id());
-    assert_eq!(first.run_id().len(), 32);
-    assert!(first.run_id().chars().all(|c| c.is_ascii_hexdigit()));
-}
-
-#[test]
 fn the_first_saved_screen_tail_of_a_task_stays() {
     let clock = Clock::new();
     let mut table = TaskTable::default();
@@ -716,6 +706,7 @@ fn dropping_a_finished_task_removes_its_local_result_file() {
 
     let path = format!("/tmp/herdr-task-x/{}.md", old.public());
     assert!(effects.contains(&Effect::RemoveResultFile(path)));
+    // The folder is the task's own, so it goes with the file.
 }
 
 #[test]

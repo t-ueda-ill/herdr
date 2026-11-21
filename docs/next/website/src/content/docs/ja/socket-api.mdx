@@ -618,7 +618,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 { "id": "2", "method": "task.submit", "params": { "target": "reviewer", "text": "fix the failing test", "key": "run42/fix" } }
 ```
 
-`"result_file": true` を付けると、Herdr はプロンプトの末尾に 1 行を足し、結果だけを `result_path` に書くようエージェントに頼みます。`result_path` はタスクの実行場所にあるファイルです（ローカルのペインならシステムの一時フォルダの中の `herdr-task-<乱数>` フォルダ、ssh やコンテナなら `/tmp` の中にタスクごとに作る同名のフォルダ）。ローカルのフォルダは Herdr が自分のユーザーだけが読める権限で作ります。そのフォルダがすでにあり、自分だけのものでないときは `task_result_folder_unsafe` でタスクを断ります。リモートのフォルダはエージェントが作ります。終わったタスクを一覧から外すとき、Herdr はローカルの結果ファイルを消します。リモートのファイルは、リモート側が一時フォルダを掃除するまで残ります。`text` は送ったテキストのままです。タスクが終わったら、`task.result` が `task_id`・`source`・`path`・`text` を持つ `task_result` を返します。結果ファイルを読めたら `source` は `file` です。ファイルを頼んでいないときやエージェントが書かなかったときは、タスクが終わった時点のエージェントのペインの末尾 40 行を返し、`source` は `screen` になります。タスクが動いている間は `task_not_finished`、ファイルが無く、先にペインが閉じたなどで画面も保存されていないときは `task_result_unavailable` で断ります。
+`"result_file": true` を付けると、Herdr はプロンプトの末尾に 1 行を足し、結果だけを `result_path` に書くようエージェントに頼みます。`result_path` はタスクの実行場所にあるファイルです（タスクごとに新しく作る `herdr-task-<乱数>` フォルダ。ローカルのペインならシステムの一時フォルダ、ssh やコンテナなら `/tmp` の中）。ローカルのフォルダは Herdr が自分のユーザーだけが読める権限で作り、作れないときは `task_result_folder_unsafe` でタスクを断ります。リモートのフォルダはエージェントが作ります。終わったタスクを一覧から外すとき、Herdr はローカルの結果ファイルを消します。リモートのファイルは、リモート側が一時フォルダを掃除するまで残ります。`text` は送ったテキストのままです。タスクが終わったら、`task.result` が `task_id`・`source`・`path`・`text` を持つ `task_result` を返します。結果ファイルを読めたら `source` は `file` です。ファイルを頼んでいないときやエージェントが書かなかったときは、タスクが終わった時点のエージェントのペインの末尾 40 行を返し、`source` は `screen` になります。タスクが動いている間は `task_not_finished`、ファイルが無く、先にペインが閉じたなどで画面も保存されていないときは `task_result_unavailable` で断ります。
 
 ```json
 { "id": "3", "method": "task.result", "params": { "task_id": "t_4" } }

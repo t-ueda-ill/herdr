@@ -120,12 +120,8 @@ pub(crate) struct KeyConflict {
     pub(crate) existing: TaskId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct TaskTable {
-    /// Names the result folder of this table. Task numbers restart with each
-    /// table, so an old run's `t_1.md` must not answer for a new `t_1`, and
-    /// the name is random so nobody else can prepare the folder.
-    run_id: String,
     next_id: u64,
     tasks: HashMap<TaskId, Task>,
     /// Kept as long as the task is kept.
@@ -142,8 +138,8 @@ struct Lane {
 }
 
 /// 128 bits from SipHash keys that std seeds from the OS: another user on the
-/// host must not guess the result folder and create it first.
-pub(crate) fn unguessable_run_id() -> String {
+/// host must not guess a result folder and create it first.
+pub(crate) fn unguessable_name() -> String {
     use std::hash::{BuildHasher, Hasher};
     let half = || {
         let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
@@ -153,24 +149,7 @@ pub(crate) fn unguessable_run_id() -> String {
     format!("{:016x}{:016x}", half(), half())
 }
 
-impl Default for TaskTable {
-    fn default() -> Self {
-        Self {
-            run_id: unguessable_run_id(),
-            next_id: 0,
-            tasks: HashMap::new(),
-            keys: HashMap::new(),
-            lanes: HashMap::new(),
-            finished: VecDeque::new(),
-        }
-    }
-}
-
 impl TaskTable {
-    pub(crate) fn run_id(&self) -> &str {
-        &self.run_id
-    }
-
     /// The task an earlier submit with this key made, if it is still kept.
     pub(crate) fn find_by_key(
         &self,

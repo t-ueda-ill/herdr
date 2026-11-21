@@ -84,7 +84,7 @@ impl App {
             None => ResultPlace::Host,
         };
         let result_dir = if params.result_file {
-            match task_result_dir(&result_place, &self.state.tasks) {
+            match task_result_dir(&result_place) {
                 Ok(dir) => Some(dir),
                 Err(message) => return encode_error(id, "task_result_folder_unsafe", message),
             }
@@ -247,7 +247,12 @@ impl App {
                 // Why on this thread: one unlink in the local temp folder, and
                 // only when a finished task leaves the kept list.
                 Effect::RemoveResultFile(path) => {
+                    let path = std::path::Path::new(&path);
                     let _ = std::fs::remove_file(path);
+                    // The folder belongs to this task alone.
+                    if let Some(folder) = path.parent() {
+                        let _ = std::fs::remove_dir(folder);
+                    }
                 }
             }
         }
@@ -372,15 +377,18 @@ fn task_key_conflict(id: String, key: &str, conflict: KeyConflict) -> String {
     )
 }
 
-/// A folder directly in the temp folder: a shared parent such as
-/// `/tmp/herdr-task/` could belong to another user, who could then swap our
-/// folder; the sticky temp folder lets only us remove ours.
-fn task_result_dir(place: &ResultPlace, tasks: &crate::tasks::TaskTable) -> Result<String, String> {
+/// A new folder directly in the temp folder for each task. Why new: an
+/// existing folder could be another user's. Why not a shared parent such as
+/// `/tmp/herdr-task/`: its owner could swap our folder, while the sticky temp
+/// folder lets only us remove ours. Why per task: task numbers restart with
+/// the server, so an old run's `t_1.md` must not answer for a new `t_1`.
+fn task_result_dir(place: &ResultPlace) -> Result<String, String> {
     match place {
         ResultPlace::Host => {
-            let dir = std::env::temp_dir().join(format!("herdr-task-{}", tasks.run_id()));
-            crate::platform::ensure_private_dir(&dir)
-                .map_err(|err| format!("cannot use the task result folder: {err}"))?;
+            let dir = std::env::temp_dir()
+                .join(format!("herdr-task-{}", crate::tasks::unguessable_name()));
+            crate::platform::create_private_dir(&dir)
+                .map_err(|err| format!("cannot create the task result folder: {err}"))?;
             Ok(dir.display().to_string())
         }
         ResultPlace::OffHost(_) => Ok(remote_result_dir()),
@@ -391,7 +399,7 @@ fn task_result_dir(place: &ResultPlace, tasks: &crate::tasks::TaskTable) -> Resu
 /// nor learn its name. Why not the pane's directory: the result must not land
 /// in the repository.
 fn remote_result_dir() -> String {
-    format!("/tmp/herdr-task-{}", crate::tasks::unguessable_run_id())
+    format!("/tmp/herdr-task-{}", crate::tasks::unguessable_name())
 }
 
 fn task_not_found(id: String, task_id: &str) -> String {
@@ -968,5 +976,25 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with("/tmp/herdr-task-"), "{first}");
         assert_eq!(first.len(), "/tmp/herdr-task-".len() + 32);
+    }
+
+    #[tokio::test]
+    async fn each_local_task_gets_its_own_new_result_folder() {
+        let mut fixture = fixture(AgentState::Idle);
+        let first = fixture.submit_with("one", true);
+        fixture.agent_becomes(AgentState::Working);
+        fixture.agent_becomes(AgentState::Idle);
+        let second = fixture.submit_with("two", true);
+
+        let folder = |task: &TaskInfo| {
+            std::path::PathBuf::from(task.result_path.clone().unwrap())
+                .parent()
+                .unwrap()
+                .to_path_buf()
+        };
+        let (first, second) = (folder(&first), folder(&second));
+        let _ = std::fs::remove_dir(&first);
+        let _ = std::fs::remove_dir(&second);
+        assert_ne!(first, second);
     }
 }

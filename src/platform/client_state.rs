@@ -31,54 +31,27 @@ pub(crate) fn sync_parent_directory(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Makes `dir` for this user only, or takes it again when it already is one.
-/// Why check an existing folder: another user who learned the name could have
-/// made it, or a link, before us.
+/// Makes a new folder that only this user can open. Non-recursive and never
+/// reuses an existing path: an existing folder or link could be another
+/// user's, and its permissions cannot be trusted.
 #[cfg(unix)]
-pub(crate) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-        other => return other,
-    }
-    let metadata = std::fs::symlink_metadata(dir)?;
-    // SAFETY: geteuid takes no pointers and has no preconditions.
-    let uid = unsafe { libc::geteuid() };
-    if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!("{} is not a private folder of this user", dir.display()),
-        ));
-    }
-    Ok(())
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(dir)
 }
 
-/// The Windows temp folder is already per user; only a link is refused.
+/// A protected DACL, because the temp folder can be shared and a plain create
+/// would inherit its access rules.
 #[cfg(windows)]
-pub(crate) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
-    match std::fs::DirBuilder::new().create(dir) {
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-        other => return other,
-    }
-    let metadata = std::fs::symlink_metadata(dir)?;
-    if !metadata.is_dir() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!("{} is not a folder", dir.display()),
-        ));
-    }
-    Ok(())
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    super::windows::create_remote_private_dir(dir)
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
-    use super::ensure_private_dir;
-
-    fn mode(path: &std::path::Path) -> u32 {
-        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
-    }
+    use super::create_private_dir;
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir =
@@ -89,46 +62,35 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_folder_is_made_for_its_owner_only() {
+    fn a_new_folder_is_made_for_its_owner_only() {
         let dir = scratch("new");
-        ensure_private_dir(&dir).unwrap();
-        assert_eq!(mode(&dir), 0o700);
+        create_private_dir(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         std::fs::remove_dir(&dir).unwrap();
+        assert_eq!(mode, 0o700);
     }
 
     #[test]
-    fn an_own_private_folder_is_taken_again() {
-        let dir = scratch("again");
-        ensure_private_dir(&dir).unwrap();
-        ensure_private_dir(&dir).unwrap();
+    fn an_existing_folder_is_never_taken_over() {
+        let dir = scratch("existing");
+        create_private_dir(&dir).unwrap();
+        let again = create_private_dir(&dir);
         std::fs::remove_dir(&dir).unwrap();
+        assert_eq!(again.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
     }
 
     #[test]
-    fn a_folder_that_others_can_open_is_refused() {
-        let dir = scratch("open");
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let refused = ensure_private_dir(&dir);
-        std::fs::remove_dir(&dir).unwrap();
-        assert_eq!(
-            refused.unwrap_err().kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
-    }
-
-    #[test]
-    fn a_link_to_a_private_folder_is_refused() {
+    fn an_existing_link_is_never_followed() {
         let target = scratch("target");
         let link = scratch("link");
-        ensure_private_dir(&target).unwrap();
+        create_private_dir(&target).unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        let refused = ensure_private_dir(&link);
+        let refused = create_private_dir(&link);
         std::fs::remove_file(&link).unwrap();
         std::fs::remove_dir(&target).unwrap();
         assert_eq!(
             refused.unwrap_err().kind(),
-            std::io::ErrorKind::PermissionDenied
+            std::io::ErrorKind::AlreadyExists
         );
     }
 }
