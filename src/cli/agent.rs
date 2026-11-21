@@ -12,6 +12,7 @@ const PANE_SHELL_READINESS_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) mod bindings;
 #[cfg(test)]
 mod bindings_tests;
+mod location_filter;
 
 pub(crate) fn command() -> clap::Command {
     bindings::command()
@@ -50,7 +51,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         Err(ParseError::Io(error)) => return Err(error),
     };
     match operation {
-        Operation::List => agent_list(),
+        Operation::List { location } => agent_list(location.as_deref()),
         Operation::Get(params) => agent_get(params),
         Operation::Focus(params) => agent_focus(params),
         Operation::Read(params) => agent_read(params),
@@ -346,11 +347,16 @@ fn agent_start(params: AgentStartParams) -> std::io::Result<i32> {
     }
 }
 
-fn agent_list() -> std::io::Result<i32> {
-    super::print_response(&super::send_request(&Request {
+fn agent_list(location: Option<&str>) -> std::io::Result<i32> {
+    let mut response = super::send_request(&Request {
         id: "cli:agent:list".into(),
         method: Method::AgentList(EmptyParams::default()),
-    })?)
+    })?;
+    // Why not a server-side filter: an older server would ignore the field and list every agent.
+    if let Some(location) = location {
+        location_filter::retain_at_location(&mut response, "agents", location);
+    }
+    super::print_response(&response)
 }
 
 fn agent_get(params: AgentTarget) -> std::io::Result<i32> {

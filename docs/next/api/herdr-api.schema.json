@@ -757,6 +757,35 @@
           ],
           "type": "string"
         },
+        "Location": {
+          "description": "Where a pane's shell runs: the fields of `PaneLocation` plus one comparable id.",
+          "properties": {
+            "container": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "`local`, `ssh:<alias>`, `container:<ref>`, or `ssh:<alias>/container:<ref>`.",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/event/$defs/PaneLocationKind"
+            },
+            "ssh_host": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "type": "object"
+        },
         "PaneDisconnected": {
           "properties": {
             "exit_code": {
@@ -835,6 +864,17 @@
                 "string",
                 "null"
               ]
+            },
+            "location": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/Location"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the shell runs; `container` and `ssh_host` folded into one id."
             },
             "pane_id": {
               "type": "string"
@@ -1040,6 +1080,27 @@
             "rect"
           ],
           "type": "object"
+        },
+        "PaneLocationKind": {
+          "oneOf": [
+            {
+              "enum": [
+                "ssh",
+                "container"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "host",
+              "description": "The server's own filesystem. `pane.directory.*` rejects host panes with\n`invalid_params`; `pane.upload.*` reports it for uploads to this host and\n`pane.download.*` when the source is this host.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind a newer server adds.",
+              "type": "string"
+            }
+          ]
         },
         "PaneScrollInfo": {
           "properties": {
@@ -8300,6 +8361,16 @@
             "launch_pending": {
               "type": "boolean"
             },
+            "location": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/Location"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "name": {
               "type": [
                 "string",
@@ -9814,6 +9885,35 @@
             }
           ]
         },
+        "Location": {
+          "description": "Where a pane's shell runs: the fields of `PaneLocation` plus one comparable id.",
+          "properties": {
+            "container": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "`local`, `ssh:<alias>`, `container:<ref>`, or `ssh:<alias>/container:<ref>`.",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/PaneLocationKind"
+            },
+            "ssh_host": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "type": "object"
+        },
         "NotificationShowReason": {
           "enum": [
             "shown",
@@ -10244,6 +10344,17 @@
                 "string",
                 "null"
               ]
+            },
+            "location": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/Location"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the shell runs; `container` and `ssh_host` folded into one id."
             },
             "pane_id": {
               "type": "string"

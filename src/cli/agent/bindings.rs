@@ -225,7 +225,7 @@ cli_projection! {
 }
 
 pub(crate) enum Operation {
-    List,
+    List { location: Option<String> },
     Get(AgentTarget),
     Focus(AgentTarget),
     Read(AgentReadParams),
@@ -238,6 +238,13 @@ pub(crate) enum Operation {
     Explain(Explain),
 }
 
+fn location_filter_arg() -> clap::Arg {
+    clap::Arg::new("location")
+        .long("location")
+        .value_name("LOCATION")
+        .help("Only agents at this location: local, ssh:HOST, container:REF, or ssh:HOST/container:REF")
+}
+
 fn leaf(name: &'static str, arguments: Vec<clap::Arg>, about: &'static str) -> Command {
     crate::cli::projection::command(name, arguments).about(about)
 }
@@ -246,7 +253,8 @@ pub(crate) fn command() -> Command {
     Command::new("agent")
         .about("Control and inspect agent panes")
         .subcommand_required(true)
-        .subcommand(leaf("list", Vec::new(), "List agents"))
+        .subcommand(leaf("list", vec![location_filter_arg()], "List agents")
+            .after_help("--location ssh:HOST also lists the containers reached through that host."))
         .subcommand(leaf("get", TargetProjection::arguments(), "Show an agent"))
         .subcommand(leaf("focus", TargetProjection::arguments(), "Focus an agent"))
         .subcommand(leaf("read", AgentReadProjection::arguments(), "Read agent terminal output")
@@ -277,7 +285,9 @@ pub(crate) fn from_matches(matches: &ArgMatches) -> Result<Operation, ParseError
         return Err(ParseError::Usage("missing agent command".into()));
     };
     Ok(match name {
-        "list" => Operation::List,
+        "list" => Operation::List {
+            location: matches.get_one::<String>("location").cloned(),
+        },
         "get" => Operation::Get(TargetProjection::from_matches(matches)?),
         "focus" => Operation::Focus(TargetProjection::from_matches(matches)?),
         "read" => {

@@ -212,3 +212,15 @@ fn agent_projection_clap_relations_and_help_before_transport() {
         );
     }
 }
+
+#[test]
+fn agent_list_takes_an_optional_location_filter() {
+    assert!(matches!(
+        parse(&["list"]).unwrap(),
+        Operation::List { location: None }
+    ));
+    assert!(matches!(
+        parse(&["list", "--location", "ssh:devbox"]).unwrap(),
+        Operation::List { location: Some(location) } if location == "ssh:devbox"
+    ));
+}

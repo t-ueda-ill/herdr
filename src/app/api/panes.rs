@@ -2507,6 +2507,62 @@ mod tests {
     }
 
     #[test]
+    fn api_pane_get_reports_a_local_pane_location() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+
+        let response = app.handle_pane_get(
+            "req".into(),
+            PaneTarget {
+                pane_id: public_pane_id,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane } = success.result else {
+            panic!("expected pane info response");
+        };
+        assert_eq!(
+            pane.location,
+            Some(crate::api::schema::Location::new(None, None))
+        );
+    }
+
+    #[test]
+    fn api_pane_get_nests_a_remote_container_location_under_its_host() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("terminal id");
+        let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
+        terminal.container = Some(crate::container::ContainerLaunch {
+            reference: crate::container::ContainerRef::Name("etl".into()),
+            canonical: "etl".into(),
+            id: "cid".into(),
+            workdir: None,
+            start_dir: None,
+            user: None,
+            shell: crate::container::ContainerShell::BashOrSh,
+            ssh: crate::ssh_host::SshLaunch::new("deploy@devbox".into(), None),
+        });
+
+        let response = app.handle_pane_get(
+            "req".into(),
+            PaneTarget {
+                pane_id: public_pane_id,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane } = success.result else {
+            panic!("expected pane info response");
+        };
+        let location = pane.location.expect("location");
+        assert_eq!(location.id, "ssh:devbox/container:etl");
+    }
+
+    #[test]
     fn pane_input_set_changes_only_the_target_pane() {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let target = app.state.workspaces[0].tabs[0].root_pane;

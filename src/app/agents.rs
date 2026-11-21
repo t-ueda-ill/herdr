@@ -402,6 +402,7 @@ impl App {
             completion_seq: terminal.last_agent_completion_seq,
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,
+            location: pane.location,
             revision: pane.revision,
         })
     }

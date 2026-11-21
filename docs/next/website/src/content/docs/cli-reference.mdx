@@ -316,6 +316,8 @@ Arguments after `--` are the command Herdr runs to resume this session after a s
 
 `pane get`, `pane list`, `agent get`, and `agent list` include a read-only `agent_session` object when an official integration has reported a native session reference. If no native session reference is stored, the field is omitted.
 
+They also include `location`, where the pane's shell runs: `{ "id", "kind", "ssh_host"?, "container"? }`. `kind` and the two names match `location` in `pane.directory.*` results. `id` is `local`, `ssh:<alias>`, `container:<name>`, or `ssh:<alias>/container:<name>` for a container reached through an ssh host. `herdr agent list --location <id>` keeps the agents at that location; `ssh:<alias>` also keeps the containers reached through that host.
+
 Those commands include `foreground_cwd` when Herdr can resolve the cwd of the foreground process controlling the pane. The `cwd` field remains the pane/workspace cwd used for labels and follow-cwd behavior.
 
 `pane get` and `pane list` include `scroll` when terminal scroll metrics are available. `scroll.offset_from_bottom == 0` means the pane is at the bottom of its scrollback.
@@ -462,7 +464,7 @@ In the TUI, `preview in browser` in the file workbench menus starts a preview of
 For the pane-versus-agent model and complete orchestration examples, see [Agent automation](/docs/agent-automation/).
 
 ```bash
-herdr agent list
+herdr agent list [--location ID]
 herdr agent get <target>
 herdr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]
 herdr agent send-keys <target> <key> [key ...]
