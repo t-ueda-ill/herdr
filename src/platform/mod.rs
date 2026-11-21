@@ -539,7 +539,7 @@ mod drop_paths;
 pub(crate) use drop_paths::{starts_with_windows_path, DropPathSyntax};
 mod client_state;
 pub(crate) use client_state::{
-    create_private_dir, create_private_state_file, replace_file, sync_parent_directory,
+    create_private_state_file, ensure_private_dir, replace_file, sync_parent_directory,
 };
 
 #[cfg(not(unix))]

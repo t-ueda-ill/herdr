@@ -100,14 +100,20 @@ impl App {
             }
             None => ResultPlace::Host,
         };
+        let result_dir = if params.result_file {
+            match task_result_dir(&result_place, &self.state.tasks) {
+                Ok(dir) => Some(dir),
+                Err(message) => return encode_error(id, "task_result_folder_unsafe", message),
+            }
+        } else {
+            None
+        };
         let key = params.key.clone();
         let submitted = self.state.tasks.submit_idempotent(
             NewTask {
                 terminal,
                 target: params.target,
-                result_dir: params
-                    .result_file
-                    .then(|| task_result_dir(&result_place, self.state.tasks.run_id())),
+                result_dir,
                 result_place,
                 location,
                 text: params.text,
@@ -262,16 +268,18 @@ impl App {
 
     /// Runs before the next queued task is written, so the tail is this task's.
     fn save_finished_screen_tail(&mut self, task: TaskId) {
-        let Some((terminal, finished, saved)) = self.state.tasks.get(task).map(|task| {
+        let Some((terminal, finished, sent, saved)) = self.state.tasks.get(task).map(|task| {
             (
                 task.terminal.clone(),
                 task.state.is_finished(),
+                task.submitted_at_ms.is_some(),
                 task.screen_tail.is_some(),
             )
         }) else {
             return;
         };
-        if !finished || saved {
+        // Why not a task cancelled in the queue: the screen shows another task.
+        if !finished || !sent || saved {
             return;
         }
         if let Some(tail) = self.task_screen_tail(&terminal) {
@@ -382,22 +390,16 @@ fn task_key_conflict(id: String, key: &str, conflict: KeyConflict) -> String {
 /// A folder directly in the temp folder: a shared parent such as
 /// `/tmp/herdr-task/` could belong to another user, who could then swap our
 /// folder; the sticky temp folder lets only us remove ours.
-fn task_result_dir(place: &ResultPlace, run: &str) -> String {
+fn task_result_dir(place: &ResultPlace, tasks: &crate::tasks::TaskTable) -> Result<String, String> {
     match place {
         ResultPlace::Host => {
-            let dir = std::env::temp_dir().join(format!("herdr-task-{run}"));
-            match crate::platform::create_private_dir(&dir) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-                // Why not refuse the task: the agent can still make the folder.
-                Err(err) => {
-                    tracing::warn!(err = %err, dir = %dir.display(), "could not create the task result folder")
-                }
-            }
-            dir.display().to_string()
+            let dir = std::env::temp_dir().join(format!("herdr-task-{}", tasks.run_id()));
+            crate::platform::ensure_private_dir(&dir)
+                .map_err(|err| format!("cannot use the task result folder: {err}"))?;
+            Ok(dir.display().to_string())
         }
         // Why not the pane's directory: the result must not land in the repository.
-        _ => format!("/tmp/herdr-task-{run}"),
+        ResultPlace::OffHost(_) => Ok(format!("/tmp/herdr-task-{}", tasks.remote_run_id())),
     }
 }
 
@@ -988,5 +990,26 @@ mod tests {
         let error = fixture.result(&task.task_id).unwrap_err();
 
         assert_eq!(error.error.code, "directory_busy");
+    }
+
+    #[tokio::test]
+    async fn a_task_cancelled_before_it_was_sent_has_no_result() {
+        let mut fixture = fixture(AgentState::Idle);
+        fixture.submit("first");
+        fixture.agent_becomes(AgentState::Working);
+        let queued = fixture.submit("second");
+        assert_eq!(queued.state, TaskState::Queued);
+        fixture.pane_prints(b"output of the first task\r\n");
+
+        let response = fixture.app.handle_task_cancel(
+            "req".into(),
+            TaskTarget {
+                task_id: queued.task_id.clone(),
+            },
+        );
+        assert!(response.contains("cancelled"), "{response}");
+
+        let error = fixture.result(&queued.task_id).unwrap_err();
+        assert_eq!(error.error.code, "task_result_unavailable");
     }
 }

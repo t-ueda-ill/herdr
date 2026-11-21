@@ -680,6 +680,9 @@ fn each_table_names_its_own_unguessable_result_folder() {
     assert_ne!(first.run_id(), second.run_id());
     assert_eq!(first.run_id().len(), 32);
     assert!(first.run_id().chars().all(|c| c.is_ascii_hexdigit()));
+    // A remote prompt must not reveal the name of the local folder.
+    assert_ne!(first.run_id(), first.remote_run_id());
+    assert_eq!(first.remote_run_id().len(), 32);
 }
 
 #[test]
