@@ -38,7 +38,15 @@ fn task(terminal_name: &str, text: &str) -> NewTask {
         text: text.into(),
         key: None,
         result_dir: None,
+        requester: None,
         result_place: super::ResultPlace::Host,
+    }
+}
+
+fn asked_by(terminal_name: &str, text: &str, requester: &str) -> NewTask {
+    NewTask {
+        requester: Some(terminal(requester)),
+        ..task(terminal_name, text)
     }
 }
 
@@ -675,6 +683,109 @@ fn each_table_names_its_own_unguessable_result_folder() {
     // A remote prompt must not reveal the name of the local folder.
     assert_ne!(first.run_id(), first.remote_run_id());
     assert_eq!(first.remote_run_id().len(), 32);
+}
+
+#[test]
+fn a_task_asked_from_a_terminal_running_a_task_records_that_task_as_its_parent() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (chief, _) = table.submit(
+        task("chief", "lead"),
+        agent(AgentStatus::Idle, 3),
+        clock.at(0),
+    );
+    table.on_agent_status(
+        &terminal("chief"),
+        agent(AgentStatus::Working, 4),
+        clock.at(10),
+    );
+
+    let (child, _) = table.submit(
+        asked_by("planner", "plan", "chief"),
+        agent(AgentStatus::Idle, 3),
+        clock.at(20),
+    );
+
+    let child = table.get(child).unwrap();
+    assert_eq!(child.requester, Some(terminal("chief")));
+    assert_eq!(child.parent, Some(chief));
+}
+
+#[test]
+fn a_task_asked_from_a_terminal_without_a_task_records_only_the_requester() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+
+    let (child, _) = table.submit(
+        asked_by("planner", "plan", "chief"),
+        agent(AgentStatus::Idle, 3),
+        clock.at(0),
+    );
+
+    let child = table.get(child).unwrap();
+    assert_eq!(child.requester, Some(terminal("chief")));
+    assert_eq!(child.parent, None);
+}
+
+#[test]
+fn asking_ones_own_terminal_is_a_cycle() {
+    let table = TaskTable::default();
+
+    assert!(table.would_cycle(&terminal("chief"), Some(&terminal("chief"))));
+}
+
+#[test]
+fn asking_back_the_terminal_that_one_works_for_is_a_cycle() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    table.submit(
+        asked_by("planner", "plan", "chief"),
+        agent(AgentStatus::Idle, 3),
+        clock.at(0),
+    );
+    table.on_agent_status(
+        &terminal("planner"),
+        agent(AgentStatus::Working, 4),
+        clock.at(10),
+    );
+    table.submit(
+        asked_by("helper", "look", "planner"),
+        agent(AgentStatus::Idle, 3),
+        clock.at(20),
+    );
+    table.on_agent_status(
+        &terminal("helper"),
+        agent(AgentStatus::Working, 4),
+        clock.at(30),
+    );
+
+    assert!(table.would_cycle(&terminal("chief"), Some(&terminal("helper"))));
+    assert!(table.would_cycle(&terminal("planner"), Some(&terminal("helper"))));
+    assert!(!table.would_cycle(&terminal("reviewer"), Some(&terminal("helper"))));
+    assert!(!table.would_cycle(&terminal("chief"), None));
+}
+
+#[test]
+fn a_finished_task_no_longer_links_its_terminal_to_the_requester() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    table.submit(
+        asked_by("planner", "plan", "chief"),
+        agent(AgentStatus::Idle, 3),
+        clock.at(0),
+    );
+    table.on_agent_status(
+        &terminal("planner"),
+        agent(AgentStatus::Working, 4),
+        clock.at(10),
+    );
+    table.on_agent_status(
+        &terminal("planner"),
+        agent(AgentStatus::Idle, 5),
+        clock.at(20),
+    );
+
+    assert!(!table.would_cycle(&terminal("chief"), Some(&terminal("planner"))));
 }
 
 #[test]

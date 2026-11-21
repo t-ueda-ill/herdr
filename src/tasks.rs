@@ -48,6 +48,8 @@ pub(crate) struct NewTask {
     pub(crate) key: Option<String>,
     /// Folder on the task's location for its result file; none asks for no file.
     pub(crate) result_dir: Option<String>,
+    /// Terminal of the pane that asked for the task.
+    pub(crate) requester: Option<TerminalId>,
     /// Where the pane's shell ran at submit, so the file stays readable later.
     pub(crate) result_place: ResultPlace,
 }
@@ -84,6 +86,9 @@ pub(crate) struct Task {
     pub(crate) reason: Option<String>,
     pub(crate) key: Option<String>,
     pub(crate) result_path: Option<String>,
+    pub(crate) requester: Option<TerminalId>,
+    /// The task the requester ran when it asked.
+    pub(crate) parent: Option<TaskId>,
     pub(crate) result_place: ResultPlace,
     /// The end of the pane when the task finished; the fallback result.
     pub(crate) screen_tail: Option<String>,
@@ -220,6 +225,10 @@ impl TaskTable {
         self.next_id += 1;
         let id = TaskId(self.next_id);
         let terminal = new.terminal.clone();
+        let parent = new
+            .requester
+            .as_ref()
+            .and_then(|requester| self.lanes.get(requester)?.active);
         if let Some(key) = &new.key {
             self.keys.insert(key.clone(), id);
         }
@@ -241,6 +250,8 @@ impl TaskTable {
                 result_path: new
                     .result_dir
                     .map(|dir| format!("{dir}/{}.md", id.public())),
+                requester: new.requester,
+                parent,
                 result_place: new.result_place,
                 screen_tail: None,
                 submit_seq: 0,
@@ -392,6 +403,28 @@ impl TaskTable {
         let mut effects = Vec::new();
         self.finish(id, TaskState::Cancelled, None, now, &mut effects);
         Ok(effects)
+    }
+
+    /// True when `target` already waits, through running tasks, for `requester`:
+    /// sending would leave both waiting on each other.
+    pub(crate) fn would_cycle(&self, target: &TerminalId, requester: Option<&TerminalId>) -> bool {
+        let mut cursor = requester;
+        // Why a step limit: a chain longer than all lanes must repeat.
+        for _ in 0..=self.lanes.len() {
+            let Some(terminal) = cursor else {
+                return false;
+            };
+            if terminal == target {
+                return true;
+            }
+            // Why not parent tasks: a chief that a person drives has no task.
+            cursor = self
+                .lanes
+                .get(terminal)
+                .and_then(|lane| self.tasks.get(&lane.active?))
+                .and_then(|task| task.requester.as_ref());
+        }
+        false
     }
 
     /// Keeps the first tail only: a later read can show the next task's turn.
