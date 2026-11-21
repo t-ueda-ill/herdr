@@ -27,23 +27,83 @@ pub(super) fn task_wait_ends(
     state.is_finished() || until.contains(&state)
 }
 
-/// The newest `task.updated` for `task_id` among `events`, and the last sequence seen.
-pub(super) fn latest_task_update(
-    events: Vec<(u64, EventEnvelope)>,
-    task_id: &str,
+/// What one look at the event history found for the waited task.
+pub(super) struct TaskScan {
+    pub(super) task: Option<crate::api::schema::TaskInfo>,
+    /// The sequence to look after next time.
+    pub(super) last: u64,
+}
+
+/// Walks the `task.updated` events after `after` in order. It stops at the
+/// first update that ends the wait, so a short-lived requested state is not
+/// hidden by a later one. `Err` means the history lost events since `after`.
+pub(super) fn scan_task_updates(
+    event_hub: &EventHub,
     after: u64,
-) -> (Option<crate::api::schema::TaskInfo>, u64) {
-    let mut last = after;
-    let mut latest = None;
-    for (sequence, event) in events {
-        last = last.max(sequence);
+    task_id: &str,
+    until: &[crate::api::schema::TaskState],
+) -> Result<TaskScan, crate::api::event_hub::EventHistoryError> {
+    let mut scan = TaskScan {
+        task: None,
+        last: after,
+    };
+    for (sequence, event) in event_hub.events_after_checked(after)? {
+        scan.last = sequence;
         if let EventData::TaskUpdated { task } = event.data {
             if task.task_id == task_id {
-                latest = Some(task);
+                let ends = task_wait_ends(task.state, until);
+                scan.task = Some(task);
+                if ends {
+                    break;
+                }
             }
         }
     }
-    (latest, last)
+    Ok(scan)
+}
+
+fn fetch_task(
+    request_id: &str,
+    task_id: &str,
+    api_tx: &ApiRequestSender,
+    deadline: Option<std::time::Instant>,
+) -> Result<crate::api::schema::TaskInfo, String> {
+    // Why not wait without a limit: a busy app must not hold the wait past its deadline.
+    let limit = deadline
+        .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()))
+        .map_or(APP_RESPONSE_TIMEOUT, |left| left.min(APP_RESPONSE_TIMEOUT));
+    let response = dispatch_to_app_with_timeout(
+        Request {
+            id: request_id.to_string(),
+            method: Method::TaskGet(crate::api::schema::TaskTarget {
+                task_id: task_id.to_string(),
+            }),
+        },
+        api_tx,
+        Some(limit),
+    );
+    match serde_json::from_str::<SuccessResponse>(&response) {
+        Ok(SuccessResponse {
+            result: ResponseResult::TaskInfo { task },
+            ..
+        }) => Ok(task),
+        _ => Err(response),
+    }
+}
+
+fn task_wait_timeout(
+    request_id: String,
+    task: &crate::api::schema::TaskInfo,
+) -> std::io::Result<Option<String>> {
+    serde_json::to_string(&ErrorResponse {
+        id: request_id,
+        error: ErrorBody {
+            code: "timeout".into(),
+            message: format!("task {} is still {:?}", task.task_id, task.state),
+        },
+    })
+    .map(Some)
+    .map_err(std::io::Error::other)
 }
 
 pub(super) fn wait_for_task(
@@ -59,22 +119,12 @@ pub(super) fn wait_for_task(
         .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
     // Why read the sequence before the task: an update between the two is then replayed.
     let mut sequence = event_hub.current_sequence();
-    let response = dispatch_to_app_with_timeout(
-        Request {
-            id: request_id.clone(),
-            method: Method::TaskGet(crate::api::schema::TaskTarget {
-                task_id: params.task_id.clone(),
-            }),
-        },
-        api_tx,
-        None,
-    );
-    let Ok(success) = serde_json::from_str::<SuccessResponse>(&response) else {
-        return Ok(Some(response));
+    let mut task = match fetch_task(&request_id, &params.task_id, api_tx, deadline) {
+        Ok(task) => task,
+        Err(response) => return Ok(Some(response)),
     };
-    let ResponseResult::TaskInfo { mut task } = success.result else {
-        return Ok(Some(response));
-    };
+    // Why not `params.task_id`: events carry the canonical id (`t_1` for `t_01`).
+    let task_id = task.task_id.clone();
     loop {
         if task_wait_ends(task.state, &params.until) {
             return serde_json::to_string(&SuccessResponse {
@@ -87,23 +137,27 @@ pub(super) fn wait_for_task(
         if should_stop_connection(stream, running)? {
             return Ok(None);
         }
-        let (latest, last) =
-            latest_task_update(event_hub.events_after(sequence), &params.task_id, sequence);
-        sequence = last;
-        if let Some(latest) = latest {
-            task = latest;
-            continue;
+        match scan_task_updates(event_hub, sequence, &task_id, &params.until) {
+            Ok(scan) => {
+                sequence = scan.last;
+                if let Some(latest) = scan.task {
+                    task = latest;
+                    continue;
+                }
+            }
+            Err(_) => {
+                sequence = event_hub.current_sequence();
+                match fetch_task(&request_id, &task_id, api_tx, deadline) {
+                    Ok(latest) => {
+                        task = latest;
+                        continue;
+                    }
+                    Err(response) => return Ok(Some(response)),
+                }
+            }
         }
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-            return serde_json::to_string(&ErrorResponse {
-                id: request_id,
-                error: ErrorBody {
-                    code: "timeout".into(),
-                    message: format!("task {} is still {:?}", params.task_id, task.state),
-                },
-            })
-            .map(Some)
-            .map_err(std::io::Error::other);
+            return task_wait_timeout(request_id, &task);
         }
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
@@ -970,27 +1024,57 @@ mod tests {
     #[test]
     fn the_newest_update_of_the_waited_task_wins() {
         use crate::api::schema::TaskState;
-        let events = vec![
-            (5, task_update("t_1", TaskState::Running)),
-            (6, task_update("t_2", TaskState::Completed)),
-            (7, task_update("t_1", TaskState::Completed)),
-        ];
+        let hub = EventHub::default();
+        hub.push(task_update("t_1", TaskState::Submitted));
+        hub.push(task_update("t_1", TaskState::Running));
+        hub.push(task_update("t_2", TaskState::Completed));
 
-        let (latest, last) = super::latest_task_update(events, "t_1", 4);
+        let scan = super::scan_task_updates(&hub, 0, "t_1", &[]).unwrap();
 
-        assert_eq!(latest.map(|task| task.state), Some(TaskState::Completed));
-        assert_eq!(last, 7);
+        assert_eq!(scan.task.map(|task| task.state), Some(TaskState::Running));
+        assert_eq!(scan.last, 3);
+    }
+
+    #[test]
+    fn a_requested_state_is_kept_even_when_a_later_update_moves_on() {
+        use crate::api::schema::TaskState;
+        let hub = EventHub::default();
+        hub.push(task_update("t_1", TaskState::NeedsInput));
+        hub.push(task_update("t_1", TaskState::Running));
+
+        let scan = super::scan_task_updates(&hub, 0, "t_1", &[TaskState::NeedsInput]).unwrap();
+
+        assert_eq!(
+            scan.task.map(|task| task.state),
+            Some(TaskState::NeedsInput)
+        );
+        assert_eq!(
+            scan.last, 1,
+            "the scan stops at the update that ends the wait"
+        );
     }
 
     #[test]
     fn updates_of_other_tasks_only_move_the_sequence() {
         use crate::api::schema::TaskState;
-        let events = vec![(9, task_update("t_2", TaskState::Running))];
+        let hub = EventHub::default();
+        hub.push(task_update("t_2", TaskState::Running));
 
-        let (latest, last) = super::latest_task_update(events, "t_1", 8);
+        let scan = super::scan_task_updates(&hub, 0, "t_1", &[]).unwrap();
 
-        assert!(latest.is_none());
-        assert_eq!(last, 9);
+        assert!(scan.task.is_none());
+        assert_eq!(scan.last, 1);
+    }
+
+    #[test]
+    fn a_scan_reports_updates_that_fell_out_of_the_history() {
+        use crate::api::schema::TaskState;
+        let hub = EventHub::default();
+        for _ in 0..600 {
+            hub.push(task_update("t_2", TaskState::Running));
+        }
+
+        assert!(super::scan_task_updates(&hub, 0, "t_1", &[]).is_err());
     }
 
     use super::*;
