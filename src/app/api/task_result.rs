@@ -1,16 +1,15 @@
 //! `task.result`: the text a finished task left, from its result file or else
-//! from the end of its pane. A file on ssh or in a container is read on a
+//! from the end of its pane as saved when the task ended. A file on ssh or in a container is read on a
 //! worker, like `pane.file.read`, so a slow remote never blocks the app.
 
 use std::sync::mpsc::Sender;
 
 use crate::api::schema::{
-    Method, PaneLocationKind, ReadFormat, ReadSource, Request, ResponseResult, TaskResult,
-    TaskResultSource,
+    Method, ReadFormat, ReadSource, Request, ResponseResult, TaskResult, TaskResultSource,
 };
 use crate::app::App;
-use crate::offhost::PaneTarget;
-use crate::tasks::TaskId;
+use crate::offhost::PaneEnvironment;
+use crate::tasks::{ResultPlace, TaskId};
 
 use super::responses::{encode_error, encode_success};
 
@@ -19,7 +18,7 @@ const SCREEN_TAIL_LINES: u32 = 40;
 
 enum FileRead {
     Host(String),
-    OffHost(Box<PaneTarget>, String),
+    OffHost(Box<PaneEnvironment>, String),
 }
 
 impl FileRead {
@@ -70,33 +69,30 @@ impl App {
         }
         let task_id = task.id.public();
         let path = task.result_path.clone();
-        let host = task.location.kind == PaneLocationKind::Host;
-        let terminal = task.terminal.clone();
-        let screen = self.task_screen_tail(&terminal);
-        let read = path.clone().and_then(|path| {
-            if host {
-                return Some(FileRead::Host(path));
-            }
-            // Why not fail here: a closed pane still leaves no screen, and the
-            // answer below says so.
-            let pane = self.terminal_public_pane_id(&terminal)?;
-            let target = self.pane_target(&pane).ok()?;
-            Some(FileRead::OffHost(Box::new(target), path))
+        let screen = task.screen_tail.clone();
+        // Why the place saved at submit: the pane may be closed or run another
+        // shell now, and the file still sits where the agent wrote it.
+        let read = path.clone().map(|path| match &task.result_place {
+            ResultPlace::Host => FileRead::Host(path),
+            ResultPlace::OffHost(environment) => FileRead::OffHost(environment.clone(), path),
         });
         let Some(read) = read else {
             let _ = respond_to.send(result_response(id, task_id, path, None, screen));
             return true;
         };
-        let job = (id, task_id, path, screen, read, respond_to);
+        let Some(permit) = self.try_acquire_directory_slot(&id, &respond_to) else {
+            return true;
+        };
+        let job = (id, task_id, path, screen, read, respond_to, permit);
         let spawned = crate::thread_spawn::spawn_named_with(
             "herdr-task-result",
             job,
-            |(id, task_id, path, screen, read, respond_to)| {
+            |(id, task_id, path, screen, read, respond_to, _permit)| {
                 let file = read.run();
                 let _ = respond_to.send(result_response(id, task_id, path, Some(file), screen));
             },
         );
-        if let Err(((id, task_id, path, screen, _, respond_to), err)) = spawned {
+        if let Err(((id, task_id, path, screen, _, respond_to, _), err)) = spawned {
             tracing::warn!(err = %err, "failed to spawn task result thread");
             let _ = respond_to.send(result_response(
                 id,
@@ -109,7 +105,10 @@ impl App {
         true
     }
 
-    fn task_screen_tail(&self, terminal: &crate::terminal::TerminalId) -> Option<String> {
+    pub(super) fn task_screen_tail(
+        &self,
+        terminal: &crate::terminal::TerminalId,
+    ) -> Option<String> {
         let (ws_idx, pane_id) = self.terminal_pane(terminal)?;
         let (runtime, _) = self.lookup_runtime(ws_idx, pane_id)?;
         Some(
@@ -164,8 +163,11 @@ fn choose_result(
             text,
         }),
         None => Err(match file_error {
-            Some(message) => format!("no result file ({message}) and the agent pane is gone"),
-            None => "the agent pane is gone and the task has no result file".to_string(),
+            Some(message) => {
+                format!("no result file ({message}) and no screen was saved when the task ended")
+            }
+            None => "no result file was asked for and no screen was saved when the task ended"
+                .to_string(),
         }),
     }
 }

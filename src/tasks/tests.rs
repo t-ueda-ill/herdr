@@ -38,6 +38,7 @@ fn task(terminal_name: &str, text: &str) -> NewTask {
         text: text.into(),
         key: None,
         result_dir: None,
+        result_place: super::ResultPlace::Host,
     }
 }
 
@@ -671,4 +672,19 @@ fn each_table_names_its_own_unguessable_result_folder() {
     assert_ne!(first.run_id(), second.run_id());
     assert_eq!(first.run_id().len(), 32);
     assert!(first.run_id().chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+#[test]
+fn the_first_saved_screen_tail_of_a_task_stays() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (id, _) = table.submit(task("a", "fix"), agent(AgentStatus::Idle, 3), clock.at(0));
+
+    table.save_screen_tail(id, "at the end".into());
+    table.save_screen_tail(id, "later".into());
+
+    assert_eq!(
+        table.get(id).unwrap().screen_tail.as_deref(),
+        Some("at the end")
+    );
 }
