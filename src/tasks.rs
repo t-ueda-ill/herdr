@@ -85,7 +85,7 @@ impl Task {
         match &self.result_path {
             // Why not localized: Herdr does not know which language the agent uses.
             Some(path) => format!(
-                "{}\n\nWhen you finish, write only your result to {path} (create the folder if it is missing).",
+                "{}\n\nWhen you finish, write only your result to {path} (if the folder is missing, create it so that only you can read it).",
                 self.text
             )
             .into(),
@@ -109,7 +109,8 @@ pub(crate) struct KeyConflict {
 #[derive(Debug)]
 pub(crate) struct TaskTable {
     /// Names the result folder of this table. Task numbers restart with each
-    /// table, so an old run's `t_1.md` must not answer for a new `t_1`.
+    /// table, so an old run's `t_1.md` must not answer for a new `t_1`, and
+    /// the name is random so nobody else can prepare the folder.
     run_id: String,
     next_id: u64,
     tasks: HashMap<TaskId, Task>,
@@ -126,19 +127,22 @@ struct Lane {
     agent: AgentSnapshot,
 }
 
+/// 128 bits from SipHash keys that std seeds from the OS: another user on the
+/// host must not guess the result folder and create it first.
+fn unguessable_run_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let half = || {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u32(std::process::id());
+        hasher.finish()
+    };
+    format!("{:016x}{:016x}", half(), half())
+}
+
 impl Default for TaskTable {
     fn default() -> Self {
-        static TABLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let started = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_millis())
-            .unwrap_or(0);
         Self {
-            run_id: format!(
-                "{}-{started:x}-{}",
-                std::process::id(),
-                TABLES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ),
+            run_id: unguessable_run_id(),
             next_id: 0,
             tasks: HashMap::new(),
             keys: HashMap::new(),

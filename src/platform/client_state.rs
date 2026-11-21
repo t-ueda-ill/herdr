@@ -30,3 +30,16 @@ pub(crate) fn sync_parent_directory(_path: &Path) -> std::io::Result<()> {
     // replace_file uses MOVEFILE_WRITE_THROUGH on Windows.
     Ok(())
 }
+
+/// Non-recursive on purpose: an existing path must fail, not be taken over.
+#[cfg(unix)]
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(dir)
+}
+
+/// The Windows temp folder is already per user.
+#[cfg(windows)]
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new().create(dir)
+}

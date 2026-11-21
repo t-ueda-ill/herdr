@@ -317,15 +317,25 @@ fn task_key_conflict(id: String, key: &str, conflict: KeyConflict) -> String {
     )
 }
 
+/// A folder directly in the temp folder: a shared parent such as
+/// `/tmp/herdr-task/` could belong to another user, who could then swap our
+/// folder; the sticky temp folder lets only us remove ours.
 fn task_result_dir(location: &Location, run: &str) -> String {
     match location.kind {
-        crate::api::schema::PaneLocationKind::Host => std::env::temp_dir()
-            .join("herdr-task")
-            .join(run)
-            .display()
-            .to_string(),
+        crate::api::schema::PaneLocationKind::Host => {
+            let dir = std::env::temp_dir().join(format!("herdr-task-{run}"));
+            match crate::platform::create_private_dir(&dir) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                // Why not refuse the task: the agent can still make the folder.
+                Err(err) => {
+                    tracing::warn!(err = %err, dir = %dir.display(), "could not create the task result folder")
+                }
+            }
+            dir.display().to_string()
+        }
         // Why not the pane's directory: the result must not land in the repository.
-        _ => format!("/tmp/herdr-task/{run}"),
+        _ => format!("/tmp/herdr-task-{run}"),
     }
 }
 
@@ -740,12 +750,10 @@ mod tests {
         let task = fixture.submit_with("plan the fix", true);
 
         let path = task.result_path.clone().expect("result path");
-        let dir = std::env::temp_dir().join("herdr-task");
-        assert!(
-            std::path::Path::new(&path).starts_with(&dir),
-            "{path} is not under {}",
-            dir.display()
-        );
+        let folder = std::path::Path::new(&path).parent().expect("result folder");
+        assert_eq!(folder.parent(), Some(std::env::temp_dir().as_path()));
+        let name = folder.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("herdr-task-"), "{name}");
         assert!(path.ends_with(&format!("{}.md", task.task_id)), "{path}");
         let written = String::from_utf8_lossy(&fixture.written_text()).into_owned();
         assert!(written.starts_with("plan the fix"), "{written:?}");
@@ -814,5 +822,20 @@ mod tests {
         let result = fixture.result(&task.task_id).expect("task result");
 
         assert_eq!(result.source, TaskResultSource::Screen);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_local_result_folder_is_made_for_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut fixture = fixture(AgentState::Idle);
+
+        let task = fixture.submit_with("plan", true);
+
+        let path = std::path::PathBuf::from(task.result_path.unwrap());
+        let folder = path.parent().unwrap();
+        let mode = std::fs::metadata(folder).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_dir(folder);
+        assert_eq!(mode, 0o700);
     }
 }

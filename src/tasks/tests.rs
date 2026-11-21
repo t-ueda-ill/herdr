@@ -664,6 +664,11 @@ fn without_a_result_dir_the_prompt_is_the_text_as_given() {
 }
 
 #[test]
-fn each_table_names_its_own_result_folder() {
-    assert_ne!(TaskTable::default().run_id(), TaskTable::default().run_id());
+fn each_table_names_its_own_unguessable_result_folder() {
+    let first = TaskTable::default();
+    let second = TaskTable::default();
+
+    assert_ne!(first.run_id(), second.run_id());
+    assert_eq!(first.run_id().len(), 32);
+    assert!(first.run_id().chars().all(|c| c.is_ascii_hexdigit()));
 }

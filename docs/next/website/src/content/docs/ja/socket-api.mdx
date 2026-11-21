@@ -618,7 +618,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 { "id": "2", "method": "task.submit", "params": { "target": "reviewer", "text": "fix the failing test", "key": "run42/fix" } }
 ```
 
-`"result_file": true` を付けると、Herdr はプロンプトの末尾に 1 行を足し、結果だけを `result_path` に書くようエージェントに頼みます。`result_path` はタスクの実行場所にあるファイルです（ローカルのペインならシステムの一時フォルダ、ssh やコンテナなら `/tmp/herdr-task/`）。`text` は送ったテキストのままです。タスクが終わったら、`task.result` が `task_id`・`source`・`path`・`text` を持つ `task_result` を返します。結果ファイルを読めたら `source` は `file` です。ファイルを頼んでいないときやエージェントが書かなかったときは、エージェントのペインの末尾 40 行を返し、`source` は `screen` になります。タスクが動いている間は `task_not_finished`、ファイルが無くペインも閉じているときは `task_result_unavailable` で断ります。
+`"result_file": true` を付けると、Herdr はプロンプトの末尾に 1 行を足し、結果だけを `result_path` に書くようエージェントに頼みます。`result_path` はタスクの実行場所にあるファイルです（ローカルのペインならシステムの一時フォルダ、ssh やコンテナなら `/tmp` の中にある `herdr-task-<乱数>` フォルダ。ローカルのフォルダは Herdr が自分のユーザーだけが読める権限で作ります）。`text` は送ったテキストのままです。タスクが終わったら、`task.result` が `task_id`・`source`・`path`・`text` を持つ `task_result` を返します。結果ファイルを読めたら `source` は `file` です。ファイルを頼んでいないときやエージェントが書かなかったときは、エージェントのペインの末尾 40 行を返し、`source` は `screen` になります。タスクが動いている間は `task_not_finished`、ファイルが無くペインも閉じているときは `task_result_unavailable` で断ります。
 
 ```json
 { "id": "3", "method": "task.result", "params": { "task_id": "t_4" } }
