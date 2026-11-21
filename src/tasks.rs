@@ -46,6 +46,17 @@ pub(crate) struct NewTask {
     pub(crate) location: Location,
     pub(crate) text: String,
     pub(crate) key: Option<String>,
+    /// Folder on the task's location for its result file; none asks for no file.
+    pub(crate) result_dir: Option<String>,
+    /// Where the pane's shell ran at submit, so the file stays readable later.
+    pub(crate) result_place: ResultPlace,
+}
+
+/// Where `task.result` reads the result file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResultPlace {
+    Host,
+    OffHost(Box<crate::offhost::PaneEnvironment>),
 }
 
 /// The agent as the App sees it at one moment.
@@ -72,8 +83,27 @@ pub(crate) struct Task {
     pub(crate) finished_at_ms: Option<u64>,
     pub(crate) reason: Option<String>,
     pub(crate) key: Option<String>,
+    pub(crate) result_path: Option<String>,
+    pub(crate) result_place: ResultPlace,
+    /// The end of the pane when the task finished; the fallback result.
+    pub(crate) screen_tail: Option<String>,
     submit_seq: u64,
     accept_deadline: Option<Instant>,
+}
+
+impl Task {
+    /// The text written to the pane: the caller's text, then the result-file line.
+    pub(crate) fn prompt(&self) -> std::borrow::Cow<'_, str> {
+        match &self.result_path {
+            // Why not localized: Herdr does not know which language the agent uses.
+            Some(path) => format!(
+                "{}\n\nWhen you finish, write only your result to {path} (if the folder is missing, create it so that only you can read it).",
+                self.text
+            )
+            .into(),
+            None => self.text.as_str().into(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -88,8 +118,15 @@ pub(crate) struct KeyConflict {
     pub(crate) existing: TaskId,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct TaskTable {
+    /// Names the result folder of this table. Task numbers restart with each
+    /// table, so an old run's `t_1.md` must not answer for a new `t_1`, and
+    /// the name is random so nobody else can prepare the folder.
+    run_id: String,
+    /// The same for folders on ssh and in containers. Separate, because a
+    /// remote prompt can reach another user of this host.
+    remote_run_id: String,
     next_id: u64,
     tasks: HashMap<TaskId, Task>,
     /// Kept as long as the task is kept.
@@ -105,7 +142,41 @@ struct Lane {
     agent: AgentSnapshot,
 }
 
+/// 128 bits from SipHash keys that std seeds from the OS: another user on the
+/// host must not guess the result folder and create it first.
+fn unguessable_run_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let half = || {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u32(std::process::id());
+        hasher.finish()
+    };
+    format!("{:016x}{:016x}", half(), half())
+}
+
+impl Default for TaskTable {
+    fn default() -> Self {
+        Self {
+            run_id: unguessable_run_id(),
+            remote_run_id: unguessable_run_id(),
+            next_id: 0,
+            tasks: HashMap::new(),
+            keys: HashMap::new(),
+            lanes: HashMap::new(),
+            finished: VecDeque::new(),
+        }
+    }
+}
+
 impl TaskTable {
+    pub(crate) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    pub(crate) fn remote_run_id(&self) -> &str {
+        &self.remote_run_id
+    }
+
     /// The task an earlier submit with this key made, if it is still kept.
     pub(crate) fn find_by_key(
         &self,
@@ -167,6 +238,11 @@ impl TaskTable {
                 finished_at_ms: None,
                 reason: None,
                 key: new.key,
+                result_path: new
+                    .result_dir
+                    .map(|dir| format!("{dir}/{}.md", id.public())),
+                result_place: new.result_place,
+                screen_tail: None,
                 submit_seq: 0,
                 accept_deadline: None,
             },
@@ -316,6 +392,13 @@ impl TaskTable {
         let mut effects = Vec::new();
         self.finish(id, TaskState::Cancelled, None, now, &mut effects);
         Ok(effects)
+    }
+
+    /// Keeps the first tail only: a later read can show the next task's turn.
+    pub(crate) fn save_screen_tail(&mut self, id: TaskId, tail: String) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.screen_tail.get_or_insert(tail);
+        }
     }
 
     pub(crate) fn next_deadline(&self) -> Option<Instant> {

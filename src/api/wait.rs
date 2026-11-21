@@ -985,6 +985,7 @@ mod tests {
                     finished_at_ms: None,
                     reason: None,
                     key: None,
+                    result_path: None,
                 },
             },
         }

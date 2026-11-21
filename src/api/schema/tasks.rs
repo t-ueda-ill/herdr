@@ -74,6 +74,30 @@ pub struct TaskInfo {
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// Where the agent was asked to write its result, on the task's location.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_path: Option<String>,
+}
+
+/// Where the text of `task.result` came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskResultSource {
+    /// The result file the prompt asked for.
+    File,
+    /// The last lines of the agent's pane.
+    Screen,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TaskResult {
+    pub task_id: String,
+    pub source: TaskResultSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -85,6 +109,9 @@ pub struct TaskSubmitParams {
     /// the first task and sends nothing; another target or text is a conflict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// Append a line that asks the agent to write its result to `result_path`.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub result_file: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

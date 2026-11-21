@@ -21,6 +21,7 @@ pub(crate) mod plugins;
 pub(super) mod responses;
 mod session;
 mod tabs;
+mod task_result;
 mod tasks;
 mod workspaces;
 mod worktrees;
@@ -1232,6 +1233,13 @@ impl App {
                     request.id,
                     "invalid_request",
                     "directory reads are handled asynchronously by the app runtime",
+                );
+            }
+            Method::TaskResult(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "task results are read asynchronously by the app runtime",
                 );
             }
             Method::PaneUploadBegin(_)

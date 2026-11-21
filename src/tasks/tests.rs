@@ -37,6 +37,8 @@ fn task(terminal_name: &str, text: &str) -> NewTask {
         location: Location::new(None, None),
         text: text.into(),
         key: None,
+        result_dir: None,
+        result_place: super::ResultPlace::Host,
     }
 }
 
@@ -628,4 +630,64 @@ fn a_key_is_forgotten_with_its_dropped_task() {
         .unwrap();
 
     assert_ne!(fresh, old);
+}
+
+#[test]
+fn a_result_dir_names_one_result_file_per_task_and_asks_for_it_in_the_prompt() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let new = NewTask {
+        result_dir: Some("/tmp/herdr-task/boot1".into()),
+        ..task("a", "plan the fix")
+    };
+
+    let (id, _) = table.submit(new, agent(AgentStatus::Idle, 3), clock.at(0));
+
+    let task = table.get(id).unwrap();
+    let path = format!("/tmp/herdr-task/boot1/{}.md", id.public());
+    assert_eq!(task.result_path.as_deref(), Some(path.as_str()));
+    assert_eq!(task.text, "plan the fix");
+    let prompt = task.prompt();
+    assert!(prompt.starts_with("plan the fix\n\n"), "{prompt}");
+    assert!(prompt.contains(&path), "{prompt}");
+}
+
+#[test]
+fn without_a_result_dir_the_prompt_is_the_text_as_given() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+
+    let (id, _) = table.submit(task("a", "fix"), agent(AgentStatus::Idle, 3), clock.at(0));
+
+    let task = table.get(id).unwrap();
+    assert_eq!(task.result_path, None);
+    assert_eq!(task.prompt(), "fix");
+}
+
+#[test]
+fn each_table_names_its_own_unguessable_result_folder() {
+    let first = TaskTable::default();
+    let second = TaskTable::default();
+
+    assert_ne!(first.run_id(), second.run_id());
+    assert_eq!(first.run_id().len(), 32);
+    assert!(first.run_id().chars().all(|c| c.is_ascii_hexdigit()));
+    // A remote prompt must not reveal the name of the local folder.
+    assert_ne!(first.run_id(), first.remote_run_id());
+    assert_eq!(first.remote_run_id().len(), 32);
+}
+
+#[test]
+fn the_first_saved_screen_tail_of_a_task_stays() {
+    let clock = Clock::new();
+    let mut table = TaskTable::default();
+    let (id, _) = table.submit(task("a", "fix"), agent(AgentStatus::Idle, 3), clock.at(0));
+
+    table.save_screen_tail(id, "at the end".into());
+    table.save_screen_tail(id, "later".into());
+
+    assert_eq!(
+        table.get(id).unwrap().screen_tail.as_deref(),
+        Some("at the end")
+    );
 }
