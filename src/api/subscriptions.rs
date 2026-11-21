@@ -706,6 +706,7 @@ mod tests {
             label: None,
             container: None,
             ssh_host: None,
+            location: None,
             agent: None,
             title: None,
             terminal_title: None,

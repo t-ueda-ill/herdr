@@ -191,6 +191,7 @@ fn pane_scroll_result(
             label: None,
             container: None,
             ssh_host: None,
+            location: None,
             agent: None,
             title: None,
             terminal_title: None,

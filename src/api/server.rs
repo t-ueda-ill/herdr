@@ -1148,6 +1148,7 @@ mod tests {
             label: None,
             container: None,
             ssh_host: None,
+            location: None,
             agent: Some("pi".into()),
             title: None,
             terminal_title: None,

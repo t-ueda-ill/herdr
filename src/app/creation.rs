@@ -347,6 +347,22 @@ impl App {
                 .focused_pane_id()
                 .is_some_and(|focused| focused == pane_id);
         let presentation = terminal.effective_presentation();
+        let container = terminal
+            .container
+            .as_ref()
+            .map(|launch| launch.canonical.clone());
+        // A remote container pane keeps `terminal.ssh` empty, so the host
+        // comes from the container's own launch.
+        let ssh_host = terminal
+            .ssh
+            .as_ref()
+            .or_else(|| {
+                terminal
+                    .container
+                    .as_ref()
+                    .and_then(|container| container.ssh.as_ref())
+            })
+            .map(|launch| launch.canonical.clone());
         Some(crate::api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             terminal_id: terminal.id.to_string(),
@@ -366,22 +382,12 @@ impl App {
                 }
             }),
             label: terminal.manual_label.clone(),
-            container: terminal
-                .container
-                .as_ref()
-                .map(|launch| launch.canonical.clone()),
-            // A remote container pane keeps `terminal.ssh` empty, so the host
-            // comes from the container's own launch.
-            ssh_host: terminal
-                .ssh
-                .as_ref()
-                .or_else(|| {
-                    terminal
-                        .container
-                        .as_ref()
-                        .and_then(|container| container.ssh.as_ref())
-                })
-                .map(|launch| launch.canonical.clone()),
+            location: Some(crate::api::schema::Location::new(
+                ssh_host.as_deref(),
+                container.as_deref(),
+            )),
+            container,
+            ssh_host,
             agent: terminal.effective_agent_label().map(str::to_string),
             title: presentation.title,
             terminal_title: terminal.terminal_title.clone(),

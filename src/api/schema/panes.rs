@@ -565,6 +565,9 @@ pub struct PaneInfo {
     /// `Host` alias of the user's ssh config this pane's shell connects to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_host: Option<String>,
+    /// Where the shell runs; `container` and `ssh_host` folded into one id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<super::Location>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
