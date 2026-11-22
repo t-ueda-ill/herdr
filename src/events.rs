@@ -169,6 +169,11 @@ pub enum AppEvent {
         task: crate::tasks::TaskId,
         reason: String,
     },
+    /// The result file of a finished task was read, so its text can be kept.
+    TaskResultRead {
+        task: crate::tasks::TaskId,
+        text: String,
+    },
     /// Process detection identified an agent before its screen state was confirmed.
     AgentProcessDetected {
         pane_id: PaneId,

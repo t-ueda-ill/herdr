@@ -70,6 +70,8 @@ impl HeadlessServer {
             self.app.state.active,
             self.app.state.selected,
         );
+        // Why through the file: the replacement server reads it at start.
+        self.app.save_tasks_now();
 
         let offhost_history = handoff_offhost_history(
             &snapshot,

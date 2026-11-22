@@ -610,7 +610,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 { "id": "1", "method": "task.submit", "params": { "target": "reviewer", "text": "fix the failing test" } }
 ```
 
-結果は `task_info` で、`task` オブジェクトを含みます。フィールドは `task_id`（`t_<n>`。番号はサーバーの再起動でやり直し）、`state`、`target`、`terminal_id`、`pane_id`、`location`、`text`、`evidence`、`created_at_ms`、`submitted_at_ms`、`finished_at_ms`、`reason`、`key`、`result_path`、`requester_terminal_id`、`parent_task_id` です。`agent.prompt` が断る場合は `task.submit` も同じエラーコードで断り、何も記録しません。
+結果は `task_info` で、`task` オブジェクトを含みます。フィールドは `task_id`（`t_<n>`。番号はサーバーを再起動しても続く）、`state`、`target`、`terminal_id`、`pane_id`、`location`、`text`、`evidence`、`created_at_ms`、`submitted_at_ms`、`finished_at_ms`、`reason`、`key`、`result_path`、`requester_terminal_id`、`parent_task_id` です。`agent.prompt` が断る場合は `task.submit` も同じエラーコードで断り、何も記録しません。
 
 接続が切れたときやタイムアウトしたときに安全に再送するには、`key`（1〜256 バイト）を渡します。同じ `key`・`target`・`text` でもう一度 `task.submit` すると、最初のタスクを返し、何も送りません。エージェントが入力待ちになっていても、ペインが閉じていても同じです。同じ `key` で `target` か `text` が違うと `task_key_conflict` で断ります。Herdr はタスクを残している間だけキーを覚えます。
 
@@ -618,7 +618,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 { "id": "2", "method": "task.submit", "params": { "target": "reviewer", "text": "fix the failing test", "key": "run42/fix" } }
 ```
 
-`"result_file": true` を付けると、Herdr はプロンプトの末尾に 1 行を足し、結果だけを `result_path` に書くようエージェントに頼みます。`result_path` はタスクの実行場所にあるファイルです（タスクごとに新しく作る `herdr-task-<乱数>` フォルダ。ローカルのペインならシステムの一時フォルダ、ssh やコンテナなら `/tmp` の中）。ローカルのフォルダは Herdr が自分のユーザーだけが読める権限で作り、作れないときは `task_result_folder_unsafe` でタスクを断ります。リモートのフォルダはエージェントが作ります。終わったタスクを一覧から外すとき、Herdr はローカルの結果ファイルを消します。リモートのファイルは、リモート側が一時フォルダを掃除するまで残ります。`text` は送ったテキストのままです。タスクが終わったら、`task.result` が `task_id`・`source`・`path`・`text` を持つ `task_result` を返します。結果ファイルを読めたら `source` は `file` です。ファイルを頼んでいないときやエージェントが書かなかったときは、タスクが終わった時点のエージェントのペインの末尾 40 行を返し、`source` は `screen` になります。タスクが動いている間は `task_not_finished`、ファイルが無く、先にペインが閉じたなどで画面も保存されていないときは `task_result_unavailable` で断ります。
+`"result_file": true` を付けると、Herdr はプロンプトの末尾に 1 行を足し、結果だけを `result_path` に書くようエージェントに頼みます。`result_path` はタスクの実行場所にあるファイルです（タスクごとに新しく作る `herdr-task-<乱数>` フォルダ。ローカルのペインならシステムの一時フォルダ、ssh やコンテナなら `/tmp` の中）。ローカルのフォルダは Herdr が自分のユーザーだけが読める権限で作り、作れないときは `task_result_folder_unsafe` でタスクを断ります。リモートのフォルダはエージェントが作ります。終わったタスクを一覧から外すとき、Herdr はローカルの結果ファイルを消します。リモートのファイルは、リモート側が一時フォルダを掃除するまで残ります。`text` は送ったテキストのままです。タスクが終わると、Herdr は結果ファイルの先頭 64 KiB をタスクの一覧に写します。そのため、一時フォルダが掃除されても、リモートのホストが無くなっても、サーバーを再起動しても結果を読めます。タスクが終わったら、`task.result` が `task_id`・`source`・`path`・`text`・`truncated` を持つ `task_result` を返します。`truncated` は、写しが先頭 64 KiB だけのときに `true` で付きます。写しか結果ファイルを読めたら `source` は `file` です。ファイルを頼んでいないときやエージェントが書かなかったときは、タスクが終わった時点のエージェントのペインの末尾 40 行を返し、`source` は `screen` になります。タスクが動いている間は `task_not_finished`、ファイルが無く、先にペインが閉じたなどで画面も保存されていないときは `task_result_unavailable` で断ります。
 
 ```json
 { "id": "3", "method": "task.result", "params": { "task_id": "t_4" } }
@@ -639,7 +639,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 
 1 つのエージェントのターミナルで同時に動くタスクは 1 つです。後のタスクは順番に待ち、エージェントが `idle` か `done` になると送られます。送信後の状態変化だけを数えるので、前のターンの終わりでタスクが完了することはありません。`evidence` は、その変化を公式インテグレーションのライフサイクルフックが報告したときは `hook`、画面検出が報告したときは `screen` です。`completed` はターンが終わったことだけを示し、作業の正しさは判断しません。`stalled` になったタスクは、遅れて反応があっても戻りません。
 
-`task.wait` は `task_id` と、省略可能な `until`（状態のリスト）と `timeout_ms` を受け取ります。タスクが終わるか `until` の状態になると `task_info` を返し、先に時間が切れると `timeout` を返します。タスク自体は続きます。`task.get` は `task_id` を受け取ります。`task.list` は古い順にタスクを返します。`location` を渡すと、その場所 ID のタスクだけを返します。`ssh:<alias>` はそのホスト経由のコンテナも含みます。`task.cancel` は `task_id` を受け取り、`queued` のタスクにだけ効きます。ほかの状態では `task_already_sent` を返します。不明な ID には `task_not_found` を返します。Herdr は終わったタスクを直近 200 件だけメモリに残し、サーバーが止まるとすべて忘れます。
+`task.wait` は `task_id` と、省略可能な `until`（状態のリスト）と `timeout_ms` を受け取ります。タスクが終わるか `until` の状態になると `task_info` を返し、先に時間が切れると `timeout` を返します。タスク自体は続きます。`task.get` は `task_id` を受け取ります。`task.list` は古い順にタスクを返します。`location` を渡すと、その場所 ID のタスクだけを返します。`ssh:<alias>` はそのホスト経由のコンテナも含みます。`task.cancel` は `task_id` を受け取り、`queued` のタスクにだけ効きます。ほかの状態では `task_already_sent` を返します。不明な ID には `task_not_found` を返します。Herdr は終わったタスクを直近 200 件残し、タスクの一覧を `session.json` と同じフォルダの `tasks.json` に保存します。このファイルは自分のユーザーだけが読めます。そのため、終わったタスクと結果はサーバーを再起動しても残ります。サーバーが止まったときに終わっていなかったタスクは、理由 `the server stopped before the task finished` を持つ `lost` になり、Herdr は送り直しません。更新でペインを止めずにサーバーを入れ替えたときは、エージェントが動き続けるので、新しいサーバーは終わっていないタスクをそのまま引き継ぎます。残っているタスクの `key` で再送すると、そのタスクを返します。
 
 `task.updated` を購読すると、変化のたびに `task` オブジェクトを受け取れます。
 

@@ -31,6 +31,7 @@ mod session;
 mod ssh_hosts;
 pub mod state;
 mod tab_bar_status;
+mod task_save;
 mod terminal_targets;
 mod terminal_titles;
 mod theme_sync;
@@ -82,6 +83,8 @@ pub(crate) struct AppPolicy {
     pub(crate) persist_session: bool,
     pub(crate) persist_plugin_registry: bool,
     pub(crate) background_updates: bool,
+    /// Keeps saved tasks that had not finished: the agents kept running.
+    pub(crate) carry_unfinished_tasks: bool,
 }
 
 impl AppPolicy {
@@ -90,6 +93,7 @@ impl AppPolicy {
         persist_session: true,
         persist_plugin_registry: true,
         background_updates: true,
+        carry_unfinished_tasks: false,
     };
 
     #[cfg(test)]
@@ -98,6 +102,7 @@ impl AppPolicy {
         persist_session: false,
         persist_plugin_registry: false,
         background_updates: false,
+        carry_unfinished_tasks: false,
     };
 
     #[cfg(unix)]
@@ -106,6 +111,7 @@ impl AppPolicy {
         persist_session: true,
         persist_plugin_registry: true,
         background_updates: true,
+        carry_unfinished_tasks: true,
     };
 }
 
@@ -156,6 +162,7 @@ pub struct App {
     next_agent_resume_at: Option<Instant>,
     pub(crate) session_save_deadline: Option<Instant>,
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
+    pub(crate) task_save: task_save::TaskSave,
     session_writer: Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
     pane_exit_checkpoint_pending: bool,
     pub(crate) detached_process_children: Vec<std::process::Child>,
@@ -410,6 +417,9 @@ impl App {
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(crate::render_signal::RenderSignal::new());
 
+        // Why before the session: restored panes find their tasks by terminal id.
+        let (initial_tasks, task_save) =
+            task_save::load_task_table(policy.persist_session, policy.carry_unfinished_tasks);
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
         let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
@@ -546,7 +556,7 @@ impl App {
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
             next_agent_state_change_seq: 0,
-            tasks: crate::tasks::TaskTable::default(),
+            tasks: initial_tasks,
             confirm_close: config.ui.confirm_close,
             pane_borders: config.ui.pane_borders,
             pane_outer_borders: config.ui.pane_outer_borders,
@@ -678,6 +688,7 @@ impl App {
             next_agent_resume_at: None,
             session_save_deadline: None,
             session_save_thread: None,
+            task_save,
             session_writer,
             pane_exit_checkpoint_pending: false,
             detached_process_children: Vec::new(),

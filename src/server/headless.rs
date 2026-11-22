@@ -701,6 +701,7 @@ impl HeadlessServer {
         if self.app.policy.persist_session {
             self.app.save_session_on_shutdown();
         }
+        self.app.save_tasks_now();
 
         info!("headless server exiting");
         Ok(())
@@ -3784,6 +3785,15 @@ impl HeadlessServer {
             .is_some_and(|deadline| now >= deadline)
         {
             self.app.start_background_session_save();
+        }
+
+        if self
+            .app
+            .task_save
+            .deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.app.start_background_task_save();
         }
 
         if let Some(deadline) = self
