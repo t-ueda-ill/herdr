@@ -236,6 +236,20 @@ head -c {cap} "$1"
     )
 }
 
+/// `$1` file, `$2` byte cap. The same tokens as `read_script`, except that a
+/// large file is not refused: only its first `$2` bytes follow `content -`.
+pub(crate) fn read_prefix_script() -> String {
+    r#"
+printf 'HERDR-OFFHOST-1\0'
+if [ ! -e "$1" ]; then printf 'enoent\0'; exit 0; fi
+if [ ! -f "$1" ]; then printf 'notfile\0'; exit 0; fi
+if [ ! -r "$1" ]; then printf 'eacces\0'; exit 0; fi
+printf 'content\0-\0'
+head -c "$2" "$1"
+"#
+    .to_owned()
+}
+
 /// Entries `stat_script` counts before it stops, like the host `files.stat`.
 pub(crate) const STAT_CHILDREN_LIMIT: u64 = crate::files::CHILDREN_LIMIT;
 

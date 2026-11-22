@@ -299,48 +299,65 @@ impl App {
         }
     }
 
-    /// Reads the result file of a task that just finished, so the text stays
-    /// readable after /tmp is cleaned, the host goes away, or herdr restarts.
+    /// Queues a copy of the result file of a task that just finished, so the
+    /// text stays readable after /tmp is cleaned, the host goes away, or
+    /// herdr restarts.
     fn start_result_capture(&mut self, task: TaskId) {
-        if self
-            .state
-            .tasks
-            .get(task)
-            .is_some_and(|task| task.state.is_finished() && task.saved_result.is_none())
-        {
-            self.find_carried_result_place(task);
-        }
-        let Some(read) = self.state.tasks.get(task).and_then(|task| {
-            if !task.state.is_finished() || task.saved_result.is_some() {
-                return None;
-            }
-            super::task_result::FileRead::of(task)
-        }) else {
-            return;
-        };
-        // Why skip when busy: task.result still reads the file until a restart.
-        let Ok(permit) = self.directory_read_slots.clone().try_acquire_owned() else {
-            return;
-        };
-        let event_tx = self.event_tx.clone();
-        let spawned = crate::thread_spawn::spawn_named("herdr-task-capture", move || {
-            let _permit = permit;
-            if let Ok(text) = read.run() {
-                let _ =
-                    event_tx.blocking_send(crate::events::AppEvent::TaskResultRead { task, text });
-            }
+        let wanted = self.state.tasks.get(task).is_some_and(|task| {
+            task.state.is_finished() && task.saved_result.is_none() && task.result_path.is_some()
         });
-        if let Err(err) = spawned {
-            tracing::warn!(err = %err, "failed to spawn task result capture thread");
+        if !wanted {
+            return;
+        }
+        self.find_carried_result_place(task);
+        self.task_captures.enqueue(task);
+        self.pump_result_captures();
+    }
+
+    /// Starts queued copies while fewer than the limit run.
+    pub(crate) fn pump_result_captures(&mut self) {
+        while let Some(task) = self.task_captures.next_to_start() {
+            let Some(read) = self
+                .state
+                .tasks
+                .get(task)
+                .filter(|task| task.saved_result.is_none())
+                .and_then(super::task_result::FileRead::of)
+            else {
+                continue;
+            };
+            let event_tx = self.event_tx.clone();
+            let spawned = crate::thread_spawn::spawn_named("herdr-task-capture", move || {
+                let cap = crate::tasks::record::SAVED_RESULT_LIMIT as u64 + 1;
+                let result = read.run_prefix(cap);
+                let _ = event_tx
+                    .blocking_send(crate::events::AppEvent::TaskResultRead { task, result });
+            });
+            match spawned {
+                Ok(_) => self.task_captures.started(),
+                Err(err) => {
+                    tracing::warn!(err = %err, "failed to spawn task result capture thread");
+                }
+            }
         }
     }
 
-    pub(crate) fn keep_task_result(&mut self, task: TaskId, text: String) {
-        self.state.tasks.save_result(
-            task,
-            crate::tasks::record::SavedResult::from_file_text(text),
-        );
-        self.schedule_task_save();
+    pub(crate) fn keep_task_result(&mut self, task: TaskId, result: Result<Vec<u8>, String>) {
+        self.task_captures.finished();
+        match result {
+            Ok(bytes) => {
+                self.state
+                    .tasks
+                    .save_result(task, crate::tasks::record::SavedResult::from_prefix(bytes));
+                self.schedule_task_save();
+            }
+            // Why not retry: the agent did not write the file, or the host is
+            // gone; task.result falls back to the screen either way.
+            Err(message) => {
+                tracing::debug!(task = %task.public(), err = %message, "task result not copied");
+            }
+        }
+        self.pump_result_captures();
     }
 
     /// Runs before the next queued task is written, so the tail is this task's.
@@ -1001,6 +1018,26 @@ mod tests {
         assert_eq!(result.source, TaskResultSource::File);
         assert_eq!(result.text, "VERDICT: approve\n");
         assert!(!result.truncated);
+    }
+
+    #[tokio::test]
+    async fn a_result_file_past_the_viewer_limit_is_copied_from_its_start() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit_with("plan", true);
+        fixture.agent_becomes(AgentState::Working);
+        let path = std::path::PathBuf::from(task.result_path.clone().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let size = crate::files::MAX_TEXT_BYTES as usize + 1;
+        std::fs::write(&path, "x".repeat(size)).unwrap();
+        fixture.agent_becomes(AgentState::Idle);
+
+        fixture.wait_for_saved_result(&task.task_id);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(path.parent().unwrap());
+        let result = fixture.result(&task.task_id).expect("task result");
+
+        assert!(result.truncated);
+        assert_eq!(result.text.len(), crate::tasks::record::SAVED_RESULT_LIMIT);
     }
 
     #[tokio::test]

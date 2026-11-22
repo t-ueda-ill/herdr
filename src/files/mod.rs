@@ -43,6 +43,16 @@ pub(crate) fn read(path: &Path) -> Result<String> {
         .map_err(failure)?;
     validate_text(bytes)
 }
+/// The first `cap` bytes of a regular file, whatever its size.
+pub(crate) fn read_prefix(path: &Path, cap: u64) -> Result<Vec<u8>> {
+    let file = crate::platform::open_text_file(path).map_err(failure)?;
+    if !file.metadata().map_err(failure)?.is_file() {
+        return Err(failure("not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(cap).read_to_end(&mut bytes).map_err(failure)?;
+    Ok(bytes)
+}
 pub(crate) const TOO_LARGE_MESSAGE: &str =
     "file exceeds the 8 MiB text limit; open in external editor";
 /// The text checks shared by the host and off-host readers, so a file is

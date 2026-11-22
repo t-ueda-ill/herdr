@@ -71,7 +71,12 @@ impl HeadlessServer {
             self.app.state.selected,
         );
         // Why through the file: the replacement server reads it at start.
-        self.app.save_tasks_now();
+        // Why roll back on failure: a stale file could make the replacement
+        // send a queued prompt that this server already sent.
+        if let Err(err) = self.app.save_tasks_for_handoff() {
+            self.rollback_handoff_before_commit(&socket_path, &paused_terminal_ids);
+            return Err(err);
+        }
 
         let offhost_history = handoff_offhost_history(
             &snapshot,
@@ -288,6 +293,7 @@ impl HeadlessServer {
             }
         }
         self.handoff_in_progress = false;
+        self.app.resume_task_saving();
         let _ = std::fs::remove_file(socket_path);
     }
 

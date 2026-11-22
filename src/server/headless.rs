@@ -701,7 +701,7 @@ impl HeadlessServer {
         if self.app.policy.persist_session {
             self.app.save_session_on_shutdown();
         }
-        self.app.save_tasks_now();
+        self.app.save_tasks_on_shutdown();
 
         info!("headless server exiting");
         Ok(())

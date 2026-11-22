@@ -31,6 +31,7 @@ mod session;
 mod ssh_hosts;
 pub mod state;
 mod tab_bar_status;
+mod task_capture;
 mod task_save;
 mod terminal_targets;
 mod terminal_titles;
@@ -163,6 +164,7 @@ pub struct App {
     pub(crate) session_save_deadline: Option<Instant>,
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
     pub(crate) task_save: task_save::TaskSave,
+    pub(crate) task_captures: task_capture::TaskCaptures,
     session_writer: Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
     pane_exit_checkpoint_pending: bool,
     pub(crate) detached_process_children: Vec<std::process::Child>,
@@ -689,6 +691,7 @@ impl App {
             session_save_deadline: None,
             session_save_thread: None,
             task_save,
+            task_captures: task_capture::TaskCaptures::default(),
             session_writer,
             pane_exit_checkpoint_pending: false,
             detached_process_children: Vec::new(),

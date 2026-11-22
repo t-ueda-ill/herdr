@@ -135,8 +135,8 @@ impl App {
                 self.fail_task_submission(task, reason);
                 return Vec::new();
             }
-            AppEvent::TaskResultRead { task, text } => {
-                self.keep_task_result(task, text);
+            AppEvent::TaskResultRead { task, result } => {
+                self.keep_task_result(task, result);
                 return Vec::new();
             }
             AppEvent::WorktreeRuntimeRestoreFailed {

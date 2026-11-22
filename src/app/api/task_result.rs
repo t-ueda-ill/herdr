@@ -33,6 +33,18 @@ impl FileRead {
         }
     }
 
+    /// The first `cap` bytes, whatever the file size.
+    pub(super) fn run_prefix(self, cap: u64) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Host(path) => crate::files::read_prefix(std::path::Path::new(&path), cap)
+                .map_err(|(_, message)| message),
+            Self::OffHost(target, path) => {
+                super::pane_directory::read_off_host_prefix(&target, &path, cap)
+                    .map_err(|(_, message)| message)
+            }
+        }
+    }
+
     pub(super) fn run(self) -> Result<String, String> {
         match self {
             Self::Host(path) => {

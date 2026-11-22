@@ -68,15 +68,23 @@ pub(crate) struct SavedResult {
 }
 
 impl SavedResult {
-    pub(crate) fn from_file_text(mut text: String) -> Self {
-        let truncated = text.len() > SAVED_RESULT_LIMIT;
+    /// The bytes read from the start of the file, at most one past the limit.
+    pub(crate) fn from_prefix(mut bytes: Vec<u8>) -> Self {
+        let truncated = bytes.len() > SAVED_RESULT_LIMIT;
         if truncated {
-            let mut end = SAVED_RESULT_LIMIT;
-            while !text.is_char_boundary(end) {
-                end -= 1;
+            bytes.truncate(SAVED_RESULT_LIMIT);
+            // Why only an incomplete end: a character the cut split in two
+            // must not turn into a replacement character.
+            if let Err(err) = std::str::from_utf8(&bytes) {
+                if err.error_len().is_none() {
+                    bytes.truncate(err.valid_up_to());
+                }
             }
-            text.truncate(end);
         }
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
+        };
         Self { text, truncated }
     }
 }

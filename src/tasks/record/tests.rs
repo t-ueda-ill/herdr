@@ -217,9 +217,9 @@ fn the_file_records_its_version() {
 
 #[test]
 fn a_long_result_is_cut_at_the_limit_on_a_character_boundary() {
-    let text = "あ".repeat(super::SAVED_RESULT_LIMIT); // 3 bytes each
+    let bytes = "あ".repeat(super::SAVED_RESULT_LIMIT).into_bytes(); // 3 bytes each
 
-    let saved = SavedResult::from_file_text(text);
+    let saved = SavedResult::from_prefix(bytes);
 
     assert!(saved.truncated);
     assert!(saved.text.len() <= super::SAVED_RESULT_LIMIT);
@@ -227,8 +227,23 @@ fn a_long_result_is_cut_at_the_limit_on_a_character_boundary() {
 }
 
 #[test]
+fn a_result_of_exactly_the_limit_is_not_truncated() {
+    let saved = SavedResult::from_prefix(vec![b'a'; super::SAVED_RESULT_LIMIT]);
+
+    assert!(!saved.truncated);
+    assert_eq!(saved.text.len(), super::SAVED_RESULT_LIMIT);
+}
+
+#[test]
+fn bytes_that_are_not_utf8_are_kept_as_replacement_characters() {
+    let saved = SavedResult::from_prefix(vec![b'o', b'k', 0xff]);
+
+    assert_eq!(saved.text, "ok\u{fffd}");
+}
+
+#[test]
 fn a_short_result_is_kept_whole() {
-    let saved = SavedResult::from_file_text("ok".into());
+    let saved = SavedResult::from_prefix(b"ok".to_vec());
 
     assert_eq!(
         saved,

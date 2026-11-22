@@ -9,6 +9,8 @@ use crate::tasks::record::Unfinished;
 
 /// Bounds how late a change reaches the file; one write covers a burst.
 const TASK_SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
+/// How long the last save waits for result copies still being read.
+const CAPTURE_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Default)]
 pub(crate) struct TaskSave {
@@ -16,6 +18,15 @@ pub(crate) struct TaskSave {
     thread: Option<std::thread::JoinHandle<()>>,
     /// False when sessions are not persisted, or a newer herdr owns the file.
     enabled: bool,
+    /// A handoff saved the table for the replacement, which owns the file
+    /// from then on unless the handoff rolls back.
+    handed_off: bool,
+}
+
+impl TaskSave {
+    fn writable(&self) -> bool {
+        self.enabled && !self.handed_off
+    }
 }
 
 /// The table to start with, and whether later changes may be written.
@@ -61,7 +72,7 @@ pub(crate) fn load_task_table(
 
 impl App {
     pub(crate) fn schedule_task_save(&mut self) {
-        if self.task_save.enabled {
+        if self.task_save.writable() {
             self.task_save
                 .deadline
                 .get_or_insert_with(|| Instant::now() + TASK_SAVE_DEBOUNCE);
@@ -84,7 +95,7 @@ impl App {
             return;
         }
         self.task_save.deadline = None;
-        if !self.task_save.enabled {
+        if !self.task_save.writable() {
             return;
         }
         let file = self.state.tasks.to_file();
@@ -106,9 +117,40 @@ impl App {
             let _ = thread.join();
         }
         self.task_save.deadline = None;
-        if self.task_save.enabled {
+        if self.task_save.writable() {
             write_task_file(&self.state.tasks.to_file());
         }
+    }
+
+    #[cfg(unix)]
+    /// Writes the table for the replacement server and stops later writes,
+    /// so this server cannot overwrite what the replacement saves.
+    pub(crate) fn save_tasks_for_handoff(&mut self) -> std::io::Result<()> {
+        self.wait_for_result_captures(CAPTURE_WAIT);
+        if let Some(thread) = self.task_save.thread.take() {
+            let _ = thread.join();
+        }
+        self.task_save.deadline = None;
+        if self.task_save.writable() {
+            crate::persist::tasks::save_tasks(&self.state.tasks.to_file())?;
+        }
+        self.task_save.handed_off = true;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    /// The handoff rolled back: this server owns the file again.
+    pub(crate) fn resume_task_saving(&mut self) {
+        self.task_save.handed_off = false;
+        self.schedule_task_save();
+    }
+
+    /// The last save before the server exits.
+    pub(crate) fn save_tasks_on_shutdown(&mut self) {
+        if self.task_save.writable() {
+            self.wait_for_result_captures(CAPTURE_WAIT);
+        }
+        self.save_tasks_now();
     }
 }
 
@@ -286,13 +328,68 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_handoff_save_that_fails_is_reported() {
+        let _home = ConfigHome::new("handoff-fails");
+        let path = crate::persist::tasks::tasks_path();
+        // A folder where the file belongs makes the rename fail.
+        std::fs::create_dir_all(&path).unwrap();
+        let mut app = app(PERSIST);
+        finish_one_task(&mut app, "plan");
+
+        assert!(app.save_tasks_for_handoff().is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn after_a_handoff_this_server_writes_nothing_more() {
+        let _home = ConfigHome::new("handoff-owner");
+        let mut app = app(PERSIST);
+        finish_one_task(&mut app, "first");
+        app.save_tasks_for_handoff().unwrap();
+        let handed = std::fs::read_to_string(crate::persist::tasks::tasks_path()).unwrap();
+
+        finish_one_task(&mut app, "second");
+        app.schedule_task_save();
+        app.save_tasks_on_shutdown();
+
+        assert!(app.task_save.deadline.is_none());
+        assert_eq!(
+            std::fs::read_to_string(crate::persist::tasks::tasks_path()).unwrap(),
+            handed
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_rolled_back_handoff_saves_again() {
+        let _home = ConfigHome::new("handoff-rollback");
+        let mut app = app(PERSIST);
+        finish_one_task(&mut app, "first");
+        app.save_tasks_for_handoff().unwrap();
+
+        app.resume_task_saving();
+        let second = finish_one_task(&mut app, "second");
+        app.save_tasks_now();
+
+        let reloaded = super::super::App::new(
+            &Config::default(),
+            PERSIST,
+            None,
+            tokio::sync::mpsc::unbounded_channel().1,
+            crate::api::EventHub::default(),
+        );
+        assert!(reloaded.state.tasks.get(second).is_some());
+    }
+
     #[tokio::test]
     async fn a_kept_result_schedules_a_save() {
         let _home = ConfigHome::new("schedule");
         let mut app = app(PERSIST);
         let id = finish_one_task(&mut app, "plan");
 
-        app.keep_task_result(id, "the plan".into());
+        app.keep_task_result(id, Ok(b"the plan".to_vec()));
 
         assert!(app.task_save.deadline.is_some());
     }
