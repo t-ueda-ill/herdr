@@ -123,10 +123,19 @@ impl App {
     }
 
     #[cfg(unix)]
+    /// Lets copies in progress land before the handoff freezes the panes.
+    pub(crate) fn settle_result_captures_for_handoff(&mut self) {
+        if self.task_save.writable() {
+            self.wait_for_result_captures(CAPTURE_WAIT);
+        }
+    }
+
+    #[cfg(unix)]
     /// Writes the table for the replacement server and stops later writes,
     /// so this server cannot overwrite what the replacement saves.
+    /// Why no wait for copies here: handling events now could change panes
+    /// that the transfer snapshot already holds.
     pub(crate) fn save_tasks_for_handoff(&mut self) -> std::io::Result<()> {
-        self.wait_for_result_captures(CAPTURE_WAIT);
         if let Some(thread) = self.task_save.thread.take() {
             let _ = thread.join();
         }
@@ -165,6 +174,8 @@ mod tests {
     use crate::api::schema::{AgentStatus, Location, TaskState};
     use crate::app::{App, AppPolicy};
     use crate::config::Config;
+    #[cfg(unix)]
+    use crate::events::AppEvent;
     use crate::tasks::{AgentSnapshot, NewTask, Now, ResultPlace};
 
     const PERSIST: AppPolicy = AppPolicy {
@@ -339,6 +350,30 @@ mod tests {
         finish_one_task(&mut app, "plan");
 
         assert!(app.save_tasks_for_handoff().is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_handoff_save_leaves_other_events_for_later() {
+        let _home = ConfigHome::new("handoff-events");
+        let mut app = app(PERSIST);
+        let id = finish_one_task(&mut app, "plan");
+        app.task_captures.enqueue(id);
+        let _ = app.task_captures.next_to_start();
+        app.task_captures.started();
+        app.event_tx
+            .try_send(AppEvent::TerminalBell {
+                pane_id: crate::layout::PaneId::from_raw(9999),
+                count: 1,
+            })
+            .unwrap();
+
+        app.save_tasks_for_handoff().unwrap();
+
+        assert!(matches!(
+            app.event_rx.try_recv(),
+            Ok(AppEvent::TerminalBell { .. })
+        ));
     }
 
     #[cfg(unix)]

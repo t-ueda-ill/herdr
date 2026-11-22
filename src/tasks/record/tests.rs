@@ -332,3 +332,11 @@ fn a_handoff_does_not_count_running_tasks_against_the_finished_limit() {
         crate::tasks::FINISHED_TASKS_KEPT + 1
     );
 }
+
+#[test]
+fn invalid_bytes_replaced_past_the_limit_are_cut_and_marked_truncated() {
+    let saved = SavedResult::from_prefix(vec![0xff; super::SAVED_RESULT_LIMIT]);
+
+    assert!(saved.text.len() <= super::SAVED_RESULT_LIMIT);
+    assert!(saved.truncated);
+}

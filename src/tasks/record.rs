@@ -81,10 +81,20 @@ impl SavedResult {
                 }
             }
         }
-        let text = match String::from_utf8(bytes) {
+        let mut text = match String::from_utf8(bytes) {
             Ok(text) => text,
             Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
         };
+        // Why again after decoding: each invalid byte grows to three.
+        let mut truncated = truncated;
+        if text.len() > SAVED_RESULT_LIMIT {
+            let mut end = SAVED_RESULT_LIMIT;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            truncated = true;
+        }
         Self { text, truncated }
     }
 }
