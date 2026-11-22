@@ -14391,6 +14391,13 @@
         },
         "TaskResult": {
           "properties": {
+            "file_error": {
+              "description": "Why the result file was not used, when `source` is `screen`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "path": {
               "type": [
                 "string",

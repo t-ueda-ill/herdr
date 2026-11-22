@@ -137,7 +137,7 @@ pub(super) fn surface() -> PaneSurfaceFrame {
     }
 }
 
-fn frame_rows(frame: &FrameData) -> Vec<String> {
+pub(super) fn frame_rows(frame: &FrameData) -> Vec<String> {
     frame
         .cells
         .chunks(frame.width as usize)

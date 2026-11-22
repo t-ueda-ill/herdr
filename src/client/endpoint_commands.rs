@@ -9,6 +9,8 @@ use crate::protocol::ClientMessage;
 use super::endpoint::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
 use super::shell::ClientShellEndpointError;
 
+/// Request ids of the Go to picker's reads.
+pub(crate) const QUERY_ID_PREFIX: &str = "client-query:";
 const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
 
@@ -73,6 +75,19 @@ impl EndpointCommands {
         self.lanes
             .get(id)
             .is_some_and(|l| l.in_flight.is_some() || !l.queued.is_empty())
+    }
+
+    /// Whether a Go to read is queued or in flight to this endpoint.
+    pub(super) fn has_pending_query(&self, id: &ClientEndpointId) -> bool {
+        self.lanes.get(id).is_some_and(|lane| {
+            lane.in_flight
+                .as_ref()
+                .is_some_and(|command| command.request_id.starts_with(QUERY_ID_PREFIX))
+                || lane
+                    .queued
+                    .iter()
+                    .any(|command| command.request.id.starts_with(QUERY_ID_PREFIX))
+        })
     }
 
     pub(super) fn enqueue(

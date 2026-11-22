@@ -483,6 +483,19 @@ mod tests {
         )
         .expect("new method shapes");
         assert_eq!(added, added_expected, "new filesystem method shapes");
+        // The Go to picker's reads, advertised to the client shell later.
+        assert_eq!(
+            actual.remove("pane.read").as_deref(),
+            Some("85dbb95417f7b04684f24c8fa9dbfa5c7a218c9829bcace71dce17ec03044960")
+        );
+        assert_eq!(
+            actual.remove("task.list").as_deref(),
+            Some("b2c0415f3f23c5ae9bf3cd0d9313a64be0e0e564f78722eb633b2ef886fc7082")
+        );
+        assert_eq!(
+            actual.remove("task.result").as_deref(),
+            Some("1392d5dc85f4b17ccde2529b9e090cba03170ade1bee779a0b5dfcb24e23eb69")
+        );
         assert_eq!(
             actual, expected,
             "an existing endpoint method changed shape; add load-bearing behavior as a new advertised method or explicitly gate new fields"

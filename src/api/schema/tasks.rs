@@ -107,6 +107,9 @@ pub struct TaskResult {
     /// The text is the start of a longer result file.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub truncated: bool,
+    /// Why the result file was not used, when `source` is `screen`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

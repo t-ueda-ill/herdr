@@ -1,6 +1,7 @@
 use super::*;
 
 mod file_viewer_overlay;
+mod goto_preview_overlay;
 mod list_picker_overlay;
 pub(in crate::client::shell) mod menu_widget;
 mod open_picker_overlays;
@@ -21,6 +22,10 @@ pub(crate) struct OverlayRender {
     pub(crate) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(crate) navigator_scrollbar: Rect,
     pub(crate) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
+    /// The preview's "open result" button.
+    pub(crate) navigator_open_result: Rect,
+    pub(crate) goto_result_max_scroll: usize,
+    pub(crate) goto_result_viewport: usize,
     pub(crate) worktree_search: Rect,
     pub(crate) worktree_rows: Vec<(Rect, usize)>,
     pub(crate) file_viewer_popup: Rect,
@@ -60,6 +65,7 @@ pub(crate) fn render_client_overlay(
     if !matches!(
         o,
         ClientShellOverlay::Navigator(_)
+            | ClientShellOverlay::GotoResult(_)
             | ClientShellOverlay::ContextMenu(_)
             | ClientShellOverlay::GlobalMenu(_)
             | ClientShellOverlay::NewWorkspaceMenu(_)
@@ -87,6 +93,9 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, p),
         ClientShellOverlay::Navigator(v) => {
             render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
+        }
+        ClientShellOverlay::GotoResult(v) => {
+            goto_preview_overlay::render_goto_result_overlay(b, v, p)
         }
         ClientShellOverlay::Settings(v) => {
             settings_overlay::render_settings_overlay(b, v, s.integration_updates_available, p)
@@ -785,7 +794,13 @@ fn render_navigator_overlay(
         &"─".repeat(i.width as usize),
         Style::default().fg(p.surface1).bg(p.panel_bg),
     );
-    let body = Rect::new(i.x, i.y + 2, i.width, i.height.saturating_sub(5));
+    let list_width = goto_preview_overlay::list_width(i.width);
+    let body = Rect::new(
+        i.x,
+        i.y + 2,
+        list_width.unwrap_or(i.width),
+        i.height.saturating_sub(5),
+    );
     let selected = super::aggregate_navigation::navigator_selected_index(&rows, n).unwrap_or(0);
     let max = rows.len().saturating_sub(body.height as usize);
     let scroll = n
@@ -988,6 +1003,29 @@ fn render_navigator_overlay(
     if let Some(track) = scrollbar {
         crate::ui::render_scrollbar_buffer(b, metrics, track, p.overlay0, p.overlay1, "▐");
     }
+    let open_result = match list_width {
+        Some(width) => {
+            let separator = Style::default().fg(p.surface1).bg(p.panel_bg);
+            for y in body.y..body.bottom() {
+                put_text(b, i.x + width, y, 1, "│", separator);
+            }
+            let preview = Rect::new(
+                i.x + width + 2,
+                body.y,
+                i.width.saturating_sub(width + 2),
+                body.height,
+            );
+            goto_preview_overlay::render_goto_preview(
+                b,
+                preview,
+                n,
+                rows.get(selected),
+                endpoints,
+                p,
+            )
+        }
+        None => Rect::default(),
+    };
     if let Some(r) = rows.get(selected) {
         put_text(
             b,
@@ -1013,6 +1051,8 @@ fn render_navigator_overlay(
         i.width,
         if n.search_focused {
             " search type · move ↑↓/ctrl+n/p · open enter · back esc"
+        } else if list_width.is_some() {
+            " ↑↓/j/k rows · ←→ workspace · / search · a/b/w/i/d filter · space result · enter open · esc close"
         } else {
             " ↑↓/j/k rows · ←→ workspace · / search · a/b/w/i/d filter · enter open · esc close"
         },
@@ -1028,6 +1068,7 @@ fn render_navigator_overlay(
         navigator_rows: row_hits,
         navigator_scrollbar: scrollbar.unwrap_or_default(),
         navigator_scroll_metrics: Some(metrics),
+        navigator_open_result: open_result,
         worktree_search: Rect::default(),
         worktree_rows: Vec::new(),
         cursor,

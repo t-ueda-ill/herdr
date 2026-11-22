@@ -1814,6 +1814,15 @@ impl ClientShellState {
             }
             return;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::GotoResult(_))) {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => self.scroll_goto_result(-3),
+                MouseEventKind::ScrollDown => self.scroll_goto_result(3),
+                _ => return,
+            }
+            outcome.repaint = true;
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {
             let row_hit = self
                 .hits
@@ -1833,7 +1842,9 @@ impl ClientShellState {
                     }
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
-                    if super::contains(self.hits.navigator_scrollbar, point) {
+                    if super::contains(self.hits.navigator_open_result, point) {
+                        outcome.repaint |= self.open_goto_result();
+                    } else if super::contains(self.hits.navigator_scrollbar, point) {
                         if let Some(metrics) = self.hits.navigator_scroll_metrics {
                             if let Some(grab_row_offset) = crate::ui::scrollbar_thumb_grab_offset(
                                 metrics,

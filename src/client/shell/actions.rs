@@ -503,6 +503,9 @@ impl ClientShellState {
     }
 
     pub(crate) fn cancel_endpoint_request(&mut self, request_id: &str) -> bool {
+        if self.is_endpoint_query(request_id) {
+            return self.cancel_endpoint_query(request_id);
+        }
         let Some(pending) = self.pending_requests.get(request_id) else {
             return false;
         };

@@ -59,6 +59,37 @@ pub(super) fn dispatch_client_shell_actions(
                     repaint |= shell.cancel_endpoint_request(&request.id);
                 }
             }
+            shell::ClientShellAction::EndpointQuery {
+                endpoint_id,
+                boot_id,
+                request,
+            } => {
+                // Why not the gate above: a read needs no surface, and the
+                // server it asks may not be the active one.
+                let request_id = request.id.clone();
+                let cancelled = match endpoints.connection(&endpoint_id) {
+                    Some(connection) => {
+                        endpoint_commands.enqueue(
+                            endpoint_id.clone(),
+                            connection.generation,
+                            boot_id,
+                            request,
+                        );
+                        // The active lane drains below, after its other actions.
+                        if endpoints.active_id() == &endpoint_id {
+                            Vec::new()
+                        } else {
+                            endpoint_commands.send_next(&endpoint_id, endpoints)
+                        }
+                    }
+                    None => vec![request_id],
+                };
+                if let Some(shell) = shell.as_deref_mut() {
+                    for request_id in cancelled {
+                        repaint |= shell.cancel_endpoint_request(&request_id);
+                    }
+                }
+            }
             shell::ClientShellAction::FileSearchCancel { boot_id, params } => {
                 let request = crate::api::schema::Request {
                     id: format!("files-cancel:{}:{}", params.search_id, params.generation),
@@ -270,6 +301,26 @@ pub(super) fn take_ready_local_activation(
         })
 }
 
+/// How long a selection waits for a Go to read on its server.
+const QUERY_ACTIVATION_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+pub(super) fn take_ready_query_activation(
+    state: &mut ClientState,
+    endpoint_commands: &endpoint_commands::EndpointCommands,
+    now: std::time::Instant,
+) -> Option<ClientLoopEvent> {
+    let (intent, deadline) = state.deferred_query_activation.as_ref()?;
+    if endpoint_commands.has_pending_query(&intent.endpoint_id) && now < *deadline {
+        return None;
+    }
+    let (intent, _) = state.deferred_query_activation.take()?;
+    Some(ClientLoopEvent::ActivateEndpoint {
+        endpoint_id: intent.endpoint_id,
+        target: intent.target,
+        force: false,
+    })
+}
+
 pub(super) fn begin_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
@@ -350,6 +401,23 @@ pub(super) fn begin_endpoint_activation(
                 }
             }
         }
+        return Ok(());
+    }
+    // Why wait: the activation sends its focus beside the command lane, and
+    // the server refuses it as busy while a Go to read is in flight there.
+    let deadline = state
+        .deferred_query_activation
+        .take()
+        .filter(|(intent, _)| intent.endpoint_id == endpoint_id)
+        .map_or(now + QUERY_ACTIVATION_WAIT, |(_, deadline)| deadline);
+    if endpoint_commands.has_pending_query(&endpoint_id) && now < deadline {
+        state.deferred_query_activation = Some((
+            endpoint::EndpointActivationIntent {
+                endpoint_id,
+                target,
+            },
+            deadline,
+        ));
         return Ok(());
     }
     let Some(shell) = state.shell.as_ref() else {

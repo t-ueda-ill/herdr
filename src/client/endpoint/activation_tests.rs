@@ -1803,3 +1803,109 @@ fn resize_message_preserves_the_latest_surface_dimensions() {
         Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 })
     );
 }
+
+#[test]
+fn a_selection_waits_for_a_go_to_read_on_its_server() {
+    use crate::client::{
+        endpoint_commands::EndpointCommands,
+        shell_runtime::{begin_endpoint_activation, take_ready_query_activation},
+        ClientLoopEvent, ClientState,
+    };
+    let (shell, mut endpoints, _local_sent, remote_sent) = shell_and_registry();
+    let mut state = ClientState::test_new();
+    state.shell = Some(shell);
+    let mut commands = EndpointCommands::default();
+    commands.enqueue(
+        endpoint(),
+        1,
+        "remote-boot".into(),
+        Box::new(crate::api::schema::Request {
+            id: "client-query:1".into(),
+            method: crate::api::schema::Method::TaskList(Default::default()),
+        }),
+    );
+    let mut pending = None;
+    let mut serial = 40;
+    let mut scheduled = None;
+    let now = Instant::now();
+
+    begin_endpoint_activation(
+        &mut state,
+        &mut endpoints,
+        &mut commands,
+        &mut pending,
+        &mut serial,
+        endpoint(),
+        None,
+        false,
+        now,
+        &mut scheduled,
+    )
+    .unwrap();
+
+    assert!(pending.is_none());
+    assert!(remote_sent.lock().unwrap().is_empty());
+    assert!(take_ready_query_activation(&mut state, &commands, now).is_none());
+    let resumed = take_ready_query_activation(&mut state, &commands, now + Duration::from_secs(3));
+    assert!(matches!(
+        resumed,
+        Some(ClientLoopEvent::ActivateEndpoint { endpoint_id, .. }) if endpoint_id == endpoint()
+    ));
+}
+
+#[test]
+fn a_selection_resumes_once_the_read_is_answered() {
+    use crate::client::{
+        endpoint_commands::EndpointCommands, shell_runtime::take_ready_query_activation,
+        ClientState,
+    };
+    let mut state = ClientState::test_new();
+    state.deferred_query_activation = Some((
+        EndpointActivationIntent {
+            endpoint_id: endpoint(),
+            target: None,
+        },
+        Instant::now() + Duration::from_secs(3),
+    ));
+
+    let resumed =
+        take_ready_query_activation(&mut state, &EndpointCommands::default(), Instant::now());
+
+    assert!(resumed.is_some());
+    assert!(state.deferred_query_activation.is_none());
+}
+
+#[test]
+fn a_go_to_read_goes_to_a_server_that_is_not_active() {
+    use crate::client::{
+        endpoint_commands::EndpointCommands, shell_runtime::dispatch_client_shell_actions,
+    };
+    let (mut shell, mut endpoints, _local_sent, remote_sent) = shell_and_registry();
+    let mut commands = EndpointCommands::default();
+    let mut scheduled = None;
+
+    dispatch_client_shell_actions(
+        vec![crate::client::shell::ClientShellAction::EndpointQuery {
+            endpoint_id: endpoint(),
+            boot_id: "remote-boot".into(),
+            request: Box::new(crate::api::schema::Request {
+                id: "client-query:1".into(),
+                method: crate::api::schema::Method::TaskList(Default::default()),
+            }),
+        }],
+        &mut commands,
+        &mut endpoints,
+        Some(&mut shell),
+        &mut Vec::new(),
+        &mut scheduled,
+    )
+    .unwrap();
+
+    let sent = remote_sent.lock().unwrap();
+    assert!(matches!(
+        sent.as_slice(),
+        [crate::protocol::ClientMessage::ClientShellEndpointRequest { request, .. }]
+            if request.contains("task.list")
+    ));
+    assert!(commands.has_pending(&endpoint()));
+}
