@@ -125,7 +125,9 @@ impl ClientShellState {
             EndpointQueryKind::Preview(read) => {
                 self.receive_goto_preview(endpoint_id, read, result)
             }
-            EndpointQueryKind::FullView(read) => self.receive_goto_result(read, result),
+            EndpointQueryKind::FullView(read) => {
+                self.receive_goto_result(endpoint_id, read, result)
+            }
         }
     }
 

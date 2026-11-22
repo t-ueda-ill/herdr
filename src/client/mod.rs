@@ -497,7 +497,6 @@ async fn run_client_loop(
         repaint_pending: false,
         presentation_frozen: false,
         deferred_local_activation: None,
-        deferred_query_activation: None,
         draw_host_cursor,
         detached_process_children: Vec::new(),
         uploads: upload::runtime::UploadRuntime::new(config.upload_settings),

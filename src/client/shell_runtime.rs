@@ -309,11 +309,17 @@ pub(super) fn take_ready_query_activation(
     endpoint_commands: &endpoint_commands::EndpointCommands,
     now: std::time::Instant,
 ) -> Option<ClientLoopEvent> {
-    let (intent, deadline) = state.deferred_query_activation.as_ref()?;
-    if endpoint_commands.has_pending_query(&intent.endpoint_id) && now < *deadline {
+    let shell = state.shell.as_mut()?;
+    let intent = shell.deferred_query_activation.as_ref()?;
+    let deadline = shell
+        .query_activation_deadline
+        .as_ref()
+        .filter(|(endpoint_id, _)| *endpoint_id == intent.endpoint_id)
+        .map_or(now, |(_, deadline)| *deadline);
+    if endpoint_commands.has_pending_query(&intent.endpoint_id) && now < deadline {
         return None;
     }
-    let (intent, _) = state.deferred_query_activation.take()?;
+    let intent = shell.deferred_query_activation.take()?;
     Some(ClientLoopEvent::ActivateEndpoint {
         endpoint_id: intent.endpoint_id,
         target: intent.target,
@@ -343,6 +349,12 @@ pub(super) fn begin_endpoint_activation(
         return Ok(());
     }
     state.deferred_local_activation = None;
+    // Why first: every selection, whichever branch it takes below, replaces
+    // one that waits for a Go to read.
+    let query_deadline = state.shell.as_mut().and_then(|shell| {
+        shell.deferred_query_activation = None;
+        shell.query_activation_deadline.take()
+    });
     if endpoint_id.is_local() && !local_activation_metadata_ready(state, endpoints) {
         state.deferred_local_activation = Some(endpoint::EndpointActivationIntent {
             endpoint_id,
@@ -405,19 +417,17 @@ pub(super) fn begin_endpoint_activation(
     }
     // Why wait: the activation sends its focus beside the command lane, and
     // the server refuses it as busy while a Go to read is in flight there.
-    let deadline = state
-        .deferred_query_activation
-        .take()
-        .filter(|(intent, _)| intent.endpoint_id == endpoint_id)
+    let deadline = query_deadline
+        .filter(|(waiting, _)| *waiting == endpoint_id)
         .map_or(now + QUERY_ACTIVATION_WAIT, |(_, deadline)| deadline);
     if endpoint_commands.has_pending_query(&endpoint_id) && now < deadline {
-        state.deferred_query_activation = Some((
-            endpoint::EndpointActivationIntent {
+        if let Some(shell) = state.shell.as_mut() {
+            shell.query_activation_deadline = Some((endpoint_id.clone(), deadline));
+            shell.deferred_query_activation = Some(endpoint::EndpointActivationIntent {
                 endpoint_id,
                 target,
-            },
-            deadline,
-        ));
+            });
+        }
         return Ok(());
     }
     let Some(shell) = state.shell.as_ref() else {

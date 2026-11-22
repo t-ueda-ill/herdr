@@ -110,13 +110,14 @@ pub(super) fn render_goto_preview(
             {
                 None | Some(PreviewBody::Loading) => lines.put("loading…", dim),
                 Some(PreviewBody::Unavailable(message)) => lines.put(message, dim),
-                Some(PreviewBody::Text { source, text, note }) => {
-                    let label = match source {
-                        PreviewSource::ResultFile => "result file",
-                        PreviewSource::ScreenTail => "screen tail",
-                    };
+                Some(PreviewBody::Text {
+                    source,
+                    text,
+                    note,
+                    truncated,
+                }) => {
                     lines.put_pair(
-                        label,
+                        &source_label(*source, *truncated),
                         dim,
                         note.as_deref().unwrap_or_default(),
                         dim.add_modifier(Modifier::DIM),
@@ -214,6 +215,19 @@ impl<'a> Lines<'a> {
         for line in shown {
             self.put(line, style);
         }
+    }
+}
+
+/// `result file`, or `result file · first 64 KiB` for a cut copy.
+fn source_label(source: PreviewSource, truncated: bool) -> String {
+    let label = match source {
+        PreviewSource::ResultFile => "result file",
+        PreviewSource::ScreenTail => "screen tail",
+    };
+    if truncated {
+        format!("{label} · first 64 KiB")
+    } else {
+        label.to_owned()
     }
 }
 
@@ -397,14 +411,16 @@ pub(super) fn render_goto_result_overlay(
     match &v.body {
         PreviewBody::Loading => lines.push(("loading…".into(), dim)),
         PreviewBody::Unavailable(message) => lines.push((message.clone(), dim)),
-        PreviewBody::Text { source, text, note } => {
-            let label = match source {
-                PreviewSource::ResultFile => "result file",
-                PreviewSource::ScreenTail => "screen tail",
-            };
+        PreviewBody::Text {
+            source,
+            text,
+            note,
+            truncated,
+        } => {
+            let label = source_label(*source, *truncated);
             let label = match note {
                 Some(note) => format!("{label} · {note}"),
-                None => label.to_owned(),
+                None => label,
             };
             lines.push((label, dim));
             lines.push((

@@ -69,7 +69,10 @@ pub(super) struct GotoTasks {
 
 #[derive(Debug)]
 struct GotoTaskList {
-    requested_at: Instant,
+    /// When it was sent, then when it was answered. Why the answer too: a
+    /// slow server would otherwise look stale on arrival and keep the
+    /// single query slot from the other read.
+    fresh_at: Instant,
     pending: bool,
     /// `None` until the first answer.
     by_pane: Option<HashMap<String, TaskInfo>>,
@@ -77,7 +80,8 @@ struct GotoTaskList {
 
 #[derive(Clone, Debug)]
 pub(super) struct GotoPreview {
-    requested_at: Instant,
+    /// When it was sent, then when it was answered, as for the list.
+    fresh_at: Instant,
     pending: bool,
     /// The finished task the text came from. Why kept: a result does not
     /// change, so it is not read again.
@@ -93,6 +97,8 @@ pub(super) enum PreviewBody {
         text: String,
         /// Why the result file was not used.
         note: Option<String>,
+        /// The text is the start of a longer result.
+        truncated: bool,
     },
     /// The server is offline, too old, or answered with an error.
     Unavailable(String),
@@ -135,7 +141,7 @@ impl GotoTasks {
 
     fn list_due(&self, endpoint_id: &ClientEndpointId, now: Instant) -> bool {
         self.lists.get(endpoint_id).is_none_or(|list| {
-            !list.pending && now.saturating_duration_since(list.requested_at) >= PREVIEW_TTL
+            !list.pending && now.saturating_duration_since(list.fresh_at) >= PREVIEW_TTL
         })
     }
 
@@ -151,7 +157,7 @@ impl GotoTasks {
         if preview.pending {
             return false;
         }
-        let expired = now.saturating_duration_since(preview.requested_at) >= PREVIEW_TTL;
+        let expired = now.saturating_duration_since(preview.fresh_at) >= PREVIEW_TTL;
         match read.task_id() {
             Some(task_id) => {
                 preview.task_id.as_deref() != Some(task_id)
@@ -166,11 +172,11 @@ impl GotoTasks {
             .lists
             .entry(endpoint_id.clone())
             .or_insert(GotoTaskList {
-                requested_at: now,
+                fresh_at: now,
                 pending: true,
                 by_pane: None,
             });
-        list.requested_at = now;
+        list.fresh_at = now;
         list.pending = true;
     }
 
@@ -179,7 +185,7 @@ impl GotoTasks {
         self.lists.insert(
             endpoint_id.clone(),
             GotoTaskList {
-                requested_at: now,
+                fresh_at: now,
                 pending: false,
                 by_pane: Some(HashMap::new()),
             },
@@ -196,7 +202,7 @@ impl GotoTasks {
             .previews
             .entry((endpoint_id.clone(), read.pane_id().to_owned()))
             .or_insert(GotoPreview {
-                requested_at: now,
+                fresh_at: now,
                 pending: true,
                 task_id: None,
                 body: PreviewBody::Loading,
@@ -206,7 +212,7 @@ impl GotoTasks {
         if preview.task_id.as_deref() != read.task_id() {
             preview.body = PreviewBody::Loading;
         }
-        preview.requested_at = now;
+        preview.fresh_at = now;
         preview.pending = true;
         preview.task_id = read.task_id().map(str::to_owned);
     }
@@ -221,7 +227,7 @@ impl GotoTasks {
         self.previews.insert(
             (endpoint_id.clone(), pane_id.to_owned()),
             GotoPreview {
-                requested_at: now,
+                fresh_at: now,
                 pending: false,
                 task_id: None,
                 body: PreviewBody::Unavailable(message.to_owned()),
@@ -233,11 +239,13 @@ impl GotoTasks {
         &mut self,
         endpoint_id: &ClientEndpointId,
         tasks: Option<Vec<TaskInfo>>,
+        now: Instant,
     ) {
         let Some(list) = self.lists.get_mut(endpoint_id) else {
             return;
         };
         list.pending = false;
+        list.fresh_at = now;
         match tasks {
             Some(tasks) => list.by_pane = Some(newest_task_by_pane(tasks)),
             // Why an empty list on failure: the screens still show.
@@ -252,6 +260,7 @@ impl GotoTasks {
         endpoint_id: &ClientEndpointId,
         read: &GotoPreviewRead,
         body: PreviewBody,
+        now: Instant,
     ) {
         let Some(preview) = self
             .previews
@@ -263,6 +272,7 @@ impl GotoTasks {
             return;
         }
         preview.pending = false;
+        preview.fresh_at = now;
         preview.body = body;
     }
 }
@@ -276,11 +286,14 @@ fn newest_task_by_pane(tasks: Vec<TaskInfo>) -> HashMap<String, TaskInfo> {
             .strip_prefix("t_")
             .and_then(|number| number.parse::<u64>().ok())
             .unwrap_or_default();
-        (
-            !task.state.is_finished(),
-            task.finished_at_ms.unwrap_or_default(),
-            number,
-        )
+        // Why three groups: a queued task is not sent yet, so the one the
+        // agent works on, or waits on input for, is the one to show.
+        let group = match task.state {
+            state if state.is_finished() => 0,
+            crate::api::schema::TaskState::Queued => 1,
+            _ => 2,
+        };
+        (group, task.finished_at_ms.unwrap_or_default(), number)
     };
     let mut by_pane: HashMap<String, TaskInfo> = HashMap::new();
     for task in tasks {
@@ -420,7 +433,7 @@ impl ClientShellState {
             Ok(ResponseResult::TaskList { tasks }) => Some(tasks),
             _ => None,
         };
-        goto.receive_list(endpoint_id, tasks);
+        goto.receive_list(endpoint_id, tasks, Instant::now());
         true
     }
 
@@ -456,13 +469,14 @@ impl ClientShellState {
 
     pub(super) fn receive_goto_result(
         &mut self,
+        endpoint_id: &ClientEndpointId,
         read: GotoPreviewRead,
         result: Result<ResponseResult, ClientShellEndpointError>,
     ) -> bool {
         let Some(ClientShellOverlay::GotoResult(viewer)) = self.overlay.as_mut() else {
             return false;
         };
-        if viewer.read != read {
+        if &viewer.endpoint_id != endpoint_id || viewer.read != read {
             return false;
         }
         viewer.pending = false;
@@ -479,7 +493,7 @@ impl ClientShellState {
         let Some(goto) = self.goto_tasks_mut() else {
             return false;
         };
-        goto.receive_preview(endpoint_id, &read, preview_body(result));
+        goto.receive_preview(endpoint_id, &read, preview_body(result), Instant::now());
         true
     }
 }
@@ -490,6 +504,7 @@ fn preview_body(result: Result<ResponseResult, ClientShellEndpointError>) -> Pre
             source: PreviewSource::ScreenTail,
             text: read.text,
             note: None,
+            truncated: false,
         },
         Ok(ResponseResult::TaskResult { result }) => PreviewBody::Text {
             source: match result.source {
@@ -498,6 +513,7 @@ fn preview_body(result: Result<ResponseResult, ClientShellEndpointError>) -> Pre
             },
             text: result.text,
             note: result.file_error,
+            truncated: result.truncated,
         },
         Ok(_) => PreviewBody::Unavailable("unexpected answer".into()),
         Err(error) => PreviewBody::Unavailable(error.message),

@@ -109,8 +109,20 @@ impl ClientShellState {
         match code {
             KeyCode::Esc => self.close_goto_result(),
             KeyCode::Enter => {
-                self.close_goto_result();
-                self.accept_navigator_selection(outcome);
+                // Why the stored pane: the picker's filter may no longer
+                // list it.
+                let Some(ClientShellOverlay::GotoResult(viewer)) = self.overlay.as_ref() else {
+                    return true;
+                };
+                let endpoint_id = viewer.endpoint_id.clone();
+                let pane_id = viewer.pane_id.clone();
+                if self.focus_or_activate(
+                    endpoint_id,
+                    ClientEndpointFocusTarget::Pane(pane_id),
+                    outcome,
+                ) {
+                    self.overlay = None;
+                }
             }
             KeyCode::Down | KeyCode::Char('j') if !control => self.scroll_goto_result(1),
             KeyCode::Up | KeyCode::Char('k') if !control => self.scroll_goto_result(-1),

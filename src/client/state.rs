@@ -77,10 +77,6 @@ pub(super) struct ClientState {
     pub(super) presentation_frozen: bool,
     /// Latest explicit Local selection awaiting this client's replacement Local connection.
     pub(super) deferred_local_activation: Option<endpoint::EndpointActivationIntent>,
-    /// A selection waiting for a Go to read on its server to finish, with
-    /// the time it stops waiting.
-    pub(super) deferred_query_activation:
-        Option<(endpoint::EndpointActivationIntent, std::time::Instant)>,
     /// Dropped-file uploads: the pending check, the worker, and the transfer.
     pub(super) uploads: upload::runtime::UploadRuntime,
     /// Downloads from the file workbench: the transfer and its writer thread.
@@ -146,7 +142,6 @@ impl ClientState {
             repaint_pending: false,
             presentation_frozen: false,
             deferred_local_activation: None,
-            deferred_query_activation: None,
             draw_host_cursor: false,
             detached_process_children: Vec::new(),
             uploads: upload::runtime::UploadRuntime::new(upload::UploadSettings::from_config(

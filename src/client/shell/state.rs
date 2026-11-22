@@ -1398,6 +1398,11 @@ pub(crate) struct ClientShellState {
     pub(super) investigation_hits: investigation::Hits,
     pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
     pub(super) endpoint_queries: HashMap<String, super::endpoint_queries::PendingEndpointQuery>,
+    /// A selection waiting for a Go to read on its server to finish.
+    pub(crate) deferred_query_activation: Option<crate::client::endpoint::EndpointActivationIntent>,
+    /// When that wait ends. Why apart from the intent: the retried
+    /// activation keeps the first deadline.
+    pub(crate) query_activation_deadline: Option<(ClientEndpointId, std::time::Instant)>,
     pub(super) pending_integration_installs: usize,
     pub(super) pending_notifications: Vec<ClientPendingNotification>,
     pub(super) visible_notification: Option<ClientVisibleNotification>,
@@ -1587,6 +1592,8 @@ impl ClientShellState {
             investigation_hits: investigation::Hits::default(),
             pending_requests: HashMap::new(),
             endpoint_queries: HashMap::new(),
+            deferred_query_activation: None,
+            query_activation_deadline: None,
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),
             visible_notification: None,

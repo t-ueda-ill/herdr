@@ -4,7 +4,7 @@ use super::*;
 use crate::api::schema::{Request, TaskInfo};
 use crate::client::shell::tests::snapshot;
 
-const READS: [&str; 3] = ["pane.read", "task.list", "task.result"];
+const READS: [&str; 4] = ["pane.focus", "pane.read", "task.list", "task.result"];
 
 fn picker(methods: &[&str]) -> ClientShellState {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(
@@ -153,6 +153,7 @@ fn a_pane_with_a_running_task_previews_its_screen() {
             source: PreviewSource::ScreenTail,
             text: "$ cargo test".into(),
             note: None,
+            truncated: false,
         })
     );
 }
@@ -164,9 +165,10 @@ fn a_screen_is_read_again_after_two_seconds_and_keeps_its_text_meanwhile() {
     let now = Instant::now();
     let read = sync(&mut state, now);
     answer(&mut state, &read[0], screen("old"));
+    let answered = Instant::now();
 
-    let soon = sync(&mut state, now + Duration::from_millis(500));
-    let later = sync(&mut state, now + PREVIEW_TTL);
+    let soon = sync(&mut state, answered + Duration::from_millis(500));
+    let later = sync(&mut state, answered + PREVIEW_TTL);
 
     assert!(soon.is_empty());
     assert_eq!(method_names(&later), ["pane.read"]);
@@ -184,6 +186,7 @@ fn a_result_is_not_read_again() {
     navigator.tasks.receive_list(
         &ClientEndpointId::Local,
         Some(vec![task("t_1", "completed", Some(5))]),
+        now,
     );
     select_pane(&mut state);
     let read = sync(&mut state, now);
@@ -204,6 +207,7 @@ fn a_result_is_not_read_again() {
             source: PreviewSource::ScreenTail,
             text: "tail".into(),
             note: Some("not found".into()),
+            truncated: false,
         })
     );
 }
@@ -459,4 +463,113 @@ fn the_full_view_shows_the_request_and_the_whole_result() {
     assert!(text.contains("review the diff"), "{text}");
     assert!(text.contains("VERDICT: approve"), "{text}");
     assert!(text.contains("esc back"), "{text}");
+}
+
+#[test]
+fn a_pane_shows_the_task_the_agent_works_on_before_a_queued_one() {
+    let tasks = newest_task_by_pane(vec![
+        task("t_1", "running", None),
+        task("t_2", "queued", None),
+    ]);
+
+    assert_eq!(tasks["pane_1"].task_id, "t_1");
+}
+
+#[test]
+fn a_slow_screen_read_leaves_the_list_its_turn() {
+    let local = ClientEndpointId::Local;
+    let read = GotoPreviewRead::Screen {
+        pane_id: "pane_1".into(),
+        lines: 20,
+    };
+    let start = Instant::now();
+    let mut tasks = GotoTasks::default();
+    tasks.list_sent(&local, start);
+    tasks.receive_list(&local, Some(Vec::new()), start);
+    tasks.preview_sent(&local, &read, start);
+    // The screen answers only after the list went stale.
+    let late = start + PREVIEW_TTL + Duration::from_secs(1);
+    tasks.receive_preview(
+        &local,
+        &read,
+        PreviewBody::Text {
+            source: PreviewSource::ScreenTail,
+            text: "slow".into(),
+            note: None,
+            truncated: false,
+        },
+        late,
+    );
+
+    assert!(tasks.list_due(&local, late));
+    assert!(!tasks.preview_due(&local, &read, late));
+}
+
+#[test]
+fn a_cut_result_says_it_shows_only_its_start() {
+    let (mut state, now) = finished_picker();
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+        panic!("picker is open");
+    };
+    navigator.tasks.receive_preview(
+        &ClientEndpointId::Local,
+        &GotoPreviewRead::Result {
+            pane_id: "pane_1".into(),
+            task_id: "t_1".into(),
+        },
+        PreviewBody::Text {
+            source: PreviewSource::ResultFile,
+            text: "VERDICT: approve".into(),
+            note: None,
+            truncated: true,
+        },
+        now,
+    );
+
+    let text = screen_text(&mut state, 120, 30);
+
+    assert!(text.contains("result file · first 64 KiB"), "{text}");
+}
+
+#[test]
+fn the_full_view_ignores_an_answer_from_another_server() {
+    let mut state = picker(&["pane.read"]);
+    select_pane(&mut state);
+    let preview = sync(&mut state, Instant::now());
+    answer(&mut state, &preview[0], screen("local"));
+    state.handle_input_bytes(b" ");
+    let read = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::GotoResult(viewer)) => viewer.read.clone(),
+        _ => panic!("expected the result view"),
+    };
+    let other = ClientEndpointId::Ssh(
+        crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+    );
+
+    let applied = state.receive_goto_result(&other, read, Ok(screen("remote")));
+
+    assert!(!applied);
+    let Some(ClientShellOverlay::GotoResult(viewer)) = state.overlay.as_ref() else {
+        panic!("expected the result view");
+    };
+    assert_eq!(viewer.body, PreviewBody::Loading);
+}
+
+#[test]
+fn enter_in_the_full_view_goes_to_its_pane_even_when_the_filter_hides_it() {
+    let (mut state, _) = finished_picker();
+    state.handle_input_bytes(b" ");
+    let Some(ClientShellOverlay::GotoResult(viewer)) = state.overlay.as_mut() else {
+        panic!("expected the result view");
+    };
+    viewer.navigator.filter = Some(ClientNavigatorFilter::Working);
+
+    let outcome = state.handle_input_bytes(b"\r");
+
+    assert!(state.overlay.is_none());
+    assert!(outcome.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, Method::PaneFocus(target) if target.pane_id == "pane_1")
+    )));
 }

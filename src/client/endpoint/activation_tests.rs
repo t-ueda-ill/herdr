@@ -1805,11 +1805,9 @@ fn resize_message_preserves_the_latest_surface_dimensions() {
 }
 
 #[test]
-fn a_selection_waits_for_a_go_to_read_on_its_server() {
+fn a_selection_waits_for_a_go_to_read_on_its_server_for_three_seconds_at_most() {
     use crate::client::{
-        endpoint_commands::EndpointCommands,
-        shell_runtime::{begin_endpoint_activation, take_ready_query_activation},
-        ClientLoopEvent, ClientState,
+        endpoint_commands::EndpointCommands, shell_runtime::begin_endpoint_activation, ClientState,
     };
     let (shell, mut endpoints, _local_sent, remote_sent) = shell_and_registry();
     let mut state = ClientState::test_new();
@@ -1817,7 +1815,60 @@ fn a_selection_waits_for_a_go_to_read_on_its_server() {
     let mut commands = EndpointCommands::default();
     commands.enqueue(
         endpoint(),
-        1,
+        7,
+        "remote-boot".into(),
+        Box::new(crate::api::schema::Request {
+            id: "client-query:1".into(),
+            method: crate::api::schema::Method::TaskList(Default::default()),
+        }),
+    );
+    let mut pending = None;
+    let mut serial = 40;
+    let mut scheduled = None;
+    let start = Instant::now();
+    let mut select = |state: &mut ClientState, pending: &mut _, at| {
+        begin_endpoint_activation(
+            state,
+            &mut endpoints,
+            &mut commands,
+            pending,
+            &mut serial,
+            endpoint(),
+            None,
+            false,
+            at,
+            &mut scheduled,
+        )
+        .unwrap();
+    };
+
+    select(&mut state, &mut pending, start);
+    assert!(pending.is_none());
+    assert!(remote_sent.lock().unwrap().is_empty());
+
+    // A retry before the deadline keeps the first deadline, not a new one.
+    select(&mut state, &mut pending, start + Duration::from_secs(2));
+    assert!(pending.is_none());
+
+    let at_deadline = start + Duration::from_secs(3);
+    select(&mut state, &mut pending, at_deadline);
+    assert!(pending.is_some(), "the wait must end at the first deadline");
+}
+
+#[test]
+fn a_newer_selection_drops_one_that_waits_for_a_go_to_read() {
+    use crate::client::{
+        endpoint_commands::EndpointCommands,
+        shell_runtime::{begin_endpoint_activation, take_ready_query_activation},
+        ClientState,
+    };
+    let (shell, mut endpoints, _local_sent, _remote_sent) = shell_and_registry();
+    let mut state = ClientState::test_new();
+    state.shell = Some(shell);
+    let mut commands = EndpointCommands::default();
+    commands.enqueue(
+        endpoint(),
+        7,
         "remote-boot".into(),
         Box::new(crate::api::schema::Request {
             id: "client-query:1".into(),
@@ -1828,51 +1879,31 @@ fn a_selection_waits_for_a_go_to_read_on_its_server() {
     let mut serial = 40;
     let mut scheduled = None;
     let now = Instant::now();
+    for target in [endpoint(), ClientEndpointId::Local] {
+        begin_endpoint_activation(
+            &mut state,
+            &mut endpoints,
+            &mut commands,
+            &mut pending,
+            &mut serial,
+            target,
+            None,
+            false,
+            now,
+            &mut scheduled,
+        )
+        .unwrap();
+    }
 
-    begin_endpoint_activation(
-        &mut state,
-        &mut endpoints,
-        &mut commands,
-        &mut pending,
-        &mut serial,
-        endpoint(),
-        None,
-        false,
-        now,
-        &mut scheduled,
-    )
-    .unwrap();
-
-    assert!(pending.is_none());
-    assert!(remote_sent.lock().unwrap().is_empty());
-    assert!(take_ready_query_activation(&mut state, &commands, now).is_none());
-    let resumed = take_ready_query_activation(&mut state, &commands, now + Duration::from_secs(3));
-    assert!(matches!(
-        resumed,
-        Some(ClientLoopEvent::ActivateEndpoint { endpoint_id, .. }) if endpoint_id == endpoint()
-    ));
-}
-
-#[test]
-fn a_selection_resumes_once_the_read_is_answered() {
-    use crate::client::{
-        endpoint_commands::EndpointCommands, shell_runtime::take_ready_query_activation,
-        ClientState,
-    };
-    let mut state = ClientState::test_new();
-    state.deferred_query_activation = Some((
-        EndpointActivationIntent {
-            endpoint_id: endpoint(),
-            target: None,
-        },
-        Instant::now() + Duration::from_secs(3),
-    ));
-
-    let resumed =
-        take_ready_query_activation(&mut state, &EndpointCommands::default(), Instant::now());
-
-    assert!(resumed.is_some());
-    assert!(state.deferred_query_activation.is_none());
+    assert!(state
+        .shell
+        .as_ref()
+        .unwrap()
+        .deferred_query_activation
+        .is_none());
+    assert!(
+        take_ready_query_activation(&mut state, &commands, now + Duration::from_secs(5)).is_none()
+    );
 }
 
 #[test]

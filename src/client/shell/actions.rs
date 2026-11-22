@@ -395,6 +395,9 @@ impl ClientShellState {
             _ => false,
         };
         if changes_focus {
+            // A newer selection wins over one that waits for a Go to read.
+            self.deferred_query_activation = None;
+            self.query_activation_deadline = None;
             self.show_terminal_side();
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
