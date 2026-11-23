@@ -101,7 +101,9 @@ impl ClientShellState {
     pub(super) fn scroll_goto_result(&mut self, delta: isize) {
         let max = self.hits.goto_result_max_scroll;
         if let Some(ClientShellOverlay::GotoResult(viewer)) = self.overlay.as_mut() {
-            viewer.scroll = viewer.scroll.saturating_add_signed(delta).min(max);
+            // Why clamp first: a larger window lowers the limit, and the
+            // first key would otherwise only undo the overshoot.
+            viewer.scroll = viewer.scroll.min(max).saturating_add_signed(delta).min(max);
         }
     }
 

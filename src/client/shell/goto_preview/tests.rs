@@ -725,3 +725,69 @@ fn a_finished_task_on_a_server_without_task_result_shows_not_available() {
     assert!(matches!(body(&state), Some(PreviewBody::Unavailable(_))));
     assert!(!outcome.repaint, "the unavailable state repaints once");
 }
+
+#[test]
+fn the_first_key_after_a_resize_moves_the_full_view() {
+    let (mut state, _) = finished_picker();
+    state.handle_input_bytes(b" ");
+    let Some(ClientShellOverlay::GotoResult(viewer)) = state.overlay.as_mut() else {
+        panic!("expected the result view");
+    };
+    // Scrolled far down in a smaller window; the larger one allows 10.
+    viewer.scroll = 50;
+    state.hits.goto_result_max_scroll = 10;
+
+    state.scroll_goto_result(-1);
+
+    let Some(ClientShellOverlay::GotoResult(viewer)) = state.overlay.as_ref() else {
+        panic!("expected the result view");
+    };
+    assert_eq!(viewer.scroll, 9);
+}
+
+#[test]
+fn an_offline_workspace_row_does_not_count_its_old_agents() {
+    let profile = crate::client::endpoint::SavedSshEndpoint {
+        id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        label: "Remote".into(),
+        target: "dev@example.com".into(),
+        session: "main".into(),
+        enabled: true,
+    };
+    let remote = ClientEndpointId::Ssh(profile.id.clone());
+    let mut state = picker(&[]);
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
+    let mut projection = snapshot();
+    projection.boot_id = "remote-boot".into();
+    projection.agents = vec![crate::protocol::ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: None,
+        display_agent: None,
+        agent: Some("claude".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: crate::api::schema::AgentStatus::Blocked,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    }];
+    state.set_endpoint_snapshot(&remote, Box::new(projection));
+    state.set_endpoint_status(&remote, ClientEndpointStatus::Reconnecting);
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+        panic!("picker is open");
+    };
+    navigator.selected = Some(ClientNavigatorTarget::Workspace {
+        endpoint_id: remote,
+        workspace_id: "ws_1".into(),
+    });
+
+    let text = screen_text(&mut state, 120, 30);
+
+    assert!(!text.contains("1 needs input"), "{text}");
+    assert!(text.contains("not available"), "{text}");
+}

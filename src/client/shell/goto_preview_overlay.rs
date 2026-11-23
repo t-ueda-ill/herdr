@@ -61,8 +61,13 @@ pub(super) fn render_goto_preview(
         } => {
             lines.put(&row.label, base.add_modifier(Modifier::BOLD));
             lines.blank();
-            let agents = endpoint_agents(endpoints, endpoint_id, Some(workspace_id));
-            lines.put(&status_counts(&agents), dim);
+            // Why not the cached snapshot: its counts are stale offline.
+            if row.stale {
+                lines.put("not available", dim);
+            } else {
+                let agents = endpoint_agents(endpoints, endpoint_id, Some(workspace_id));
+                lines.put(&status_counts(&agents), dim);
+            }
             Rect::default()
         }
         ClientNavigatorTarget::Pane {
@@ -479,18 +484,24 @@ pub(super) fn render_goto_result_overlay(
     })
 }
 
-/// Splits a line into pieces at most `width` cells wide.
+/// Splits a line into pieces at most `width` cells wide, between grapheme
+/// clusters so a combining mark stays with its base. A tab becomes four
+/// spaces, since it has no width of its own. A cluster wider than `width`
+/// takes a piece alone.
 fn wrap(line: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation as _;
+
+    let line = line.replace('\t', "    ");
     let mut pieces = Vec::new();
     let mut piece = String::new();
     let mut used = 0;
-    for ch in line.chars() {
-        let cells = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+    for cluster in line.graphemes(true) {
+        let cells = UnicodeWidthStr::width(cluster);
         if used + cells > width && !piece.is_empty() {
             pieces.push(std::mem::take(&mut piece));
             used = 0;
         }
-        piece.push(ch);
+        piece.push_str(cluster);
         used += cells;
     }
     pieces.push(piece);
@@ -518,6 +529,14 @@ mod tests {
             tokens: Vec::new(),
             focused: false,
         }
+    }
+
+    #[test]
+    fn wrapping_keeps_combining_marks_and_tabs_and_splits_wide_text() {
+        assert_eq!(wrap("e\u{301}e\u{301}", 1), ["e\u{301}", "e\u{301}"]);
+        assert_eq!(wrap("a\tb", 3), ["a  ", "  b"]);
+        assert_eq!(wrap("日本語", 4), ["日本", "語"]);
+        assert_eq!(wrap("日", 1), ["日"]);
     }
 
     #[test]
