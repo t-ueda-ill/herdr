@@ -1805,15 +1805,15 @@ fn resize_message_preserves_the_latest_surface_dimensions() {
 }
 
 #[test]
-fn a_selection_waits_for_a_go_to_read_on_its_server_for_three_seconds_at_most() {
+fn a_selection_waits_for_a_go_to_read_and_gives_up_without_switching() {
     use crate::client::{
         endpoint_commands::EndpointCommands, shell_runtime::begin_endpoint_activation, ClientState,
     };
     let (shell, mut endpoints, _local_sent, remote_sent) = shell_and_registry();
     let mut state = ClientState::test_new();
     state.shell = Some(shell);
-    let mut commands = EndpointCommands::default();
-    commands.enqueue(
+    let mut busy = EndpointCommands::default();
+    busy.enqueue(
         endpoint(),
         7,
         "remote-boot".into(),
@@ -1826,33 +1826,51 @@ fn a_selection_waits_for_a_go_to_read_on_its_server_for_three_seconds_at_most() 
     let mut serial = 40;
     let mut scheduled = None;
     let start = Instant::now();
-    let mut select = |state: &mut ClientState, pending: &mut _, at| {
-        begin_endpoint_activation(
-            state,
-            &mut endpoints,
-            &mut commands,
-            pending,
-            &mut serial,
-            endpoint(),
-            None,
-            false,
-            at,
-            &mut scheduled,
-        )
-        .unwrap();
-    };
+    let mut select =
+        |state: &mut ClientState, commands: &mut EndpointCommands, pending: &mut _, at| {
+            begin_endpoint_activation(
+                state,
+                &mut endpoints,
+                commands,
+                pending,
+                &mut serial,
+                endpoint(),
+                None,
+                false,
+                at,
+                &mut scheduled,
+            )
+            .unwrap();
+        };
 
-    select(&mut state, &mut pending, start);
+    select(&mut state, &mut busy, &mut pending, start);
     assert!(pending.is_none());
     assert!(remote_sent.lock().unwrap().is_empty());
 
-    // A retry before the deadline keeps the first deadline, not a new one.
-    select(&mut state, &mut pending, start + Duration::from_secs(2));
+    // A retry keeps the first deadline; past it, the switch is dropped
+    // rather than sent into a busy server.
+    select(
+        &mut state,
+        &mut busy,
+        &mut pending,
+        start + Duration::from_secs(3),
+    );
     assert!(pending.is_none());
+    assert!(state
+        .shell
+        .as_ref()
+        .unwrap()
+        .deferred_query_activation
+        .is_none());
 
-    let at_deadline = start + Duration::from_secs(3);
-    select(&mut state, &mut pending, at_deadline);
-    assert!(pending.is_some(), "the wait must end at the first deadline");
+    let mut idle = EndpointCommands::default();
+    select(
+        &mut state,
+        &mut idle,
+        &mut pending,
+        start + Duration::from_secs(4),
+    );
+    assert!(pending.is_some(), "a free lane lets the selection switch");
 }
 
 #[test]

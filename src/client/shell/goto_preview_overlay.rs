@@ -318,6 +318,7 @@ pub(super) fn status_counts(agents: &[&crate::protocol::ClientShellAgent]) -> St
         (AgentStatus::Working, "working"),
         (AgentStatus::Done, "done"),
         (AgentStatus::Idle, "idle"),
+        (AgentStatus::Unknown, "unknown"),
     ];
     let parts = order
         .iter()
@@ -367,7 +368,7 @@ pub(super) fn render_goto_result_overlay(
         base.fg(p.accent),
     );
 
-    let task = v.navigator.tasks.task(&v.endpoint_id, &v.pane_id);
+    let task = v.task.as_ref();
     let agent_status = v.row.agent.as_ref().and(v.row.status);
     let (glyph, word, color) = pane_state(agent_status, task, p);
     let mut header = Lines::new(b, Rect::new(i.x + 1, i.y, i.width.saturating_sub(2), 1));
@@ -486,6 +487,37 @@ fn wrap(line: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn agent(status: AgentStatus) -> crate::protocol::ClientShellAgent {
+        crate::protocol::ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: None,
+            display_agent: None,
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: status,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        }
+    }
+
+    #[test]
+    fn agents_in_an_unknown_state_are_counted_too() {
+        let unknown = agent(AgentStatus::Unknown);
+        let working = agent(AgentStatus::Working);
+
+        assert_eq!(status_counts(&[&unknown]), "1 unknown");
+        assert_eq!(
+            status_counts(&[&working, &unknown]),
+            "1 working · 1 unknown"
+        );
+    }
 
     #[test]
     fn the_list_keeps_its_state_column_when_the_preview_has_room() {

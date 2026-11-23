@@ -387,7 +387,7 @@ fn the_full_view_of_a_pane_without_a_result_reads_more_of_its_screen() {
         panic!("expected pane.read, got {reads:?}");
     };
     assert_eq!(params.lines, Some(VIEWER_LINES));
-    assert_eq!(params.source, crate::api::schema::ReadSource::Visible);
+    assert_eq!(params.source, crate::api::schema::ReadSource::Detection);
 }
 
 fn screen_text(state: &mut ClientShellState, cols: u16, rows: u16) -> String {
@@ -539,7 +539,7 @@ fn the_full_view_ignores_an_answer_from_another_server() {
     answer(&mut state, &preview[0], screen("local"));
     state.handle_input_bytes(b" ");
     let read = match state.overlay.as_ref() {
-        Some(ClientShellOverlay::GotoResult(viewer)) => viewer.read.clone(),
+        Some(ClientShellOverlay::GotoResult(viewer)) => viewer.read.clone().expect("read"),
         _ => panic!("expected the result view"),
     };
     let other = ClientEndpointId::Ssh(
@@ -572,4 +572,59 @@ fn enter_in_the_full_view_goes_to_its_pane_even_when_the_filter_hides_it() {
         ClientShellAction::Endpoint { request, .. }
             if matches!(&request.method, Method::PaneFocus(target) if target.pane_id == "pane_1")
     )));
+}
+
+#[test]
+fn a_full_view_opened_before_the_task_list_reads_the_result_once_the_list_arrives() {
+    let mut state = picker(&READS);
+    select_pane(&mut state);
+    state.handle_input_bytes(b" ");
+    let now = Instant::now();
+
+    let list = sync(&mut state, now);
+    assert_eq!(method_names(&list), ["task.list"]);
+    answer(
+        &mut state,
+        &list[0],
+        ResponseResult::TaskList {
+            tasks: vec![task("t_1", "completed", Some(5))],
+        },
+    );
+    sync(&mut state, now);
+    let read = sync(&mut state, now);
+
+    assert_eq!(method_names(&read), ["task.result"]);
+}
+
+#[test]
+fn the_full_view_keeps_the_task_it_opened_with() {
+    let (mut state, now) = finished_picker();
+    state.handle_input_bytes(b" ");
+    let Some(ClientShellOverlay::GotoResult(viewer)) = state.overlay.as_mut() else {
+        panic!("expected the result view");
+    };
+    viewer.navigator.tasks.receive_list(
+        &ClientEndpointId::Local,
+        Some(vec![
+            task("t_1", "completed", Some(5)),
+            task("t_2", "running", None),
+        ]),
+        now,
+    );
+
+    let Some(ClientShellOverlay::GotoResult(viewer)) = state.overlay.as_ref() else {
+        panic!("expected the result view");
+    };
+    assert_eq!(
+        viewer.task.as_ref().map(|task| task.task_id.as_str()),
+        Some("t_1")
+    );
+}
+
+#[test]
+fn the_full_view_keeps_ascii_input_like_the_picker() {
+    let (mut state, _) = finished_picker();
+    state.handle_input_bytes(b" ");
+
+    assert!(state.wants_ascii_input());
 }

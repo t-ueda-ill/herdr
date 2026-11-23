@@ -420,13 +420,24 @@ pub(super) fn begin_endpoint_activation(
     let deadline = query_deadline
         .filter(|(waiting, _)| *waiting == endpoint_id)
         .map_or(now + QUERY_ACTIVATION_WAIT, |(_, deadline)| deadline);
-    if endpoint_commands.has_pending_query(&endpoint_id) && now < deadline {
-        if let Some(shell) = state.shell.as_mut() {
+    if endpoint_commands.has_pending_query(&endpoint_id) {
+        let Some(shell) = state.shell.as_mut() else {
+            return Ok(());
+        };
+        if now < deadline {
             shell.query_activation_deadline = Some((endpoint_id.clone(), deadline));
             shell.deferred_query_activation = Some(endpoint::EndpointActivationIntent {
                 endpoint_id,
                 target,
             });
+        } else {
+            // Why not switch anyway: the server would refuse the focus and
+            // roll the switch back; the read on its side cannot be cancelled.
+            let label = shell.endpoint_label(&endpoint_id).to_owned();
+            shell.receive_endpoint_unavailable(format!(
+                "{label} is still answering a read; select it again"
+            ));
+            present_shell_repaint(state);
         }
         return Ok(());
     }

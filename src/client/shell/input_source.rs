@@ -1,7 +1,7 @@
 use super::*;
 
 impl ClientShellState {
-    fn wants_ascii_input(&self) -> bool {
+    pub(super) fn wants_ascii_input(&self) -> bool {
         if let Some(overlay) = self.overlay.as_ref() {
             return matches!(
                 overlay,
@@ -9,6 +9,7 @@ impl ClientShellState {
                     | ClientShellOverlay::UploadConfirm(_)
                     | ClientShellOverlay::Help(_)
                     | ClientShellOverlay::Navigator(_)
+                    | ClientShellOverlay::GotoResult(_)
                     | ClientShellOverlay::WorktreeRemove(_)
                     | ClientShellOverlay::ContextMenu(_)
                     | ClientShellOverlay::GlobalMenu(_)

@@ -1,7 +1,8 @@
 //! The full view of a pane's request and result, opened from Go to.
 
-use super::goto_preview::{GotoPreviewRead, PreviewBody, VIEWER_LINES};
+use super::goto_preview::{GotoPreviewRead, GotoTasks, PreviewBody, VIEWER_LINES};
 use super::*;
+use crate::api::schema::TaskInfo;
 
 #[derive(Debug)]
 pub(crate) struct ClientGotoResultOverlay {
@@ -11,7 +12,12 @@ pub(crate) struct ClientGotoResultOverlay {
     pub(super) pane_id: String,
     /// The picker row it opened from, for its name and state.
     pub(super) row: ClientNavigatorRow,
-    pub(super) read: GotoPreviewRead,
+    /// The task shown, fixed when the view chose what to read. Why not the
+    /// picker's list: a refresh could pair a newer request with this result.
+    pub(super) task: Option<TaskInfo>,
+    /// `None` until the server's task list arrives, which decides whether
+    /// the view reads the result or the screen.
+    pub(super) read: Option<GotoPreviewRead>,
     pub(super) pending: bool,
     pub(super) body: PreviewBody,
     pub(super) scroll: usize,
@@ -45,26 +51,13 @@ impl ClientShellState {
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.take() else {
             return false;
         };
-        let task = navigator.tasks.task(&endpoint_id, &pane_id);
-        let read = match task {
-            Some(task) if task.state.is_finished() => GotoPreviewRead::Result {
-                pane_id: pane_id.clone(),
-                task_id: task.task_id.clone(),
-            },
-            _ => GotoPreviewRead::Screen {
-                pane_id: pane_id.clone(),
-                lines: VIEWER_LINES,
-            },
-        };
-        // Why reuse: a result does not change, and the preview read it whole.
-        let body = match (&read, navigator.tasks.preview(&endpoint_id, &pane_id)) {
-            (GotoPreviewRead::Result { task_id, .. }, Some(preview))
-                if preview.task_id() == Some(task_id.as_str())
-                    && matches!(preview.body, PreviewBody::Text { .. }) =>
-            {
-                preview.body.clone()
-            }
-            _ => PreviewBody::Loading,
+        let listed = navigator.tasks.listed(&endpoint_id)
+            || !self.endpoint_advertises(&endpoint_id, "task.list");
+        let (task, read, body) = if listed {
+            let (task, read, body) = choose_full_view(&navigator.tasks, &endpoint_id, &pane_id);
+            (task, Some(read), body)
+        } else {
+            (None, None, PreviewBody::Loading)
         };
         self.overlay = Some(ClientShellOverlay::GotoResult(Box::new(
             ClientGotoResultOverlay {
@@ -72,12 +65,29 @@ impl ClientShellState {
                 endpoint_id,
                 pane_id,
                 row,
+                task,
                 read,
                 pending: false,
                 body,
                 scroll: 0,
             },
         )));
+        true
+    }
+
+    /// Chooses what the view reads once the task list is known.
+    pub(super) fn choose_goto_result_read(&mut self) -> bool {
+        let Some(ClientShellOverlay::GotoResult(viewer)) = self.overlay.as_mut() else {
+            return false;
+        };
+        let (task, read, body) = choose_full_view(
+            &viewer.navigator.tasks,
+            &viewer.endpoint_id,
+            &viewer.pane_id,
+        );
+        viewer.task = task;
+        viewer.read = Some(read);
+        viewer.body = body;
         true
     }
 
@@ -147,4 +157,34 @@ impl ClientShellState {
         outcome.repaint = true;
         true
     }
+}
+
+/// The task to show, what to read for it, and the text already at hand.
+fn choose_full_view(
+    tasks: &GotoTasks,
+    endpoint_id: &ClientEndpointId,
+    pane_id: &str,
+) -> (Option<TaskInfo>, GotoPreviewRead, PreviewBody) {
+    let task = tasks.task(endpoint_id, pane_id).cloned();
+    let read = match &task {
+        Some(task) if task.state.is_finished() => GotoPreviewRead::Result {
+            pane_id: pane_id.to_owned(),
+            task_id: task.task_id.clone(),
+        },
+        _ => GotoPreviewRead::Screen {
+            pane_id: pane_id.to_owned(),
+            lines: VIEWER_LINES,
+        },
+    };
+    // Why reuse: a result does not change, and the preview read it whole.
+    let body = match (&read, tasks.preview(endpoint_id, pane_id)) {
+        (GotoPreviewRead::Result { task_id, .. }, Some(preview))
+            if preview.task_id() == Some(task_id.as_str())
+                && matches!(preview.body, PreviewBody::Text { .. }) =>
+        {
+            preview.body.clone()
+        }
+        _ => PreviewBody::Loading,
+    };
+    (task, read, body)
 }

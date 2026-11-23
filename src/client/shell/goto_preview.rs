@@ -44,10 +44,10 @@ impl GotoPreviewRead {
         match self {
             Self::Screen { pane_id, lines } => Method::PaneRead(PaneReadParams {
                 pane_id: pane_id.clone(),
-                // Why not recent: the server would scroll an idle agent's
-                // alternate screen to collect history, or refuse while it
-                // works, and this read repeats every two seconds.
-                source: ReadSource::Visible,
+                // Why detection: recent would make the server scroll an
+                // idle agent's alternate screen to collect history, and
+                // visible follows the pane's scroll offset, not its output.
+                source: ReadSource::Detection,
                 lines: Some(*lines),
                 format: ReadFormat::Text,
                 strip_ansi: true,
@@ -133,13 +133,13 @@ impl GotoTasks {
     }
 
     /// Whether the list for this server answered at least once.
-    fn listed(&self, endpoint_id: &ClientEndpointId) -> bool {
+    pub(super) fn listed(&self, endpoint_id: &ClientEndpointId) -> bool {
         self.lists
             .get(endpoint_id)
             .is_some_and(|list| list.by_pane.is_some())
     }
 
-    fn list_due(&self, endpoint_id: &ClientEndpointId, now: Instant) -> bool {
+    pub(super) fn list_due(&self, endpoint_id: &ClientEndpointId, now: Instant) -> bool {
         self.lists.get(endpoint_id).is_none_or(|list| {
             !list.pending && now.saturating_duration_since(list.fresh_at) >= PREVIEW_TTL
         })
@@ -167,7 +167,7 @@ impl GotoTasks {
         }
     }
 
-    fn list_sent(&mut self, endpoint_id: &ClientEndpointId, now: Instant) {
+    pub(super) fn list_sent(&mut self, endpoint_id: &ClientEndpointId, now: Instant) {
         let list = self
             .lists
             .entry(endpoint_id.clone())
@@ -323,7 +323,7 @@ impl ClientShellState {
     /// then the selected pane's preview, then a fresh list for its server.
     /// Called after picker input and on the timer, never while drawing.
     pub(crate) fn sync_goto_preview(&mut self, now: Instant, outcome: &mut ClientShellInput) {
-        self.sync_goto_result(outcome);
+        self.sync_goto_result(now, outcome);
         // Why before taking the tasks: search matches their text.
         let selected = {
             let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_ref() else {
@@ -438,15 +438,39 @@ impl ClientShellState {
     }
 
     /// Sends the full view's read while it has no text.
-    fn sync_goto_result(&mut self, outcome: &mut ClientShellInput) {
+    fn sync_goto_result(&mut self, now: Instant, outcome: &mut ClientShellInput) {
         let Some(ClientShellOverlay::GotoResult(viewer)) = self.overlay.as_ref() else {
+            return;
+        };
+        let endpoint_id = viewer.endpoint_id.clone();
+        let Some(read) = viewer.read.clone() else {
+            // Opened before the task list: fetch it, then choose the read.
+            if viewer.navigator.tasks.listed(&endpoint_id)
+                || !self.endpoint_advertises(&endpoint_id, "task.list")
+            {
+                outcome.repaint |= self.choose_goto_result_read();
+            } else if !self.endpoint_is_online(&endpoint_id) {
+                if let Some(ClientShellOverlay::GotoResult(viewer)) = self.overlay.as_mut() {
+                    viewer.body = PreviewBody::Unavailable("not available on this server".into());
+                    outcome.repaint = true;
+                }
+            } else if viewer.navigator.tasks.list_due(&endpoint_id, now)
+                && self.query_endpoint(
+                    &endpoint_id,
+                    Method::TaskList(TaskListParams::default()),
+                    EndpointQueryKind::TaskList,
+                    outcome,
+                )
+            {
+                if let Some(goto) = self.goto_tasks_mut() {
+                    goto.list_sent(&endpoint_id, now);
+                }
+            }
             return;
         };
         if viewer.pending || viewer.body != PreviewBody::Loading {
             return;
         }
-        let endpoint_id = viewer.endpoint_id.clone();
-        let read = viewer.read.clone();
         let method = read.method();
         let available = self.endpoint_is_online(&endpoint_id)
             && self.endpoint_advertises(&endpoint_id, crate::api::api_method_name(&method));
@@ -476,7 +500,7 @@ impl ClientShellState {
         let Some(ClientShellOverlay::GotoResult(viewer)) = self.overlay.as_mut() else {
             return false;
         };
-        if &viewer.endpoint_id != endpoint_id || viewer.read != read {
+        if &viewer.endpoint_id != endpoint_id || viewer.read.as_ref() != Some(&read) {
             return false;
         }
         viewer.pending = false;
