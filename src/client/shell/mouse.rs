@@ -1818,6 +1818,13 @@ impl ClientShellState {
             match mouse.kind {
                 MouseEventKind::ScrollUp => self.scroll_goto_result(-3),
                 MouseEventKind::ScrollDown => self.scroll_goto_result(3),
+                // Like the picker's outside click, but back to the picker.
+                MouseEventKind::Down(MouseButton::Left)
+                    if super::contains(self.hits.goto_result_back, point)
+                        || !super::contains(self.hits.navigator_popup, point) =>
+                {
+                    self.close_goto_result();
+                }
                 _ => return,
             }
             outcome.repaint = true;

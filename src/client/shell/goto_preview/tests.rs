@@ -628,3 +628,46 @@ fn the_full_view_keeps_ascii_input_like_the_picker() {
 
     assert!(state.wants_ascii_input());
 }
+
+fn click(state: &mut ClientShellState, column: u16, row: u16) {
+    let mut outcome = ClientShellInput::default();
+    state.handle_mouse(
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+        &mut outcome,
+    );
+}
+
+#[test]
+fn a_click_outside_the_full_view_returns_to_the_picker() {
+    let (mut state, _) = finished_picker();
+    state.handle_input_bytes(b" ");
+    screen_text(&mut state, 120, 30);
+
+    click(&mut state, 0, 0);
+
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+}
+
+#[test]
+fn a_click_on_esc_back_returns_to_the_picker() {
+    let (mut state, _) = finished_picker();
+    state.handle_input_bytes(b" ");
+    screen_text(&mut state, 120, 30);
+    let back = state.hits.goto_result_back;
+    assert!(!back.is_empty());
+
+    click(&mut state, back.x, back.y);
+
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+}

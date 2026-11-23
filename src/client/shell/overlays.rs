@@ -26,6 +26,8 @@ pub(crate) struct OverlayRender {
     pub(crate) navigator_open_result: Rect,
     pub(crate) goto_result_max_scroll: usize,
     pub(crate) goto_result_viewport: usize,
+    /// The full view's "esc back", which a click also takes.
+    pub(crate) goto_result_back: Rect,
     pub(crate) worktree_search: Rect,
     pub(crate) worktree_rows: Vec<(Rect, usize)>,
     pub(crate) file_viewer_popup: Rect,

@@ -449,17 +449,21 @@ pub(super) fn render_goto_result_overlay(
         let track = Rect::new(i.right() - 1, body.y, 1, body.height);
         crate::ui::render_scrollbar_buffer(b, metrics, track, p.overlay0, p.overlay1, "▐");
     }
-    put_text(
-        b,
-        i.x,
+    let footer = " j/k ↑↓ PgUp/PgDn Home/End scroll · y copy · enter open · ";
+    let back_label = "esc back";
+    put_text(b, i.x, i.bottom() - 1, i.width, footer, dim);
+    let back_x = i.x.saturating_add(display_width(footer));
+    let back = Rect::new(
+        back_x,
         i.bottom() - 1,
-        i.width,
-        " j/k ↑↓ PgUp/PgDn Home/End scroll · y copy · enter open · esc back",
-        dim,
+        display_width(back_label).min(i.right().saturating_sub(back_x)),
+        1,
     );
+    put_text(b, back.x, back.y, back.width, back_label, dim);
     Some(OverlayRender {
         area: q,
         navigator_popup: q,
+        goto_result_back: back,
         goto_result_max_scroll: max_scroll,
         goto_result_viewport: viewport,
         ..OverlayRender::default()

@@ -140,6 +140,7 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_open_result: Rect,
     pub(super) goto_result_max_scroll: usize,
     pub(super) goto_result_viewport: usize,
+    pub(super) goto_result_back: Rect,
     pub(super) worktree_search: Rect,
     pub(super) worktree_rows: Vec<(Rect, usize)>,
     pub(super) file_viewer_popup: Rect,
