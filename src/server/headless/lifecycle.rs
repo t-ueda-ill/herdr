@@ -47,7 +47,7 @@ impl HeadlessServer {
 
         // Why before the pane map: the wait handles events, which can open
         // or close panes.
-        self.app.settle_result_captures_for_handoff();
+        self.app.settle_result_captures();
         let pane_by_terminal = handoff_panes(&self.app.state);
 
         self.handoff_in_progress = true;

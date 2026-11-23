@@ -20,6 +20,9 @@ pub(crate) enum LoadedTasks {
     Empty,
     /// A newer herdr wrote it: keep it as it is.
     Newer,
+    /// It exists but could not be read: keep it, so a later save does not
+    /// replace the history with an empty table.
+    Unreadable,
 }
 
 pub(crate) fn load_tasks() -> LoadedTasks {
@@ -35,8 +38,11 @@ fn load_tasks_from(path: &Path) -> LoadedTasks {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return LoadedTasks::Empty,
         Err(err) => {
-            warn!(path = %path.display(), err = %err, "failed to read the task file");
-            return LoadedTasks::Empty;
+            warn!(
+                path = %path.display(), err = %err,
+                "failed to read the task file; tasks will not be saved"
+            );
+            return LoadedTasks::Unreadable;
         }
     };
     let version = serde_json::from_str::<serde_json::Value>(&content)
@@ -120,6 +126,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
 
         assert!(matches!(loaded, LoadedTasks::Empty));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_kept() {
+        let path = scratch("unreadable");
+        // A folder where the file belongs fails the read with no NotFound.
+        std::fs::create_dir_all(&path).unwrap();
+
+        let loaded = load_tasks_from(&path);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+
+        assert!(matches!(loaded, LoadedTasks::Unreadable));
     }
 
     #[test]
