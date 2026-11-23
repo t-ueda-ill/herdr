@@ -21,6 +21,12 @@ pub(crate) struct TaskSave {
     /// A handoff saved the table for the replacement, which owns the file
     /// from then on unless the handoff rolls back.
     handed_off: bool,
+    /// Sessions persist, but the file is kept as it is: a newer herdr wrote
+    /// it, or it could not be read.
+    // Why allowed: only the Unix live handoff reads it; loading sets it on
+    // every platform.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    kept: bool,
 }
 
 impl TaskSave {
@@ -66,7 +72,13 @@ pub(crate) fn load_task_table(
                 ..TaskSave::default()
             },
         ),
-        LoadedTasks::Newer => (crate::tasks::TaskTable::default(), TaskSave::default()),
+        LoadedTasks::Newer | LoadedTasks::Unreadable => (
+            crate::tasks::TaskTable::default(),
+            TaskSave {
+                kept: true,
+                ..TaskSave::default()
+            },
+        ),
     }
 }
 
@@ -122,9 +134,10 @@ impl App {
         }
     }
 
-    #[cfg(unix)]
-    /// Lets copies in progress land before the handoff freezes the panes.
-    pub(crate) fn settle_result_captures_for_handoff(&mut self) {
+    /// Lets copies in progress land before the last save. Call it before
+    /// the panes are frozen or the session is saved: it handles events,
+    /// which can open or close panes.
+    pub(crate) fn settle_result_captures(&mut self) {
         if self.task_save.writable() {
             self.wait_for_result_captures(CAPTURE_WAIT);
         }
@@ -136,6 +149,19 @@ impl App {
     /// Why no wait for copies here: handling events now could change panes
     /// that the transfer snapshot already holds.
     pub(crate) fn save_tasks_for_handoff(&mut self) -> std::io::Result<()> {
+        // Why refuse: the replacement reads tasks only from the file, so
+        // unfinished ones would be lost with this server.
+        if self.task_save.kept
+            && self
+                .state
+                .tasks
+                .iter()
+                .any(|task| !task.state.is_finished())
+        {
+            return Err(std::io::Error::other(
+                "unfinished tasks cannot be handed over: the task file is kept as it is",
+            ));
+        }
         if let Some(thread) = self.task_save.thread.take() {
             let _ = thread.join();
         }
@@ -154,11 +180,9 @@ impl App {
         self.schedule_task_save();
     }
 
-    /// The last save before the server exits.
+    /// The last save before the server exits. Why no wait for copies here:
+    /// `settle_result_captures` runs before the session save instead.
     pub(crate) fn save_tasks_on_shutdown(&mut self) {
-        if self.task_save.writable() {
-            self.wait_for_result_captures(CAPTURE_WAIT);
-        }
         self.save_tasks_now();
     }
 }
@@ -174,7 +198,6 @@ mod tests {
     use crate::api::schema::{AgentStatus, Location, TaskState};
     use crate::app::{App, AppPolicy};
     use crate::config::Config;
-    #[cfg(unix)]
     use crate::events::AppEvent;
     use crate::tasks::{AgentSnapshot, NewTask, Now, ResultPlace};
 
@@ -344,12 +367,62 @@ mod tests {
     async fn a_handoff_save_that_fails_is_reported() {
         let _home = ConfigHome::new("handoff-fails");
         let path = crate::persist::tasks::tasks_path();
+        let mut app = app(PERSIST);
+        finish_one_task(&mut app, "plan");
         // A folder where the file belongs makes the rename fail.
+        std::fs::create_dir_all(&path).unwrap();
+
+        assert!(app.save_tasks_for_handoff().is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_task_file_is_never_overwritten() {
+        let _home = ConfigHome::new("unreadable");
+        let path = crate::persist::tasks::tasks_path();
         std::fs::create_dir_all(&path).unwrap();
         let mut app = app(PERSIST);
         finish_one_task(&mut app, "plan");
 
+        app.save_tasks_on_shutdown();
+
+        assert!(path.is_dir());
+        assert!(!app.task_save.writable());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_handoff_with_unfinished_tasks_is_refused_while_the_file_is_kept() {
+        let _home = ConfigHome::new("handoff-kept");
+        let path = crate::persist::tasks::tasks_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"version":99,"next_id":1,"tasks":[]}"#).unwrap();
+        let mut app = app(PERSIST);
+        start_one_task(&mut app);
+
         assert!(app.save_tasks_for_handoff().is_err());
+    }
+
+    #[tokio::test]
+    async fn the_shutdown_save_leaves_other_events_for_later() {
+        let _home = ConfigHome::new("shutdown-events");
+        let mut app = app(PERSIST);
+        let id = finish_one_task(&mut app, "plan");
+        app.task_captures.enqueue(id);
+        let _ = app.task_captures.next_to_start();
+        app.task_captures.started();
+        app.event_tx
+            .try_send(AppEvent::TerminalBell {
+                pane_id: crate::layout::PaneId::from_raw(9999),
+                count: 1,
+            })
+            .unwrap();
+
+        app.save_tasks_on_shutdown();
+
+        assert!(matches!(
+            app.event_rx.try_recv(),
+            Ok(AppEvent::TerminalBell { .. })
+        ));
     }
 
     #[cfg(unix)]

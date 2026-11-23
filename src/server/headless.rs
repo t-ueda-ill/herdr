@@ -697,6 +697,9 @@ impl HeadlessServer {
             }
         }
 
+        // Why first: waiting for result copies handles events, which can
+        // open panes the session save must include.
+        self.app.settle_result_captures();
         // Save session on exit.
         if self.app.policy.persist_session {
             self.app.save_session_on_shutdown();
