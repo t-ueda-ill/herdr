@@ -382,7 +382,12 @@ impl ClientShellState {
                 };
                 let method = read.method();
                 if !self.endpoint_advertises(&endpoint_id, crate::api::api_method_name(&method)) {
-                    if tasks.preview(&endpoint_id, &pane_id).is_none() {
+                    // Why also over cached text: text read for an earlier
+                    // task would hide behind loading forever.
+                    if !tasks
+                        .preview(&endpoint_id, &pane_id)
+                        .is_some_and(|preview| matches!(preview.body, PreviewBody::Unavailable(_)))
+                    {
                         outcome.repaint = true;
                         tasks.preview_unavailable(
                             &endpoint_id,

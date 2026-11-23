@@ -692,3 +692,36 @@ fn a_result_read_for_the_previous_task_is_not_shown_under_a_new_one() {
     assert!(!text.contains("VERDICT: approve"), "{text}");
     assert!(text.contains("loading…"), "{text}");
 }
+
+#[test]
+fn a_finished_task_on_a_server_without_task_result_shows_not_available() {
+    let mut state = picker(&["pane.read", "task.list"]);
+    select_pane(&mut state);
+    let now = Instant::now();
+    let list = sync(&mut state, now);
+    answer(
+        &mut state,
+        &list[0],
+        ResponseResult::TaskList {
+            tasks: vec![task("t_1", "running", None)],
+        },
+    );
+    let read = sync(&mut state, now);
+    answer(&mut state, &read[0], screen("working"));
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+        panic!("picker is open");
+    };
+    navigator.tasks.receive_list(
+        &ClientEndpointId::Local,
+        Some(vec![task("t_1", "completed", Some(5))]),
+        now,
+    );
+
+    let first = sync(&mut state, now);
+    let mut outcome = ClientShellInput::default();
+    state.sync_goto_preview(now, &mut outcome);
+
+    assert!(first.is_empty());
+    assert!(matches!(body(&state), Some(PreviewBody::Unavailable(_))));
+    assert!(!outcome.repaint, "the unavailable state repaints once");
+}
