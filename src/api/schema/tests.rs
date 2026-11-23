@@ -2018,3 +2018,28 @@ fn download_methods_are_surface_independent_and_advertised_to_client_shells() {
         assert!(advertised.contains(&name), "{name} is not advertised");
     }
 }
+
+#[test]
+fn task_and_screen_reads_are_advertised_and_need_no_surface() {
+    let methods = [
+        Method::TaskList(TaskListParams::default()),
+        Method::TaskResult(TaskTarget {
+            task_id: "t_1".into(),
+        }),
+        Method::PaneRead(PaneReadParams {
+            pane_id: "w1:p1".into(),
+            source: ReadSource::Recent,
+            lines: Some(20),
+            format: ReadFormat::Text,
+            strip_ansi: true,
+            intent: Default::default(),
+        }),
+    ];
+    for method in methods {
+        assert!(method.independent_of_surface(), "{method:?}");
+    }
+    let advertised = operations::client_shell_method_names();
+    for name in ["pane.read", "task.list", "task.result"] {
+        assert!(advertised.contains(&name), "{name} is not advertised");
+    }
+}

@@ -119,10 +119,10 @@ operations::define_operations! {
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     TaskSubmit(TaskSubmitParams) => "task.submit", true, false;
     TaskGet(TaskTarget) => "task.get", false, false;
-    TaskList(TaskListParams) => "task.list", false, false;
+    TaskList(TaskListParams) => "task.list", false, true;
     TaskCancel(TaskTarget) => "task.cancel", true, false;
     TaskWait(TaskWaitParams) => "task.wait", false, false;
-    TaskResult(TaskTarget) => "task.result", false, false;
+    TaskResult(TaskTarget) => "task.result", false, true;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;
     PaneSplitInherit(PaneSplitParams) => "pane.split_inherit", true, true;
     PaneSwap(PaneSwapParams) => "pane.swap", true, true;
@@ -157,7 +157,7 @@ operations::define_operations! {
     PaneSendText(PaneSendTextParams) => "pane.send_text", false, false;
     PaneSendKeys(PaneSendKeysParams) => "pane.send_keys", false, false;
     PaneSendInput(PaneSendInputParams) => "pane.send_input", false, false;
-    PaneRead(PaneReadParams) => "pane.read", false, false;
+    PaneRead(PaneReadParams) => "pane.read", false, true;
     PaneReportAgent(PaneReportAgentParams) => "pane.report_agent", true, false;
     PaneReportAgentSession(PaneReportAgentSessionParams) => "pane.report_agent_session", true, false;
     PaneReportMetadata(PaneReportMetadataParams) => "pane.report_metadata", true, false;
@@ -244,6 +244,11 @@ impl Method {
                 | Self::PreviewStart(_)
                 | Self::PreviewList(_)
                 | Self::PreviewStop(_)
+                // Why: the Go to preview reads servers whose surface is
+                // elsewhere, and a read must not take the foreground.
+                | Self::TaskList(_)
+                | Self::TaskResult(_)
+                | Self::PaneRead(_)
         )
     }
 }

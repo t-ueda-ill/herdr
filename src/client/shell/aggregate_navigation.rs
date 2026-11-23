@@ -397,7 +397,11 @@ pub(super) fn navigator_rows(
                                 || agent
                                     .and_then(|agent| agent.display_agent.as_deref())
                                     .is_some_and(text)
-                                || text(&pane.pane_id))
+                                || text(&pane.pane_id)
+                                || navigator
+                                    .tasks
+                                    .task(&endpoint.endpoint_id, &pane.pane_id)
+                                    .is_some_and(|task| text(&task.text)))
                         {
                             children.push(ClientNavigatorRow {
                                 depth: 1 + depth_offset,

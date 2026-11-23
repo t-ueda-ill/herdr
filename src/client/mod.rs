@@ -2248,6 +2248,18 @@ async fn run_client_loop(
                             || (false, Vec::new()),
                             |shell| {
                                 if completed.generation == generation
+                                    && shell.is_endpoint_query(&completed.request_id)
+                                {
+                                    (
+                                        shell.handle_endpoint_query_result(
+                                            &completed.endpoint_id,
+                                            &completed.boot_id,
+                                            &completed.request_id,
+                                            completed.result,
+                                        ),
+                                        Vec::new(),
+                                    )
+                                } else if completed.generation == generation
                                     && shell.endpoint_is_active(&completed.endpoint_id)
                                 {
                                     shell.handle_endpoint_result(
@@ -2632,6 +2644,10 @@ async fn run_client_loop(
             }
             ClientLoopEvent::Timer => {
                 client_timer.fired();
+                if scheduled_activation.is_none() {
+                    scheduled_activation =
+                        take_ready_query_activation(&mut state, &endpoint_commands, now);
+                }
                 let effects = state.uploads.tick(now);
                 if upload::runtime::apply_upload_effects(
                     &mut state,
@@ -2747,6 +2763,15 @@ async fn run_client_loop(
                         let surface_before = shell.composed_surface_size();
                         let mut outcome = shell.tick_selection_autoscroll(now);
                         for expired in expired_endpoints {
+                            if shell.is_endpoint_query(&expired.request_id) {
+                                outcome.repaint |= shell.handle_endpoint_query_result(
+                                    &expired.endpoint_id,
+                                    &expired.boot_id,
+                                    &expired.request_id,
+                                    expired.result,
+                                );
+                                continue;
+                            }
                             if !shell.endpoint_is_active(&expired.endpoint_id) {
                                 continue;
                             }
@@ -2759,6 +2784,7 @@ async fn run_client_loop(
                             outcome.actions.extend(actions);
                         }
                         shell.tick_investigation(now, &mut outcome);
+                        shell.sync_goto_preview(now, &mut outcome);
                         shell.request_resize_if_surface_changed(surface_before, &mut outcome);
                         let (effects, notification_repaint) = shell.tick_notifications(now);
                         outcome.repaint |= notification_repaint

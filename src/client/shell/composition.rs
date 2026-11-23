@@ -810,6 +810,10 @@ impl ClientShellState {
                 self.hits.navigator_rows = rendered.navigator_rows;
                 self.hits.navigator_scrollbar = rendered.navigator_scrollbar;
                 self.hits.navigator_scroll_metrics = rendered.navigator_scroll_metrics;
+                self.hits.navigator_open_result = rendered.navigator_open_result;
+                self.hits.goto_result_max_scroll = rendered.goto_result_max_scroll;
+                self.hits.goto_result_viewport = rendered.goto_result_viewport;
+                self.hits.goto_result_back = rendered.goto_result_back;
                 self.hits.worktree_search = rendered.worktree_search;
                 self.hits.worktree_rows = rendered.worktree_rows;
                 self.hits.file_viewer_popup = rendered.file_viewer_popup;

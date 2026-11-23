@@ -395,6 +395,9 @@ impl ClientShellState {
             _ => false,
         };
         if changes_focus {
+            // A newer selection wins over one that waits for a Go to read.
+            self.deferred_query_activation = None;
+            self.query_activation_deadline = None;
             self.show_terminal_side();
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
@@ -503,6 +506,9 @@ impl ClientShellState {
     }
 
     pub(crate) fn cancel_endpoint_request(&mut self, request_id: &str) -> bool {
+        if self.is_endpoint_query(request_id) {
+            return self.cancel_endpoint_query(request_id);
+        }
         let Some(pending) = self.pending_requests.get(request_id) else {
             return false;
         };

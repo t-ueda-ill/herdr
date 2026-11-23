@@ -912,6 +912,129 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     shutdown_test_runtimes(&mut server);
 }
 
+#[tokio::test]
+async fn a_client_without_the_surface_can_read_tasks_through_the_endpoint_lane() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("endpoint");
+    let root = workspace.tabs[0].root_pane;
+    let (runtime, _input_rx) =
+        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+            80,
+            24,
+            64 * 1024,
+            b"$ cargo test",
+            4,
+        );
+    workspace.insert_test_runtime(root, runtime);
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    let client_id = 43;
+    server.handle_server_event(ServerEvent::ClientShellConnected {
+        surface_reuse: false,
+        surface_delta: false,
+        surface_scroll: false,
+        client_id,
+        surface_cols: 80,
+        surface_rows: 23,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+        direct_graphics: false,
+        endpoint_keybindings: false,
+        mouse_capture: false,
+        surface_active: false,
+        writer,
+    });
+    let _initial_snapshot = client_shell_snapshot(&control_rx);
+    let boot_id = server.client_shell_boot_id.clone();
+
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id,
+        request: Box::new(api::schema::Request {
+            id: "client-shell:tasks".into(),
+            method: api::schema::Method::TaskList(api::schema::TaskListParams::default()),
+        }),
+    });
+    let response_ready = server
+        .server_event_rx
+        .recv()
+        .await
+        .expect("endpoint response ready");
+    server.handle_server_event(response_ready);
+
+    let ServerMessage::ClientShellEndpointResponseChunk { data, .. } =
+        read_server_message(control_rx.recv().expect("endpoint response"))
+    else {
+        panic!("expected client shell endpoint response");
+    };
+    let response = serde_json::from_slice::<api::schema::SuccessResponse>(&data)
+        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&data)));
+    assert!(matches!(
+        response.result,
+        api::schema::ResponseResult::TaskList { .. }
+    ));
+    assert!(!server.clients[&client_id].shell_surface_active);
+
+    // The snapshot's pane id is the one tasks report and pane.read takes.
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "boot", 1, None, None);
+    let focused = server.app.state.workspaces[0]
+        .focused_pane_id()
+        .expect("focused pane");
+    let pane_id = snapshot.panes[0].pane_id.clone();
+    assert_eq!(server.app.public_pane_id(0, focused), Some(pane_id.clone()));
+    for (request_id, method) in [
+        (
+            "client-shell:read",
+            api::schema::Method::PaneRead(api::schema::PaneReadParams {
+                pane_id,
+                source: api::schema::ReadSource::Visible,
+                lines: Some(20),
+                format: api::schema::ReadFormat::Text,
+                strip_ansi: true,
+                intent: Default::default(),
+            }),
+        ),
+        (
+            "client-shell:result",
+            api::schema::Method::TaskResult(api::schema::TaskTarget {
+                task_id: "t_9".into(),
+            }),
+        ),
+    ] {
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id,
+            boot_id: server.client_shell_boot_id.clone(),
+            request: Box::new(api::schema::Request {
+                id: request_id.into(),
+                method,
+            }),
+        });
+        let response_ready = server
+            .server_event_rx
+            .recv()
+            .await
+            .expect("endpoint response ready");
+        server.handle_server_event(response_ready);
+        let ServerMessage::ClientShellEndpointResponseChunk { data, .. } =
+            read_server_message(control_rx.recv().expect("endpoint response"))
+        else {
+            panic!("expected client shell endpoint response");
+        };
+        let text = String::from_utf8_lossy(&data).into_owned();
+        if request_id == "client-shell:read" {
+            assert!(text.contains("$ cargo test"), "{text}");
+        } else {
+            // Past the lane's gates: the task lookup itself answers.
+            assert!(text.contains("task_not_found"), "{text}");
+        }
+    }
+    assert!(!server.clients[&client_id].shell_surface_active);
+    shutdown_test_runtimes(&mut server);
+}
+
 #[test]
 fn terminal_client_endpoint_request_error_removes_client() {
     let mut server = test_headless_server();

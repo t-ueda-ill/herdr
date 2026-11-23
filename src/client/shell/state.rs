@@ -137,6 +137,10 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(super) navigator_scrollbar: Rect,
     pub(super) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
+    pub(super) navigator_open_result: Rect,
+    pub(super) goto_result_max_scroll: usize,
+    pub(super) goto_result_viewport: usize,
+    pub(super) goto_result_back: Rect,
     pub(super) worktree_search: Rect,
     pub(super) worktree_rows: Vec<(Rect, usize)>,
     pub(super) file_viewer_popup: Rect,
@@ -272,6 +276,12 @@ pub(crate) enum ClientShellAction {
         boot_id: String,
         request: Box<crate::api::schema::Request>,
     },
+    /// A read-only request to any connected server, active or not.
+    EndpointQuery {
+        endpoint_id: ClientEndpointId,
+        boot_id: String,
+        request: Box<crate::api::schema::Request>,
+    },
     ClipboardWrite(Vec<u8>),
     OpenSafeWebUrl(String),
     ActivateEndpoint {
@@ -316,6 +326,7 @@ pub(super) enum ClientShellOverlayKind {
     ConfirmClose,
     Help,
     Navigator,
+    GotoResult,
     WorktreeCreate,
     WorktreeOpen,
     WorktreeRemove,
@@ -405,6 +416,8 @@ pub(super) struct ClientNavigatorOverlay {
     pub(super) selected: Option<ClientNavigatorTarget>,
     pub(super) scroll: usize,
     pub(super) filter: Option<ClientNavigatorFilter>,
+    /// What the preview read while the picker is open.
+    pub(super) tasks: super::goto_preview::GotoTasks,
 }
 
 #[derive(Debug, Default)]
@@ -987,6 +1000,7 @@ pub(super) enum ClientShellOverlay {
     ConfirmClose(ClientConfirmCloseOverlay),
     Help(ClientHelpOverlay),
     Navigator(ClientNavigatorOverlay),
+    GotoResult(Box<super::goto_result::ClientGotoResultOverlay>),
     WorktreeCreate(ClientWorktreeCreateOverlay),
     WorktreeOpen(ClientWorktreeOpenOverlay),
     WorktreeRemove(ClientWorktreeRemoveOverlay),
@@ -1010,6 +1024,7 @@ impl ClientShellOverlay {
             Self::ConfirmClose(_) => ClientShellOverlayKind::ConfirmClose,
             Self::Help(_) => ClientShellOverlayKind::Help,
             Self::Navigator(_) => ClientShellOverlayKind::Navigator,
+            Self::GotoResult(_) => ClientShellOverlayKind::GotoResult,
             Self::WorktreeCreate(_) => ClientShellOverlayKind::WorktreeCreate,
             Self::WorktreeOpen(_) => ClientShellOverlayKind::WorktreeOpen,
             Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
@@ -1383,6 +1398,12 @@ pub(crate) struct ClientShellState {
     pub(super) workbench: investigation::Workbench,
     pub(super) investigation_hits: investigation::Hits,
     pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
+    pub(super) endpoint_queries: HashMap<String, super::endpoint_queries::PendingEndpointQuery>,
+    /// A selection waiting for a Go to read on its server to finish.
+    pub(crate) deferred_query_activation: Option<crate::client::endpoint::EndpointActivationIntent>,
+    /// When that wait ends. Why apart from the intent: the retried
+    /// activation keeps the first deadline.
+    pub(crate) query_activation_deadline: Option<(ClientEndpointId, std::time::Instant)>,
     pub(super) pending_integration_installs: usize,
     pub(super) pending_notifications: Vec<ClientPendingNotification>,
     pub(super) visible_notification: Option<ClientVisibleNotification>,
@@ -1571,6 +1592,9 @@ impl ClientShellState {
             },
             investigation_hits: investigation::Hits::default(),
             pending_requests: HashMap::new(),
+            endpoint_queries: HashMap::new(),
+            deferred_query_activation: None,
+            query_activation_deadline: None,
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),
             visible_notification: None,

@@ -59,6 +59,37 @@ pub(super) fn dispatch_client_shell_actions(
                     repaint |= shell.cancel_endpoint_request(&request.id);
                 }
             }
+            shell::ClientShellAction::EndpointQuery {
+                endpoint_id,
+                boot_id,
+                request,
+            } => {
+                // Why not the gate above: a read needs no surface, and the
+                // server it asks may not be the active one.
+                let request_id = request.id.clone();
+                let cancelled = match endpoints.connection(&endpoint_id) {
+                    Some(connection) => {
+                        endpoint_commands.enqueue(
+                            endpoint_id.clone(),
+                            connection.generation,
+                            boot_id,
+                            request,
+                        );
+                        // The active lane drains below, after its other actions.
+                        if endpoints.active_id() == &endpoint_id {
+                            Vec::new()
+                        } else {
+                            endpoint_commands.send_next(&endpoint_id, endpoints)
+                        }
+                    }
+                    None => vec![request_id],
+                };
+                if let Some(shell) = shell.as_deref_mut() {
+                    for request_id in cancelled {
+                        repaint |= shell.cancel_endpoint_request(&request_id);
+                    }
+                }
+            }
             shell::ClientShellAction::FileSearchCancel { boot_id, params } => {
                 let request = crate::api::schema::Request {
                     id: format!("files-cancel:{}:{}", params.search_id, params.generation),
@@ -270,6 +301,32 @@ pub(super) fn take_ready_local_activation(
         })
 }
 
+/// How long a selection waits for a Go to read on its server.
+const QUERY_ACTIVATION_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+pub(super) fn take_ready_query_activation(
+    state: &mut ClientState,
+    endpoint_commands: &endpoint_commands::EndpointCommands,
+    now: std::time::Instant,
+) -> Option<ClientLoopEvent> {
+    let shell = state.shell.as_mut()?;
+    let intent = shell.deferred_query_activation.as_ref()?;
+    let deadline = shell
+        .query_activation_deadline
+        .as_ref()
+        .filter(|(endpoint_id, _)| *endpoint_id == intent.endpoint_id)
+        .map_or(now, |(_, deadline)| *deadline);
+    if endpoint_commands.has_pending_query(&intent.endpoint_id) && now < deadline {
+        return None;
+    }
+    let intent = shell.deferred_query_activation.take()?;
+    Some(ClientLoopEvent::ActivateEndpoint {
+        endpoint_id: intent.endpoint_id,
+        target: intent.target,
+        force: false,
+    })
+}
+
 pub(super) fn begin_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
@@ -292,6 +349,12 @@ pub(super) fn begin_endpoint_activation(
         return Ok(());
     }
     state.deferred_local_activation = None;
+    // Why first: every selection, whichever branch it takes below, replaces
+    // one that waits for a Go to read.
+    let query_deadline = state.shell.as_mut().and_then(|shell| {
+        shell.deferred_query_activation = None;
+        shell.query_activation_deadline.take()
+    });
     if endpoint_id.is_local() && !local_activation_metadata_ready(state, endpoints) {
         state.deferred_local_activation = Some(endpoint::EndpointActivationIntent {
             endpoint_id,
@@ -349,6 +412,32 @@ pub(super) fn begin_endpoint_activation(
                     state.present_frame(frame);
                 }
             }
+        }
+        return Ok(());
+    }
+    // Why wait: the activation sends its focus beside the command lane, and
+    // the server refuses it as busy while a Go to read is in flight there.
+    let deadline = query_deadline
+        .filter(|(waiting, _)| *waiting == endpoint_id)
+        .map_or(now + QUERY_ACTIVATION_WAIT, |(_, deadline)| deadline);
+    if endpoint_commands.has_pending_query(&endpoint_id) {
+        let Some(shell) = state.shell.as_mut() else {
+            return Ok(());
+        };
+        if now < deadline {
+            shell.query_activation_deadline = Some((endpoint_id.clone(), deadline));
+            shell.deferred_query_activation = Some(endpoint::EndpointActivationIntent {
+                endpoint_id,
+                target,
+            });
+        } else {
+            // Why not switch anyway: the server would refuse the focus and
+            // roll the switch back; the read on its side cannot be cancelled.
+            let label = shell.endpoint_label(&endpoint_id).to_owned();
+            shell.receive_endpoint_unavailable(format!(
+                "{label} is still answering a read; select it again"
+            ));
+            present_shell_repaint(state);
         }
         return Ok(());
     }

@@ -100,6 +100,7 @@ impl App {
                 path,
                 text: saved.text.clone(),
                 truncated: saved.truncated,
+                file_error: None,
             };
             let _ = respond_to.send(encode_success(id, ResponseResult::TaskResult { result }));
             return true;
@@ -182,6 +183,7 @@ fn choose_result(
                 path,
                 text,
                 truncated: false,
+                file_error: None,
             })
         }
         Some(Err(message)) => Some(message),
@@ -194,6 +196,7 @@ fn choose_result(
             path: None,
             text,
             truncated: false,
+            file_error,
         }),
         None => Err(match file_error {
             Some(message) => {
@@ -234,6 +237,15 @@ mod tests {
         .unwrap();
         assert_eq!(result.source, TaskResultSource::Screen);
         assert_eq!(result.path, None);
+        assert_eq!(result.file_error.as_deref(), Some("not found"));
+    }
+
+    #[test]
+    fn a_screen_result_without_a_result_file_has_no_file_error() {
+        let result = choose_result("t_1".into(), None, None, Some("screen".into())).unwrap();
+
+        assert_eq!(result.source, TaskResultSource::Screen);
+        assert_eq!(result.file_error, None);
     }
 
     #[test]

@@ -197,6 +197,7 @@ impl ClientShellState {
             selected: None,
             scroll: 0,
             filter: None,
+            tasks: Default::default(),
         };
         let rows =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, &navigator);
@@ -593,6 +594,9 @@ impl ClientShellState {
         {
             return;
         }
+        if self.route_goto_result_key(key, outcome) {
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {
             let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
             let search_focused = matches!(
@@ -642,6 +646,10 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                return;
+            }
+            if matches!(code, KeyCode::Char(' ') | KeyCode::Char('r')) && modifiers.is_empty() {
+                outcome.repaint |= self.open_goto_result();
                 return;
             }
             if matches!(code, KeyCode::Left | KeyCode::Right) && modifiers.is_empty() {
