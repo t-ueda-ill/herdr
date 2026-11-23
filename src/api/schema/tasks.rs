@@ -52,7 +52,7 @@ pub enum TaskEvidence {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskInfo {
-    /// `t_<n>`; numbers restart with the server.
+    /// `t_<n>`; numbers continue across server restarts.
     pub task_id: String,
     pub state: TaskState,
     /// The agent target as the caller gave it.
@@ -104,6 +104,9 @@ pub struct TaskResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     pub text: String,
+    /// The text is the start of a longer result file.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

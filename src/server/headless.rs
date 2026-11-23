@@ -697,10 +697,14 @@ impl HeadlessServer {
             }
         }
 
+        // Why first: waiting for result copies handles events, which can
+        // open panes the session save must include.
+        self.app.settle_result_captures();
         // Save session on exit.
         if self.app.policy.persist_session {
             self.app.save_session_on_shutdown();
         }
+        self.app.save_tasks_on_shutdown();
 
         info!("headless server exiting");
         Ok(())
@@ -3784,6 +3788,15 @@ impl HeadlessServer {
             .is_some_and(|deadline| now >= deadline)
         {
             self.app.start_background_session_save();
+        }
+
+        if self
+            .app
+            .task_save
+            .deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.app.start_background_task_save();
         }
 
         if let Some(deadline) = self

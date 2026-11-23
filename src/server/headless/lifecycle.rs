@@ -45,6 +45,9 @@ impl HeadlessServer {
             }
         };
 
+        // Why before the pane map: the wait handles events, which can open
+        // or close panes.
+        self.app.settle_result_captures();
         let pane_by_terminal = handoff_panes(&self.app.state);
 
         self.handoff_in_progress = true;
@@ -70,6 +73,13 @@ impl HeadlessServer {
             self.app.state.active,
             self.app.state.selected,
         );
+        // Why through the file: the replacement server reads it at start.
+        // Why roll back on failure: a stale file could make the replacement
+        // send a queued prompt that this server already sent.
+        if let Err(err) = self.app.save_tasks_for_handoff() {
+            self.rollback_handoff_before_commit(&socket_path, &paused_terminal_ids);
+            return Err(err);
+        }
 
         let offhost_history = handoff_offhost_history(
             &snapshot,
@@ -286,6 +296,7 @@ impl HeadlessServer {
             }
         }
         self.handoff_in_progress = false;
+        self.app.resume_task_saving();
         let _ = std::fs::remove_file(socket_path);
     }
 

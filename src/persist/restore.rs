@@ -36,6 +36,8 @@ struct PaneRestoreStartup<'a> {
 }
 
 struct RestoreRuntimeContext<'a> {
+    /// Ids already given to restored terminals.
+    claimed_terminal_ids: &'a std::cell::RefCell<HashSet<TerminalId>>,
     scrollback_limit_bytes: usize,
     shell_config: crate::pane::PaneShellConfig<'a>,
     resume_agents_on_restore: bool,
@@ -283,9 +285,11 @@ fn restore_with_imports_and_failures(
     let mut terminals = HashMap::new();
     let mut terminal_runtimes = HashMap::new();
     let mut resumed_agent_sessions = HashSet::new();
+    let claimed_terminal_ids = std::cell::RefCell::new(HashSet::new());
     let mut failed_imports = 0;
     for (idx, ws_snap) in snapshot.workspaces.iter().enumerate() {
         let runtime_context = RestoreRuntimeContext {
+            claimed_terminal_ids: &claimed_terminal_ids,
             scrollback_limit_bytes,
             shell_config,
             resume_agents_on_restore,
@@ -486,13 +490,29 @@ fn saved_remote_cwd(pane: &super::snapshot::PaneSnapshot) -> Option<PathBuf> {
         .filter(|cwd| crate::offhost::is_remote_absolute(cwd))
 }
 
+/// The saved id, so tasks saved for the pane find it again; a new one when
+/// none was saved or another pane already has it.
+fn restored_terminal_id(
+    pane: Option<&super::snapshot::PaneSnapshot>,
+    claimed: &std::cell::RefCell<HashSet<TerminalId>>,
+) -> TerminalId {
+    let mut claimed = claimed.borrow_mut();
+    let id = pane
+        .and_then(|pane| pane.terminal_id.clone())
+        .filter(|id| !claimed.contains(id))
+        .unwrap_or_else(TerminalId::alloc);
+    claimed.insert(id.clone());
+    id
+}
+
 fn unavailable_restored_terminal(
     pane: Option<&super::snapshot::PaneSnapshot>,
     cwd: PathBuf,
     reason: String,
+    claimed: &std::cell::RefCell<HashSet<TerminalId>>,
 ) -> TerminalState {
     warn!(cwd = %cwd.display(), reason = %reason, "preserving unavailable restored pane");
-    let mut terminal = TerminalState::new(TerminalId::alloc(), cwd);
+    let mut terminal = TerminalState::new(restored_terminal_id(pane, claimed), cwd);
     terminal.restore_error = Some(reason);
     if let Some(pane) = pane {
         terminal.manual_label = pane.label.clone();
@@ -574,6 +594,7 @@ fn restore_tab(
                 cwd,
                 "Saved directory is unavailable. Restore the directory and restart this session."
                     .into(),
+                runtime_context.claimed_terminal_ids,
             );
             panes.insert(*id, PaneState::new(terminal.id.clone()));
             terminals.push(terminal);
@@ -660,7 +681,9 @@ fn restore_tab(
         #[cfg(not(unix))]
         let carries_claim = false;
         if connects_off_host {
-            let mut terminal = TerminalState::new(TerminalId::alloc(), cwd.clone())
+            let terminal_id =
+                restored_terminal_id(saved_pane, runtime_context.claimed_terminal_ids);
+            let mut terminal = TerminalState::new(terminal_id, cwd.clone())
                 .with_pending_offhost_connect(startup.initial_history_ansi.map(str::to_owned));
             if let Some(label) = saved_label {
                 terminal.set_manual_label(label);
@@ -688,7 +711,8 @@ fn restore_tab(
             startup.restore_plan.clone()
         };
         if let Some(plan) = pending_native_agent_restore {
-            let terminal_id = TerminalId::alloc();
+            let terminal_id =
+                restored_terminal_id(saved_pane, runtime_context.claimed_terminal_ids);
             let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone())
                 .with_pending_agent_resume_plan(plan);
             if let Some(label) = saved_label {
@@ -790,7 +814,8 @@ fn restore_tab(
 
         match runtime_result {
             Ok(runtime) => {
-                let terminal_id = TerminalId::alloc();
+                let terminal_id =
+                    restored_terminal_id(saved_pane, runtime_context.claimed_terminal_ids);
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
                 if was_imported {
                     if let Some(argv) = saved_launch_argv {
@@ -863,6 +888,7 @@ fn restore_tab(
                     let terminal = unavailable_restored_terminal(
                         saved_pane, cwd,
                         format!("Could not start the saved shell: {e}. Fix the shell configuration and restart this session."),
+                        runtime_context.claimed_terminal_ids,
                     );
                     panes.insert(*id, PaneState::new(terminal.id.clone()));
                     terminals.push(terminal);
@@ -2001,6 +2027,7 @@ mod tests {
             container: Some(remote_container_snapshot("scratch", "-oProxyCommand=sh")),
             ssh: None,
             remote_cwd: None,
+            terminal_id: None,
         });
         let (events, _event_rx) = mpsc::channel(8);
 
@@ -2048,6 +2075,7 @@ mod tests {
             container: Some(test_container_snapshot("agent")),
             ssh: None,
             remote_cwd: None,
+            terminal_id: None,
         });
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -2102,7 +2130,64 @@ mod tests {
             container: None,
             ssh,
             remote_cwd: None,
+            terminal_id: None,
         }
+    }
+
+    fn saved_terminal_id(name: &str) -> TerminalId {
+        serde_json::from_value(serde_json::json!(name)).expect("terminal id")
+    }
+
+    #[tokio::test]
+    async fn a_restored_pane_keeps_the_terminal_id_it_was_saved_with() {
+        for ssh in [None, Some(test_ssh_snapshot("prod"))] {
+            let mut pane = ssh_pane(ssh);
+            pane.terminal_id = Some(saved_terminal_id("term_saved1"));
+
+            let (_, terminals, _) = restore_single_pane(pane, None, false);
+
+            assert!(terminals.contains_key(&saved_terminal_id("term_saved1")));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pane_saved_without_a_terminal_id_gets_a_new_one() {
+        let (_, terminals, _) = restore_single_pane(ssh_pane(None), None, false);
+
+        let id = terminals.keys().next().expect("terminal");
+        assert!(id.as_str().starts_with("term_"));
+    }
+
+    #[tokio::test]
+    async fn two_panes_saved_with_the_same_terminal_id_get_different_ids() {
+        let mut pane = ssh_pane(None);
+        pane.terminal_id = Some(saved_terminal_id("term_twice"));
+        let mut snapshot = single_pane_session(pane);
+        let copy: WorkspaceSnapshot =
+            serde_json::from_value(serde_json::to_value(&snapshot.workspaces[0]).unwrap()).unwrap();
+        snapshot.workspaces.push(WorkspaceSnapshot {
+            id: Some("workspace-2".into()),
+            ..copy
+        });
+        let (events, _event_rx) = mpsc::channel(8);
+
+        let (workspaces, terminals, _) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        assert_eq!(terminals.len(), 2);
+        assert!(terminals.contains_key(&saved_terminal_id("term_twice")));
+        assert_restored_invariants(workspaces, terminals);
     }
 
     #[test]
@@ -2328,6 +2413,7 @@ mod tests {
                             container: None,
                             ssh: None,
                             remote_cwd: None,
+                            terminal_id: None,
                         },
                     )]),
                     zoomed: false,
@@ -2413,6 +2499,7 @@ mod tests {
                                 container: None,
                                 ssh: None,
                                 remote_cwd: None,
+                                terminal_id: None,
                             },
                         ),
                         (
@@ -2428,6 +2515,7 @@ mod tests {
                                 container: None,
                                 ssh: None,
                                 remote_cwd: None,
+                                terminal_id: None,
                             },
                         ),
                     ]),
@@ -2485,6 +2573,7 @@ mod tests {
                     container: None,
                     ssh: None,
                     remote_cwd: None,
+                    terminal_id: None,
                 },
             )
         };
@@ -2504,6 +2593,7 @@ mod tests {
             container: None,
             ssh: None,
             remote_cwd: None,
+            terminal_id: None,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -2659,6 +2749,7 @@ mod tests {
                             container: None,
                             ssh: None,
                             remote_cwd: None,
+                            terminal_id: None,
                         },
                     )]),
                     zoomed: false,
@@ -3131,6 +3222,7 @@ mod tests {
                 container: None,
                 ssh: None,
                 remote_cwd: None,
+                terminal_id: None,
             },
         );
         let mut history = SessionHistorySnapshot {

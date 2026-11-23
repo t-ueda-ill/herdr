@@ -120,6 +120,9 @@ pub struct PaneSnapshot {
     /// CLI in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_cwd: Option<PathBuf>,
+    /// The terminal id before the restart, so saved tasks find the pane again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_id: Option<crate::terminal::TerminalId>,
 }
 
 /// Persisted mirror of `SshLaunch`.
@@ -553,6 +556,7 @@ fn capture_tab(
                 container,
                 ssh,
                 remote_cwd,
+                terminal_id: terminal_id.cloned(),
             },
         );
     }
@@ -922,6 +926,7 @@ mod tests {
                 container: None,
                 ssh: None,
                 remote_cwd: None,
+                terminal_id: None,
             },
         );
         panes.insert(
@@ -937,6 +942,7 @@ mod tests {
                 container: None,
                 ssh: None,
                 remote_cwd: None,
+                terminal_id: None,
             },
         );
 
@@ -1008,6 +1014,7 @@ mod tests {
             container,
             ssh: None,
             remote_cwd: None,
+            terminal_id: None,
         }
     }
 
@@ -1369,6 +1376,23 @@ mod tests {
         assert_eq!(captured_ids, ids);
         assert_eq!(snapshot.active, state.active);
         assert_eq!(snapshot.selected, state.selected);
+    }
+
+    #[test]
+    fn capture_contract_records_each_pane_terminal_id() {
+        let state = state_with_workspaces(&["a"]);
+
+        let snapshot = capture_from_state(&state);
+
+        let tab = &state.workspaces[0].tabs[0];
+        let expected = tab.terminal_id(tab.root_pane).cloned();
+        let pane = snapshot.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .next()
+            .unwrap();
+        assert!(expected.is_some());
+        assert_eq!(pane.terminal_id, expected);
     }
 
     #[test]
@@ -2028,6 +2052,7 @@ mod tests {
                 container: None,
                 ssh: None,
                 remote_cwd: None,
+                terminal_id: None,
             },
         );
         panes.insert(
@@ -2045,6 +2070,7 @@ mod tests {
                 container: None,
                 ssh: None,
                 remote_cwd: None,
+                terminal_id: None,
             },
         );
 

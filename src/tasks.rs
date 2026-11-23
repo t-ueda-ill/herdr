@@ -61,6 +61,8 @@ pub(crate) struct NewTask {
 pub(crate) enum ResultPlace {
     Host,
     OffHost(Box<crate::offhost::PaneEnvironment>),
+    /// Off host, from before a restart: only the saved copy remains.
+    Unreachable,
 }
 
 /// The agent as the App sees it at one moment.
@@ -94,6 +96,8 @@ pub(crate) struct Task {
     pub(crate) result_place: ResultPlace,
     /// The end of the pane when the task finished; the fallback result.
     pub(crate) screen_tail: Option<String>,
+    /// The result file text, copied when the task finished.
+    pub(crate) saved_result: Option<record::SavedResult>,
     submit_seq: u64,
     accept_deadline: Option<Instant>,
 }
@@ -140,6 +144,13 @@ struct Lane {
     active: Option<TaskId>,
     queue: VecDeque<TaskId>,
     agent: AgentSnapshot,
+}
+
+pub(crate) fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 /// 128 bits from SipHash keys that std seeds from the OS: another user on the
@@ -227,6 +238,7 @@ impl TaskTable {
                 parent,
                 result_place: new.result_place,
                 screen_tail: None,
+                saved_result: None,
                 submit_seq: 0,
                 accept_deadline: None,
             },
@@ -417,6 +429,18 @@ impl TaskTable {
         }
     }
 
+    pub(crate) fn set_result_place(&mut self, id: TaskId, place: ResultPlace) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.result_place = place;
+        }
+    }
+
+    pub(crate) fn save_result(&mut self, id: TaskId, result: record::SavedResult) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.saved_result = Some(result);
+        }
+    }
+
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         self.lanes
             .values()
@@ -517,6 +541,8 @@ impl TaskTable {
         tasks.into_iter()
     }
 }
+
+pub(crate) mod record;
 
 #[cfg(test)]
 mod tests;

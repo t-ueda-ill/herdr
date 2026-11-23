@@ -1295,7 +1295,7 @@
               "type": "string"
             },
             "task_id": {
-              "description": "`t_<n>`; numbers restart with the server.",
+              "description": "`t_<n>`; numbers continue across server restarts.",
               "type": "string"
             },
             "terminal_id": {
@@ -14368,7 +14368,7 @@
               "type": "string"
             },
             "task_id": {
-              "description": "`t_<n>`; numbers restart with the server.",
+              "description": "`t_<n>`; numbers continue across server restarts.",
               "type": "string"
             },
             "terminal_id": {
@@ -14405,6 +14405,10 @@
             },
             "text": {
               "type": "string"
+            },
+            "truncated": {
+              "description": "The text is the start of a longer result file.",
+              "type": "boolean"
             }
           },
           "required": [

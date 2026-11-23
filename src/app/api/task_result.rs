@@ -16,13 +16,36 @@ use super::responses::{encode_error, encode_success};
 /// Lines of the pane returned when there is no result file.
 const SCREEN_TAIL_LINES: u32 = 40;
 
-enum FileRead {
+pub(super) enum FileRead {
     Host(String),
     OffHost(Box<PaneEnvironment>, String),
 }
 
 impl FileRead {
-    fn run(self) -> Result<String, String> {
+    /// Why the place saved at submit: the pane may be closed or run another
+    /// shell now, and the file still sits where the agent wrote it.
+    pub(super) fn of(task: &crate::tasks::Task) -> Option<Self> {
+        let path = task.result_path.clone()?;
+        match &task.result_place {
+            ResultPlace::Host => Some(Self::Host(path)),
+            ResultPlace::OffHost(environment) => Some(Self::OffHost(environment.clone(), path)),
+            ResultPlace::Unreachable => None,
+        }
+    }
+
+    /// The first `cap` bytes, whatever the file size.
+    pub(super) fn run_prefix(self, cap: u64) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Host(path) => crate::files::read_prefix(std::path::Path::new(&path), cap)
+                .map_err(|(_, message)| message),
+            Self::OffHost(target, path) => {
+                super::pane_directory::read_off_host_prefix(&target, &path, cap)
+                    .map_err(|(_, message)| message)
+            }
+        }
+    }
+
+    pub(super) fn run(self) -> Result<String, String> {
         match self {
             Self::Host(path) => {
                 crate::files::read(std::path::Path::new(&path)).map_err(|(_, message)| message)
@@ -70,14 +93,22 @@ impl App {
         let task_id = task.id.public();
         let path = task.result_path.clone();
         let screen = task.screen_tail.clone();
-        // Why the place saved at submit: the pane may be closed or run another
-        // shell now, and the file still sits where the agent wrote it.
-        let read = path.clone().map(|path| match &task.result_place {
-            ResultPlace::Host => FileRead::Host(path),
-            ResultPlace::OffHost(environment) => FileRead::OffHost(environment.clone(), path),
-        });
-        let Some(read) = read else {
-            let _ = respond_to.send(result_response(id, task_id, path, None, screen));
+        if let Some(saved) = &task.saved_result {
+            let result = TaskResult {
+                task_id,
+                source: TaskResultSource::File,
+                path,
+                text: saved.text.clone(),
+                truncated: saved.truncated,
+            };
+            let _ = respond_to.send(encode_success(id, ResponseResult::TaskResult { result }));
+            return true;
+        }
+        let Some(read) = FileRead::of(task) else {
+            let file = path.as_ref().map(|_| {
+                Err("the file was on another host and was not copied before the restart".into())
+            });
+            let _ = respond_to.send(result_response(id, task_id, path, file, screen));
             return true;
         };
         let Some(permit) = self.try_acquire_directory_slot(&id, &respond_to) else {
@@ -150,6 +181,7 @@ fn choose_result(
                 source: TaskResultSource::File,
                 path,
                 text,
+                truncated: false,
             })
         }
         Some(Err(message)) => Some(message),
@@ -161,6 +193,7 @@ fn choose_result(
             source: TaskResultSource::Screen,
             path: None,
             text,
+            truncated: false,
         }),
         None => Err(match file_error {
             Some(message) => {

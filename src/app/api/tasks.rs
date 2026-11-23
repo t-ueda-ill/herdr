@@ -83,23 +83,7 @@ impl App {
             .unwrap_or_else(|| Location::new(None, None));
         // Why not `location`: it comes from saved metadata, and a cold-restored
         // pane can run a host shell while it still names its old container.
-        let result_place = match crate::server::client_shell::running_pane_off_host_shell(
-            self,
-            validated.ws_idx,
-            validated.pane_id,
-        ) {
-            Some(crate::server::client_shell::RunningOffHostShell::Container(launch)) => {
-                ResultPlace::OffHost(Box::new(crate::offhost::PaneEnvironment::Container(
-                    Box::new(launch.clone()),
-                )))
-            }
-            Some(crate::server::client_shell::RunningOffHostShell::Ssh(launch)) => {
-                ResultPlace::OffHost(Box::new(crate::offhost::PaneEnvironment::Ssh(
-                    launch.clone(),
-                )))
-            }
-            None => ResultPlace::Host,
-        };
+        let result_place = self.running_result_place(validated.ws_idx, validated.pane_id);
         let result_dir = if params.result_file {
             match task_result_dir(&result_place) {
                 Ok(dir) => Some(dir),
@@ -250,6 +234,8 @@ impl App {
             match effect {
                 Effect::Emit(task) => {
                     self.save_finished_screen_tail(task);
+                    self.start_result_capture(task);
+                    self.schedule_task_save();
                     if let Some(task) = self.task_info(task) {
                         self.emit_event(EventEnvelope {
                             event: EventKind::TaskUpdated,
@@ -274,6 +260,104 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Where the pane's shell runs now, as the place of a result file.
+    fn running_result_place(&self, ws_idx: usize, pane_id: crate::layout::PaneId) -> ResultPlace {
+        match crate::server::client_shell::running_pane_off_host_shell(self, ws_idx, pane_id) {
+            Some(crate::server::client_shell::RunningOffHostShell::Container(launch)) => {
+                ResultPlace::OffHost(Box::new(crate::offhost::PaneEnvironment::Container(
+                    Box::new(launch.clone()),
+                )))
+            }
+            Some(crate::server::client_shell::RunningOffHostShell::Ssh(launch)) => {
+                ResultPlace::OffHost(Box::new(crate::offhost::PaneEnvironment::Ssh(
+                    launch.clone(),
+                )))
+            }
+            None => ResultPlace::Host,
+        }
+    }
+
+    /// A task carried over a handoff lost its off-host place with the old
+    /// server; the pane that still runs it knows the place again.
+    fn find_carried_result_place(&mut self, task: TaskId) {
+        let Some(terminal) = self
+            .state
+            .tasks
+            .get(task)
+            .filter(|task| task.result_place == ResultPlace::Unreachable)
+            .map(|task| task.terminal.clone())
+        else {
+            return;
+        };
+        let Some((ws_idx, pane_id)) = self.terminal_pane(&terminal) else {
+            return;
+        };
+        if let place @ ResultPlace::OffHost(_) = self.running_result_place(ws_idx, pane_id) {
+            self.state.tasks.set_result_place(task, place);
+        }
+    }
+
+    /// Queues a copy of the result file of a task that just finished, so the
+    /// text stays readable after /tmp is cleaned, the host goes away, or
+    /// herdr restarts.
+    fn start_result_capture(&mut self, task: TaskId) {
+        let wanted = self.state.tasks.get(task).is_some_and(|task| {
+            task.state.is_finished() && task.saved_result.is_none() && task.result_path.is_some()
+        });
+        if !wanted {
+            return;
+        }
+        self.find_carried_result_place(task);
+        self.task_captures.enqueue(task);
+        self.pump_result_captures();
+    }
+
+    /// Starts queued copies while fewer than the limit run.
+    pub(crate) fn pump_result_captures(&mut self) {
+        while let Some(task) = self.task_captures.next_to_start() {
+            let Some(read) = self
+                .state
+                .tasks
+                .get(task)
+                .filter(|task| task.saved_result.is_none())
+                .and_then(super::task_result::FileRead::of)
+            else {
+                continue;
+            };
+            let event_tx = self.event_tx.clone();
+            let spawned = crate::thread_spawn::spawn_named("herdr-task-capture", move || {
+                let cap = crate::tasks::record::SAVED_RESULT_LIMIT as u64 + 1;
+                let result = read.run_prefix(cap);
+                let _ = event_tx
+                    .blocking_send(crate::events::AppEvent::TaskResultRead { task, result });
+            });
+            match spawned {
+                Ok(_) => self.task_captures.started(),
+                Err(err) => {
+                    tracing::warn!(err = %err, "failed to spawn task result capture thread");
+                }
+            }
+        }
+    }
+
+    pub(crate) fn keep_task_result(&mut self, task: TaskId, result: Result<Vec<u8>, String>) {
+        self.task_captures.finished();
+        match result {
+            Ok(bytes) => {
+                self.state
+                    .tasks
+                    .save_result(task, crate::tasks::record::SavedResult::from_prefix(bytes));
+                self.schedule_task_save();
+            }
+            // Why not retry: the agent did not write the file, or the host is
+            // gone; task.result falls back to the screen either way.
+            Err(message) => {
+                tracing::debug!(task = %task.public(), err = %message, "task result not copied");
+            }
+        }
+        self.pump_result_captures();
     }
 
     /// Runs before the next queued task is written, so the tail is this task's.
@@ -412,6 +496,8 @@ fn task_result_dir(place: &ResultPlace) -> Result<String, String> {
             Ok(dir.display().to_string())
         }
         ResultPlace::OffHost(_) => Ok(remote_result_dir()),
+        // Why an error: only tasks restored from the file have this place.
+        ResultPlace::Unreachable => Err("the task's host is not known".to_string()),
     }
 }
 
@@ -433,12 +519,7 @@ fn response_error_message(response: &str) -> String {
         .unwrap_or_else(|| response.to_string())
 }
 
-fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis().min(u128::from(u64::MAX)) as u64)
-        .unwrap_or(0)
-}
+use crate::tasks::unix_ms;
 
 fn task_now() -> Now {
     Now {
@@ -605,6 +686,26 @@ mod tests {
                 Err(_) => Err(serde_json::from_str(&response)
                     .unwrap_or_else(|_| panic!("unexpected response: {response}"))),
             }
+        }
+
+        /// Lets the capture worker report back, as the app loop would.
+        fn wait_for_saved_result(&mut self, task_id: &str) {
+            let id = crate::tasks::TaskId::parse(task_id).expect("task id");
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                self.app.drain_all_internal_events();
+                if self
+                    .app
+                    .state
+                    .tasks
+                    .get(id)
+                    .is_some_and(|task| task.saved_result.is_some())
+                {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("the result of {task_id} was not copied");
         }
 
         fn pane_prints(&self, bytes: &[u8]) {
@@ -897,6 +998,46 @@ mod tests {
         assert_eq!(result.source, TaskResultSource::File);
         assert_eq!(result.text, "## plan\n1. fix the token check\n");
         assert_eq!(result.path.as_deref(), task.result_path.as_deref());
+    }
+
+    #[tokio::test]
+    async fn a_result_file_is_copied_when_the_task_finishes_and_outlives_the_file() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit_with("plan", true);
+        fixture.agent_becomes(AgentState::Working);
+        let path = std::path::PathBuf::from(task.result_path.clone().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "VERDICT: approve\n").unwrap();
+        fixture.agent_becomes(AgentState::Idle);
+
+        fixture.wait_for_saved_result(&task.task_id);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(path.parent().unwrap());
+        let result = fixture.result(&task.task_id).expect("task result");
+
+        assert_eq!(result.source, TaskResultSource::File);
+        assert_eq!(result.text, "VERDICT: approve\n");
+        assert!(!result.truncated);
+    }
+
+    #[tokio::test]
+    async fn a_result_file_past_the_viewer_limit_is_copied_from_its_start() {
+        let mut fixture = fixture(AgentState::Idle);
+        let task = fixture.submit_with("plan", true);
+        fixture.agent_becomes(AgentState::Working);
+        let path = std::path::PathBuf::from(task.result_path.clone().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let size = crate::files::MAX_TEXT_BYTES as usize + 1;
+        std::fs::write(&path, "x".repeat(size)).unwrap();
+        fixture.agent_becomes(AgentState::Idle);
+
+        fixture.wait_for_saved_result(&task.task_id);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(path.parent().unwrap());
+        let result = fixture.result(&task.task_id).expect("task result");
+
+        assert!(result.truncated);
+        assert_eq!(result.text.len(), crate::tasks::record::SAVED_RESULT_LIMIT);
     }
 
     #[tokio::test]

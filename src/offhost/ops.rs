@@ -152,6 +152,24 @@ pub(crate) fn index(
     })
 }
 
+/// The first `cap` bytes of a file, for a copy that must not depend on the
+/// file size.
+pub(crate) fn read_prefix(
+    runner: &dyn ScriptRunner,
+    path: &str,
+    cap: u64,
+) -> Result<Vec<u8>, Failure> {
+    validate_path(path)?;
+    let cap = cap.to_string();
+    let output = runner
+        .run(&super::scripts::read_prefix_script(), &[path, &cap])
+        .map_err(|err| err.failure())?;
+    match parse_read(&output).map_err(|failure| script_failure(failure, path))? {
+        ParsedRead::Content { bytes, .. } => Ok(bytes),
+        ParsedRead::Unchanged { .. } => Err(("read_failed", "no content".into())),
+    }
+}
+
 pub(crate) fn read(
     runner: &dyn ScriptRunner,
     location: PaneLocation,

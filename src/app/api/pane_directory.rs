@@ -106,6 +106,20 @@ pub(super) fn read_off_host_text(
     ops::read(&runner, environment.location(), path, None).map(|content| content.document.text)
 }
 
+pub(super) fn read_off_host_prefix(
+    environment: &PaneEnvironment,
+    path: &str,
+    cap: u64,
+) -> Result<Vec<u8>, Failure> {
+    ensure_platform_supported()?;
+    let runner = EnvironmentRunner {
+        programs: Programs::system(),
+        env: environment,
+        deadline: Instant::now() + environment.deadline_budget(false),
+    };
+    ops::read_prefix(&runner, path, cap)
+}
+
 fn ensure_platform_supported() -> Result<(), Failure> {
     if !crate::platform::OFFHOST_FILE_VIEWER_SUPPORTED {
         return Err((

@@ -19,7 +19,7 @@ fn session_history_path() -> PathBuf {
 // Follow symlinks manually so a write through a (possibly dangling) symlink
 // lands on the target. `fs::canonicalize` requires the target to exist, which
 // excludes the dangling-symlink case stow users hit on the very first save.
-fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
+pub(super) fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
     let mut current = path.to_path_buf();
     for _ in 0..16 {
         let meta = match std::fs::symlink_metadata(&current) {
