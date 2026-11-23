@@ -103,11 +103,20 @@ pub(super) fn render_goto_preview(
                 return Rect::default();
             }
             let button = lines.reserve_bottom();
+            // Why the task check: after the list changes, the text read for
+            // the previous task must not sit under the new task's request.
+            let shown_task = task
+                .filter(|task| task.state.is_finished())
+                .map(|task| task.task_id.as_str());
             match n
                 .tasks
                 .preview(endpoint_id, pane_id)
-                .map(|preview| &preview.body)
-            {
+                .map(|preview| match &preview.body {
+                    PreviewBody::Text { .. } if preview.task_id() != shown_task => {
+                        &PreviewBody::Loading
+                    }
+                    body => body,
+                }) {
                 None | Some(PreviewBody::Loading) => lines.put("loading…", dim),
                 Some(PreviewBody::Unavailable(message)) => lines.put(message, dim),
                 Some(PreviewBody::Text {

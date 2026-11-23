@@ -671,3 +671,24 @@ fn a_click_on_esc_back_returns_to_the_picker() {
         Some(ClientShellOverlay::Navigator(_))
     ));
 }
+
+#[test]
+fn a_result_read_for_the_previous_task_is_not_shown_under_a_new_one() {
+    let (mut state, now) = finished_picker();
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+        panic!("picker is open");
+    };
+    navigator.tasks.receive_list(
+        &ClientEndpointId::Local,
+        Some(vec![
+            task("t_1", "completed", Some(5)),
+            task("t_2", "running", None),
+        ]),
+        now,
+    );
+
+    let text = screen_text(&mut state, 120, 30);
+
+    assert!(!text.contains("VERDICT: approve"), "{text}");
+    assert!(text.contains("loading…"), "{text}");
+}
