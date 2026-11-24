@@ -1543,6 +1543,9 @@ impl ClientShellState {
         if self.route_previews_mouse(mouse.kind, point, outcome) {
             return;
         }
+        if self.route_assist_mouse(mouse.kind, point, outcome) {
+            return;
+        }
         if matches!(
             self.overlay,
             Some(
@@ -2058,6 +2061,7 @@ impl ClientShellState {
                     .map(|hit| hit.pane_id.clone());
                 if let Some(pane_id) = pane_id {
                     self.open_pane_context_menu(pane_id, mouse.column, mouse.row);
+                    self.refresh_assist_links(outcome);
                     outcome.repaint = true;
                 }
             }

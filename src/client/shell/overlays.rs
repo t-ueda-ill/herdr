@@ -1,5 +1,6 @@
 use super::*;
 
+mod assist_overlays;
 mod file_viewer_overlay;
 mod goto_preview_overlay;
 mod list_picker_overlay;
@@ -112,6 +113,7 @@ pub(crate) fn render_client_overlay(
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
         ClientShellOverlay::Previews(v) => preview_overlays::render_previews_overlay(b, v, p),
+        ClientShellOverlay::Assist(v) => assist_overlays::render_assist_overlay(b, v, p),
         ClientShellOverlay::OpenPicker(v) => {
             open_picker_overlays::render_open_picker_overlay(b, v, p)
         }

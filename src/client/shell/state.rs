@@ -41,6 +41,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) prompt_new_tab_name: bool,
     pub(super) prompt_new_workspace_name: bool,
     pub(super) confirm_close: bool,
+    /// The product the Ask AI picker selects first.
+    pub(super) assist_product: Option<crate::api::schema::AssistProduct>,
     pub(super) file_viewer_show_hidden: bool,
     pub(super) file_viewer_show_ignored: bool,
     pub(super) file_workbench_keys: std::collections::BTreeMap<String, String>,
@@ -331,6 +333,7 @@ pub(super) enum ClientShellOverlayKind {
     WorktreeOpen,
     WorktreeRemove,
     Previews,
+    Assist,
     OpenPicker,
     FileViewer,
     ContextMenu,
@@ -536,6 +539,22 @@ impl ClientWorktreeOpenEntry {
             .to_lowercase()
             .contains(&query)
     }
+}
+
+/// The Ask AI picker: which product to open, and where.
+#[derive(Debug)]
+pub(super) struct ClientAssistOverlay {
+    /// The pane the assist will read.
+    pub(super) pane_id: String,
+    pub(super) products: Vec<crate::api::schema::AssistProductInfo>,
+    pub(super) selected: usize,
+    pub(super) placement: crate::api::schema::AssistPlacement,
+    /// Why kept: the list picker draws a search line, which this short list
+    /// never uses.
+    pub(super) query: TextEditor,
+    /// A start waits for its answer.
+    pub(super) starting: bool,
+    pub(super) error: Option<String>,
 }
 
 /// The running previews of the active server, from `preview.list`.
@@ -923,6 +942,8 @@ pub(super) enum ClientContextMenuAction {
     SplitDown,
     Zoom,
     ToggleRightClickPassthrough,
+    AskAi,
+    SendLatestToAssist,
     ClosePane,
 }
 
@@ -948,6 +969,10 @@ pub(super) enum ClientContextMenuTarget {
         source_pane_id: Option<String>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+        /// The server opens assists and this pane is not one.
+        offers_ask_ai: bool,
+        /// The pane is an assist or has one.
+        offers_send_latest: bool,
     },
 }
 
@@ -1005,6 +1030,7 @@ pub(super) enum ClientShellOverlay {
     WorktreeOpen(ClientWorktreeOpenOverlay),
     WorktreeRemove(ClientWorktreeRemoveOverlay),
     Previews(ClientPreviewsOverlay),
+    Assist(ClientAssistOverlay),
     OpenPicker(ClientOpenPickerOverlay),
     FileViewer(Box<ClientFileViewerOverlay>),
     ContextMenu(ClientContextMenuOverlay),
@@ -1029,6 +1055,7 @@ impl ClientShellOverlay {
             Self::WorktreeOpen(_) => ClientShellOverlayKind::WorktreeOpen,
             Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
             Self::Previews(_) => ClientShellOverlayKind::Previews,
+            Self::Assist(_) => ClientShellOverlayKind::Assist,
             Self::OpenPicker(_) => ClientShellOverlayKind::OpenPicker,
             Self::FileViewer(_) => ClientShellOverlayKind::FileViewer,
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
@@ -1071,6 +1098,13 @@ pub(super) enum PendingEndpointKind {
     PreviewStop {
         preview_id: String,
     },
+    /// Ask AI… on `pane_id` waits for the products the server has.
+    AssistProducts {
+        pane_id: String,
+    },
+    AssistStart,
+    AssistRefresh,
+    AssistList,
     PrepareOpenPicker(OpenPickerSource),
     /// Lists one docker host's containers for the second picker stage.
     ListContainers(OpenPickerHost),
@@ -1401,6 +1435,8 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_queries: HashMap<String, super::endpoint_queries::PendingEndpointQuery>,
     /// A selection waiting for a Go to read on its server to finish.
     pub(crate) deferred_query_activation: Option<crate::client::endpoint::EndpointActivationIntent>,
+    /// Assists of the active server, from `assist.list` and `assist.start`.
+    pub(super) assist_links: Vec<crate::api::schema::AssistInfo>,
     /// When that wait ends. Why apart from the intent: the retried
     /// activation keeps the first deadline.
     pub(crate) query_activation_deadline: Option<(ClientEndpointId, std::time::Instant)>,
@@ -1594,6 +1630,7 @@ impl ClientShellState {
             pending_requests: HashMap::new(),
             endpoint_queries: HashMap::new(),
             deferred_query_activation: None,
+            assist_links: Vec::new(),
             query_activation_deadline: None,
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),

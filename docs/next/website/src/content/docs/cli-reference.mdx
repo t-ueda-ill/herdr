@@ -476,6 +476,7 @@ Herdr writes what the pane shows to `context.md` in a new folder under the temp 
 
 `assist refresh` writes the file again from the pane's current output and sends the assist a line that tells it to read the file again. It takes the assist or the pane it reads. The assist only advises: Herdr starts `claude` with `--disallowedTools Bash(herdr:*)`, `codex` with `--sandbox read-only`, and `copilot` with `--deny-tool=shell(herdr:*)`. These rules belong to each CLI and are not a security boundary. An assist is not a target for `task submit`. Closing the assist deletes its folder; closing the pane it reads leaves the assist open, and `assist list` then shows it `for a closed pane`. Assists are not kept across a server restart, and stopping the server deletes their folders.
 
+In the TUI, `Ask AI…` in a pane's right-click menu opens an assist for that pane, and `keys.ask_ai` (unset by default) does it for the focused pane. With one CLI on the server it opens at once; with more, a picker lists them with their paths, starting on `ui.assist_product` (`claude`, `codex`, or `copilot`; unset by default). Enter or `↵ open` opens the selected one, and Tab or the placement button cycles `auto`, `right`, and `below`. `Send latest to AI` in the menu of an assist, or of the pane it reads, does `assist refresh`. An assist's own menu has no `Ask AI…`.
 
 ## Agents
 

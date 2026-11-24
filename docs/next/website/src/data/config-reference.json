@@ -542,6 +542,12 @@
           "description": "Browse files from the focused pane's working directory and send a path to it. The files open beside the terminals, or full screen when chosen from their right-click menu. When the files are hidden, pressing it shows them and gives them the keys; when they are shown beside a terminal that has the keys, it gives the files the keys; otherwise it hides them."
         },
         {
+          "key": "keys.ask_ai",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Open a coding-agent CLI beside the focused pane to advise on it. Unset by default."
+        },
+        {
           "key": "keys.rename_workspace",
           "type": "keybinding",
           "default": "\"prefix+shift+w\"",
@@ -969,6 +975,12 @@
           "type": "boolean",
           "default": "true",
           "description": "Ask for confirmation before closing a workspace."
+        },
+        {
+          "key": "ui.assist_product",
+          "type": "string",
+          "default": "unset",
+          "description": "The CLI the Ask AI picker selects first: claude, codex, or copilot."
         },
         {
           "key": "ui.upload_on_drop",

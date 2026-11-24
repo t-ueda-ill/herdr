@@ -181,7 +181,7 @@ impl ClientShellState {
     }
 
     /// The visible notice's title and body.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn endpoint_notice_for_test(&self) -> Option<(&str, &str)> {
         self.visible_endpoint_notice
             .as_ref()

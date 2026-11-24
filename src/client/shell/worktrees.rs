@@ -548,7 +548,11 @@ impl ClientShellState {
                 | PendingEndpointKind::CopySearch { .. }
                 | PendingEndpointKind::CopyCommandOutput { .. }
                 | PendingEndpointKind::PreviewList
-                | PendingEndpointKind::PreviewStop { .. },
+                | PendingEndpointKind::PreviewStop { .. }
+                | PendingEndpointKind::AssistProducts { .. }
+                | PendingEndpointKind::AssistStart
+                | PendingEndpointKind::AssistRefresh
+                | PendingEndpointKind::AssistList,
                 Err(_),
             ) => true,
         }

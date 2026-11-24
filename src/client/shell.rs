@@ -21,6 +21,7 @@ pub(super) use endpoints::*;
 mod file_viewer;
 mod investigation;
 use file_viewer::{ClientFileViewerOverlay, FileViewerButton, FileViewerRequest};
+mod assists;
 mod global_menu;
 mod goto_preview;
 mod goto_result;

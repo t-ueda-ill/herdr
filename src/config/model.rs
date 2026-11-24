@@ -356,6 +356,8 @@ pub struct KeysConfig {
     pub open_container_workspace: BindingConfig,
     /// Browse files from the focused pane's working directory and send a path to it. Default: "prefix+f"
     pub open_files: BindingConfig,
+    /// Open a coding-agent CLI beside the focused pane to advise on it. Unset by default.
+    pub ask_ai: BindingConfig,
     /// Rename the selected workspace. Default: "prefix+shift+w"
     pub rename_workspace: BindingConfig,
     /// Close the selected workspace. Default: "prefix+shift+d"
@@ -495,6 +497,8 @@ pub(crate) struct KeysConfigOverlay {
     remove_worktree: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     open_ssh_workspace: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ask_ai: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     open_container_workspace: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -664,6 +668,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(open_worktree);
         apply_field!(remove_worktree);
         apply_field!(open_ssh_workspace);
+        apply_field!(ask_ai);
         apply_field!(open_container_workspace);
         apply_field!(open_files);
         apply_field!(rename_workspace);
@@ -772,6 +777,7 @@ impl KeysConfig {
         copy_effective_action_field!(open_worktree, keybinds.open_worktree);
         copy_effective_action_field!(remove_worktree, keybinds.remove_worktree);
         copy_effective_action_field!(open_ssh_workspace, keybinds.open_ssh_workspace);
+        copy_effective_action_field!(ask_ai, keybinds.ask_ai);
         copy_effective_action_field!(open_container_workspace, keybinds.open_container_workspace);
         copy_effective_action_field!(open_files, keybinds.open_files);
         copy_effective_action_field!(rename_workspace, keybinds.rename_workspace);
@@ -981,6 +987,8 @@ pub struct UiConfig {
     pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
+    /// The CLI the Ask AI picker selects first: claude, codex, or copilot. Unset by default.
+    pub assist_product: Option<crate::api::schema::AssistProduct>,
     /// Upload files dropped onto ssh and container panes, or onto any pane
     /// of a remote server, and paste their remote paths; also copy files
     /// dropped onto the file workbench list into its selected folder. A single
@@ -1191,6 +1199,7 @@ impl Default for KeysConfig {
             open_worktree: BindingConfig::empty(),
             remove_worktree: BindingConfig::empty(),
             open_ssh_workspace: BindingConfig::empty(),
+            ask_ai: BindingConfig::empty(),
             open_container_workspace: BindingConfig::empty(),
             open_files: BindingConfig::one("prefix+f"),
             rename_workspace: BindingConfig::one("prefix+shift+w"),
@@ -1277,6 +1286,7 @@ impl Default for UiConfig {
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
             confirm_close: true,
+            assist_product: None,
             upload_on_drop: true,
             upload_confirm_bytes: 100 * 1024 * 1024,
             upload_confirm_entries: 1000,

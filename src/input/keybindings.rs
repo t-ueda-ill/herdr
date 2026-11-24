@@ -25,6 +25,7 @@ pub(crate) enum KeybindAction {
     OpenSshWorkspace,
     OpenContainerWorkspace,
     OpenFiles,
+    AskAi,
     RenameWorkspace,
     CloseWorkspace,
     SwitchWorkspace(usize),
@@ -110,6 +111,7 @@ pub(crate) fn resolve_non_indexed_action(
             &keybinds.open_ssh_workspace,
             KeybindAction::OpenSshWorkspace,
         ),
+        (&keybinds.ask_ai, KeybindAction::AskAi),
         (
             &keybinds.open_container_workspace,
             KeybindAction::OpenContainerWorkspace,

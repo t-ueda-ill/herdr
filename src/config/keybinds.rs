@@ -360,6 +360,7 @@ pub struct Keybinds {
     pub open_ssh_workspace: ActionKeybinds,
     pub open_container_workspace: ActionKeybinds,
     pub open_files: ActionKeybinds,
+    pub ask_ai: ActionKeybinds,
     pub rename_workspace: ActionKeybinds,
     pub close_workspace: ActionKeybinds,
     pub workspace_picker: ActionKeybinds,
@@ -546,6 +547,7 @@ impl Config {
             open_ssh_workspace: empty_action!(),
             open_container_workspace: empty_action!(),
             open_files: empty_action!(),
+            ask_ai: empty_action!(),
             rename_workspace: empty_action!(),
             close_workspace: empty_action!(),
             workspace_picker: empty_action!(),
@@ -676,6 +678,7 @@ impl Config {
             apply_action!(keybinds.open_worktree, open_worktree, source);
             apply_action!(keybinds.remove_worktree, remove_worktree, source);
             apply_action!(keybinds.open_ssh_workspace, open_ssh_workspace, source);
+            apply_action!(keybinds.ask_ai, ask_ai, source);
             apply_action!(
                 keybinds.open_container_workspace,
                 open_container_workspace,

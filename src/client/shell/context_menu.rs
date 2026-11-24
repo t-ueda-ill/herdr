@@ -77,6 +77,8 @@ impl ClientContextMenuOverlay {
                 source_pane_id,
                 has_manual_label,
                 right_click_passthrough,
+                offers_ask_ai,
+                offers_send_latest,
                 ..
             } => {
                 let mut items = vec![item("Rename pane", Action::RenamePane)];
@@ -89,6 +91,17 @@ impl ClientContextMenuOverlay {
                 items.extend([
                     item("Split right", Action::SplitRight),
                     item("Split down", Action::SplitDown),
+                ]);
+                if *offers_ask_ai {
+                    items.push(item(super::assists::ASK_AI_LABEL, Action::AskAi));
+                }
+                if *offers_send_latest {
+                    items.push(item(
+                        super::assists::SEND_LATEST_LABEL,
+                        Action::SendLatestToAssist,
+                    ));
+                }
+                items.extend([
                     item("Zoom", Action::Zoom),
                     item(
                         if *right_click_passthrough {
@@ -180,13 +193,19 @@ impl ClientShellState {
             .focused_pane_id
             .clone()
             .filter(|focused| focused != &pane_id);
+        let workspace_id = pane.workspace_id.clone();
+        let has_manual_label = pane.label.is_some();
+        let right_click_passthrough = pane.right_click_passthrough;
+        let (offers_ask_ai, offers_send_latest) = self.assist_menu_offers(&pane_id);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Pane {
                 pane_id,
-                workspace_id: pane.workspace_id.clone(),
+                workspace_id,
                 source_pane_id,
-                has_manual_label: pane.label.is_some(),
-                right_click_passthrough: pane.right_click_passthrough,
+                has_manual_label,
+                right_click_passthrough,
+                offers_ask_ai,
+                offers_send_latest,
             },
             x,
             y,
@@ -470,6 +489,10 @@ impl ClientShellState {
                 }),
                 outcome,
             ),
+            ClientContextMenuAction::AskAi => self.begin_assist(pane_id, outcome),
+            ClientContextMenuAction::SendLatestToAssist => {
+                self.send_latest_to_assist(pane_id, outcome);
+            }
             ClientContextMenuAction::ClosePane => self.request_pane_close(pane_id, outcome),
             _ => {}
         }

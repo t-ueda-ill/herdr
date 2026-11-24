@@ -134,6 +134,7 @@ pub(crate) fn keybind_help_groups(
                     "delete worktree checkout",
                 ),
                 entry(binding_label(&keybinds.open_ssh_workspace), "open ssh host"),
+                entry(binding_label(&keybinds.ask_ai), "ask AI about the pane"),
                 entry(
                     binding_label(&keybinds.open_container_workspace),
                     "open container",
