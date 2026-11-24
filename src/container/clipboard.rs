@@ -517,6 +517,7 @@ mod tests {
         fn remote() -> DockerHost {
             DockerHost::Ssh {
                 host: "deploy@prod".into(),
+                config: None,
                 control_path: Some(crate::ssh_host::control::test_control_path("prod")),
             }
         }

@@ -6,6 +6,7 @@ pub fn run_server() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let handoff_import = args.get(2).map(String::as_str) == Some("--handoff-import");
     // Taken before any thread starts, since it edits the process environment.
+    let ssh_config_request = crate::ssh_host::session_config::take_server_request();
     let recording_request = crate::recording::launch::take_server_request();
     let process_context = crate::platform::prepare_server_process(handoff_import);
     init_logging();
@@ -19,6 +20,14 @@ pub fn run_server() -> io::Result<()> {
     crate::platform::raise_server_nofile_limit();
 
     if handoff_import {
+        // The predecessor already took the request, so this only reads the
+        // remembered file and cannot fail; a failure must not drop its panes.
+        if let Err(err) = crate::ssh_host::session_config::establish(
+            ssh_config_request,
+            &crate::session::data_dir(),
+        ) {
+            warn!(%err, "could not settle the session ssh config during handoff");
+        }
         crate::recording::start_server(recording_request);
         let socket_path = args
             .get(3)
@@ -54,7 +63,15 @@ pub fn run_server() -> io::Result<()> {
         Err(err) => return Err(err),
     };
     // Why after the bind: a duplicate server that loses the socket race must
-    // not overwrite the running server's remembered choice.
+    // not overwrite the running server's remembered config.
+    crate::ssh_host::session_config::establish(ssh_config_request, &crate::session::data_dir())
+        .map_err(|err| {
+            tracing::error!(%err, "could not remember the requested ssh config");
+            io::Error::new(
+                err.kind(),
+                format!("cannot remember the session ssh config: {err}"),
+            )
+        })?;
     crate::recording::start_server(recording_request);
 
     let rt = tokio::runtime::Builder::new_multi_thread()

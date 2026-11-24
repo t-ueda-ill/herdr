@@ -451,7 +451,7 @@ fn restored_ssh_launch(pane: &super::snapshot::PaneSnapshot) -> Option<crate::ss
     let saved = pane.ssh.as_ref()?;
     let launch = saved.to_launch();
     if launch.is_none() {
-        warn!(host = %saved.host, "dropping ssh pane metadata with an invalid host");
+        warn!(host = %saved.host, "dropping ssh pane metadata with an invalid host or ssh config");
     }
     launch
 }
@@ -1679,6 +1679,7 @@ mod tests {
                 host: host.into(),
                 control_path: Some(PathBuf::from("/tmp/hssh-1/abc-%C")),
                 has_remote_command: true,
+                config: None,
             }),
             ..test_container_snapshot(name)
         }
@@ -2113,6 +2114,7 @@ mod tests {
             host: host.into(),
             control_path: Some(PathBuf::from(format!("/tmp/hssh-test/{host}-%C"))),
             has_remote_command: true,
+            config: None,
         }
     }
 

@@ -117,22 +117,42 @@ pub(crate) fn resolve_request(args: LaunchArgs) -> Result<Option<RecordingReques
     })))
 }
 
+/// Refuses `--log` when a socket override points this launch at a server
+/// whose session this process cannot name.
+///
+/// Why: the remembered choice is read from the selected session's folder,
+/// while a socket override from the environment may attach to another
+/// session's server. An explicit `--session` replaces the overrides.
+pub(crate) fn check_launch_target(
+    explicit_session: bool,
+    socket_override: bool,
+) -> Result<(), String> {
+    if socket_override && !explicit_session {
+        return Err(format!(
+            "{DIR_OPTION} needs --session <name> while HERDR_SOCKET_PATH or HERDR_CLIENT_SOCKET_PATH selects the server"
+        ));
+    }
+    Ok(())
+}
+
 /// Hands `request` to a server this launch spawns, or refuses it when the
 /// session's running server remembers something else.
 ///
 /// Why refuse instead of switching: the running panes already record (or
 /// not) under the remembered choice, and a silent mismatch would leave an
 /// audit trail the user believes exists but does not.
+/// `stop_command` stops this session's server, e.g. `herdr session stop prod`.
 pub(crate) fn apply_for_launch(
     request: &RecordingRequest,
     server_running: bool,
     state_dir: &Path,
+    stop_command: &str,
 ) -> Result<(), String> {
     if server_running {
         let remembered = read_remembered(state_dir);
         if !same_settings(remembered.as_ref(), request.settings()) {
             return Err(format!(
-                "this session's server is {}; run `herdr server stop` first to switch to {}",
+                "this session's server is {}; run `{stop_command}` first to switch to {}",
                 describe(remembered.as_ref()),
                 describe(request.settings()),
             ));
@@ -403,16 +423,32 @@ mod tests {
     }
 
     #[test]
+    fn a_socket_override_needs_an_explicit_session() {
+        assert!(check_launch_target(false, true).is_err());
+        assert!(check_launch_target(true, true).is_ok());
+        assert!(check_launch_target(false, false).is_ok());
+    }
+
+    #[test]
     fn a_running_server_refuses_a_launch_that_asks_for_something_else() {
         let state = scratch("running");
         let logs = state.join("logs");
         establish(Some(on(&logs, false)), &state).unwrap();
 
-        assert!(apply_for_launch(&on(&logs, false), true, &state).is_ok());
-        let err = apply_for_launch(&on(&logs, true), true, &state).unwrap_err();
+        assert!(apply_for_launch(&on(&logs, false), true, &state, "herdr server stop").is_ok());
+        let err =
+            apply_for_launch(&on(&logs, true), true, &state, "herdr server stop").unwrap_err();
         assert!(err.contains("herdr server stop"), "{err}");
-        assert!(apply_for_launch(&RecordingRequest::Off, true, &state).is_err());
-        assert!(apply_for_launch(&on(&state.join("other"), false), true, &state).is_err());
+        assert!(
+            apply_for_launch(&RecordingRequest::Off, true, &state, "herdr server stop").is_err()
+        );
+        assert!(apply_for_launch(
+            &on(&state.join("other"), false),
+            true,
+            &state,
+            "herdr server stop"
+        )
+        .is_err());
         std::fs::remove_dir_all(state).unwrap();
     }
 }

@@ -579,6 +579,41 @@ fn main() -> io::Result<()> {
         }
     };
 
+    let (args, ssh_config_request) = match ssh_host::session_config::extract_launch_arg(&args)
+        .and_then(|(args, raw)| {
+            let request = raw
+                .map(|raw| ssh_host::session_config::resolve_request(&raw))
+                .transpose()?;
+            Ok((args, request))
+        }) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("error: {err}");
+            eprintln!("run 'herdr --help' for usage");
+            std::process::exit(2);
+        }
+    };
+    if ssh_config_request.is_some() {
+        let socket_override = std::env::var_os(api::SOCKET_PATH_ENV_VAR).is_some()
+            || std::env::var_os(server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR).is_some();
+        if let Err(err) = ssh_host::session_config::check_launch_target(
+            session::explicit_session_requested(),
+            socket_override,
+        ) {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
+    }
+    if ssh_config_request.is_some()
+        && (remote_launch.is_some() || args.iter().skip(1).any(|arg| !arg.starts_with('-')))
+    {
+        eprintln!(
+            "error: --ssh can only be used with the default launch command, without --remote"
+        );
+        eprintln!("run 'herdr --help' for usage");
+        std::process::exit(2);
+    }
+
     let (args, recording_request) = match recording::launch::extract_launch_args(&args)
         .and_then(|(args, parsed)| Ok((args, recording::launch::resolve_request(parsed)?)))
     {
@@ -589,6 +624,17 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     };
+    if recording_request.is_some() {
+        let socket_override = std::env::var_os(api::SOCKET_PATH_ENV_VAR).is_some()
+            || std::env::var_os(server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR).is_some();
+        if let Err(err) = recording::launch::check_launch_target(
+            session::explicit_session_requested(),
+            socket_override,
+        ) {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
+    }
     if recording_request.is_some()
         && (remote_launch.is_some() || args.iter().skip(1).any(|arg| !arg.starts_with('-')))
     {
@@ -768,6 +814,8 @@ fn main() -> io::Result<()> {
         println!("  --session <name>    Use or create a named persistent session");
         println!("  --machine <label-or-id>  Run an API command on a saved SSH machine");
         println!("  --remote <target>   Attach through SSH to a remote Herdr server");
+        println!("  --ssh <file|none>   Open this session's ssh hosts through only <file>");
+        println!("                      (remembered by the session; none restores ssh's defaults)");
         println!("  --remote-keybindings <local|server>");
         println!("                      Keybindings for --remote app attach (default: local)");
         println!("  --log <dir|none>    Record each pane's output under <dir>/<session>/ as");
@@ -863,11 +911,26 @@ fn main() -> io::Result<()> {
     let loaded_config = config::Config::load();
     exit_if_nested_disabled(&loaded_config.config);
 
+    if let Some(request) = &ssh_config_request {
+        let server_running = server::autodetect::is_server_listening().unwrap_or(false);
+        if let Err(err) = ssh_host::session_config::apply_for_launch(
+            request,
+            server_running,
+            &session::data_dir(),
+            &session::local_stop_command(),
+        ) {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
+    }
     if let Some(request) = &recording_request {
         let server_running = server::autodetect::is_server_listening().unwrap_or(false);
-        if let Err(err) =
-            recording::launch::apply_for_launch(request, server_running, &session::data_dir())
-        {
+        if let Err(err) = recording::launch::apply_for_launch(
+            request,
+            server_running,
+            &session::data_dir(),
+            &session::local_stop_command(),
+        ) {
             eprintln!("error: {err}");
             std::process::exit(2);
         }
@@ -875,7 +938,32 @@ fn main() -> io::Result<()> {
 
     let saved_federation =
         client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_enabled_ssh());
-    if let Err(err) = server::autodetect::auto_detect_launch(saved_federation) {
+    let check_ssh_config = || {
+        if let Some(request) = &ssh_config_request {
+            if let Err(err) = ssh_host::session_config::apply_for_launch(
+                request,
+                true,
+                &session::data_dir(),
+                &session::local_stop_command(),
+            ) {
+                eprintln!("error: {err}");
+                std::process::exit(2);
+            }
+        }
+        if let Some(request) = &recording_request {
+            if let Err(err) = recording::launch::apply_for_launch(
+                request,
+                true,
+                &session::data_dir(),
+                &session::local_stop_command(),
+            ) {
+                eprintln!("error: {err}");
+                std::process::exit(2);
+            }
+        }
+        Ok(())
+    };
+    if let Err(err) = server::autodetect::auto_detect_launch(saved_federation, check_ssh_config) {
         eprintln!("herdr: {err}");
         std::process::exit(1);
     }
