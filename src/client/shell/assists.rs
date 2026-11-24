@@ -48,21 +48,22 @@ impl ClientShellState {
                 .assist_links
                 .iter()
                 .any(|link| link.target_pane_id.as_deref() == Some(pane_id));
-        let can_start = self.supports_endpoint_method(&Method::AssistStart(AssistStartParams {
-            pane_id: String::new(),
-            product: None,
-            placement: AssistPlacement::Auto,
-            focus: true,
-        }));
+        // Why advertised and not merely supported: an older server lists no
+        // methods, and offering it Ask AI… would only end in an error.
+        let can_start = self.endpoint_advertises_method("assist.start");
         (can_start && !is_helper, has_assist)
     }
 
     /// Asks the server what assist links it has, so the next pane menu is right.
-    /// Why silent when unsupported: the menu then offers no assist items at all.
+    /// Why only when advertised: a right-click must not raise an error notice
+    /// from a server that never offered assists.
     pub(super) fn refresh_assist_links(&mut self, outcome: &mut ClientShellInput) {
-        let method = Method::AssistList(EmptyParams::default());
-        if self.supports_endpoint_method(&method) {
-            self.push_endpoint_method_with_kind(method, PendingEndpointKind::AssistList, outcome);
+        if self.endpoint_advertises_method("assist.list") {
+            self.push_endpoint_method_with_kind(
+                Method::AssistList(EmptyParams::default()),
+                PendingEndpointKind::AssistList,
+                outcome,
+            );
         }
     }
 

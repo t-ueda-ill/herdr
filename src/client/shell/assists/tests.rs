@@ -492,3 +492,18 @@ fn asking_again_works_once_the_assist_has_opened() {
         [(_, Method::AssistProducts(_))]
     ));
 }
+
+#[test]
+fn a_server_that_lists_no_methods_gets_no_assist_items_or_queries() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.set_endpoint_methods(None);
+
+    let labels = pane_menu_labels(&mut state, "pane_1");
+    let mut outcome = ClientShellInput::default();
+    state.refresh_assist_links(&mut outcome);
+
+    assert!(!labels.contains(&ASK_AI_LABEL));
+    assert!(requests(&outcome).is_empty());
+}
