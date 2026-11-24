@@ -28,7 +28,10 @@ pub fn run_server() -> io::Result<()> {
         ) {
             warn!(%err, "could not settle the session ssh config during handoff");
         }
-        crate::recording::start_server(recording_request);
+        // A failure must not drop the panes this server takes over.
+        if let Err(err) = crate::recording::start_server(recording_request) {
+            warn!(%err, "could not start pane recording during handoff");
+        }
         let socket_path = args
             .get(3)
             .map(PathBuf::from)
@@ -72,7 +75,7 @@ pub fn run_server() -> io::Result<()> {
                 format!("cannot remember the session ssh config: {err}"),
             )
         })?;
-    crate::recording::start_server(recording_request);
+    crate::recording::start_server(recording_request)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

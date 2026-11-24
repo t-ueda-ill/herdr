@@ -176,7 +176,9 @@ pub(crate) fn part_path(identity: &CastIdentity, part: u32) -> PathBuf {
 fn create_part(identity: &CastIdentity, first: u32) -> io::Result<(u32, PathBuf, File)> {
     for part in first..first.saturating_add(MAX_NAME_ATTEMPTS) {
         let path = part_path(identity, part);
-        match crate::platform::create_private_state_file(&path) {
+        // Owner-only on every platform: a plain create inherits the folder's
+        // access rules on Windows, and recordings can hold typed passwords.
+        match crate::platform::create_config_temporary(&path, true) {
             Ok(file) => return Ok((part, path, file)),
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),

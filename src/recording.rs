@@ -47,23 +47,19 @@ static RECORDER: OnceLock<Recorder> = OnceLock::new();
 
 /// Settles the session's choice at server start and starts recording when it
 /// is on. Call once, before the first pane opens.
-pub(crate) fn start_server(request: Option<launch::RecordingRequest>) {
-    let state_dir = crate::session::data_dir();
-    let requested = match &request {
-        Some(launch::RecordingRequest::On(settings)) => Some(settings.clone()),
-        _ => None,
-    };
-    let settings = match launch::establish(request, &state_dir) {
-        Ok(settings) => settings,
-        Err(err) => {
-            // Why still record: the user asked for it at this launch, and a
-            // choice that cannot be remembered must not silently turn it off.
-            tracing::warn!(%err, "could not remember the session's pane recording choice");
-            requested
-        }
-    };
+pub(crate) fn start_server(request: Option<launch::RecordingRequest>) -> std::io::Result<()> {
+    // Why fail the start instead of recording anyway: the remembered choice is
+    // what later launches compare against and what a restart resumes, so a
+    // server that cannot save it would record differently from what it reports.
+    let settings = launch::establish(request, &crate::session::data_dir()).map_err(|err| {
+        tracing::error!(%err, "could not remember the session's pane recording choice");
+        std::io::Error::new(
+            err.kind(),
+            format!("cannot remember the session's pane recording choice: {err}"),
+        )
+    })?;
     let Some(settings) = settings else {
-        return;
+        return Ok(());
     };
     let session = session_folder_name();
     let config = RecorderConfig {
@@ -75,13 +71,13 @@ pub(crate) fn start_server(request: Option<launch::RecordingRequest>) {
         pane_queue_limit_bytes: PANE_QUEUE_LIMIT_BYTES,
     };
     let dir = config.dir.clone();
-    match Recorder::spawn(config) {
-        Ok(recorder) => {
-            tracing::info!(dir = %dir.display(), input = settings.input, "recording panes");
-            let _ = RECORDER.set(recorder);
-        }
-        Err(err) => tracing::warn!(%err, "could not start pane recording"),
-    }
+    let recorder = Recorder::spawn(config).map_err(|err| {
+        tracing::error!(%err, "could not start pane recording");
+        std::io::Error::new(err.kind(), format!("cannot start pane recording: {err}"))
+    })?;
+    tracing::info!(dir = %dir.display(), input = settings.input, "recording panes");
+    let _ = RECORDER.set(recorder);
+    Ok(())
 }
 
 /// The folder below `--log` this session records into.

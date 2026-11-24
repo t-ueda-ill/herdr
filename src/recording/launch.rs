@@ -181,7 +181,7 @@ fn check_writable(dir: &Path) -> Result<(), String> {
     let cannot = |err: io::Error| format!("cannot record into {}: {err}", dir.display());
     super::sink::ensure_private_dir(dir).map_err(cannot)?;
     let probe = dir.join(format!(".herdr-log-check-{}", std::process::id()));
-    crate::platform::create_private_state_file(&probe).map_err(cannot)?;
+    crate::platform::create_config_temporary(&probe, true).map_err(cannot)?;
     let _ = std::fs::remove_file(&probe);
     Ok(())
 }
@@ -420,6 +420,23 @@ mod tests {
         assert!(logs.is_dir());
         assert_eq!(std::fs::read_dir(&logs).unwrap().count(), 0);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_remembered_choice_that_cannot_be_cleared_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = scratch("cannot-clear");
+        establish(Some(on(&state.join("logs"), true)), &state).unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let cleared = establish(Some(RecordingRequest::Off), &state);
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&state).unwrap();
+        // Why skip when it passed: root ignores directory permissions.
+        if cleared.is_ok() {
+            return;
+        }
+        assert_eq!(cleared.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]
