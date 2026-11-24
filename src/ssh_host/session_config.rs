@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn server_remembers_a_requested_file_until_a_default_request() {
         let dir = temp_dir("remember");
-        let file = PathBuf::from("/home/u/.ssh/prod-config");
+        let file = dir.join("prod-config");
 
         let chosen = establish_in(Some(SshConfigRequest::File(file.clone())), &dir).unwrap();
         let kept = establish_in(None, &dir).unwrap();
@@ -311,20 +311,16 @@ mod tests {
     #[test]
     fn running_server_refuses_a_different_config_and_accepts_the_same_one() {
         let dir = temp_dir("running");
-        let file = PathBuf::from("/home/u/.ssh/prod-config");
+        let file = dir.join("prod-config");
         establish_in(Some(SshConfigRequest::File(file.clone())), &dir).unwrap();
 
-        let same = apply_for_launch(&SshConfigRequest::File(file), true, &dir);
-        let other = apply_for_launch(
-            &SshConfigRequest::File("/home/u/.ssh/dev-config".into()),
-            true,
-            &dir,
-        );
+        let same = apply_for_launch(&SshConfigRequest::File(file.clone()), true, &dir);
+        let other = apply_for_launch(&SshConfigRequest::File(dir.join("dev-config")), true, &dir);
         let default = apply_for_launch(&SshConfigRequest::Default, true, &dir);
 
         assert_eq!(same, Ok(()));
         let other = other.unwrap_err();
-        assert!(other.contains("/home/u/.ssh/prod-config"), "{other}");
+        assert!(other.contains(&file.display().to_string()), "{other}");
         assert!(other.contains("herdr server stop"), "{other}");
         assert!(default.is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -333,7 +329,7 @@ mod tests {
     #[test]
     fn request_reaches_the_server_through_the_environment_and_is_cleared() {
         let dir = temp_dir("env");
-        let file = PathBuf::from("/home/u/.ssh/prod-config");
+        let file = dir.join("prod-config");
         std::env::remove_var(ENV_VAR);
 
         apply_for_launch(&SshConfigRequest::File(file.clone()), false, &dir).unwrap();

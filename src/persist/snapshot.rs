@@ -1071,14 +1071,16 @@ mod tests {
 
     #[test]
     fn ssh_snapshot_keeps_the_session_ssh_config_of_the_pane() {
+        // Why under the temp dir: the path must be absolute on every platform.
+        let config = std::env::temp_dir().join("prod-config");
         let launch = crate::ssh_host::SshLaunch::new("prod".into(), None)
             .unwrap()
-            .with_config(Some(PathBuf::from("/home/u/.ssh/prod-config")));
+            .with_config(Some(config.clone()));
 
         let encoded = serde_json::to_value(PaneSshSnapshot::from(&launch)).unwrap();
         let back: PaneSshSnapshot = serde_json::from_value(encoded.clone()).unwrap();
 
-        assert_eq!(encoded["config"], "/home/u/.ssh/prod-config");
+        assert_eq!(encoded["config"], config.to_str().unwrap());
         assert_eq!(back.to_launch().unwrap().config, launch.config);
     }
 
