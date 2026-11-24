@@ -2980,7 +2980,16 @@ impl PaneRuntime {
         let content_write_lock = Arc::new(Mutex::new(()));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
 
-        let recorder = crate::recording::open_pane(pane_id.raw(), cols, rows);
+        let recorder = {
+            let render_dirty = render_dirty.clone();
+            let render_notify = render_notify.clone();
+            // The sidebar mark comes from the shell snapshot, which only a
+            // full render rebuilds.
+            crate::recording::open_pane(pane_id.raw(), cols, rows, move || {
+                render_dirty.request_generic();
+                render_notify.notify_one();
+            })
+        };
         let io = {
             let read_recorder = recorder.clone();
             let terminal = terminal.clone();
@@ -3203,7 +3212,16 @@ impl PaneRuntime {
             });
         }
 
-        let recorder = crate::recording::open_pane(pane_id.raw(), cols, rows);
+        let recorder = {
+            let render_dirty = render_dirty.clone();
+            let render_notify = render_notify.clone();
+            // The sidebar mark comes from the shell snapshot, which only a
+            // full render rebuilds.
+            crate::recording::open_pane(pane_id.raw(), cols, rows, move || {
+                render_dirty.request_generic();
+                render_notify.notify_one();
+            })
+        };
         let io = {
             let read_recorder = recorder.clone();
             let terminal = terminal.clone();

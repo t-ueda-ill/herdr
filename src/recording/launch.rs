@@ -142,7 +142,7 @@ pub(crate) fn apply_for_launch(
     match request {
         RecordingRequest::Off => std::env::set_var(DIR_ENV_VAR, OFF_KEYWORD),
         RecordingRequest::On(settings) => {
-            check_writable(&settings.dir)?;
+            check_writable(&settings.dir.join(super::session_folder_name()))?;
             std::env::set_var(DIR_ENV_VAR, &settings.dir);
             if settings.input {
                 std::env::set_var(INPUT_ENV_VAR, "1");

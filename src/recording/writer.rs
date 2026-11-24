@@ -74,7 +74,12 @@ struct PaneShared {
     queued_bytes: AtomicUsize,
     /// Mirrors `status.error.is_some()` for readers that must not lock.
     failed: AtomicBool,
+    /// Runs once when recording fails, so clients redraw the sidebar mark.
+    on_failure: Option<FailureNotice>,
 }
+
+/// Called from the writer thread; must only flag work for other threads.
+pub(crate) type FailureNotice = Box<dyn Fn() + Send + Sync>;
 
 impl PaneShared {
     fn update(&self, change: impl FnOnce(&mut PaneRecordingStatus)) {
@@ -83,7 +88,11 @@ impl PaneShared {
 
     fn fail(&self, err: &std::io::Error) {
         self.update(|status| status.error = Some(err.to_string()));
-        self.failed.store(true, Ordering::Release);
+        if !self.failed.swap(true, Ordering::AcqRel) {
+            if let Some(notice) = &self.on_failure {
+                notice();
+            }
+        }
     }
 }
 
@@ -116,9 +125,23 @@ impl Recorder {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn pane(&self, pane: u32, cols: u16, rows: u16) -> PaneRecorder {
+        self.pane_with_failure_notice(pane, cols, rows, None)
+    }
+
+    pub(crate) fn pane_with_failure_notice(
+        &self,
+        pane: u32,
+        cols: u16,
+        rows: u16,
+        on_failure: Option<FailureNotice>,
+    ) -> PaneRecorder {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let shared = Arc::new(PaneShared::default());
+        let shared = Arc::new(PaneShared {
+            on_failure,
+            ..PaneShared::default()
+        });
         shared.update(|status| status.input = self.config.input);
         let _ = self.tx.send(Command::Open {
             id,
@@ -442,11 +465,22 @@ impl Writer {
 }
 
 fn finish(entry: PaneEntry, at: Instant) {
-    let Some(file) = entry.file else {
+    let Some(mut file) = entry.file else {
         return;
     };
     let path = file.path().display().to_string();
-    if let Err(err) = file.finish(at) {
+    // Why here too: the dropped tail of a pane that closes right after a
+    // flood has no later event to carry its marker.
+    let dropped = entry.shared.dropped_bytes.swap(0, Ordering::Relaxed);
+    let marked = if dropped > 0 {
+        entry
+            .shared
+            .update(|status| status.dropped_bytes += dropped);
+        file.write_marker(at, &format!("herdr: {dropped} bytes not recorded"))
+    } else {
+        Ok(())
+    };
+    if let Err(err) = marked.and_then(|()| file.finish(at).map(|_| ())) {
         tracing::warn!(%err, %path, "could not finish pane recording");
         entry.shared.fail(&err);
     }
@@ -597,6 +631,54 @@ mod tests {
             codes_and_data(quiet_status.path.as_ref().unwrap()),
             vec![("o".to_owned(), "ok".to_owned())]
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bytes_dropped_right_before_the_pane_closes_still_leave_a_marker() {
+        let mut config = config("dropped-tail", false);
+        config.queue_limit_bytes = 4;
+        let root = config.dir.parent().unwrap().to_path_buf();
+        let recorder = Recorder::spawn(config).unwrap();
+        let pane = recorder.pane(1, 80, 24);
+        pane.output(b"too long");
+        let holder = pane.clone();
+        drop(pane);
+        recorder.shutdown();
+
+        let status = holder.status();
+        assert_eq!(status.dropped_bytes, 8);
+        assert_eq!(
+            codes_and_data(status.path.as_ref().unwrap()),
+            vec![("m".to_owned(), "herdr: 8 bytes not recorded".to_owned())]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failing_pane_notifies_once_so_clients_can_redraw() {
+        let mut config = config("notice", false);
+        let root = config.dir.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&root).unwrap();
+        let blocker = root.join("not-a-folder");
+        std::fs::write(&blocker, b"").unwrap();
+        config.dir = blocker.join("default");
+        let notices = Arc::new(AtomicUsize::new(0));
+        let counter = notices.clone();
+        let recorder = Recorder::spawn(config).unwrap();
+        let pane = recorder.pane_with_failure_notice(
+            1,
+            80,
+            24,
+            Some(Box::new(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            })),
+        );
+        pane.output(b"lost");
+        recorder.shutdown();
+
+        assert!(pane.failed());
+        assert_eq!(notices.load(Ordering::Relaxed), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -49,18 +49,23 @@ static RECORDER: OnceLock<Recorder> = OnceLock::new();
 /// is on. Call once, before the first pane opens.
 pub(crate) fn start_server(request: Option<launch::RecordingRequest>) {
     let state_dir = crate::session::data_dir();
+    let requested = match &request {
+        Some(launch::RecordingRequest::On(settings)) => Some(settings.clone()),
+        _ => None,
+    };
     let settings = match launch::establish(request, &state_dir) {
         Ok(settings) => settings,
         Err(err) => {
+            // Why still record: the user asked for it at this launch, and a
+            // choice that cannot be remembered must not silently turn it off.
             tracing::warn!(%err, "could not remember the session's pane recording choice");
-            return;
+            requested
         }
     };
     let Some(settings) = settings else {
         return;
     };
-    let session = crate::session::active_name()
-        .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned());
+    let session = session_folder_name();
     let config = RecorderConfig {
         dir: settings.dir.join(&session),
         session,
@@ -79,12 +84,22 @@ pub(crate) fn start_server(request: Option<launch::RecordingRequest>) {
     }
 }
 
+/// The folder below `--log` this session records into.
+pub(crate) fn session_folder_name() -> String {
+    crate::session::active_name().unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned())
+}
+
 /// A recorder for a pane runtime that is opening, or `None` when the session
 /// does not record.
-pub(crate) fn open_pane(pane_id: u32, cols: u16, rows: u16) -> Option<PaneRecorder> {
-    RECORDER
-        .get()
-        .map(|recorder| recorder.pane(pane_id, cols, rows))
+pub(crate) fn open_pane(
+    pane_id: u32,
+    cols: u16,
+    rows: u16,
+    on_failure: impl Fn() + Send + Sync + 'static,
+) -> Option<PaneRecorder> {
+    RECORDER.get().map(|recorder| {
+        recorder.pane_with_failure_notice(pane_id, cols, rows, Some(Box::new(on_failure)))
+    })
 }
 
 #[cfg(test)]
