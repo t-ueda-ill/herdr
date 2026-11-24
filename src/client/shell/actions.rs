@@ -400,6 +400,7 @@ impl ClientShellState {
             crate::api::schema::Method::TabCreateInherit(params) => params.create.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
             crate::api::schema::Method::PaneSplitInherit(params) => params.focus,
+            crate::api::schema::Method::AssistStart(params) => params.focus,
             crate::api::schema::Method::SshOpen(params) => params.target.focus(),
             crate::api::schema::Method::ContainerOpen(params) => params.target.focus(),
             crate::api::schema::Method::SshContainerOpen(params) => params.target.focus(),

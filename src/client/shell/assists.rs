@@ -202,19 +202,38 @@ impl ClientShellState {
             return;
         };
         let (ask, send) = self.assist_menu_offers(&pane_id.clone());
-        if let Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
-            target:
-                ClientContextMenuTarget::Pane {
-                    offers_ask_ai,
-                    offers_send_latest,
-                    ..
-                },
+        let Some(ClientShellOverlay::ContextMenu(menu)) = self.overlay.as_mut() else {
+            return;
+        };
+        let ClientContextMenuTarget::Pane {
+            offers_ask_ai,
+            offers_send_latest,
             ..
-        })) = self.overlay.as_mut()
+        } = &mut menu.target
+        else {
+            return;
+        };
+        if (*offers_ask_ai, *offers_send_latest) == (ask, send) {
+            return;
+        }
+        // Why by action: the items move, and the old index could now be
+        // `Close pane`.
+        let highlighted = menu.items().get(menu.highlighted).map(|item| item.action);
+        if let ClientContextMenuTarget::Pane {
+            offers_ask_ai,
+            offers_send_latest,
+            ..
+        } = &mut menu.target
         {
             *offers_ask_ai = ask;
             *offers_send_latest = send;
         }
+        menu.highlighted = highlighted
+            .and_then(|action| menu.items().iter().position(|item| item.action == action))
+            .unwrap_or(0);
+        // Why: the rows of the last frame point at the old items until the
+        // next frame draws the new ones.
+        self.hits.context_menu_rows.clear();
     }
 
     fn move_assist_selection(&mut self, delta: isize) {

@@ -1840,6 +1840,8 @@ impl ClientShellState {
 
     pub(super) fn reset_endpoint_projection(&mut self) {
         self.hits = ShellHitMap::default();
+        // Why: pane ids repeat across servers and boots.
+        self.assist_links.clear();
         self.pane_surface = None;
         self.pending_pane_surface = None;
         self.input_leases = ClientInputLeases::default();

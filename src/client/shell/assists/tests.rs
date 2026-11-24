@@ -382,3 +382,60 @@ fn the_picker_shows_every_product_without_scrolling() {
         assert!(text.contains(path), "{path} is not shown");
     }
 }
+
+#[test]
+fn opening_an_assist_brings_the_terminal_side_forward() {
+    let mut state = shell();
+    ask_ai(&mut state, all_products());
+    state.workbench.files_focused = true;
+
+    key(&mut state, KeyCode::Enter);
+
+    assert!(!state.workbench.files_focused);
+}
+
+#[test]
+fn a_later_assist_list_keeps_the_highlighted_item_by_its_action() {
+    let mut state = shell();
+    state.assist_links = vec![assist("pane_9", "pane_1")];
+    state.open_pane_context_menu("pane_1".into(), 5, 3);
+    let mut outcome = ClientShellInput::default();
+    state.refresh_assist_links(&mut outcome);
+    let sent = requests(&outcome);
+    let highlight = |state: &ClientShellState| match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu.items()[menu.highlighted].action,
+        _ => panic!("pane context menu"),
+    };
+    if let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_mut() {
+        menu.highlighted = menu
+            .items()
+            .iter()
+            .position(|item| item.action == ClientContextMenuAction::ToggleRightClickPassthrough)
+            .unwrap();
+    }
+    state.hits.context_menu_rows = vec![(Rect::new(5, 3, 20, 1), 0)];
+
+    state.handle_endpoint_result(
+        "boot-1",
+        &sent[0].0,
+        Ok(ResponseResult::AssistList {
+            assists: Vec::new(),
+        }),
+    );
+
+    assert_eq!(
+        highlight(&state),
+        ClientContextMenuAction::ToggleRightClickPassthrough
+    );
+    assert!(state.hits.context_menu_rows.is_empty());
+}
+
+#[test]
+fn switching_servers_forgets_the_assists_of_the_old_one() {
+    let mut state = shell();
+    state.assist_links = vec![assist("pane_9", "pane_1")];
+
+    state.reset_endpoint_projection();
+
+    assert!(state.assist_links.is_empty());
+}
