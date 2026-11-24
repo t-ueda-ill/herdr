@@ -187,7 +187,8 @@ pub(super) fn validate_ssh_host(host: &str) -> Result<(), ApiFailure> {
 /// stay off the app thread.
 pub(super) fn resolve_ssh_launch(host: &str) -> Result<SshLaunch, ApiFailure> {
     let hosts = crate::ssh_host::hosts::list_configured_hosts().map_err(ssh_unavailable)?;
-    let config = crate::ssh_host::session_config::current();
+    let config = crate::ssh_host::session_config::current()
+        .map_err(|detail| ("ssh_unavailable".to_owned(), detail))?;
     let control_config = config.clone();
     launch_for_configured_host(host, &hosts, config, |destination| {
         crate::ssh_host::control::pane_control_path(destination, control_config.as_deref())

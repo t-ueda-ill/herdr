@@ -10,7 +10,12 @@ use super::launch::ssh_destination_alias;
 pub(crate) enum SshHostError {
     SshNotFound,
     NoHomeDirectory,
-    ConfigUnreadable { path: PathBuf, source: io::Error },
+    ConfigUnreadable {
+        path: PathBuf,
+        source: io::Error,
+    },
+    /// The server could not settle the session's ssh config.
+    SessionConfigUnknown(String),
 }
 
 impl fmt::Display for SshHostError {
@@ -23,6 +28,7 @@ impl fmt::Display for SshHostError {
             Self::ConfigUnreadable { path, source } => {
                 write!(f, "could not read {}: {source}", path.display())
             }
+            Self::SessionConfigUnknown(detail) => f.write_str(detail),
         }
     }
 }
@@ -39,7 +45,9 @@ pub(crate) fn list_configured_hosts() -> Result<Vec<SshHostInfo>, SshHostError> 
         .user_config
         .ok_or(SshHostError::NoHomeDirectory)?;
     let ssh_dir = user_config.parent().unwrap_or_else(|| Path::new("."));
-    let root = super::session_config::current().unwrap_or_else(|| user_config.clone());
+    let root = super::session_config::current()
+        .map_err(SshHostError::SessionConfigUnknown)?
+        .unwrap_or_else(|| user_config.clone());
     configured_hosts_in(&FsConfigLoader, &root, ssh_dir)
 }
 

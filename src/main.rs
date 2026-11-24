@@ -592,6 +592,17 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     };
+    if ssh_config_request.is_some() {
+        let socket_override = std::env::var_os(api::SOCKET_PATH_ENV_VAR).is_some()
+            || std::env::var_os(server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR).is_some();
+        if let Err(err) = ssh_host::session_config::check_launch_target(
+            session::explicit_session_requested(),
+            socket_override,
+        ) {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
+    }
     if ssh_config_request.is_some()
         && (remote_launch.is_some() || args.iter().skip(1).any(|arg| !arg.starts_with('-')))
     {

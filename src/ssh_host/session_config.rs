@@ -17,7 +17,8 @@ const DEFAULT_KEYWORD: &str = "none";
 const STATE_FILE: &str = "ssh-config";
 const OPTION: &str = "--ssh";
 
-static SESSION_CONFIG: OnceLock<Option<PathBuf>> = OnceLock::new();
+/// `Err` when the server could not tell which config the session uses.
+static SESSION_CONFIG: OnceLock<Result<Option<PathBuf>, String>> = OnceLock::new();
 
 /// What a launch asked the session to use.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +110,24 @@ pub(crate) fn resolve_request(raw: &str) -> Result<SshConfigRequest, String> {
     }
 }
 
+/// Refuses `--ssh` when a socket override points this launch at a server
+/// whose session this process cannot name.
+///
+/// Why: the remembered config is read from the selected session's directory,
+/// while a socket override from the environment may attach to another
+/// session's server. An explicit `--session` replaces the overrides.
+pub(crate) fn check_launch_target(
+    explicit_session: bool,
+    socket_override: bool,
+) -> Result<(), String> {
+    if socket_override && !explicit_session {
+        return Err(format!(
+            "{OPTION} needs --session <name> while HERDR_SOCKET_PATH or HERDR_CLIENT_SOCKET_PATH selects the server"
+        ));
+    }
+    Ok(())
+}
+
 /// Hands `request` to a server this launch spawns, or refuses it when the
 /// session's running server remembers another config. Call it again with
 /// `server_running` once the server is ready: two launches racing to start
@@ -123,7 +142,8 @@ pub(crate) fn apply_for_launch(
     state_dir: &Path,
 ) -> Result<(), String> {
     if server_running {
-        let remembered = read_remembered(state_dir);
+        let remembered = read_remembered(state_dir)
+            .map_err(|err| format!("cannot read this session's remembered ssh config: {err}"))?;
         if !same_config(remembered.as_deref(), request.config()) {
             return Err(format!(
                 "this session's server already uses {}; run `herdr server stop` first to switch to {}",
@@ -152,13 +172,24 @@ pub(crate) fn take_server_request() -> Option<SshConfigRequest> {
 /// Why an error instead of falling back to ssh's defaults: a host alias
 /// shared by both configs would silently reach another machine, and the
 /// launching client compares against the remembered file.
+/// On an error the session's config stays unknown, and [`current`] refuses
+/// ssh launches instead of reading ssh's defaults.
 pub(crate) fn establish(request: Option<SshConfigRequest>, state_dir: &Path) -> io::Result<()> {
-    let config = establish_in(request, state_dir)?;
-    if let Some(config) = &config {
-        tracing::info!(config = %config.display(), "ssh panes read the session ssh config");
+    match establish_in(request, state_dir) {
+        Ok(config) => {
+            if let Some(config) = &config {
+                tracing::info!(config = %config.display(), "ssh panes read the session ssh config");
+            }
+            let _ = SESSION_CONFIG.set(Ok(config));
+            Ok(())
+        }
+        Err(err) => {
+            let _ = SESSION_CONFIG.set(Err(format!(
+                "the session ssh config is unknown ({err}); restart the server with --ssh <file|none>"
+            )));
+            Err(err)
+        }
     }
-    let _ = SESSION_CONFIG.set(config);
-    Ok(())
 }
 
 fn establish_in(
@@ -167,7 +198,7 @@ fn establish_in(
 ) -> io::Result<Option<PathBuf>> {
     let state = state_dir.join(STATE_FILE);
     match request {
-        None => Ok(read_remembered(state_dir)),
+        None => read_remembered(state_dir),
         Some(SshConfigRequest::Default) => match std::fs::remove_file(&state) {
             Ok(()) => Ok(None),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -184,17 +215,30 @@ fn establish_in(
     }
 }
 
-/// The config the session's server uses; `None` reads ssh's defaults.
-pub(crate) fn current() -> Option<PathBuf> {
-    SESSION_CONFIG.get().cloned().flatten()
+/// The config the session's server uses; `Ok(None)` reads ssh's defaults,
+/// as does a process that never settled one.
+pub(crate) fn current() -> Result<Option<PathBuf>, String> {
+    SESSION_CONFIG.get().cloned().unwrap_or(Ok(None))
 }
 
+/// Only a missing file means "no setting". Why every other failure is an
+/// error: falling back to ssh's defaults could reach another machine.
 /// Why only absolute paths: the state file is user-editable, and a relative
 /// path would resolve against whatever directory the server started in.
-fn read_remembered(state_dir: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(state_dir.join(STATE_FILE)).ok()?;
+fn read_remembered(state_dir: &Path) -> io::Result<Option<PathBuf>> {
+    let text = match std::fs::read_to_string(state_dir.join(STATE_FILE)) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
     let path = PathBuf::from(text.trim_end_matches(['\n', '\r']));
-    path.is_absolute().then_some(path)
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("remembered ssh config {} is not absolute", path.display()),
+        ));
+    }
+    Ok(Some(path))
 }
 
 fn same_config(a: Option<&Path>, b: Option<&Path>) -> bool {
@@ -315,12 +359,27 @@ mod tests {
     }
 
     #[test]
-    fn a_relative_remembered_path_is_ignored() {
-        let dir = temp_dir("relative");
-        std::fs::write(dir.join(STATE_FILE), "prod-config\n").unwrap();
+    fn a_relative_or_unreadable_remembered_config_is_an_error_not_the_defaults() {
+        let relative = temp_dir("relative");
+        std::fs::write(relative.join(STATE_FILE), "prod-config\n").unwrap();
+        let unreadable = temp_dir("unreadable");
+        std::fs::create_dir_all(unreadable.join(STATE_FILE)).unwrap();
+        let missing = temp_dir("missing");
 
-        assert_eq!(read_remembered(&dir), None);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(establish_in(None, &relative).is_err());
+        assert!(establish_in(None, &unreadable).is_err());
+        assert!(apply_for_launch(&SshConfigRequest::Default, true, &unreadable).is_err());
+        assert_eq!(establish_in(None, &missing).unwrap(), None);
+        for dir in [relative, unreadable, missing] {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn ssh_option_needs_an_explicit_session_under_a_socket_override() {
+        assert!(check_launch_target(false, true).is_err());
+        assert_eq!(check_launch_target(true, true), Ok(()));
+        assert_eq!(check_launch_target(false, false), Ok(()));
     }
 
     #[test]
