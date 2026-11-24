@@ -263,6 +263,13 @@ pub(super) fn render_expanded(
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
+    super::recording_badge::render(
+        buffer,
+        Rect::new(workspace_area.x, workspace_area.y, workspace_area.width, 1),
+        " machines",
+        active_snapshot,
+        palette,
+    );
 
     let empty_collapsed_groups = HashSet::new();
 

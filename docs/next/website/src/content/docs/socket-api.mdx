@@ -491,6 +491,10 @@ When the source runs on the host, both methods behave exactly like the plain one
 
 Clients check the endpoint's advertised methods first. Against a server that lacks these two methods, the TUI falls back to `tab.create` and `pane.split`, which open a host shell.
 
+## Pane recording
+
+When the session was started with `herdr --log <dir>`, pane info carries `recording` for each pane: `path` of the gzip-compressed asciicast file being written, and `input`, true when what is sent to the pane is recorded too. `dropped_bytes` appears once output was left out because the disk could not keep up, and `error` when recording stopped or never started for the pane. No event announces a new file or an error; read the pane again to see them.
+
 ## Reconnecting panes
 
 After a server restart, restored container and ssh panes connect again on their own. When the `ssh` or `docker` process of such a pane exits with a nonzero code or a signal, the pane stays instead of closing, and its pane info carries `disconnected`, with `exit_code` when the process exited with one. `pane.reconnect` takes a `pane_id`, starts the connection again, and answers `ok`; a pane that is not disconnected returns `pane_not_disconnected`. A container pane looks its container up again first, so a recreated compose service is found by name.

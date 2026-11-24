@@ -7,6 +7,7 @@ pub fn run_server() -> io::Result<()> {
     let handoff_import = args.get(2).map(String::as_str) == Some("--handoff-import");
     // Taken before any thread starts, since it edits the process environment.
     let ssh_config_request = crate::ssh_host::session_config::take_server_request();
+    let recording_request = crate::recording::launch::take_server_request();
     let process_context = crate::platform::prepare_server_process(handoff_import);
     init_logging();
     match process_context {
@@ -26,6 +27,10 @@ pub fn run_server() -> io::Result<()> {
             &crate::session::data_dir(),
         ) {
             warn!(%err, "could not settle the session ssh config during handoff");
+        }
+        // A failure must not drop the panes this server takes over.
+        if let Err(err) = crate::recording::start_server(recording_request) {
+            warn!(%err, "could not start pane recording during handoff");
         }
         let socket_path = args
             .get(3)
@@ -70,6 +75,7 @@ pub fn run_server() -> io::Result<()> {
                 format!("cannot remember the session ssh config: {err}"),
             )
         })?;
+    crate::recording::start_server(recording_request)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -116,6 +122,7 @@ pub fn run_server() -> io::Result<()> {
     });
 
     rt.shutdown_timeout(Duration::from_millis(100));
+    crate::recording::shutdown();
     crate::logging::shutdown("server");
     result
 }
@@ -229,6 +236,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
     });
 
     rt.shutdown_timeout(Duration::from_millis(100));
+    crate::recording::shutdown();
     crate::logging::shutdown("server");
     result
 }

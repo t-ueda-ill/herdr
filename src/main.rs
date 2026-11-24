@@ -52,6 +52,7 @@ mod product_announcements;
 mod protocol;
 mod pty;
 mod raw_input;
+mod recording;
 mod release_notes;
 mod remote;
 mod render_prof;
@@ -579,6 +580,18 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // `--log` is taken first and steps over `--ssh <file>`, so either order of
+    // the two works before the command-word guards below run.
+    let (args, recording_request) = match recording::launch::extract_launch_args(&args)
+        .and_then(|(args, parsed)| Ok((args, recording::launch::resolve_request(parsed)?)))
+    {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("error: {err}");
+            eprintln!("run 'herdr --help' for usage");
+            std::process::exit(2);
+        }
+    };
     let (args, ssh_config_request) = match ssh_host::session_config::extract_launch_arg(&args)
         .and_then(|(args, raw)| {
             let request = raw
@@ -609,6 +622,27 @@ fn main() -> io::Result<()> {
     {
         eprintln!(
             "error: --ssh can only be used with the default launch command, without --remote"
+        );
+        eprintln!("run 'herdr --help' for usage");
+        std::process::exit(2);
+    }
+
+    if recording_request.is_some() {
+        let socket_override = std::env::var_os(api::SOCKET_PATH_ENV_VAR).is_some()
+            || std::env::var_os(server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR).is_some();
+        if let Err(err) = recording::launch::check_launch_target(
+            session::explicit_session_requested(),
+            socket_override,
+        ) {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
+    }
+    if recording_request.is_some()
+        && (remote_launch.is_some() || args.iter().skip(1).any(|arg| !arg.starts_with('-')))
+    {
+        eprintln!(
+            "error: --log can only be used with the default launch command, without --remote"
         );
         eprintln!("run 'herdr --help' for usage");
         std::process::exit(2);
@@ -787,6 +821,9 @@ fn main() -> io::Result<()> {
         println!("                      (remembered by the session; none restores ssh's defaults)");
         println!("  --remote-keybindings <local|server>");
         println!("                      Keybindings for --remote app attach (default: local)");
+        println!("  --log <dir|none>    Record each pane's output under <dir>/<session>/ as");
+        println!("                      gzipped asciicast (remembered by the session)");
+        println!("  --log-input         With --log, also record what is typed or sent to panes");
         println!("  --handoff           Opt into live handoff for update or remote attach");
         println!("  --default-config    Print default configuration and exit");
         println!("  --skill             Print the agent skill file and exit");
@@ -889,12 +926,35 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     }
+    if let Some(request) = &recording_request {
+        let server_running = server::autodetect::is_server_listening().unwrap_or(false);
+        if let Err(err) = recording::launch::apply_for_launch(
+            request,
+            server_running,
+            &session::data_dir(),
+            &session::local_stop_command(),
+        ) {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
+    }
 
     let saved_federation =
         client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_enabled_ssh());
     let check_ssh_config = || {
         if let Some(request) = &ssh_config_request {
             if let Err(err) = ssh_host::session_config::apply_for_launch(
+                request,
+                true,
+                &session::data_dir(),
+                &session::local_stop_command(),
+            ) {
+                eprintln!("error: {err}");
+                std::process::exit(2);
+            }
+        }
+        if let Some(request) = &recording_request {
+            if let Err(err) = recording::launch::apply_for_launch(
                 request,
                 true,
                 &session::data_dir(),

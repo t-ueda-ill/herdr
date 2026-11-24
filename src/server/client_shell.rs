@@ -214,6 +214,16 @@ pub(super) fn snapshot_with_completions(
                         exit_code: disconnected.exit_code,
                     }
                 }),
+                recording: runtime_pane
+                    .and_then(|(workspace_index, pane_id)| {
+                        app.state.runtime_for_pane_in_workspace(
+                            &app.terminal_runtimes,
+                            workspace_index,
+                            pane_id,
+                        )
+                    })
+                    .and_then(|runtime| runtime.recording_failed())
+                    .map(|failed| protocol::ClientShellPaneRecording { failed }),
             }
         })
         .collect();
