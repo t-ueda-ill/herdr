@@ -302,7 +302,14 @@ pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Resu
 /// 1. Check if a server is listening on the client socket
 /// 2. If no server → spawn server daemon → wait for socket readiness
 /// 3. Run the thin client (which connects to the server)
-pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
+///
+/// `before_attach` runs once the local server is listening, right before the
+/// client attaches, so a check against the running server sees the one this
+/// client will use.
+pub fn auto_detect_launch(
+    saved_federation: bool,
+    before_attach: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
     crate::platform::terminal_grid_size().map_err(|err| {
@@ -328,11 +335,14 @@ pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
                 .and_then(|_| wait_for_server_socket(&socket_path, SERVER_READY_TIMEOUT))
         }
     });
-    if let Err(error) = startup {
-        if !saved_federation {
-            return Err(error);
+    match startup {
+        Ok(()) => before_attach()?,
+        Err(error) => {
+            if !saved_federation {
+                return Err(error);
+            }
+            tracing::warn!(%error, "Local startup failed; keeping saved machines available");
         }
-        tracing::warn!(%error, "Local startup failed; keeping saved machines available");
     }
 
     // Now attach as a thin client.

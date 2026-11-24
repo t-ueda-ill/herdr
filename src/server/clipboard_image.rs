@@ -28,8 +28,12 @@ pub(crate) enum OffHostTarget {
         ssh: Option<RemoteDockerHost>,
     },
     /// The pane shell is an ssh login to `host` whose master listens on
-    /// `control_path`.
-    Ssh { host: String, control_path: PathBuf },
+    /// `control_path`, resolved through the pane's ssh `config`.
+    Ssh {
+        host: String,
+        config: Option<PathBuf>,
+        control_path: PathBuf,
+    },
 }
 
 /// An ssh host that runs the docker CLI for a container pane, joined through
@@ -39,6 +43,7 @@ pub(crate) enum OffHostTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoteDockerHost {
     pub(crate) host: String,
+    pub(crate) config: Option<PathBuf>,
     pub(crate) control_path: PathBuf,
 }
 
@@ -166,9 +171,11 @@ pub(crate) fn stage_off_host(
             crate::container::clipboard::stage_image(&host, id, user.as_deref(), &file_name, data)
                 .map_err(|err| err.to_string())?
         }
-        OffHostTarget::Ssh { host, control_path } => {
-            stage_over_ssh(host, control_path, &file_name, data)?
-        }
+        OffHostTarget::Ssh {
+            host,
+            config,
+            control_path,
+        } => stage_over_ssh(host, config.as_deref(), control_path, &file_name, data)?,
     };
     Ok(StagedClipboardImage {
         path: PathBuf::from(&path),
@@ -187,6 +194,7 @@ fn docker_host(
     Ok(match ssh {
         Some(remote) => DockerHost::Ssh {
             host: remote.host.clone(),
+            config: remote.config.clone(),
             control_path: Some(remote.control_path.clone()),
         },
         None => DockerHost::Local,
@@ -206,17 +214,19 @@ fn docker_host(
 #[cfg(unix)]
 fn stage_over_ssh(
     host: &str,
+    config: Option<&Path>,
     control_path: &Path,
     file_name: &str,
     data: Vec<u8>,
 ) -> Result<String, String> {
-    crate::ssh_host::clipboard::stage_image(host, control_path, file_name, data)
+    crate::ssh_host::clipboard::stage_image(host, config, control_path, file_name, data)
         .map_err(|err| err.to_string())
 }
 
 #[cfg(windows)]
 fn stage_over_ssh(
     _host: &str,
+    _config: Option<&Path>,
     _control_path: &Path,
     _file_name: &str,
     _data: Vec<u8>,
@@ -225,13 +235,23 @@ fn stage_over_ssh(
 }
 
 #[cfg(unix)]
-fn remove_over_ssh(host: &str, control_path: &Path, paths: &[String]) -> Result<(), String> {
-    crate::ssh_host::clipboard::remove_images(host, control_path, paths)
+fn remove_over_ssh(
+    host: &str,
+    config: Option<&Path>,
+    control_path: &Path,
+    paths: &[String],
+) -> Result<(), String> {
+    crate::ssh_host::clipboard::remove_images(host, config, control_path, paths)
         .map_err(|err| err.to_string())
 }
 
 #[cfg(windows)]
-fn remove_over_ssh(_host: &str, _control_path: &Path, _paths: &[String]) -> Result<(), String> {
+fn remove_over_ssh(
+    _host: &str,
+    _config: Option<&Path>,
+    _control_path: &Path,
+    _paths: &[String],
+) -> Result<(), String> {
     Err(SSH_SIDE_CHANNEL_UNSUPPORTED.to_owned())
 }
 
@@ -257,9 +277,11 @@ pub(crate) fn remove_off_host_batch(batch: &OffHostCleanupBatch) -> Result<(), S
             crate::container::clipboard::remove_images(&host, id, user.as_deref(), &batch.paths)
                 .map_err(|err| err.to_string())
         }
-        OffHostTarget::Ssh { host, control_path } => {
-            remove_over_ssh(host, control_path, &batch.paths)
-        }
+        OffHostTarget::Ssh {
+            host,
+            config,
+            control_path,
+        } => remove_over_ssh(host, config.as_deref(), control_path, &batch.paths),
     }
 }
 
@@ -637,6 +659,7 @@ mod tests {
             user: user.map(str::to_owned),
             ssh: Some(RemoteDockerHost {
                 host: host.into(),
+                config: None,
                 control_path: control_path.into(),
             }),
         }
@@ -645,6 +668,7 @@ mod tests {
     fn ssh(host: &str, control_path: &str) -> OffHostTarget {
         OffHostTarget::Ssh {
             host: host.into(),
+            config: None,
             control_path: control_path.into(),
         }
     }

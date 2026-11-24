@@ -22,6 +22,7 @@ fn ssh_pane(running: bool) -> OffHostPaneFixture {
 fn ssh_target(host: &str, control_path: &str) -> OffHostTarget {
     OffHostTarget::Ssh {
         host: host.into(),
+        config: None,
         control_path: control_path.into(),
     }
 }

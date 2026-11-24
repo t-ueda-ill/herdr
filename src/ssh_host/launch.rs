@@ -19,6 +19,10 @@ pub(crate) struct SshLaunch {
     /// that was not checked. Why default to true: a configured command owns the
     /// session, and injecting a launcher there would replace it.
     pub(crate) has_remote_command: bool,
+    /// The ssh config file handed to `ssh -F`, kept per pane so a respawn or
+    /// a cold restore reaches the host it first opened. `None` reads ssh's
+    /// defaults (`~/.ssh/config` and the system config).
+    pub(crate) config: Option<PathBuf>,
 }
 
 impl SshLaunch {
@@ -31,7 +35,13 @@ impl SshLaunch {
             control_path,
             start_dir: None,
             has_remote_command: true,
+            config: None,
         })
+    }
+
+    pub(crate) fn with_config(mut self, config: Option<PathBuf>) -> Self {
+        self.config = config;
+        self
     }
 
     pub(crate) fn with_remote_command(mut self, has_remote_command: bool) -> Self {
@@ -76,10 +86,12 @@ pub(crate) fn ssh_destination_alias(host: &str) -> Option<&str> {
 /// `ssh -C [-S <control> -o ControlMaster=auto -o ControlPersist=600] -t <host>`.
 ///
 /// Why not `-F` with a generated config like `herdr --remote`: the pane is the
-/// user's own login, so their `~/.ssh/config` must apply unchanged. Why not
-/// `BatchMode`: the pane is interactive and owns password and host key prompts.
+/// user's own login, so their `~/.ssh/config` must apply unchanged. The only
+/// `-F` is the session's own ssh config, which the user chose to replace it.
+/// Why not `BatchMode`: the pane is interactive and owns password and host key prompts.
 pub(crate) fn ssh_argv(launch: &SshLaunch) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec!["ssh".into(), "-C".into()];
+    argv.extend(config_args(launch.config.as_deref()));
     if let Some(control_path) = &launch.control_path {
         argv.extend([
             "-S".into(),
@@ -159,25 +171,27 @@ pub(crate) fn portable_remote_command(posix_command: &str) -> String {
     format!("exec sh -c 'eval \"$(printf \"{escaped}\")\"'")
 }
 
-/// `ssh [-S <control> -o ControlMaster=auto -o ControlPersist=600] <batch options> <host> <command>`.
+/// `ssh [-F <config>] [-S <control> -o ControlMaster=auto -o ControlPersist=600] <batch options> <host> <command>`.
 ///
 /// Why `ControlMaster=auto` and not `no` like the clipboard side channel: a
 /// listing may be the first contact with the host, and the master it creates
 /// is the one a pane opened afterwards joins through the same `ControlPath`.
 /// Why `BatchMode`: nothing here can answer a password or host key prompt, so
 /// an unauthenticated host must fail fast and send the user to an ssh pane.
-/// Why not `-F`: the user's own config must resolve `host` exactly as it does
-/// for ssh panes, or `%C` in the control path would name another socket.
+/// Why `-F` only with the pane's `config`: the config must resolve `host`
+/// exactly as it does for the ssh pane, or `%C` in the control path would
+/// name another socket.
 /// The remaining options match the clipboard side channel: no tty (stdin may
 /// carry raw bytes), no `RemoteCommand` (ssh refuses a second command), and
 /// no forwardings or local commands.
 /// `command` is one string the remote login shell parses; the caller quotes it.
 pub(crate) fn ssh_batch_argv(
     host: &str,
+    config: Option<&Path>,
     control_path: Option<&Path>,
     command: &str,
 ) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = Vec::new();
+    let mut argv: Vec<OsString> = config_args(config).collect();
     if let Some(control_path) = control_path {
         argv.extend([
             "-S".into(),
@@ -204,6 +218,13 @@ pub(crate) fn ssh_batch_argv(
     argv.push(host.into());
     argv.push(command.into());
     argv
+}
+
+/// `-F <config>`, or nothing so ssh reads its default configs.
+pub(crate) fn config_args(config: Option<&Path>) -> impl Iterator<Item = OsString> + '_ {
+    config
+        .into_iter()
+        .flat_map(|config| ["-F".into(), config.as_os_str().to_owned()])
 }
 
 /// Exit status 255 is ssh's own failure; these are the ones a prompt-free
@@ -429,6 +450,77 @@ mod tests {
                 "prod"
             ]
         );
+    }
+
+    #[test]
+    fn ssh_argv_reads_only_the_session_ssh_config_when_one_is_given() {
+        let launch = SshLaunch::new("prod".into(), Some("/tmp/hssh-1/abc-%C".into()))
+            .unwrap()
+            .with_config(Some("/home/u/.ssh/prod-config".into()));
+
+        assert_eq!(
+            strings(ssh_argv(&launch)),
+            [
+                "ssh",
+                "-C",
+                "-F",
+                "/home/u/.ssh/prod-config",
+                "-S",
+                "/tmp/hssh-1/abc-%C",
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                "ControlPersist=600",
+                "-t",
+                "prod"
+            ]
+        );
+    }
+
+    #[test]
+    fn ssh_command_argv_keeps_the_session_ssh_config() {
+        let launch = SshLaunch::new("prod".into(), None)
+            .unwrap()
+            .with_config(Some("/home/u/.ssh/prod-config".into()));
+
+        assert_eq!(
+            strings(ssh_command_argv(&launch, "true".into())),
+            [
+                "ssh",
+                "-C",
+                "-F",
+                "/home/u/.ssh/prod-config",
+                "-o",
+                "RemoteCommand=none",
+                "-t",
+                "prod",
+                "true"
+            ]
+        );
+    }
+
+    #[test]
+    fn ssh_batch_argv_reads_the_session_ssh_config_before_any_other_option() {
+        let argv = strings(ssh_batch_argv(
+            "prod",
+            Some(Path::new("/home/u/.ssh/prod-config")),
+            Some(Path::new("/tmp/hssh-1/abc-%C")),
+            "true",
+        ));
+
+        assert_eq!(
+            argv[..4],
+            ["-F", "/home/u/.ssh/prod-config", "-S", "/tmp/hssh-1/abc-%C"]
+        );
+        assert_eq!(argv[argv.len() - 2..], ["prod", "true"]);
+    }
+
+    #[test]
+    fn ssh_batch_argv_without_a_session_ssh_config_passes_no_config_flag() {
+        let argv = strings(ssh_batch_argv("prod", None, None, "true"));
+
+        assert!(!argv.iter().any(|arg| arg == "-F"), "{argv:?}");
+        assert_eq!(argv[0], "-o");
     }
 
     #[test]
