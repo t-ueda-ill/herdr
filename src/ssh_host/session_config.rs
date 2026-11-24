@@ -136,17 +136,19 @@ pub(crate) fn check_launch_target(
 /// Why refuse instead of switching: open ssh panes and their masters were
 /// resolved through the remembered file, and a silent switch would send new
 /// panes with the same alias to another machine.
+/// `stop_command` stops this session's server, e.g. `herdr session stop prod`.
 pub(crate) fn apply_for_launch(
     request: &SshConfigRequest,
     server_running: bool,
     state_dir: &Path,
+    stop_command: &str,
 ) -> Result<(), String> {
     if server_running {
         let remembered = read_remembered(state_dir)
             .map_err(|err| format!("cannot read this session's remembered ssh config: {err}"))?;
         if !same_config(remembered.as_deref(), request.config()) {
             return Err(format!(
-                "this session's server already uses {}; run `herdr server stop` first to switch to {}",
+                "this session's server already uses {}; run `{stop_command}` first to switch to {}",
                 describe(remembered.as_deref()),
                 describe(request.config()),
             ));
@@ -262,6 +264,8 @@ fn describe(config: Option<&Path>) -> String {
 mod tests {
     use super::*;
 
+    const STOP: &str = "herdr session stop prod";
+
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| (*arg).to_owned()).collect()
     }
@@ -368,7 +372,7 @@ mod tests {
 
         assert!(establish_in(None, &relative).is_err());
         assert!(establish_in(None, &unreadable).is_err());
-        assert!(apply_for_launch(&SshConfigRequest::Default, true, &unreadable).is_err());
+        assert!(apply_for_launch(&SshConfigRequest::Default, true, &unreadable, STOP).is_err());
         assert_eq!(establish_in(None, &missing).unwrap(), None);
         for dir in [relative, unreadable, missing] {
             let _ = std::fs::remove_dir_all(&dir);
@@ -388,14 +392,19 @@ mod tests {
         let file = dir.join("prod-config");
         establish_in(Some(SshConfigRequest::File(file.clone())), &dir).unwrap();
 
-        let same = apply_for_launch(&SshConfigRequest::File(file.clone()), true, &dir);
-        let other = apply_for_launch(&SshConfigRequest::File(dir.join("dev-config")), true, &dir);
-        let default = apply_for_launch(&SshConfigRequest::Default, true, &dir);
+        let same = apply_for_launch(&SshConfigRequest::File(file.clone()), true, &dir, STOP);
+        let other = apply_for_launch(
+            &SshConfigRequest::File(dir.join("dev-config")),
+            true,
+            &dir,
+            STOP,
+        );
+        let default = apply_for_launch(&SshConfigRequest::Default, true, &dir, STOP);
 
         assert_eq!(same, Ok(()));
         let other = other.unwrap_err();
         assert!(other.contains(&file.display().to_string()), "{other}");
-        assert!(other.contains("herdr server stop"), "{other}");
+        assert!(other.contains("`herdr session stop prod`"), "{other}");
         assert!(default.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -406,7 +415,7 @@ mod tests {
         let file = dir.join("prod-config");
         std::env::remove_var(ENV_VAR);
 
-        apply_for_launch(&SshConfigRequest::File(file.clone()), false, &dir).unwrap();
+        apply_for_launch(&SshConfigRequest::File(file.clone()), false, &dir, STOP).unwrap();
         let taken = take_server_request();
 
         assert_eq!(taken, Some(SshConfigRequest::File(file)));

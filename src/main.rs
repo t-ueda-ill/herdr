@@ -882,6 +882,7 @@ fn main() -> io::Result<()> {
             request,
             server_running,
             &session::data_dir(),
+            &session::local_stop_command(),
         ) {
             eprintln!("error: {err}");
             std::process::exit(2);
@@ -892,9 +893,12 @@ fn main() -> io::Result<()> {
         client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_enabled_ssh());
     let check_ssh_config = || {
         if let Some(request) = &ssh_config_request {
-            if let Err(err) =
-                ssh_host::session_config::apply_for_launch(request, true, &session::data_dir())
-            {
+            if let Err(err) = ssh_host::session_config::apply_for_launch(
+                request,
+                true,
+                &session::data_dir(),
+                &session::local_stop_command(),
+            ) {
                 eprintln!("error: {err}");
                 std::process::exit(2);
             }

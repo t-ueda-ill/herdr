@@ -26,7 +26,7 @@ herdr --version               # バージョンを表示
 起動と更新の任意オプション:
 
 - デフォルトではなく名前付きセッションを使う場合は `--session <name>` を追加します。
-- `--ssh <file>` を追加すると、セッションの ssh ホストをその ssh 設定ファイルだけで開きます（例: `herdr --session prod --ssh ~/.ssh/prod-config`）。セッションがファイルを覚えるので、次回 `--ssh` を付けずに起動しても同じファイルを使います。`--ssh none` で ssh の既定の設定に戻ります。Herdr はファイルを `ssh -F` で渡すため、`~/.ssh/config` とシステムの設定は読まれません。それらに追加する形にしたい場合は、ファイルの末尾に `Match all` と `Include ~/.ssh/config` を書きます。ssh は最初に読んだ値を使うので、`Include` より前の設定が優先されます。起動中のサーバーはファイルを変えません。切り替えるには先に `herdr server stop` を実行します。`--ssh` は `--remote` と併用できません。
+- `--ssh <file>` を追加すると、セッションの ssh ホストをその ssh 設定ファイルだけで開きます（例: `herdr --session prod --ssh ~/.ssh/prod-config`）。セッションがファイルを覚えるので、次回 `--ssh` を付けずに起動しても同じファイルを使います。`--ssh none` で ssh の既定の設定に戻ります。Herdr はファイルを `ssh -F` で渡すため、`~/.ssh/config` とシステムの設定は読まれません。それらに追加する形にしたい場合は、ファイルの末尾に `Match all` と `Include ~/.ssh/config` を書きます。ssh は最初に読んだ値を使うので、`Include` より前の設定が優先されます。起動中のサーバーはファイルを変えません。切り替えるには先にサーバーを止めます（名前付きセッションでは `herdr session stop <name>`、既定のセッションでは `herdr server stop`）。`--ssh` は `--remote` と併用できません。
 - リモート接続でサーバーのキーバインドを使う場合は `--remote-keybindings server` を追加します。
 - 実験的なライブハンドオフには、`herdr --remote` または `herdr update` で明示的な `--handoff` が必要です。通常のセットアップや接続には使いません。[更新](/ja/docs/install/)を参照してください。
 
