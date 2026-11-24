@@ -67,7 +67,10 @@ impl ClientShellState {
     }
 
     pub(super) fn begin_assist(&mut self, pane_id: String, outcome: &mut ClientShellInput) {
-        self.push_endpoint_method_with_kind(
+        if self.assist_pending {
+            return;
+        }
+        self.assist_pending = self.push_endpoint_method_with_kind(
             Method::AssistProducts(EmptyParams::default()),
             PendingEndpointKind::AssistProducts { pane_id },
             outcome,
@@ -93,7 +96,7 @@ impl ClientShellState {
         placement: AssistPlacement,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        self.push_endpoint_method_with_kind(
+        self.assist_pending = self.push_endpoint_method_with_kind(
             Method::AssistStart(AssistStartParams {
                 pane_id,
                 product: Some(product),
@@ -102,7 +105,8 @@ impl ClientShellState {
             }),
             PendingEndpointKind::AssistStart,
             outcome,
-        )
+        );
+        self.assist_pending
     }
 
     pub(super) fn handle_assist_endpoint_result(
@@ -111,7 +115,16 @@ impl ClientShellState {
         result: Result<ResponseResult, ClientShellEndpointError>,
     ) -> (bool, Vec<ClientShellAction>) {
         let mut outcome = ClientShellInput::default();
+        if matches!(
+            kind,
+            PendingEndpointKind::AssistProducts { .. } | PendingEndpointKind::AssistStart
+        ) {
+            self.assist_pending = false;
+        }
         match (kind, result) {
+            // Why nothing when another overlay is up: the user moved on while
+            // the server answered, and the picker would replace their dialog.
+            (PendingEndpointKind::AssistProducts { .. }, Ok(_)) if self.overlay.is_some() => {}
             (
                 PendingEndpointKind::AssistProducts { pane_id },
                 Ok(ResponseResult::AssistProducts { products }),

@@ -439,3 +439,56 @@ fn switching_servers_forgets_the_assists_of_the_old_one() {
 
     assert!(state.assist_links.is_empty());
 }
+
+#[test]
+fn a_late_products_answer_does_not_replace_a_dialog_opened_meanwhile() {
+    let mut state = shell();
+    let outcome = choose_in_pane_menu(&mut state, ASK_AI_LABEL);
+    let sent = requests(&outcome);
+    choose_in_pane_menu(&mut state, "Rename pane");
+    assert!(matches!(state.overlay, Some(ClientShellOverlay::Rename(_))));
+
+    state.handle_endpoint_result(
+        "boot-1",
+        &sent[0].0,
+        Ok(ResponseResult::AssistProducts {
+            products: all_products(),
+        }),
+    );
+
+    assert!(matches!(state.overlay, Some(ClientShellOverlay::Rename(_))));
+}
+
+#[test]
+fn asking_again_while_an_ask_is_pending_sends_nothing_more() {
+    let mut state = shell();
+    choose_in_pane_menu(&mut state, ASK_AI_LABEL);
+
+    let again = choose_in_pane_menu(&mut state, ASK_AI_LABEL);
+
+    assert!(requests(&again).is_empty());
+}
+
+#[test]
+fn asking_again_works_once_the_assist_has_opened() {
+    let mut state = shell();
+    let sent = ask_ai(
+        &mut state,
+        vec![product(AssistProduct::Codex, "/bin/codex")],
+    );
+    state.handle_endpoint_result(
+        "boot-1",
+        &sent[0].0,
+        Ok(ResponseResult::AssistStarted {
+            assist: assist("pane_9", "pane_1"),
+            created: true,
+        }),
+    );
+
+    let again = choose_in_pane_menu(&mut state, ASK_AI_LABEL);
+
+    assert!(matches!(
+        &requests(&again)[..],
+        [(_, Method::AssistProducts(_))]
+    ));
+}

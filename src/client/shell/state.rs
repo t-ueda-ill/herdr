@@ -1437,6 +1437,9 @@ pub(crate) struct ClientShellState {
     pub(crate) deferred_query_activation: Option<crate::client::endpoint::EndpointActivationIntent>,
     /// Assists of the active server, from `assist.list` and `assist.start`.
     pub(super) assist_links: Vec<crate::api::schema::AssistInfo>,
+    /// Ask AI waits for `assist.products` or `assist.start`; a second ask
+    /// sends nothing until the answer arrives.
+    pub(super) assist_pending: bool,
     /// When that wait ends. Why apart from the intent: the retried
     /// activation keeps the first deadline.
     pub(crate) query_activation_deadline: Option<(ClientEndpointId, std::time::Instant)>,
@@ -1631,6 +1634,7 @@ impl ClientShellState {
             endpoint_queries: HashMap::new(),
             deferred_query_activation: None,
             assist_links: Vec::new(),
+            assist_pending: false,
             query_activation_deadline: None,
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),
@@ -1842,6 +1846,7 @@ impl ClientShellState {
         self.hits = ShellHitMap::default();
         // Why: pane ids repeat across servers and boots.
         self.assist_links.clear();
+        self.assist_pending = false;
         self.pane_surface = None;
         self.pending_pane_surface = None;
         self.input_leases = ClientInputLeases::default();
