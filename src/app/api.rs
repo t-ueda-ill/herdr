@@ -638,6 +638,15 @@ impl App {
         let Some(terminal) = self.state.terminals.get(&pane_state.attached_terminal_id) else {
             return RuntimeExitAction::ClosePane;
         };
+        // Why: a shell in its place would keep the assist link and context
+        // folder, so Ask AI would focus that shell and refresh would fail.
+        if self
+            .state
+            .assists
+            .is_helper(&pane_state.attached_terminal_id)
+        {
+            return RuntimeExitAction::ClosePane;
+        }
 
         if terminal.respawn_shell_on_exit || self.should_respawn_shell_after_agent_exit(terminal) {
             RuntimeExitAction::RespawnShell

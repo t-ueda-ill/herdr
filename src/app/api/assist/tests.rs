@@ -452,3 +452,34 @@ async fn a_session_save_keeps_neither_the_assist_pane_nor_its_screen_history() {
         .keys()
         .all(|pane| *pane != helper_pane.raw()));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_assist_whose_cli_exits_closes_instead_of_getting_a_new_shell() {
+    let mut fixture = fixture(80, MARKED_SHELL);
+    started(&start(&mut fixture, AssistPlacement::Auto));
+    let helper = fixture
+        .app
+        .state
+        .assists
+        .iter()
+        .next()
+        .unwrap()
+        .helper
+        .clone();
+    let (_, helper_pane) = fixture.app.state.pane_of_terminal(&helper).unwrap();
+    // Why set by hand: Windows sets it when a PowerShell agent exits, which
+    // this test cannot start.
+    fixture
+        .app
+        .state
+        .terminals
+        .get_mut(&helper)
+        .unwrap()
+        .respawn_shell_on_exit = true;
+
+    assert!(matches!(
+        fixture.app.runtime_exit_action(helper_pane),
+        crate::app::api::RuntimeExitAction::ClosePane
+    ));
+}
