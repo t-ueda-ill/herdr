@@ -187,7 +187,12 @@ pub(super) fn validate_ssh_host(host: &str) -> Result<(), ApiFailure> {
 /// stay off the app thread.
 pub(super) fn resolve_ssh_launch(host: &str) -> Result<SshLaunch, ApiFailure> {
     let hosts = crate::ssh_host::hosts::list_configured_hosts().map_err(ssh_unavailable)?;
-    launch_for_configured_host(host, &hosts, crate::ssh_host::control::pane_control_path)
+    launch_for_configured_host(
+        host,
+        &hosts,
+        crate::ssh_host::session_config::current(),
+        crate::ssh_host::control::pane_control_path,
+    )
 }
 
 /// [`resolve_ssh_launch`] plus the `RemoteCommand` check an ssh pane needs.
@@ -195,19 +200,27 @@ pub(super) fn resolve_ssh_launch(host: &str) -> Result<SshLaunch, ApiFailure> {
 /// override `RemoteCommand`, so they would only pay for a second ssh process.
 pub(super) fn resolve_ssh_pane_launch(host: &str) -> Result<SshLaunch, ApiFailure> {
     let launch = resolve_ssh_launch(host)?;
-    let has_remote_command = crate::ssh_host::remote_command::host_has_remote_command(host);
+    let has_remote_command =
+        crate::ssh_host::remote_command::host_has_remote_command(host, launch.config.as_deref());
     Ok(launch.with_remote_command(has_remote_command))
 }
 
+/// `config` is the session's ssh config, kept on the launch so the pane and
+/// every later reconnect resolve `host` through the same file.
 fn launch_for_configured_host(
     host: &str,
     configured: &[SshHostInfo],
+    config: Option<std::path::PathBuf>,
     control_path: impl FnOnce(&str) -> Option<std::path::PathBuf>,
 ) -> Result<SshLaunch, ApiFailure> {
+    let config_name = config.as_ref().map_or_else(
+        || "~/.ssh/config".to_owned(),
+        |path| path.display().to_string(),
+    );
     let not_found = || {
         (
             "ssh_host_not_found".to_string(),
-            format!("no Host alias in ~/.ssh/config matches {host}"),
+            format!("no Host alias in {config_name} matches {host}"),
         )
     };
     let alias = ssh_destination_alias(host).ok_or_else(not_found)?;
@@ -216,7 +229,9 @@ fn launch_for_configured_host(
     if !configured.iter().any(|info| info.alias == alias) {
         return Err(not_found());
     }
-    SshLaunch::new(host.to_owned(), control_path(host)).ok_or_else(not_found)
+    SshLaunch::new(host.to_owned(), control_path(host))
+        .map(|launch| launch.with_config(config))
+        .ok_or_else(not_found)
 }
 
 fn ssh_unavailable(err: SshHostError) -> ApiFailure {
@@ -389,7 +404,7 @@ mod tests {
     fn configured_alias_resolves_to_a_launch_with_its_control_path() {
         let configured = [host("lab"), host("prod")];
 
-        let launch = launch_for_configured_host("deploy@prod", &configured, |destination| {
+        let launch = launch_for_configured_host("deploy@prod", &configured, None, |destination| {
             Some(PathBuf::from(format!("/tmp/ctl-{destination}")))
         })
         .unwrap();
@@ -403,10 +418,31 @@ mod tests {
     }
 
     #[test]
+    fn configured_alias_keeps_the_session_ssh_config_on_its_launch() {
+        let configured = [host("prod")];
+        let config = PathBuf::from("/home/u/.ssh/prod-config");
+
+        let launch =
+            launch_for_configured_host("prod", &configured, Some(config.clone()), |_| None)
+                .unwrap();
+        let missing =
+            launch_for_configured_host("lab", &configured, Some(config), |_| None).unwrap_err();
+
+        assert_eq!(
+            launch.config,
+            Some(PathBuf::from("/home/u/.ssh/prod-config"))
+        );
+        assert_eq!(
+            missing.1,
+            "no Host alias in /home/u/.ssh/prod-config matches lab"
+        );
+    }
+
+    #[test]
     fn unconfigured_alias_is_not_found_without_computing_a_control_path() {
         let configured = [host("lab")];
 
-        let err = launch_for_configured_host("prod", &configured, |_| {
+        let err = launch_for_configured_host("prod", &configured, None, |_| {
             panic!("an unknown host must not reach the control path")
         })
         .unwrap_err();

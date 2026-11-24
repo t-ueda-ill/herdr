@@ -578,6 +578,30 @@ fn main() -> io::Result<()> {
         }
     };
 
+    let (args, ssh_config_request) = match ssh_host::session_config::extract_launch_arg(&args)
+        .and_then(|(args, raw)| {
+            let request = raw
+                .map(|raw| ssh_host::session_config::resolve_request(&raw))
+                .transpose()?;
+            Ok((args, request))
+        }) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("error: {err}");
+            eprintln!("run 'herdr --help' for usage");
+            std::process::exit(2);
+        }
+    };
+    if ssh_config_request.is_some()
+        && (remote_launch.is_some() || args.iter().skip(1).any(|arg| !arg.starts_with('-')))
+    {
+        eprintln!(
+            "error: --ssh can only be used with the default launch command, without --remote"
+        );
+        eprintln!("run 'herdr --help' for usage");
+        std::process::exit(2);
+    }
+
     if remote_launch.is_some()
         && args.get(1).is_some()
         && !args.iter().any(|a| {
@@ -747,6 +771,8 @@ fn main() -> io::Result<()> {
         println!("  --session <name>    Use or create a named persistent session");
         println!("  --machine <label-or-id>  Run an API command on a saved SSH machine");
         println!("  --remote <target>   Attach through SSH to a remote Herdr server");
+        println!("  --ssh <file|none>   Open this session's ssh hosts through only <file>");
+        println!("                      (remembered by the session; none restores ssh's defaults)");
         println!("  --remote-keybindings <local|server>");
         println!("                      Keybindings for --remote app attach (default: local)");
         println!("  --handoff           Opt into live handoff for update or remote attach");
@@ -838,6 +864,18 @@ fn main() -> io::Result<()> {
 
     let loaded_config = config::Config::load();
     exit_if_nested_disabled(&loaded_config.config);
+
+    if let Some(request) = &ssh_config_request {
+        let server_running = server::autodetect::is_server_listening().unwrap_or(false);
+        if let Err(err) = ssh_host::session_config::apply_for_launch(
+            request,
+            server_running,
+            &session::data_dir(),
+        ) {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
+    }
 
     let saved_federation =
         client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_enabled_ssh());

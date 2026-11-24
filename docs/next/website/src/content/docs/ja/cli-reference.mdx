@@ -26,6 +26,7 @@ herdr --version               # バージョンを表示
 起動と更新の任意オプション:
 
 - デフォルトではなく名前付きセッションを使う場合は `--session <name>` を追加します。
+- `--ssh <file>` を追加すると、セッションの ssh ホストをその ssh 設定ファイルだけで開きます（例: `herdr --session prod --ssh ~/.ssh/prod-config`）。セッションがファイルを覚えるので、次回 `--ssh` を付けずに起動しても同じファイルを使います。`--ssh none` で ssh の既定の設定に戻ります。Herdr はファイルを `ssh -F` で渡すため、`~/.ssh/config` とシステムの設定は読まれません。それらに追加する形にしたい場合は、ファイルの末尾に `Match all` と `Include ~/.ssh/config` を書きます。ssh は最初に読んだ値を使うので、`Include` より前の設定が優先されます。起動中のサーバーはファイルを変えません。切り替えるには先に `herdr server stop` を実行します。`--ssh` は `--remote` と併用できません。
 - リモート接続でサーバーのキーバインドを使う場合は `--remote-keybindings server` を追加します。
 - 実験的なライブハンドオフには、`herdr --remote` または `herdr update` で明示的な `--handoff` が必要です。通常のセットアップや接続には使いません。[更新](/ja/docs/install/)を参照してください。
 
@@ -405,7 +406,7 @@ herdr pane split --ssh HOST [<pane_id>|--pane ID|--current] --direction right|do
 herdr ssh hosts [--json]
 ```
 
-`--ssh HOST` を指定すると、新しいシェルをローカルではなく SSH 経由のリモートホストで開きます。`HOST` には `~/.ssh/config` の `Host` エイリアスを指定し、`user@alias` の形でも書けます。`--container` と併用した場合は、そのコンテナを持つ Docker のホストを指定するだけです（[コンテナ](#コンテナ)を参照）。ペインでは `ssh -C -S <herdr control path> -o ControlMaster=auto -o ControlPersist=600 -t HOST` を実行するため、ユーザー自身の SSH 設定がそのまま適用されます（Herdr は `-F` を渡しません）。パスワード、パスフレーズ、ホスト鍵の確認はペイン内に表示されます。`HERDR_*` 環境変数はリモートシェルに転送されません。`TERM` は `ssh` 自身が送ります。リモート側に Herdr は不要です。リモートで Herdr サーバーを動かす[保存済み SSH マシン](#保存済み-ssh-マシン)や `herdr --remote` とは異なります。
+`--ssh HOST` を指定すると、新しいシェルをローカルではなく SSH 経由のリモートホストで開きます。`HOST` には `~/.ssh/config` の `Host` エイリアスを指定し、`user@alias` の形でも書けます。`--container` と併用した場合は、そのコンテナを持つ Docker のホストを指定するだけです（[コンテナ](#コンテナ)を参照）。ペインでは `ssh -C -S <herdr control path> -o ControlMaster=auto -o ControlPersist=600 -t HOST` を実行するため、ユーザー自身の SSH 設定がそのまま適用されます（Herdr が `-F` を渡すのは `--ssh <file>` で起動したセッションだけで、ペインは再起動後も同じファイルを使います）。パスワード、パスフレーズ、ホスト鍵の確認はペイン内に表示されます。`HERDR_*` 環境変数はリモートシェルに転送されません。`TERM` は `ssh` 自身が送ります。リモート側に Herdr は不要です。リモートで Herdr サーバーを動かす[保存済み SSH マシン](#保存済み-ssh-マシン)や `herdr --remote` とは異なります。
 
 `ssh hosts` は `~/.ssh/config` にあるリテラルな `Host` エイリアスをファイル内の順に、`alias`、`hostname`、`user` の列を持つ表で表示します（不明な値は `-`）。`--json` を付けると生の応答を表示します。`*` や `?` を含むパターンと、否定の `!` パターンは対象外です。`Include` は辿ります。相対パスは `~/.ssh/` を基準に解決し、グロブも使えます。設定が空の場合は `No ssh hosts in ~/.ssh/config.` と表示します。エラーは JSON エラーとして標準エラー出力に表示します。
 

@@ -1,4 +1,4 @@
-//! Whether `~/.ssh/config` sets `RemoteCommand` for a host.
+//! Whether the ssh config sets `RemoteCommand` for a host.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -19,8 +19,9 @@ pub(crate) fn config_sets_remote_command(ssh_g_output: &str) -> bool {
 ///
 /// Why true on any failure: an unreadable answer must not inject a launcher
 /// over a command the user configured, and the plain login still works.
-pub(crate) fn host_has_remote_command(host: &str) -> bool {
+pub(crate) fn host_has_remote_command(host: &str, config: Option<&std::path::Path>) -> bool {
     let Ok(mut child) = Command::new("ssh")
+        .args(crate::ssh_host::launch::config_args(config))
         .arg("-G")
         .arg(host)
         .stdin(Stdio::null())

@@ -11,6 +11,7 @@ pub(crate) mod control;
 pub(crate) mod hosts;
 pub(crate) mod launch;
 pub(crate) mod remote_command;
+pub(crate) mod session_config;
 
 pub(crate) use config::SshHostInfo;
 pub(crate) use hosts::SshHostError;

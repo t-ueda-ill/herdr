@@ -1206,6 +1206,7 @@ impl HeadlessServer {
                         Some(ssh) => match &ssh.control_path {
                             Some(control_path) => Some(OffHostSsh {
                                 host: ssh.host.clone(),
+                                config: ssh.config.clone(),
                                 control_path: control_path.clone(),
                             }),
                             None => return Err(
@@ -1227,6 +1228,7 @@ impl HeadlessServer {
             Some(RunningOffHostShell::Ssh(launch)) => match &launch.control_path {
                 Some(control_path) => Ok(StageTarget::OffHost(OffHostTarget::Ssh {
                     host: launch.host.clone(),
+                    config: launch.config.clone(),
                     control_path: control_path.clone(),
                 })),
                 None => Err(

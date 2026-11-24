@@ -29,8 +29,8 @@ impl fmt::Display for SshHostError {
 
 impl std::error::Error for SshHostError {}
 
-/// Lists the hosts an ssh pane can open. Reads `~/.ssh/config` and its
-/// includes, so it must stay off the app thread.
+/// Lists the hosts an ssh pane can open. Reads the session's ssh config, or
+/// `~/.ssh/config`, and its includes, so it must stay off the app thread.
 pub(crate) fn list_configured_hosts() -> Result<Vec<SshHostInfo>, SshHostError> {
     if find_on_path(std::env::var_os("PATH").as_deref(), "ssh").is_none() {
         return Err(SshHostError::SshNotFound);
@@ -38,23 +38,26 @@ pub(crate) fn list_configured_hosts() -> Result<Vec<SshHostInfo>, SshHostError> 
     let user_config = crate::platform::remote_ssh_config_paths()
         .user_config
         .ok_or(SshHostError::NoHomeDirectory)?;
-    configured_hosts_in(&FsConfigLoader, &user_config)
+    let ssh_dir = user_config.parent().unwrap_or_else(|| Path::new("."));
+    let root = super::session_config::current().unwrap_or_else(|| user_config.clone());
+    configured_hosts_in(&FsConfigLoader, &root, ssh_dir)
 }
 
+/// Why `ssh_dir` apart from `root`: OpenSSH resolves a relative `Include`
+/// against `~/.ssh` even when `-F` names a file elsewhere.
 /// Why not list the system `ssh_config`: its hosts are rare and shared by
 /// every account, while the picker offers the user's own aliases.
 pub(crate) fn configured_hosts_in(
     loader: &dyn SshConfigLoader,
-    user_config: &Path,
+    root: &Path,
+    ssh_dir: &Path,
 ) -> Result<Vec<SshHostInfo>, SshHostError> {
-    let ssh_dir = user_config.parent().unwrap_or_else(|| Path::new("."));
-    let hosts =
-        list_host_aliases(loader, user_config, ssh_dir, ssh_dir.parent()).map_err(|source| {
-            SshHostError::ConfigUnreadable {
-                path: user_config.to_owned(),
-                source,
-            }
-        })?;
+    let hosts = list_host_aliases(loader, root, ssh_dir, ssh_dir.parent()).map_err(|source| {
+        SshHostError::ConfigUnreadable {
+            path: root.to_owned(),
+            source,
+        }
+    })?;
     // An alias `ssh` cannot be handed safely (or one with `user@`, which a
     // `Host` pattern never matches) would only fail after the pane opened.
     Ok(hosts
@@ -111,6 +114,7 @@ mod tests {
         let hosts = configured_hosts_in(
             &config("Host prod -oProxyCommand=sh deploy@prod \"two words\" ok.example_1\n"),
             Path::new("/home/u/.ssh/config"),
+            Path::new("/home/u/.ssh"),
         )
         .unwrap();
 
@@ -130,11 +134,39 @@ mod tests {
             ),
         ]));
 
-        let hosts = configured_hosts_in(&files, Path::new("/home/u/.ssh/config")).unwrap();
+        let hosts = configured_hosts_in(
+            &files,
+            Path::new("/home/u/.ssh/config"),
+            Path::new("/home/u/.ssh"),
+        )
+        .unwrap();
 
         assert_eq!(aliases(&hosts), ["work", "main"]);
         assert_eq!(hosts[0].hostname.as_deref(), Some("work.example.com"));
         assert_eq!(hosts[0].user.as_deref(), Some("me"));
+    }
+
+    #[test]
+    fn a_session_config_outside_the_ssh_dir_includes_relative_to_the_ssh_dir() {
+        let files = Files(HashMap::from([
+            (
+                PathBuf::from("/srv/ops/prod-config"),
+                Ok("Host prod\nMatch all\n  Include config\n".to_owned()),
+            ),
+            (
+                PathBuf::from("/home/u/.ssh/config"),
+                Ok("Host personal\n".to_owned()),
+            ),
+        ]));
+
+        let hosts = configured_hosts_in(
+            &files,
+            Path::new("/srv/ops/prod-config"),
+            Path::new("/home/u/.ssh"),
+        )
+        .unwrap();
+
+        assert_eq!(aliases(&hosts), ["prod", "personal"]);
     }
 
     #[test]
@@ -144,7 +176,12 @@ mod tests {
             Err(io::ErrorKind::PermissionDenied.into()),
         )]));
 
-        let err = configured_hosts_in(&files, Path::new("/home/u/.ssh/config")).unwrap_err();
+        let err = configured_hosts_in(
+            &files,
+            Path::new("/home/u/.ssh/config"),
+            Path::new("/home/u/.ssh"),
+        )
+        .unwrap_err();
 
         assert!(matches!(
             err,

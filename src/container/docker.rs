@@ -21,6 +21,8 @@ pub(crate) enum DockerHost {
     /// Docker runs on `host`, reached with the local `ssh` client.
     Ssh {
         host: String,
+        /// The pane's `ssh -F` config, see [`crate::ssh_host::SshLaunch::config`].
+        config: Option<PathBuf>,
         control_path: Option<PathBuf>,
     },
 }
@@ -30,6 +32,7 @@ impl DockerHost {
         match ssh {
             Some(launch) => Self::Ssh {
                 host: launch.host.clone(),
+                config: launch.config.clone(),
                 control_path: launch.control_path.clone(),
             },
             None => Self::Local,
@@ -165,6 +168,7 @@ fn failed(output: ProcessOutput) -> ContainerListError {
 /// for the remote login shell, which would split filters at `=` and `;`.
 pub(super) fn ssh_docker_argv(
     host: &str,
+    config: Option<&Path>,
     control_path: Option<&Path>,
     docker_args: &[&str],
 ) -> Vec<OsString> {
@@ -173,7 +177,7 @@ pub(super) fn ssh_docker_argv(
         command.push(' ');
         command.push_str(&shell_quote(arg));
     }
-    ssh_batch_argv(host, control_path, &command)
+    ssh_batch_argv(host, config, control_path, &command)
 }
 
 /// Runs one docker CLI call, locally or on the ssh host. `stdin` is streamed
@@ -188,10 +192,15 @@ pub(super) fn run_docker_with(
 ) -> Result<ProcessOutput, ContainerListError> {
     let result = match host {
         DockerHost::Local => run_with_deadline(program, args, stdin, deadline),
-        DockerHost::Ssh { host, control_path } => run_with_deadline(
+        DockerHost::Ssh {
+            host,
+            config,
+            control_path,
+        } => run_with_deadline(
             program,
             &ssh_docker_argv(
                 host,
+                config.as_deref(),
                 crate::ssh_host::control::prepare_control_path(control_path.as_deref()).as_deref(),
                 args,
             ),
@@ -391,6 +400,7 @@ pub(super) mod tests {
     fn prod(control_path: Option<&str>) -> DockerHost {
         DockerHost::Ssh {
             host: "deploy@prod".into(),
+            config: None,
             control_path: control_path.map(PathBuf::from),
         }
     }
@@ -415,9 +425,29 @@ pub(super) mod tests {
     ];
 
     #[test]
+    fn docker_on_an_ssh_host_reads_the_pane_ssh_config() {
+        let launch = crate::ssh_host::SshLaunch::new("deploy@prod".into(), None)
+            .unwrap()
+            .with_config(Some("/cfg/prod".into()));
+        let DockerHost::Ssh { config, .. } = DockerHost::for_launch(Some(&launch)) else {
+            panic!("an ssh launch runs docker over ssh");
+        };
+
+        let argv = strings(ssh_docker_argv(
+            "deploy@prod",
+            config.as_deref(),
+            None,
+            &["ps"],
+        ));
+
+        assert_eq!(argv[..2], ["-F", "/cfg/prod"]);
+    }
+
+    #[test]
     fn ssh_docker_argv_joins_the_pane_master_and_quotes_every_docker_argument() {
         let argv = strings(ssh_docker_argv(
             "deploy@prod",
+            None,
             Some(Path::new("/tmp/hssh-1/abc-%C")),
             &["ps", "--filter", "label=a=b c", "it's"],
         ));
@@ -440,7 +470,7 @@ pub(super) mod tests {
 
     #[test]
     fn ssh_docker_argv_omits_the_master_options_without_a_control_path() {
-        let argv = strings(ssh_docker_argv("prod", None, &["ps"]));
+        let argv = strings(ssh_docker_argv("prod", None, None, &["ps"]));
         let mut expected: Vec<String> = BATCH_OPTIONS.iter().map(|s| s.to_string()).collect();
         expected.extend(["prod".to_owned(), "docker 'ps'".to_owned()]);
         assert_eq!(argv, expected);
@@ -477,6 +507,7 @@ pub(super) mod tests {
         );
         let host = DockerHost::Ssh {
             host: "deploy@prod".into(),
+            config: None,
             control_path: Some(crate::ssh_host::control::test_control_path("prod")),
         };
 
@@ -589,6 +620,7 @@ pub(super) mod tests {
             ),
             DockerHost::Ssh {
                 host: "prod".into(),
+                config: None,
                 control_path: Some("/tmp/c".into())
             }
         );

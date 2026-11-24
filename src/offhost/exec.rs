@@ -185,7 +185,12 @@ pub(crate) fn command_argv(
                         .join(" ");
                     Ok((
                         "ssh",
-                        ssh_batch_argv(&ssh.host, ssh.control_path.as_deref(), &command),
+                        ssh_batch_argv(
+                            &ssh.host,
+                            ssh.config.as_deref(),
+                            ssh.control_path.as_deref(),
+                            &command,
+                        ),
                     ))
                 }
             }
@@ -206,7 +211,12 @@ pub(crate) fn command_argv(
                 .join(" ");
             Ok((
                 "ssh",
-                ssh_batch_argv(&launch.host, Some(control_path), &command),
+                ssh_batch_argv(
+                    &launch.host,
+                    launch.config.as_deref(),
+                    Some(control_path),
+                    &command,
+                ),
             ))
         }
     }
@@ -483,6 +493,19 @@ mod tests {
             argv[options.len()..],
             [r#"'sh' '-c' 'echo "$1"' 'sh' '/srv/my dir'"#]
         );
+    }
+
+    #[test]
+    fn ssh_pane_and_container_on_an_ssh_host_read_the_pane_ssh_config() {
+        let launch = ssh_launch(Some("/tmp/hssh/abc-%C")).with_config(Some("/cfg/prod".into()));
+
+        for env in [
+            PaneEnvironment::Ssh(launch.clone()),
+            container(None, Some(launch.clone())),
+        ] {
+            let (_, argv) = command_argv(&env, "true", &[]).unwrap();
+            assert_eq!(strings(argv)[..2], ["-F", "/cfg/prod"]);
+        }
     }
 
     #[test]

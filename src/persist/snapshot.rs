@@ -140,6 +140,10 @@ pub struct PaneSshSnapshot {
         skip_serializing_if = "is_remote_command_unknown"
     )]
     pub has_remote_command: bool,
+    /// The session's ssh config the pane was opened through; absent means
+    /// ssh's own defaults, as for every session written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<PathBuf>,
 }
 
 fn remote_command_unknown() -> bool {
@@ -156,6 +160,7 @@ impl From<&crate::ssh_host::SshLaunch> for PaneSshSnapshot {
             host: launch.host.clone(),
             control_path: launch.control_path.clone(),
             has_remote_command: launch.has_remote_command,
+            config: launch.config.clone(),
         }
     }
 }
@@ -166,9 +171,23 @@ impl PaneSshSnapshot {
     /// respawn would put the value straight into `ssh`'s argv.
     // Why not persist `canonical`: it is derived from `host`, and a stored
     // copy could disagree with it after a hand edit.
+    // Why refuse a relative `config` instead of dropping it: reconnecting
+    // through ssh's defaults could reach another machine under the same alias.
     pub(crate) fn to_launch(&self) -> Option<crate::ssh_host::SshLaunch> {
-        crate::ssh_host::SshLaunch::new(self.host.clone(), self.control_path.clone())
-            .map(|launch| launch.with_remote_command(self.has_remote_command))
+        if self
+            .config
+            .as_ref()
+            .is_some_and(|config| !config.is_absolute())
+        {
+            return None;
+        }
+        crate::ssh_host::SshLaunch::new(self.host.clone(), self.control_path.clone()).map(
+            |launch| {
+                launch
+                    .with_remote_command(self.has_remote_command)
+                    .with_config(self.config.clone())
+            },
+        )
     }
 }
 
@@ -1051,16 +1070,40 @@ mod tests {
     }
 
     #[test]
+    fn ssh_snapshot_keeps_the_session_ssh_config_of_the_pane() {
+        let launch = crate::ssh_host::SshLaunch::new("prod".into(), None)
+            .unwrap()
+            .with_config(Some(PathBuf::from("/home/u/.ssh/prod-config")));
+
+        let encoded = serde_json::to_value(PaneSshSnapshot::from(&launch)).unwrap();
+        let back: PaneSshSnapshot = serde_json::from_value(encoded.clone()).unwrap();
+
+        assert_eq!(encoded["config"], "/home/u/.ssh/prod-config");
+        assert_eq!(back.to_launch().unwrap().config, launch.config);
+    }
+
+    #[test]
+    fn ssh_snapshot_with_a_relative_config_is_not_reconnected() {
+        let snapshot: PaneSshSnapshot =
+            serde_json::from_value(serde_json::json!({ "host": "prod", "config": "prod-config" }))
+                .unwrap();
+
+        assert_eq!(snapshot.to_launch(), None);
+    }
+
+    #[test]
     fn round_trip_preserves_pane_ssh() {
         let multiplexed = PaneSshSnapshot {
             host: "deploy@prod".into(),
             control_path: Some(PathBuf::from("/tmp/hssh-1000/abc-%C")),
             has_remote_command: true,
+            config: None,
         };
         let plain = PaneSshSnapshot {
             host: "lab".into(),
             control_path: None,
             has_remote_command: true,
+            config: None,
         };
         let panes = HashMap::from([
             (
@@ -1109,6 +1152,7 @@ mod tests {
                 host: host.into(),
                 control_path: None,
                 has_remote_command: true,
+                config: None,
             };
             assert_eq!(snapshot.to_launch(), None, "{host:?}");
         }
@@ -1194,6 +1238,7 @@ mod tests {
                 host: "deploy@prod".into(),
                 control_path: Some("/tmp/hssh-1/abc-%C".into()),
                 has_remote_command: true,
+                config: None,
             }),
         };
         let panes = HashMap::from([(0, pane_snapshot_with_container(Some(remote.clone())))]);
@@ -1232,6 +1277,7 @@ mod tests {
                     host: host.into(),
                     control_path: None,
                     has_remote_command: true,
+                    config: None,
                 }),
             };
             assert_eq!(snapshot.to_launch(), None, "{host:?}");
@@ -1285,6 +1331,7 @@ mod tests {
                 host: "deploy@prod".into(),
                 control_path: Some("/tmp/hssh-1000/0123456789abcdef01234567-%C".into()),
                 has_remote_command: true,
+                config: None,
             })
         );
     }

@@ -26,6 +26,7 @@ herdr --version               # print version
 Optional launch and update settings:
 
 - Add `--session <name>` to use a named session instead of the default.
+- Add `--ssh <file>` to open the session's ssh hosts through only that ssh config, for example `herdr --session prod --ssh ~/.ssh/prod-config`. The session remembers the file, so later launches without `--ssh` keep it; `--ssh none` returns to ssh's own defaults. Herdr passes the file as `ssh -F`, which skips `~/.ssh/config` and the system config. To add the file on top of them instead, end it with `Match all` followed by `Include ~/.ssh/config`; ssh keeps the first value it reads, so entries before the `Include` win. A running server keeps its file: stop it with `herdr server stop` before switching. `--ssh` cannot be combined with `--remote`.
 - Add `--remote-keybindings server` to remote attach to use server keybindings instead of local ones.
 - Experimental live handoff requires explicit `--handoff` on `herdr --remote` or `herdr update`. It is not the normal setup or connection path; see [Updates](/docs/install/#update).
 
@@ -426,7 +427,7 @@ herdr pane split --ssh HOST [<pane_id>|--pane ID|--current] --direction right|do
 herdr ssh hosts [--json]
 ```
 
-`--ssh HOST` opens the new shell on a remote host over SSH instead of on the local machine. `HOST` is a `Host` alias from your `~/.ssh/config`, optionally written as `user@alias`. Combined with `--container`, it only names the host whose Docker holds the container, see [Containers](#containers). The pane runs `ssh -C -S <herdr control path> -o ControlMaster=auto -o ControlPersist=600 -t HOST`, so your own SSH config applies unchanged: Herdr does not pass `-F`. Password, passphrase, and host-key prompts appear in the pane. `HERDR_*` environment variables are not forwarded to the remote shell; `ssh` itself sends `TERM`. The remote host does not need Herdr installed, unlike [saved SSH machines](#saved-ssh-machines) and `herdr --remote`, which run a Herdr server remotely.
+`--ssh HOST` opens the new shell on a remote host over SSH instead of on the local machine. `HOST` is a `Host` alias from your `~/.ssh/config`, optionally written as `user@alias`. Combined with `--container`, it only names the host whose Docker holds the container, see [Containers](#containers). The pane runs `ssh -C -S <herdr control path> -o ControlMaster=auto -o ControlPersist=600 -t HOST`, so your own SSH config applies unchanged: Herdr passes `-F` only for a session started with `--ssh <file>`, and the pane keeps that file across restarts. Password, passphrase, and host-key prompts appear in the pane. `HERDR_*` environment variables are not forwarded to the remote shell; `ssh` itself sends `TERM`. The remote host does not need Herdr installed, unlike [saved SSH machines](#saved-ssh-machines) and `herdr --remote`, which run a Herdr server remotely.
 
 `ssh hosts` lists the literal `Host` aliases of `~/.ssh/config` in file order, as a table with `alias`, `hostname`, and `user` columns (`-` when unknown), or the raw response with `--json`. Patterns containing `*` or `?` and negated `!` patterns are skipped. `Include` is followed; relative paths resolve against `~/.ssh/` and globs are allowed. An empty config prints `No ssh hosts in ~/.ssh/config.`. Errors are printed as the JSON error on stderr.
 

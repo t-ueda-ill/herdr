@@ -42,13 +42,15 @@ impl std::error::Error for SshSideChannelError {}
 ///
 /// Why `ControlMaster=no` and `BatchMode`: the pane owns the master and its
 /// interactive login, so a side channel only joins it and never prompts.
-/// Why not `-F`: the user's own config must resolve `host` exactly as it did
-/// for the pane, or `%C` in the control path would name another socket.
+/// Why `-F` only with the pane's own `config`: the config must resolve `host`
+/// exactly as it did for the pane, or `%C` in the control path would name
+/// another socket.
 /// Why the remaining options: like scp(1), a file transfer must not allocate
 /// a tty (stdin carries raw bytes), run the config's `RemoteCommand` (ssh
 /// refuses a second command), or set up forwardings and local commands.
-fn side_channel_argv(host: &str, control_path: &Path) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = vec!["-S".into(), control_path.as_os_str().to_owned()];
+fn side_channel_argv(host: &str, config: Option<&Path>, control_path: &Path) -> Vec<OsString> {
+    let mut argv: Vec<OsString> = crate::ssh_host::launch::config_args(config).collect();
+    argv.extend(["-S".into(), control_path.as_os_str().to_owned()]);
     for option in [
         "ControlMaster=no",
         "BatchMode=yes",
@@ -72,8 +74,13 @@ fn side_channel_argv(host: &str, control_path: &Path) -> Vec<OsString> {
 /// Why one pre-quoted command: ssh joins its remaining arguments with spaces
 /// and hands the result to the remote login shell, which would otherwise
 /// split the script at `;`, `&&`, and `>`.
-fn stage_argv(host: &str, control_path: &Path, file_name: &str) -> Vec<OsString> {
-    let mut argv = side_channel_argv(host, control_path);
+fn stage_argv(
+    host: &str,
+    config: Option<&Path>,
+    control_path: &Path,
+    file_name: &str,
+) -> Vec<OsString> {
+    let mut argv = side_channel_argv(host, config, control_path);
     argv.push(
         format!(
             "sh -c {} sh {}",
@@ -88,7 +95,12 @@ fn stage_argv(host: &str, control_path: &Path, file_name: &str) -> Vec<OsString>
 /// `ssh <side channel options> <host> "sh -c '<cleanup script>' sh '<path>'…"`, one
 /// run per host. Why `rmdir` and not `rm -rf`: each staged image owns a fresh
 /// directory, and `rmdir` can only remove it once empty.
-fn cleanup_argv(host: &str, control_path: &Path, paths: &[String]) -> Vec<OsString> {
+fn cleanup_argv(
+    host: &str,
+    config: Option<&Path>,
+    control_path: &Path,
+    paths: &[String],
+) -> Vec<OsString> {
     // Why `sh -c` and not a bare `rm; rmdir` line: the remote login shell may
     // not be a POSIX shell, so redirections and `;` are only safe inside `sh`.
     let mut command = format!("sh -c {} sh", shell_quote(CLEANUP_SCRIPT));
@@ -96,7 +108,7 @@ fn cleanup_argv(host: &str, control_path: &Path, paths: &[String]) -> Vec<OsStri
         command.push(' ');
         command.push_str(&shell_quote(path));
     }
-    let mut argv = side_channel_argv(host, control_path);
+    let mut argv = side_channel_argv(host, config, control_path);
     argv.push(command.into());
     argv
 }
@@ -104,6 +116,7 @@ fn cleanup_argv(host: &str, control_path: &Path, paths: &[String]) -> Vec<OsStri
 /// Streams `data` to the pane's ssh host and returns the remote path.
 pub(crate) fn stage_image(
     host: &str,
+    config: Option<&Path>,
     control_path: &Path,
     file_name: &str,
     data: Vec<u8>,
@@ -111,6 +124,7 @@ pub(crate) fn stage_image(
     stage_image_with(
         "ssh",
         host,
+        config,
         control_path,
         file_name,
         data,
@@ -121,12 +135,13 @@ pub(crate) fn stage_image(
 fn stage_image_with(
     program: impl AsRef<Path>,
     host: &str,
+    config: Option<&Path>,
     control_path: &Path,
     file_name: &str,
     data: Vec<u8>,
     timeout: Duration,
 ) -> Result<String, SshSideChannelError> {
-    let argv = stage_argv(host, control_path, file_name);
+    let argv = stage_argv(host, config, control_path, file_name);
     let output = run_ssh(
         program.as_ref(),
         &argv,
@@ -139,15 +154,24 @@ fn stage_image_with(
 /// Removes staged files. Callers ignore the error: the master may be gone.
 pub(crate) fn remove_images(
     host: &str,
+    config: Option<&Path>,
     control_path: &Path,
     paths: &[String],
 ) -> Result<(), SshSideChannelError> {
-    remove_images_with("ssh", host, control_path, paths, SSH_SIDE_CHANNEL_TIMEOUT)
+    remove_images_with(
+        "ssh",
+        host,
+        config,
+        control_path,
+        paths,
+        SSH_SIDE_CHANNEL_TIMEOUT,
+    )
 }
 
 fn remove_images_with(
     program: impl AsRef<Path>,
     host: &str,
+    config: Option<&Path>,
     control_path: &Path,
     paths: &[String],
     timeout: Duration,
@@ -155,7 +179,7 @@ fn remove_images_with(
     if paths.is_empty() {
         return Ok(());
     }
-    let argv = cleanup_argv(host, control_path, paths);
+    let argv = cleanup_argv(host, config, control_path, paths);
     run_ssh(program.as_ref(), &argv, None, Instant::now() + timeout).map(|_| ())
 }
 
@@ -233,7 +257,7 @@ mod tests {
 
     #[test]
     fn stage_argv_joins_the_pane_master_and_runs_the_shared_script() {
-        let argv = strings(stage_argv("deploy@prod", Path::new(CONTROL), NAME));
+        let argv = strings(stage_argv("deploy@prod", None, Path::new(CONTROL), NAME));
 
         assert_eq!(
             argv,
@@ -245,6 +269,18 @@ mod tests {
     }
 
     #[test]
+    fn side_channel_reads_the_pane_ssh_config_before_joining_its_master() {
+        let argv = strings(stage_argv(
+            "prod",
+            Some(Path::new("/cfg/prod")),
+            Path::new(CONTROL),
+            NAME,
+        ));
+
+        assert_eq!(argv[..4], ["-F", "/cfg/prod", "-S", CONTROL]);
+    }
+
+    #[test]
     fn cleanup_argv_removes_every_path_of_a_host_in_one_run() {
         let paths = vec![
             "/tmp/herdr-clipboard-image-aB3dE9/a.png".to_owned(),
@@ -252,7 +288,7 @@ mod tests {
         ];
 
         assert_eq!(
-            strings(cleanup_argv("prod", Path::new(CONTROL), &paths)),
+            strings(cleanup_argv("prod", None, Path::new(CONTROL), &paths)),
             expected(
                 "prod",
                 &format!(
@@ -469,7 +505,7 @@ mod tests {
 
             let bytes = (0..=255u8).cycle().take(300_000).collect::<Vec<_>>();
             let file_name = "client-1-clipboard-42-0.png";
-            let staged = stage_image(ALIAS, &host.control, file_name, bytes.clone()).unwrap();
+            let staged = stage_image(ALIAS, None, &host.control, file_name, bytes.clone()).unwrap();
 
             let dir = Path::new(&staged).parent().unwrap().display().to_string();
             assert_eq!(staged, format!("{dir}/{file_name}"));
@@ -485,14 +521,15 @@ mod tests {
             let read_back = container_out(&host, &["cat", &staged]);
             assert_eq!(read_back.stdout, bytes, "no tty mangled the raw bytes");
 
-            remove_images(ALIAS, &host.control, std::slice::from_ref(&staged)).unwrap();
+            remove_images(ALIAS, None, &host.control, std::slice::from_ref(&staged)).unwrap();
             let gone = container_out(&host, &["test", "-e", &staged]);
             assert!(!gone.status.success(), "cleanup removes the staged file");
             let dir_gone = container_out(&host, &["test", "-e", &dir]);
             assert!(!dir_gone.status.success(), "cleanup removes the directory");
 
             assert!(host.stop_master().status.success());
-            let err = stage_image(ALIAS, &host.control, file_name, b"x".to_vec()).unwrap_err();
+            let err =
+                stage_image(ALIAS, None, &host.control, file_name, b"x".to_vec()).unwrap_err();
             assert!(
                 matches!(
                     err,
@@ -582,6 +619,7 @@ mod tests {
             let path = stage_image_with(
                 remote.ssh.program(),
                 "prod",
+                None,
                 control(),
                 NAME,
                 b"image-bytes".to_vec(),
@@ -605,6 +643,7 @@ mod tests {
             let path = stage_image_with(
                 remote.ssh.program(),
                 "prod",
+                None,
                 control(),
                 NAME,
                 b"x".to_vec(),
@@ -615,6 +654,7 @@ mod tests {
             remove_images_with(
                 remote.ssh.program(),
                 "prod",
+                None,
                 control(),
                 std::slice::from_ref(&path),
                 secs(5),
@@ -636,8 +676,16 @@ mod tests {
                 "cat >/dev/null; echo 'Permission denied (publickey,password).' >&2; exit 255",
             );
 
-            let err = stage_image_with(ssh.program(), "prod", control(), NAME, vec![1, 2], secs(5))
-                .unwrap_err();
+            let err = stage_image_with(
+                ssh.program(),
+                "prod",
+                None,
+                control(),
+                NAME,
+                vec![1, 2],
+                secs(5),
+            )
+            .unwrap_err();
 
             match err {
                 SshSideChannelError::Failed { status, stderr } => {
@@ -656,6 +704,7 @@ mod tests {
             let err = stage_image_with(
                 ssh.program(),
                 "prod",
+                None,
                 control(),
                 NAME,
                 vec![0; 1 << 20],
@@ -675,8 +724,16 @@ mod tests {
                 "cat >/dev/null; printf '%s\\n%s' /tmp/evil /tmp/x/client-7-clipboard-123-0.png",
             );
 
-            let err = stage_image_with(ssh.program(), "prod", control(), NAME, vec![1], secs(5))
-                .unwrap_err();
+            let err = stage_image_with(
+                ssh.program(),
+                "prod",
+                None,
+                control(),
+                NAME,
+                vec![1],
+                secs(5),
+            )
+            .unwrap_err();
 
             assert!(matches!(err, SshSideChannelError::InvalidOutput(_)));
         }
@@ -686,6 +743,7 @@ mod tests {
             let err = stage_image_with(
                 "/nonexistent/herdr-ssh",
                 "prod",
+                None,
                 control(),
                 NAME,
                 vec![1],
@@ -699,7 +757,15 @@ mod tests {
 
         #[test]
         fn remove_images_skips_ssh_when_nothing_was_staged() {
-            remove_images_with("/nonexistent/herdr-ssh", "prod", control(), &[], secs(5)).unwrap();
+            remove_images_with(
+                "/nonexistent/herdr-ssh",
+                "prod",
+                None,
+                control(),
+                &[],
+                secs(5),
+            )
+            .unwrap();
         }
     }
 }

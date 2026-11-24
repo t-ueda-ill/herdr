@@ -57,6 +57,7 @@ fn remote_container_target() -> OffHostTarget {
         user: Some("node".into()),
         ssh: Some(RemoteDockerHost {
             host: "deploy@prod".into(),
+            config: None,
             control_path: REMOTE_CONTROL_PATH.into(),
         }),
     }
