@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod agents;
+pub mod assist;
 pub mod commands;
 pub mod common;
 pub mod containers;
@@ -26,6 +27,7 @@ pub mod workspaces;
 pub mod worktrees;
 
 pub use agents::*;
+pub use assist::*;
 pub use commands::*;
 pub use common::*;
 pub use containers::*;
@@ -210,6 +212,10 @@ operations::define_operations! {
     PreviewStart(PreviewStartParams) => "preview.start", false, true;
     PreviewList(EmptyParams) => "preview.list", false, true;
     PreviewStop(PreviewStopParams) => "preview.stop", false, true;
+    AssistProducts(EmptyParams) => "assist.products", false, true;
+    AssistList(EmptyParams) => "assist.list", false, true;
+    AssistStart(AssistStartParams) => "assist.start", true, true;
+    AssistRefresh(AssistRefreshParams) => "assist.refresh", true, true;
 }
 
 #[cfg(test)]
@@ -244,6 +250,8 @@ impl Method {
                 | Self::PreviewStart(_)
                 | Self::PreviewList(_)
                 | Self::PreviewStop(_)
+                | Self::AssistProducts(_)
+                | Self::AssistList(_)
                 // Why: the Go to preview reads servers whose surface is
                 // elsewhere, and a read must not take the foreground.
                 | Self::TaskList(_)

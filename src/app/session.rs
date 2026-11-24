@@ -41,12 +41,21 @@ impl App {
         if self.state.workspaces.is_empty() {
             SessionSaveJob::Clear
         } else {
-            let snapshot = crate::persist::capture(
+            // Why without assists: a restored assist would run its CLI
+            // again with a prompt that names a context file already deleted.
+            let assists = self
+                .state
+                .assists
+                .iter()
+                .map(|link| link.helper.clone())
+                .collect();
+            let snapshot = crate::persist::capture_excluding(
                 &self.state.workspaces,
                 &self.state.terminals,
                 &self.terminal_runtimes,
                 self.state.active,
                 self.state.selected,
+                &assists,
             );
             let history = self.persist_pane_history.then(|| {
                 crate::persist::capture_history(

@@ -73,7 +73,7 @@ impl App {
         if self.terminal_runtimes.get(terminal_id).is_some() {
             return;
         }
-        let Some((ws_idx, pane_id)) = pane_of_terminal(&self.state, terminal_id) else {
+        let Some((ws_idx, pane_id)) = self.state.pane_of_terminal(terminal_id) else {
             return;
         };
         let Some(launch_env) = self.pane_launch_env(ws_idx, pane_id, Vec::new()) else {
@@ -195,24 +195,6 @@ fn running_container_id(launch: &ContainerLaunch) -> Option<String> {
     };
     // `docker inspect` takes an id wherever it takes a name.
     running(&ContainerRef::Name(launch.id.clone())).or_else(|| running(&launch.reference))
-}
-
-fn pane_of_terminal(
-    state: &AppState,
-    terminal_id: &TerminalId,
-) -> Option<(usize, crate::layout::PaneId)> {
-    state
-        .workspaces
-        .iter()
-        .enumerate()
-        .find_map(|(ws_idx, ws)| {
-            ws.tabs.iter().find_map(|tab| {
-                tab.panes
-                    .iter()
-                    .find(|(_, pane)| &pane.attached_terminal_id == terminal_id)
-                    .map(|(pane_id, _)| (ws_idx, *pane_id))
-            })
-        })
 }
 
 #[cfg(test)]

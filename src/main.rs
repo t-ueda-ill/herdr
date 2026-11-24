@@ -15,6 +15,7 @@ mod agent_resume;
 mod agent_view_eval;
 mod api;
 mod app;
+mod assist;
 mod build_info;
 mod checksum;
 mod cli;

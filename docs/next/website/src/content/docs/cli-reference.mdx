@@ -459,6 +459,22 @@ Opened as a page, Markdown, Mermaid (`.mmd`), CSV, TSV, JSON, YAML, TOML, and co
 
 In the TUI, `preview in browser` in the file workbench menus starts a preview of the tree root and opens the chosen file or folder (the root from empty tree space). It is available only when the Herdr server runs on the same machine as the TUI; with a remote server it says `preview needs the herdr server on this machine`. `previews` in the global menu lists the running previews with their place and address: Enter or a click on `↵ open` opens the selected one in the browser, and Delete or `del stop` stops it. `/` filters by root, place, or port.
 
+## Assists
+
+```bash
+herdr assist start [PANE] [--with claude|codex|copilot] [--right|--below] [--no-focus] [--json]
+herdr assist refresh [PANE] [--json]
+herdr assist list [--json]
+herdr assist products [--json]
+```
+
+`assist start` opens a coding-agent CLI next to a pane so it can advise on what the pane shows. The CLI runs on the machine of the Herdr server, also when the pane's shell runs in a container or over SSH; `assist products` lists the ones found on the server's `PATH` (`claude`, `codex`, `copilot`). `PANE` defaults to the pane the command runs in. `--with` picks the CLI (default: the first found, in that order). Without `--right` or `--below`, a pane at least 120 columns wide gets the assist on its right (two fifths of the width), and a narrower one in its lower half. The new pane is named `assist ▸ <pane name>`. Running `assist start` again for the same pane focuses its open assist.
+
+Herdr writes what the pane shows to `context.md` in a new folder under the temp folder that only the server's user can open, and gives the CLI a one-line prompt that names the file. From a shell that marks its prompts (OSC 133), the file holds the last 3 commands with their output (200 lines each at most) and the prompt that waits for input, with any text typed there but not run yet; otherwise it holds the last 200 lines of the screen, or the screen of an agent. Type into the assist to say what you want to do next.
+
+`assist refresh` writes the file again from the pane's current output and sends the assist a line that tells it to read the file again. It takes the assist or the pane it reads. The assist only advises: Herdr starts `claude` with `--disallowedTools Bash(herdr:*)`, `codex` with `--sandbox read-only`, and `copilot` with `--deny-tool=shell(herdr:*)`. These rules belong to each CLI and are not a security boundary. An assist is not a target for `task submit`. Closing the assist deletes its folder; closing the pane it reads leaves the assist open, and `assist list` then shows it `for a closed pane`. Assists are not kept across a server restart, and stopping the server deletes their folders.
+
+
 ## Agents
 
 For the pane-versus-agent model and complete orchestration examples, see [Agent automation](/docs/agent-automation/).

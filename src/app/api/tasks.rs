@@ -36,6 +36,15 @@ impl App {
                 Err(conflict) => return task_key_conflict(id, key, conflict),
             }
         }
+        // Why only tasks and not `agent.prompt`: an assist answers its user,
+        // and herdr itself sends it lines through `assist.refresh`.
+        if self.agent_target_is_assist(&params.target) {
+            return encode_error(
+                id,
+                "assist_not_task_target",
+                format!("{} is an assist and does not take tasks", params.target),
+            );
+        }
         let prompt = AgentPromptParams {
             target: params.target.clone(),
             text: params.text.clone(),

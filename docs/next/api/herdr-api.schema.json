@@ -1987,6 +1987,85 @@
           ],
           "type": "object"
         },
+        "AssistPlacement": {
+          "description": "Where the assist opens next to the pane it reads.",
+          "oneOf": [
+            {
+              "enum": [
+                "right",
+                "below"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "auto",
+              "description": "Right of a wide pane, below a narrow one.",
+              "type": "string"
+            }
+          ]
+        },
+        "AssistProduct": {
+          "description": "A coding-agent CLI the server can open as an assist.",
+          "oneOf": [
+            {
+              "enum": [
+                "claude",
+                "codex",
+                "copilot"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A product a newer server adds.",
+              "type": "string"
+            }
+          ]
+        },
+        "AssistRefreshParams": {
+          "description": "`pane_id` is the assist or the pane it reads.",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        "AssistStartParams": {
+          "properties": {
+            "focus": {
+              "default": true,
+              "description": "Focus the assist. A pane that already has an assist focuses it either way.",
+              "type": "boolean"
+            },
+            "pane_id": {
+              "description": "The pane the assist reads.",
+              "type": "string"
+            },
+            "placement": {
+              "$ref": "#/schemas/request/$defs/AssistPlacement",
+              "default": "auto"
+            },
+            "product": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/AssistProduct"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the first product found, in the order claude, codex, copilot."
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
         "ClientShellSurfaceSetParams": {
           "description": "Updates whether the requesting client shell receives and controls pane presentation.",
           "properties": {
@@ -8510,6 +8589,70 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "assist.products",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "assist.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "assist.start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AssistStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "assist.refresh",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AssistRefreshParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -8983,6 +9126,68 @@
             "unknown"
           ],
           "type": "string"
+        },
+        "AssistInfo": {
+          "properties": {
+            "context_path": {
+              "description": "The file that holds what the assist read. Only the server's user can read it.",
+              "type": "string"
+            },
+            "pane_id": {
+              "description": "The assist's own pane.",
+              "type": "string"
+            },
+            "product": {
+              "$ref": "#/schemas/success_response/$defs/AssistProduct"
+            },
+            "target_pane_id": {
+              "description": "Absent once the pane it read has closed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id",
+            "product",
+            "context_path"
+          ],
+          "type": "object"
+        },
+        "AssistProduct": {
+          "description": "A coding-agent CLI the server can open as an assist.",
+          "oneOf": [
+            {
+              "enum": [
+                "claude",
+                "codex",
+                "copilot"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A product a newer server adds.",
+              "type": "string"
+            }
+          ]
+        },
+        "AssistProductInfo": {
+          "properties": {
+            "path": {
+              "description": "The executable found on the server's `PATH`.",
+              "type": "string"
+            },
+            "product": {
+              "$ref": "#/schemas/success_response/$defs/AssistProduct"
+            }
+          },
+          "required": [
+            "product",
+            "path"
+          ],
+          "type": "object"
         },
         "ClientWindowTitleReason": {
           "enum": [
@@ -14080,6 +14285,81 @@
               "required": [
                 "type",
                 "preview_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "products": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/AssistProductInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "assist_products",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "products"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "assists": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/AssistInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "assist_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "assists"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`created` is false when the pane already had an assist, which is focused instead.",
+              "properties": {
+                "assist": {
+                  "$ref": "#/schemas/success_response/$defs/AssistInfo"
+                },
+                "created": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "assist_started",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "assist",
+                "created"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "assist": {
+                  "$ref": "#/schemas/success_response/$defs/AssistInfo"
+                },
+                "type": {
+                  "const": "assist_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "assist"
               ],
               "type": "object"
             }

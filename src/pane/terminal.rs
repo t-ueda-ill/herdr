@@ -21,7 +21,7 @@ mod migration_tests;
 #[cfg(windows)]
 mod windows_recent_fallback;
 
-pub(crate) use command_marks::{CommandMarkError, PromptMotion};
+pub(crate) use command_marks::{CommandMarkError, CommandText, PromptMotion, RecentCommands};
 
 #[cfg(test)]
 use super::cursor::CURSOR_POSITION_SETTLE;

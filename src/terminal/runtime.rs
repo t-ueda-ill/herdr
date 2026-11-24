@@ -344,6 +344,13 @@ impl TerminalRuntime {
         self.0.command_output_range(row)
     }
 
+    pub(crate) fn recent_commands(
+        &self,
+        max: usize,
+    ) -> Result<crate::pane::RecentCommands, crate::pane::CommandMarkError> {
+        self.0.recent_commands(max)
+    }
+
     pub fn bracketed_paste_enabled(&self) -> bool {
         self.0.bracketed_paste_enabled()
     }

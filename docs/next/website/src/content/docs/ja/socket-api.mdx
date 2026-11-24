@@ -106,6 +106,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
+| アシスト | `assist.products`、`assist.list`、`assist.start`、`assist.refresh` |
 | タスク | `task.submit`、`task.get`、`task.list`、`task.wait`、`task.cancel`、`task.result` |
 | イベント | `events.subscribe`、`events.wait` |
 | インテグレーション | `integration.install`、`integration.uninstall` |
@@ -601,6 +602,26 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 | `platform_unsupported` | Windows サーバーでのコンテナまたは SSH のペイン |
 
 コンテナや SSH で読み出しに失敗したときは、API のエラーではなく、ブラウザのページとして表示します。
+
+### アシスト
+
+`assist.products`、`assist.list`、`assist.start`、`assist.refresh` は、サーバーの機械にあるコーディングエージェントの CLI をペインの隣に開き、ペインの内容について助言させます。`herdr assist` が使います。
+
+```json
+{ "id": "a1", "method": "assist.start", "params": { "pane_id": "w1:p2", "product": "codex", "placement": "auto" } }
+```
+
+`products` は `assist_products` で `products` を返します。各要素は `product`（`claude`、`codex`、`copilot`）と、サーバーの `PATH` で見つかった `path` です。`start` は `pane_id`、省略できる `product`（既定は最初に見つかったもの）、`placement`（`auto`、`right`、`below`。既定は `auto`）、`focus`（既定は `true`）を取ります。応答は `assist_started` で、`assist` と `created` を返します。ペインに既にアシストがあれば、それに移って `created` は `false` です。`assist` は `pane_id`（アシストのペイン）、`target_pane_id`（読んでいるペインを閉じると無くなる）、`product`、アシストが読むファイルの `context_path` を持ちます。`refresh` はアシストか、アシストが読むペインを取り、ファイルを書き直して、`agent.prompt` と同じ経路でアシストに 1 行送り、`assist_refreshed` を返します。`agent.prompt` が断る場合は同じく断ります。`list` は `assist_list` で `assists` を返します。`task.submit` はアシストを `assist_not_task_target` で断ります。
+
+| コード | 意味 |
+| --- | --- |
+| `pane_not_found` | ペインが見つからない |
+| `pane_is_assist` | `start` にアシスト自身のペインを指定した |
+| `assist_product_not_found` | CLI がサーバーの `PATH` に無い。メッセージに見つかったものを並べる |
+| `assist_context_failed` | サーバーが文脈ファイルを書けなかった |
+| `assist_start_failed` | CLI を起動できなかった |
+| `assist_not_found` | ペインにアシストが無いか、アシストが閉じた |
+| `assist_target_closed` | アシストが読むペインが閉じた |
 
 ## プロンプトタスク
 

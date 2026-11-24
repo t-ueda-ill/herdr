@@ -379,6 +379,20 @@ pub enum ResponseResult {
     PreviewStopped {
         preview_id: String,
     },
+    AssistProducts {
+        products: Vec<super::assist::AssistProductInfo>,
+    },
+    AssistList {
+        assists: Vec<super::assist::AssistInfo>,
+    },
+    /// `created` is false when the pane already had an assist, which is focused instead.
+    AssistStarted {
+        assist: super::assist::AssistInfo,
+        created: bool,
+    },
+    AssistRefreshed {
+        assist: super::assist::AssistInfo,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

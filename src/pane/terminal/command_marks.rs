@@ -177,6 +177,85 @@ fn written_output_range(
     ))
 }
 
+/// A command the shell ran: the prompt rows with the command typed at them,
+/// and the output below them. A command that still runs has its output so far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommandText {
+    pub(crate) command: String,
+    pub(crate) output: String,
+}
+
+/// The newest commands, oldest first, and the prompt that waits for input.
+///
+/// Why the whole prompt row and not only the typed input: rows mark where a
+/// prompt starts, not where the input in it starts, so text typed but not
+/// run yet comes with the prompt text before it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct RecentCommands {
+    pub(crate) commands: Vec<CommandText>,
+    pub(crate) waiting_prompt: Option<String>,
+}
+
+/// The rows of one prompt: its start row, its last continuation row, and the
+/// first output row below it when the command wrote any row of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PromptRows {
+    start: usize,
+    end: usize,
+    output: Option<usize>,
+}
+
+/// The newest `count` prompts, oldest first.
+///
+/// Why scan from the bottom: the scrollback can hold thousands of rows, and
+/// only the newest commands are wanted.
+fn newest_prompt_rows(
+    total_rows: usize,
+    count: usize,
+    prompt_at: impl Fn(usize) -> RowPrompt,
+) -> Vec<PromptRows> {
+    let mut prompts = Vec::new();
+    for start in (0..total_rows).rev() {
+        if prompts.len() == count {
+            break;
+        }
+        if prompt_at(start) != RowPrompt::Start {
+            continue;
+        }
+        let end = (start + 1..total_rows)
+            .take_while(|row| prompt_at(*row) == RowPrompt::Continuation)
+            .last()
+            .unwrap_or(start);
+        let output =
+            Some(end + 1).filter(|row| *row < total_rows && prompt_at(*row) == RowPrompt::None);
+        prompts.push(PromptRows { start, end, output });
+    }
+    prompts.reverse();
+    prompts
+}
+
+/// Text of whole rows `start..=end`, without the blanks that pad each row.
+fn rows_text(terminal: &Terminal, start: usize, end: usize) -> Option<String> {
+    let last_col = terminal.cols().ok()?.saturating_sub(1);
+    let text = terminal
+        .read_text_screen(
+            (0, u32::try_from(start).ok()?),
+            (last_col, u32::try_from(end).ok()?),
+            false,
+        )
+        .ok()?;
+    Some(trim_line_ends(&text))
+}
+
+fn trim_line_ends(text: &str) -> String {
+    text.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_owned()
+}
+
 impl PaneTerminal {
     /// First cell of the nearest prompt above or below `row`.
     pub(crate) fn prompt_motion_target(
@@ -228,6 +307,61 @@ impl PaneTerminal {
             .flatten()
             .find_map(|candidate| written_output_range(terminal, candidate))
             .ok_or_else(|| missing_mark_error(terminal, total_rows))
+    }
+    /// The newest `max` commands and the prompt that waits for input.
+    pub(crate) fn recent_commands(&self, max: usize) -> Result<RecentCommands, CommandMarkError> {
+        let core = self
+            .ghostty
+            .core
+            .lock()
+            .map_err(|_| CommandMarkError::NotFound)?;
+        let terminal = &core.terminal;
+        let total_rows = terminal
+            .total_rows()
+            .map_err(|_| CommandMarkError::NotFound)?;
+        let mut prompts = newest_prompt_rows(total_rows, max.saturating_add(1), |row| {
+            row_prompt(terminal, row)
+        });
+        if prompts.is_empty() {
+            return Err(missing_mark_error(terminal, total_rows));
+        }
+        // Why the cursor and not the rows below the prompt: the blank rows
+        // under a waiting prompt are unmarked like output rows, and a command
+        // that runs moves the cursor below its prompt before it prints.
+        let cursor_row = shell_cursor_row(terminal, total_rows);
+        let waiting = prompts
+            .last()
+            .filter(|prompt| {
+                cursor_row.is_some_and(|row| (prompt.start..=prompt.end).contains(&row))
+            })
+            .copied();
+        if waiting.is_some() {
+            prompts.pop();
+        }
+        let waiting_prompt =
+            waiting.and_then(|prompt| rows_text(terminal, prompt.start, prompt.end));
+        let skip = prompts.len().saturating_sub(max);
+        let commands = prompts
+            .into_iter()
+            .skip(skip)
+            .map(|prompt| CommandText {
+                command: rows_text(terminal, prompt.start, prompt.end).unwrap_or_default(),
+                output: prompt
+                    .output
+                    .and_then(|row| written_output_range(terminal, row))
+                    .and_then(|(start, end)| {
+                        terminal
+                            .read_text_screen((start.col, start.row), (end.col, end.row), false)
+                            .ok()
+                    })
+                    .map(|text| trim_line_ends(&text))
+                    .unwrap_or_default(),
+            })
+            .collect();
+        Ok(RecentCommands {
+            commands,
+            waiting_prompt,
+        })
     }
 }
 
@@ -627,5 +761,98 @@ mod tests {
             shell.command_output_range(3),
             Ok((point(1, 0), point(2, 4)))
         );
+    }
+
+    #[test]
+    fn recent_commands_hold_each_command_line_and_its_output_oldest_first() {
+        let shell = marked_shell(20, 4, &[("first", &["a1", "a2"]), ("second", &["b1"])]);
+
+        let recent = shell.recent_commands(3).unwrap();
+
+        assert_eq!(
+            recent.commands,
+            vec![
+                CommandText {
+                    command: "$ first".into(),
+                    output: "a1\na2".into(),
+                },
+                CommandText {
+                    command: "$ second".into(),
+                    output: "b1".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn recent_commands_keep_only_the_newest_ones() {
+        let shell = marked_shell(
+            20,
+            4,
+            &[("first", &["a1"]), ("second", &["b1"]), ("third", &["c1"])],
+        );
+
+        let recent = shell.recent_commands(2).unwrap();
+
+        let commands: Vec<_> = recent.commands.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(commands, ["$ second", "$ third"]);
+    }
+
+    #[test]
+    fn recent_commands_report_the_waiting_prompt_with_what_is_typed_at_it() {
+        let mut terminal = Terminal::new(30, 4, 1000).unwrap();
+        terminal.write(PROMPT);
+        terminal.write(b"make\r\n\x1b]133;C\x07built\r\n");
+        terminal.write(PROMPT);
+        terminal.write(b"git rebase main");
+        let shell = pane(terminal);
+
+        let recent = shell.recent_commands(3).unwrap();
+
+        assert_eq!(recent.waiting_prompt.as_deref(), Some("$ git rebase main"));
+        assert_eq!(recent.commands.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_waiting_prompt_is_reported_as_the_prompt_alone() {
+        let shell = marked_shell(20, 4, &[("first", &["a1"])]);
+
+        let recent = shell.recent_commands(3).unwrap();
+
+        assert_eq!(recent.waiting_prompt.as_deref(), Some("$"));
+        assert_eq!(recent.commands.len(), 1);
+    }
+
+    #[test]
+    fn a_command_that_printed_nothing_has_empty_output() {
+        let shell = marked_shell(20, 4, &[("cd src", &[]), ("ls", &["main.rs"])]);
+
+        let recent = shell.recent_commands(3).unwrap();
+
+        assert_eq!(recent.commands[0].command, "$ cd src");
+        assert_eq!(recent.commands[0].output, "");
+        assert_eq!(recent.commands[1].output, "main.rs");
+    }
+
+    #[test]
+    fn a_running_command_is_reported_with_the_output_so_far() {
+        let mut terminal = Terminal::new(30, 4, 1000).unwrap();
+        terminal.write(PROMPT);
+        terminal.write(b"npm test\r\n\x1b]133;C\x07running 3 tests\r\n");
+        let shell = pane(terminal);
+
+        let recent = shell.recent_commands(3).unwrap();
+
+        assert_eq!(recent.waiting_prompt, None);
+        assert_eq!(recent.commands[0].output, "running 3 tests");
+    }
+
+    #[test]
+    fn recent_commands_of_a_shell_without_marks_are_unmarked() {
+        let mut terminal = Terminal::new(20, 4, 100).unwrap();
+        terminal.write(b"$ first\r\na1\r\n$ ");
+        let shell = pane(terminal);
+
+        assert_eq!(shell.recent_commands(3), Err(CommandMarkError::Unmarked));
     }
 }

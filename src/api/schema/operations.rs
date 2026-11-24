@@ -186,6 +186,8 @@ mod tests {
             "agent.send_keys",
             "task.submit",
             "task.cancel",
+            "assist.start",
+            "assist.refresh",
             "pane.split",
             "pane.split_inherit",
             "pane.swap",

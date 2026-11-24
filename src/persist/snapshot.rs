@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use ratatui::layout::Direction;
@@ -414,6 +414,8 @@ fn first_pane_id_in_layout(layout: &LayoutSnapshot) -> Option<u32> {
 }
 
 /// Capture the current app state into a serializable snapshot.
+// Why: see the export in `persist.rs`.
+#[cfg(any(unix, test))]
 pub fn capture(
     workspaces: &[Workspace],
     terminals: &std::collections::HashMap<
@@ -424,11 +426,35 @@ pub fn capture(
     active: Option<usize>,
     selected: usize,
 ) -> SessionSnapshot {
+    capture_excluding(
+        workspaces,
+        terminals,
+        terminal_runtimes,
+        active,
+        selected,
+        &HashSet::new(),
+    )
+}
+
+/// Like [`capture`], without the panes of `excluded` terminals: their splits
+/// close as if the panes had closed. A pane alone in its tab stays, as a plain
+/// shell, because a tab needs a pane.
+pub fn capture_excluding(
+    workspaces: &[Workspace],
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    active: Option<usize>,
+    selected: usize,
+    excluded: &HashSet<crate::terminal::TerminalId>,
+) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
         workspaces: workspaces
             .iter()
-            .map(|workspace| capture_workspace(workspace, terminals, terminal_runtimes))
+            .map(|workspace| capture_workspace(workspace, terminals, terminal_runtimes, excluded))
             .collect(),
         active,
         selected,
@@ -445,11 +471,13 @@ fn capture_workspace(
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    excluded: &HashSet<crate::terminal::TerminalId>,
 ) -> WorkspaceSnapshot {
+    let mut dropped = HashSet::new();
     let tabs: Vec<_> = ws
         .tabs
         .iter()
-        .map(|tab| capture_tab(tab, terminals, terminal_runtimes))
+        .map(|tab| capture_tab(tab, terminals, terminal_runtimes, excluded, &mut dropped))
         .collect();
     let identity_cwd = tabs
         .first()
@@ -465,6 +493,7 @@ fn capture_workspace(
             .public_pane_numbers
             .iter()
             .map(|(pane_id, number)| (pane_id.raw(), *number))
+            .filter(|(pane_id, _)| !dropped.contains(pane_id))
             .collect(),
         next_public_pane_number: ws.next_public_pane_number,
         public_tab_numbers: ws.tabs.iter().map(|tab| tab.number).collect(),
@@ -481,9 +510,32 @@ fn capture_tab(
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    excluded: &HashSet<crate::terminal::TerminalId>,
+    dropped: &mut HashSet<u32>,
 ) -> TabSnapshot {
+    let is_excluded = |id: &crate::layout::PaneId| {
+        tab.terminal_id(*id)
+            .is_some_and(|terminal| excluded.contains(terminal))
+    };
+    let mut layout = capture_node(tab.layout.root());
+    let mut kept_as_shell = HashSet::new();
+    for id in tab.panes.keys().filter(|id| is_excluded(id)) {
+        match without_pane(layout, id.raw()) {
+            Ok(rest) => {
+                layout = rest;
+                dropped.insert(id.raw());
+            }
+            Err(alone) => {
+                layout = alone;
+                kept_as_shell.insert(id.raw());
+            }
+        }
+    }
     let mut panes = HashMap::new();
     for id in tab.panes.keys() {
+        if dropped.contains(&id.raw()) {
+            continue;
+        }
         let terminal_id = tab.terminal_id(*id);
         let terminal = terminal_id.and_then(|id| terminals.get(id));
         let cwd = terminal_id
@@ -543,6 +595,13 @@ fn capture_tab(
                 agent: resume.agent.clone(),
                 argv: resume.argv.clone(),
             });
+        // Why: a pane kept only because its tab needs one must not start
+        // its program or agent again.
+        let (launch_argv, agent_resume, agent_session) = if kept_as_shell.contains(&id.raw()) {
+            (None, None, None)
+        } else {
+            (launch_argv, agent_resume, agent_session)
+        };
         panes.insert(
             id.raw(),
             PaneSnapshot {
@@ -560,13 +619,44 @@ fn capture_tab(
             },
         );
     }
+    let first_kept = first_pane_id_in_layout(&layout);
+    let keep = |id: u32| Some(id).filter(|id| !dropped.contains(id)).or(first_kept);
     TabSnapshot {
         custom_name: tab.custom_name.clone(),
-        layout: capture_node(tab.layout.root()),
+        layout,
         panes,
         zoomed: tab.zoomed,
-        focused: Some(tab.layout.focused().raw()),
-        root_pane: Some(tab.root_pane.raw()),
+        focused: keep(tab.layout.focused().raw()),
+        root_pane: keep(tab.root_pane.raw()),
+    }
+}
+
+/// `node` with the pane `id` and its split removed, the other side taking
+/// the split's place. `Err` gives `node` back when `id` is its only pane.
+fn without_pane(node: LayoutSnapshot, id: u32) -> Result<LayoutSnapshot, LayoutSnapshot> {
+    match node {
+        LayoutSnapshot::Pane(pane) if pane == id => Err(LayoutSnapshot::Pane(pane)),
+        LayoutSnapshot::Pane(pane) => Ok(LayoutSnapshot::Pane(pane)),
+        LayoutSnapshot::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => match (without_pane(*first, id), without_pane(*second, id)) {
+            (Err(_), Ok(rest)) | (Ok(rest), Err(_)) => Ok(rest),
+            (Ok(first), Ok(second)) => Ok(LayoutSnapshot::Split {
+                direction,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }),
+            (Err(first), Err(second)) => Err(LayoutSnapshot::Split {
+                direction,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }),
+        },
     }
 }
 
@@ -727,7 +817,7 @@ pub(super) fn snapshot_file_version(content: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
 
     use ratatui::layout::{Direction, Rect};
@@ -1470,6 +1560,64 @@ mod tests {
         assert_eq!(tab.root_pane, Some(root.raw()));
         assert!(tab.zoomed);
         assert_eq!(tab.panes.len(), 2);
+    }
+
+    fn capture_without(state: &AppState, excluded: &[crate::layout::PaneId]) -> SessionSnapshot {
+        let terminals: HashSet<crate::terminal::TerminalId> = excluded
+            .iter()
+            .filter_map(|pane| state.terminal_id_for_pane(0, *pane))
+            .collect();
+        capture_excluding(
+            &state.workspaces,
+            &state.terminals,
+            &TerminalRuntimeRegistry::new(),
+            state.active,
+            state.selected,
+            &terminals,
+        )
+    }
+
+    #[test]
+    fn an_excluded_pane_is_left_out_with_its_split() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let assist = state.workspaces[0].test_split(Direction::Horizontal);
+        state.workspaces[0].tabs[0].layout.focus_pane(assist);
+
+        let snapshot = capture_without(&state, &[assist]);
+
+        let workspace = &snapshot.workspaces[0];
+        let tab = &workspace.tabs[0];
+        assert!(matches!(tab.layout, LayoutSnapshot::Pane(id) if id == root.raw()));
+        assert_eq!(tab.panes.keys().copied().collect::<Vec<_>>(), [root.raw()]);
+        assert_eq!(tab.focused, Some(root.raw()));
+        assert!(!workspace.public_pane_numbers.contains_key(&assist.raw()));
+    }
+
+    #[test]
+    fn an_excluded_root_pane_hands_the_root_to_the_pane_that_stays() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let other = state.workspaces[0].test_split(Direction::Horizontal);
+
+        let snapshot = capture_without(&state, &[root]);
+
+        assert_eq!(snapshot.workspaces[0].tabs[0].root_pane, Some(other.raw()));
+    }
+
+    #[test]
+    fn an_excluded_pane_alone_in_its_tab_stays_as_a_plain_shell() {
+        let mut state = state_with_workspaces(&["one"]);
+        let only = state.workspaces[0].tabs[0].root_pane;
+        let terminal = state.terminal_id_for_pane(0, only).unwrap();
+        state.terminals.get_mut(&terminal).unwrap().launch_argv =
+            Some(vec!["claude".into(), "ask".into()]);
+
+        let snapshot = capture_without(&state, &[only]);
+
+        let pane = &snapshot.workspaces[0].tabs[0].panes[&only.raw()];
+        assert_eq!(pane.launch_argv, None);
+        assert!(pane.agent_resume.is_none());
     }
 
     #[test]

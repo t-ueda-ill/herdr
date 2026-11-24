@@ -444,6 +444,25 @@ mod tests {
         }
         assert_eq!(preview_actual, preview, "preview method shapes");
 
+        let assist: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-method-shapes-assist.json"
+        )))
+        .expect("assist endpoint method shape fixture");
+        let mut assist_actual = BTreeMap::new();
+        for method in [
+            "assist.list",
+            "assist.products",
+            "assist.refresh",
+            "assist.start",
+        ] {
+            assist_actual.insert(
+                method.to_owned(),
+                actual.remove(method).expect("assist method"),
+            );
+        }
+        assert_eq!(assist_actual, assist, "assist method shapes");
+
         let command_marks: BTreeMap<String, String> = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/endpoint-method-shapes-command-marks.json"
