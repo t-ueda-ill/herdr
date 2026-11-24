@@ -48,7 +48,9 @@ pub(super) fn render_list_picker_overlay<'a>(
     picker_row: impl Fn(usize) -> PickerRow<'a>,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    let popup_height = (picker.total.saturating_mul(2) + 7).clamp(12, 26) as u16;
+    // Two rows of border and six of title, search, rule and buttons around
+    // the two-line rows: anything less hides the last row.
+    let popup_height = (picker.total.saturating_mul(2) + 8).clamp(12, 26) as u16;
     let popup = popup(b.area, 96, popup_height)?;
     let inner = panel(b, popup, p.accent, p.panel_bg)?;
     put_text(
