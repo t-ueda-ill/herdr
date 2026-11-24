@@ -1096,6 +1096,16 @@ pub struct ClientShellPane {
     /// close through `pane.close`, so a close that needs confirmation asks.
     #[serde(default)]
     pub disconnected: Option<ClientShellPaneDisconnected>,
+    /// Set while the session records this pane (`herdr --log`). Older
+    /// servers leave it out, which reads as not recording.
+    #[serde(default)]
+    pub recording: Option<ClientShellPaneRecording>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellPaneRecording {
+    /// Recording stopped, or never started, for this pane.
+    pub failed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2891,6 +2901,7 @@ mod tests {
                 container: None,
                 ssh_host: None,
                 disconnected: None,
+                recording: None,
             }],
             agents: Vec::new(),
             commands: vec![ClientShellCommand {

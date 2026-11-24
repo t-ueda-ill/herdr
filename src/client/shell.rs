@@ -39,6 +39,7 @@ mod overlay_input;
 mod popup_menu;
 mod preferences;
 mod previews;
+mod recording_badge;
 mod render;
 mod scroll;
 mod settings;

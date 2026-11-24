@@ -896,6 +896,17 @@
             "pane_id": {
               "type": "string"
             },
+            "recording": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/PaneRecording"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Present while the session records this pane (`herdr --log`)."
+            },
             "restore_error": {
               "type": [
                 "string",
@@ -1118,6 +1129,38 @@
               "type": "string"
             }
           ]
+        },
+        "PaneRecording": {
+          "properties": {
+            "dropped_bytes": {
+              "description": "Bytes left out because the disk could not keep up.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "error": {
+              "description": "Why recording stopped, or never started, for this pane.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "input": {
+              "description": "Whether what is typed or sent to the pane is recorded too.",
+              "type": "boolean"
+            },
+            "path": {
+              "description": "The gzip-compressed asciicast file being written; absent until it is\ncreated, or when it could not be.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "input"
+          ],
+          "type": "object"
         },
         "PaneScrollInfo": {
           "properties": {
@@ -10810,6 +10853,17 @@
             "pane_id": {
               "type": "string"
             },
+            "recording": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/PaneRecording"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Present while the session records this pane (`herdr --log`)."
+            },
             "restore_error": {
               "type": [
                 "string",
@@ -11328,6 +11382,38 @@
             "text",
             "revision",
             "truncated"
+          ],
+          "type": "object"
+        },
+        "PaneRecording": {
+          "properties": {
+            "dropped_bytes": {
+              "description": "Bytes left out because the disk could not keep up.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "error": {
+              "description": "Why recording stopped, or never started, for this pane.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "input": {
+              "description": "Whether what is typed or sent to the pane is recorded too.",
+              "type": "boolean"
+            },
+            "path": {
+              "description": "The gzip-compressed asciicast file being written; absent until it is\ncreated, or when it could not be.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "input"
           ],
           "type": "object"
         },

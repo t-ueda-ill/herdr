@@ -286,6 +286,14 @@ impl TerminalRuntime {
         self.0.scroll_metrics()
     }
 
+    pub(crate) fn recording_failed(&self) -> Option<bool> {
+        self.0.recording_failed()
+    }
+
+    pub(crate) fn recording_status(&self) -> Option<crate::recording::PaneRecordingStatus> {
+        self.0.recording_status()
+    }
+
     pub(crate) fn search_text_window(
         &self,
         query: &str,

@@ -225,6 +225,13 @@ pub(crate) fn render_sidebar(
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
+    super::recording_badge::render(
+        buffer,
+        Rect::new(workspace_area.x, workspace_area.y, workspace_area.width, 1),
+        " spaces",
+        Some(snapshot),
+        palette,
+    );
 
     let entries = workspace_entries(snapshot, state.collapsed_groups);
     let labels = super::space_label::SpaceLabels::new(snapshot);

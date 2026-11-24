@@ -63,6 +63,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             container: None,
             ssh_host: None,
             disconnected: None,
+            recording: None,
         }],
         agents: Vec::new(),
         commands: Vec::new(),
@@ -206,6 +207,7 @@ fn pane_scroll_result(
                 max_offset_from_bottom,
                 viewport_rows,
             }),
+            recording: None,
             revision: 0,
         },
     }

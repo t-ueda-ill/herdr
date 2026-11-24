@@ -1752,6 +1752,8 @@ pub struct PaneRuntime {
     // Task handles for deterministic shutdown
     compression: TerminalCompressionTask,
     detect_handle: Option<tokio::task::AbortHandle>,
+    /// Present while the session records panes (`herdr --log`).
+    recorder: Option<crate::recording::PaneRecorder>,
 }
 
 enum PaneRuntimeIo {
@@ -2978,7 +2980,9 @@ impl PaneRuntime {
         let content_write_lock = Arc::new(Mutex::new(()));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
 
+        let recorder = crate::recording::open_pane(pane_id.raw(), cols, rows);
         let io = {
+            let read_recorder = recorder.clone();
             let terminal = terminal.clone();
             let response_writer = response_tx.clone();
             let render_notify = render_notify.clone();
@@ -2993,6 +2997,9 @@ impl PaneRuntime {
             let rt = tokio::runtime::Handle::current();
             let delay_rt = rt.clone();
             let on_read = Box::new(move |bytes: &[u8]| {
+                if let Some(recorder) = &read_recorder {
+                    recorder.output(bytes);
+                }
                 let _content_write_guard = match content_write_lock.lock() {
                     Ok(guard) => guard,
                     Err(poisoned) => poisoned.into_inner(),
@@ -3098,6 +3105,7 @@ impl PaneRuntime {
             preserve_processes_on_drop: true,
             compression,
             detect_handle: Some(detect_handle),
+            recorder,
         })
     }
 
@@ -3195,7 +3203,9 @@ impl PaneRuntime {
             });
         }
 
+        let recorder = crate::recording::open_pane(pane_id.raw(), cols, rows);
         let io = {
+            let read_recorder = recorder.clone();
             let terminal = terminal.clone();
             let response_writer = response_tx.clone();
             let render_notify = render_notify.clone();
@@ -3209,6 +3219,9 @@ impl PaneRuntime {
             let compression_wake = compression.notifier();
             let rt = tokio::runtime::Handle::current();
             let on_read = Box::new(move |bytes: &[u8]| {
+                if let Some(recorder) = &read_recorder {
+                    recorder.output(bytes);
+                }
                 let _content_write_guard = match content_write_lock.lock() {
                     Ok(guard) => guard,
                     Err(poisoned) => poisoned.into_inner(),
@@ -3817,6 +3830,7 @@ impl PaneRuntime {
             preserve_processes_on_drop: false,
             compression,
             detect_handle,
+            recorder,
         })
     }
 
@@ -3871,6 +3885,9 @@ impl PaneRuntime {
             return;
         }
         self.current_size.set(size);
+        if let Some(recorder) = &self.recorder {
+            recorder.resize(cols, rows);
+        }
         let _content_write_guard = match self.content_write_lock.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -4273,7 +4290,13 @@ impl PaneRuntime {
     }
 
     pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
-        self.io.try_send_bytes(bytes)
+        let Some(recorder) = &self.recorder else {
+            return self.io.try_send_bytes(bytes);
+        };
+        let sent = bytes.clone();
+        self.io.try_send_bytes(bytes)?;
+        recorder.input(&sent);
+        Ok(())
     }
 
     /// Preflight a complete API command without changing input queue semantics.
@@ -4298,8 +4321,29 @@ impl PaneRuntime {
         delay: std::time::Duration,
         deadline: Option<std::time::Instant>,
     ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
-        self.io
-            .queue_user_input_submission(text, enter, delay, deadline)
+        let Some(recorder) = &self.recorder else {
+            return self
+                .io
+                .queue_user_input_submission(text, enter, delay, deadline);
+        };
+        let sent = (text.clone(), enter.clone());
+        let reply = self
+            .io
+            .queue_user_input_submission(text, enter, delay, deadline)?;
+        recorder.input(&sent.0);
+        recorder.input(&sent.1);
+        Ok(reply)
+    }
+
+    /// `Some(failed)` while the session records panes; lock-free, so
+    /// per-snapshot projections can afford it.
+    pub(crate) fn recording_failed(&self) -> Option<bool> {
+        self.recorder.as_ref().map(|recorder| recorder.failed())
+    }
+
+    /// This runtime's recording, when the session records panes.
+    pub(crate) fn recording_status(&self) -> Option<crate::recording::PaneRecordingStatus> {
+        self.recorder.as_ref().map(|recorder| recorder.status())
     }
 
     pub fn try_send_paste(&self, text: String) -> Result<(), mpsc::error::TrySendError<Bytes>> {
@@ -4738,6 +4782,7 @@ impl PaneRuntime {
                 preserve_processes_on_drop: true,
                 compression,
                 detect_handle: Some(tokio::spawn(async {}).abort_handle()),
+                recorder: None,
             },
             rx,
         )
@@ -4747,6 +4792,45 @@ impl PaneRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_recorded_pane_records_sent_input_and_size_changes() {
+        let dir = std::env::temp_dir().join(format!("herdr-pane-recording-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let recorder = crate::recording::test_recorder(dir.clone(), true);
+        let (mut runtime, mut rx) = PaneRuntime::test_with_channel(80, 24);
+        runtime.recorder = Some(recorder.pane(1, 80, 24));
+
+        runtime
+            .try_send_bytes(Bytes::from_static(b"ls\r"))
+            .expect("queued");
+        runtime.resize(30, 100, 0, 0);
+        let handle = runtime.recorder.clone().expect("recording");
+        drop(runtime);
+        recorder.shutdown();
+        // Read after shutdown: the writer thread creates the file on its own time.
+        let status = handle.status();
+
+        assert_eq!(rx.recv().await.as_deref(), Some(&b"ls\r"[..]));
+        let mut text = String::new();
+        std::io::Read::read_to_string(
+            &mut flate2::read::GzDecoder::new(
+                std::fs::File::open(status.path.expect("file")).expect("open"),
+            ),
+            &mut text,
+        )
+        .expect("gzip");
+        let events: Vec<serde_json::Value> = text
+            .lines()
+            .skip(1)
+            .map(|line| serde_json::from_str(line).expect("json"))
+            .collect();
+        assert_eq!(events[0][1], "i");
+        assert_eq!(events[0][2], "ls\r");
+        assert_eq!(events[1][1], "r");
+        assert_eq!(events[1][2], "100x30");
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
     use std::ffi::OsStr;
 
     #[tokio::test]
@@ -6873,6 +6957,7 @@ mod tests {
             preserve_processes_on_drop: true,
             compression,
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
+            recorder: None,
         };
 
         assert!(runtime.try_send_focus_event(crate::ghostty::FocusEvent::Gained));
@@ -6916,6 +7001,7 @@ mod tests {
             preserve_processes_on_drop: true,
             compression,
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
+            recorder: None,
         };
 
         assert!(!runtime.try_send_focus_event(crate::ghostty::FocusEvent::Gained));

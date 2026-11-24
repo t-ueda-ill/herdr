@@ -5,6 +5,8 @@ pub fn run_server() -> io::Result<()> {
     crate::platform::ignore_server_hangup();
     let args: Vec<String> = std::env::args().collect();
     let handoff_import = args.get(2).map(String::as_str) == Some("--handoff-import");
+    // Taken before any thread starts, since it edits the process environment.
+    let recording_request = crate::recording::launch::take_server_request();
     let process_context = crate::platform::prepare_server_process(handoff_import);
     init_logging();
     match process_context {
@@ -17,6 +19,7 @@ pub fn run_server() -> io::Result<()> {
     crate::platform::raise_server_nofile_limit();
 
     if handoff_import {
+        crate::recording::start_server(recording_request);
         let socket_path = args
             .get(3)
             .map(PathBuf::from)
@@ -50,6 +53,9 @@ pub fn run_server() -> io::Result<()> {
         }
         Err(err) => return Err(err),
     };
+    // Why after the bind: a duplicate server that loses the socket race must
+    // not overwrite the running server's remembered choice.
+    crate::recording::start_server(recording_request);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -96,6 +102,7 @@ pub fn run_server() -> io::Result<()> {
     });
 
     rt.shutdown_timeout(Duration::from_millis(100));
+    crate::recording::shutdown();
     crate::logging::shutdown("server");
     result
 }
@@ -209,6 +216,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
     });
 
     rt.shutdown_timeout(Duration::from_millis(100));
+    crate::recording::shutdown();
     crate::logging::shutdown("server");
     result
 }

@@ -588,7 +588,30 @@ pub struct PaneInfo {
     pub agent_session: Option<AgentSessionInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<PaneScrollInfo>,
+    /// Present while the session records this pane (`herdr --log`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<PaneRecording>,
     pub revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneRecording {
+    /// The gzip-compressed asciicast file being written; absent until it is
+    /// created, or when it could not be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Whether what is typed or sent to the pane is recorded too.
+    pub input: bool,
+    /// Bytes left out because the disk could not keep up.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dropped_bytes: u64,
+    /// Why recording stopped, or never started, for this pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -51,6 +51,7 @@ mod product_announcements;
 mod protocol;
 mod pty;
 mod raw_input;
+mod recording;
 mod release_notes;
 mod remote;
 mod render_prof;
@@ -578,6 +579,26 @@ fn main() -> io::Result<()> {
         }
     };
 
+    let (args, recording_request) = match recording::launch::extract_launch_args(&args)
+        .and_then(|(args, parsed)| Ok((args, recording::launch::resolve_request(parsed)?)))
+    {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("error: {err}");
+            eprintln!("run 'herdr --help' for usage");
+            std::process::exit(2);
+        }
+    };
+    if recording_request.is_some()
+        && (remote_launch.is_some() || args.iter().skip(1).any(|arg| !arg.starts_with('-')))
+    {
+        eprintln!(
+            "error: --log can only be used with the default launch command, without --remote"
+        );
+        eprintln!("run 'herdr --help' for usage");
+        std::process::exit(2);
+    }
+
     if remote_launch.is_some()
         && args.get(1).is_some()
         && !args.iter().any(|a| {
@@ -749,6 +770,9 @@ fn main() -> io::Result<()> {
         println!("  --remote <target>   Attach through SSH to a remote Herdr server");
         println!("  --remote-keybindings <local|server>");
         println!("                      Keybindings for --remote app attach (default: local)");
+        println!("  --log <dir|none>    Record each pane's output under <dir>/<session>/ as");
+        println!("                      gzipped asciicast (remembered by the session)");
+        println!("  --log-input         With --log, also record what is typed or sent to panes");
         println!("  --handoff           Opt into live handoff for update or remote attach");
         println!("  --default-config    Print default configuration and exit");
         println!("  --skill             Print the agent skill file and exit");
@@ -838,6 +862,16 @@ fn main() -> io::Result<()> {
 
     let loaded_config = config::Config::load();
     exit_if_nested_disabled(&loaded_config.config);
+
+    if let Some(request) = &recording_request {
+        let server_running = server::autodetect::is_server_listening().unwrap_or(false);
+        if let Err(err) =
+            recording::launch::apply_for_launch(request, server_running, &session::data_dir())
+        {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
+    }
 
     let saved_federation =
         client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_enabled_ssh());
