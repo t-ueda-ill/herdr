@@ -187,12 +187,11 @@ pub(super) fn validate_ssh_host(host: &str) -> Result<(), ApiFailure> {
 /// stay off the app thread.
 pub(super) fn resolve_ssh_launch(host: &str) -> Result<SshLaunch, ApiFailure> {
     let hosts = crate::ssh_host::hosts::list_configured_hosts().map_err(ssh_unavailable)?;
-    launch_for_configured_host(
-        host,
-        &hosts,
-        crate::ssh_host::session_config::current(),
-        crate::ssh_host::control::pane_control_path,
-    )
+    let config = crate::ssh_host::session_config::current();
+    let control_config = config.clone();
+    launch_for_configured_host(host, &hosts, config, |destination| {
+        crate::ssh_host::control::pane_control_path(destination, control_config.as_deref())
+    })
 }
 
 /// [`resolve_ssh_launch`] plus the `RemoteCommand` check an ssh pane needs.

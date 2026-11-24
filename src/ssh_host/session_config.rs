@@ -110,7 +110,9 @@ pub(crate) fn resolve_request(raw: &str) -> Result<SshConfigRequest, String> {
 }
 
 /// Hands `request` to a server this launch spawns, or refuses it when the
-/// session's running server remembers another config.
+/// session's running server remembers another config. Call it again with
+/// `server_running` once the server is ready: two launches racing to start
+/// the session must not attach to the server the other one configured.
 ///
 /// Why refuse instead of switching: open ssh panes and their masters were
 /// resolved through the remembered file, and a silent switch would send new
@@ -146,15 +148,17 @@ pub(crate) fn take_server_request() -> Option<SshConfigRequest> {
 
 /// Settles the session's config at server start: a request replaces the
 /// remembered one, and no request keeps it.
-pub(crate) fn establish(request: Option<SshConfigRequest>, state_dir: &Path) {
-    let config = establish_in(request, state_dir).unwrap_or_else(|err| {
-        tracing::warn!(%err, "could not remember the session ssh config");
-        None
-    });
+///
+/// Why an error instead of falling back to ssh's defaults: a host alias
+/// shared by both configs would silently reach another machine, and the
+/// launching client compares against the remembered file.
+pub(crate) fn establish(request: Option<SshConfigRequest>, state_dir: &Path) -> io::Result<()> {
+    let config = establish_in(request, state_dir)?;
     if let Some(config) = &config {
         tracing::info!(config = %config.display(), "ssh panes read the session ssh config");
     }
     let _ = SESSION_CONFIG.set(config);
+    Ok(())
 }
 
 fn establish_in(
@@ -296,6 +300,17 @@ mod tests {
         assert_eq!(kept.as_ref(), Some(&file));
         assert_eq!(reset, None);
         assert_eq!(after_reset, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_request_that_cannot_be_remembered_is_an_error_not_the_defaults() {
+        let dir = temp_dir("unwritable");
+        std::fs::create_dir_all(dir.join(STATE_FILE)).unwrap();
+
+        let result = establish_in(Some(SshConfigRequest::File(dir.join("prod-config"))), &dir);
+
+        assert!(result.is_err(), "{result:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

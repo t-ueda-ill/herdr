@@ -19,7 +19,14 @@ pub fn run_server() -> io::Result<()> {
     crate::platform::raise_server_nofile_limit();
 
     if handoff_import {
-        crate::ssh_host::session_config::establish(ssh_config_request, &crate::session::data_dir());
+        // The predecessor already took the request, so this only reads the
+        // remembered file and cannot fail; a failure must not drop its panes.
+        if let Err(err) = crate::ssh_host::session_config::establish(
+            ssh_config_request,
+            &crate::session::data_dir(),
+        ) {
+            warn!(%err, "could not settle the session ssh config during handoff");
+        }
         let socket_path = args
             .get(3)
             .map(PathBuf::from)
@@ -55,7 +62,14 @@ pub fn run_server() -> io::Result<()> {
     };
     // Why after the bind: a duplicate server that loses the socket race must
     // not overwrite the running server's remembered config.
-    crate::ssh_host::session_config::establish(ssh_config_request, &crate::session::data_dir());
+    crate::ssh_host::session_config::establish(ssh_config_request, &crate::session::data_dir())
+        .map_err(|err| {
+            tracing::error!(%err, "could not remember the requested ssh config");
+            io::Error::new(
+                err.kind(),
+                format!("cannot remember the session ssh config: {err}"),
+            )
+        })?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

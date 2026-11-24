@@ -9,17 +9,30 @@ use super::SshLaunch;
 /// Why not `create_remote_ssh_config_dir`: it mints a fresh per-process
 /// directory removed by a drop guard, while a pane has no owner object and its
 /// respawns and later file transfers must reach the same master.
-pub(crate) fn pane_control_path(host: &str) -> Option<PathBuf> {
+pub(crate) fn pane_control_path(host: &str, config: Option<&Path>) -> Option<PathBuf> {
     control_path_with(
         crate::platform::remote_ssh_config_paths().multiplexing,
-        || crate::platform::shared_ssh_control_path(&control_namespace(), host),
+        || crate::platform::shared_ssh_control_path(&control_namespace(config), host),
     )
 }
 
 /// Why not the `herdr --remote` namespace: herdr stops that master when it
 /// retires a remote connection, which must not reach a pane's login.
-fn control_namespace() -> PathBuf {
-    crate::config::config_dir().join("ssh-panes")
+/// Why `config` joins the namespace: `%C` covers only the resolved host,
+/// port, and user, so two configs that differ in `IdentityFile` or
+/// `ProxyCommand` would otherwise share one master and its credentials.
+/// Without a config the namespace stays as before, so saved panes keep theirs.
+fn control_namespace(config: Option<&Path>) -> PathBuf {
+    let base = crate::config::config_dir().join("ssh-panes");
+    match config {
+        None => base,
+        Some(config) => {
+            let mut namespace = base.into_os_string();
+            namespace.push("#");
+            namespace.push(config);
+            PathBuf::from(namespace)
+        }
+    }
 }
 
 pub(crate) fn control_path_with(
@@ -83,12 +96,23 @@ fn prepare_control_path_with(
 /// A control path the spawn paths keep, for tests that run a fake `ssh`.
 #[cfg(all(test, unix))]
 pub(crate) fn test_control_path(host: &str) -> PathBuf {
-    pane_control_path(host).expect("this platform multiplexes ssh")
+    pane_control_path(host, None).expect("this platform multiplexes ssh")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_session_ssh_config_gets_its_own_control_namespace() {
+        let default = control_namespace(None);
+        let prod = control_namespace(Some(Path::new("/cfg/prod")));
+
+        assert_eq!(default, crate::config::config_dir().join("ssh-panes"));
+        assert_ne!(prod, default);
+        assert_ne!(prod, control_namespace(Some(Path::new("/cfg/dev"))));
+        assert_eq!(prod, control_namespace(Some(Path::new("/cfg/prod"))));
+    }
 
     #[test]
     fn control_path_is_absent_without_multiplexing() {
@@ -121,10 +145,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pane_control_path_is_stable_per_host_and_distinct_from_remote_attach() {
-        let first = pane_control_path("prod").expect("unix multiplexes");
+        let first = pane_control_path("prod", None).expect("unix multiplexes");
 
-        assert_eq!(pane_control_path("prod"), Some(first.clone()));
-        assert_ne!(pane_control_path("staging"), Some(first.clone()));
+        assert_eq!(pane_control_path("prod", None), Some(first.clone()));
+        assert_ne!(pane_control_path("staging", None), Some(first.clone()));
         assert_ne!(
             crate::platform::shared_ssh_control_path(&crate::config::config_path(), "prod").ok(),
             Some(first.clone())
@@ -163,7 +187,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_pane_launch_keeps_the_control_path_herdr_computed_for_it() {
-        let launch = SshLaunch::new("prod".into(), pane_control_path("prod")).unwrap();
+        let launch = SshLaunch::new("prod".into(), pane_control_path("prod", None)).unwrap();
 
         assert_eq!(prepare_launch(&launch), launch);
     }

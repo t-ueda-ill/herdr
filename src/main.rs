@@ -879,7 +879,18 @@ fn main() -> io::Result<()> {
 
     let saved_federation =
         client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_enabled_ssh());
-    if let Err(err) = server::autodetect::auto_detect_launch(saved_federation) {
+    let check_ssh_config = || {
+        if let Some(request) = &ssh_config_request {
+            if let Err(err) =
+                ssh_host::session_config::apply_for_launch(request, true, &session::data_dir())
+            {
+                eprintln!("error: {err}");
+                std::process::exit(2);
+            }
+        }
+        Ok(())
+    };
+    if let Err(err) = server::autodetect::auto_detect_launch(saved_federation, check_ssh_config) {
         eprintln!("herdr: {err}");
         std::process::exit(1);
     }
