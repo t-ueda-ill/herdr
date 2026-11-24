@@ -18,6 +18,7 @@ const OFF_KEYWORD: &str = "none";
 const STATE_FILE: &str = "pane-log.json";
 const DIR_OPTION: &str = "--log";
 const INPUT_OPTION: &str = "--log-input";
+const SSH_OPTION: &str = "--ssh";
 
 /// What a launch asked the session to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +67,15 @@ pub(crate) fn extract_launch_args(args: &[String]) -> Result<(Vec<String>, Launc
             value.clone()
         } else if let Some(inline) = arg.strip_prefix("--log=") {
             inline.to_owned()
+        } else if arg == SSH_OPTION {
+            // `--ssh <file>` is another launch option; its value is not a
+            // command word, and the ssh scanner takes both afterwards.
+            cleaned.push(arg.clone());
+            if let Some(value) = args.get(index) {
+                cleaned.push(value.clone());
+                index += 1;
+            }
+            continue;
         } else if arg == INPUT_OPTION {
             if parsed.input {
                 return Err(format!("{INPUT_OPTION} can only be specified once"));
@@ -149,7 +159,8 @@ pub(crate) fn apply_for_launch(
     stop_command: &str,
 ) -> Result<(), String> {
     if server_running {
-        let remembered = read_remembered(state_dir);
+        let remembered = read_remembered(state_dir)
+            .map_err(|err| format!("cannot read this session's pane recording choice: {err}"))?;
         if !same_settings(remembered.as_ref(), request.settings()) {
             return Err(format!(
                 "this session's server is {}; run `{stop_command}` first to switch to {}",
@@ -213,7 +224,7 @@ pub(crate) fn establish(
 ) -> io::Result<Option<RecordingSettings>> {
     let state = state_dir.join(STATE_FILE);
     match request {
-        None => Ok(read_remembered(state_dir)),
+        None => read_remembered(state_dir),
         Some(RecordingRequest::Off) => match std::fs::remove_file(&state) {
             Ok(()) => Ok(None),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -228,12 +239,29 @@ pub(crate) fn establish(
     }
 }
 
-fn read_remembered(state_dir: &Path) -> Option<RecordingSettings> {
-    let text = std::fs::read_to_string(state_dir.join(STATE_FILE)).ok()?;
-    let settings: RecordingSettings = serde_json::from_str(&text).ok()?;
+/// Only a missing file means "not recording". Why not treat a broken one the
+/// same: a restart would then silently stop an audit trail.
+fn read_remembered(state_dir: &Path) -> io::Result<Option<RecordingSettings>> {
+    let path = state_dir.join(STATE_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let invalid = |reason: String| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: {reason}", path.display()),
+        )
+    };
+    let settings: RecordingSettings =
+        serde_json::from_str(&text).map_err(|err| invalid(err.to_string()))?;
     // Why only absolute paths: the state file is user-editable, and a
     // relative path would resolve against wherever the server started.
-    settings.dir.is_absolute().then_some(settings)
+    if !settings.dir.is_absolute() {
+        return Err(invalid("the log folder must be an absolute path".into()));
+    }
+    Ok(Some(settings))
 }
 
 fn same_settings(a: Option<&RecordingSettings>, b: Option<&RecordingSettings>) -> bool {
@@ -301,6 +329,40 @@ mod tests {
                 input: true
             }
         );
+    }
+
+    #[test]
+    fn an_ssh_config_before_or_after_log_stays_for_the_ssh_scanner() {
+        for order in [
+            ["herdr", "--ssh", "none", "--log", "/logs"],
+            ["herdr", "--log", "/logs", "--ssh", "none"],
+        ] {
+            let (rest, parsed) = extract_launch_args(&args(&order)).unwrap();
+            assert_eq!(rest, args(&["herdr", "--ssh", "none"]), "{order:?}");
+            assert_eq!(parsed.dir.as_deref(), Some("/logs"), "{order:?}");
+        }
+    }
+
+    #[test]
+    fn a_broken_remembered_choice_is_an_error_and_a_missing_one_is_not() {
+        let state = scratch("broken");
+        assert_eq!(establish(None, &state).unwrap(), None);
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join(STATE_FILE), "{not json").unwrap();
+        assert_eq!(
+            establish(None, &state).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        std::fs::write(
+            state.join(STATE_FILE),
+            r#"{"dir":"relative","input":false}"#,
+        )
+        .unwrap();
+        assert!(establish(None, &state).is_err());
+        assert!(
+            apply_for_launch(&RecordingRequest::Off, true, &state, "herdr server stop").is_err()
+        );
+        std::fs::remove_dir_all(&state).unwrap();
     }
 
     #[test]

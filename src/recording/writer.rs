@@ -51,6 +51,9 @@ enum Command {
         at: Instant,
         code: EventCode,
         bytes: Bytes,
+        /// Bytes dropped since the pane's previous accepted event; the
+        /// marker goes right before this one so the gap sits where it was.
+        dropped_before: u64,
     },
     Resize {
         id: u64,
@@ -61,6 +64,7 @@ enum Command {
     Close {
         id: u64,
         at: Instant,
+        dropped_before: u64,
     },
     Shutdown {
         reply: mpsc::Sender<()>,
@@ -70,7 +74,10 @@ enum Command {
 #[derive(Default)]
 struct PaneShared {
     status: Mutex<PaneRecordingStatus>,
-    dropped_bytes: AtomicU64,
+    /// Every byte dropped so far, for the status.
+    dropped_total: AtomicU64,
+    /// Bytes dropped since the last event the producer queued.
+    dropped_pending: AtomicU64,
     queued_bytes: AtomicUsize,
     /// Mirrors `status.error.is_some()` for readers that must not lock.
     failed: AtomicBool,
@@ -202,6 +209,7 @@ impl Drop for PaneRecorderInner {
         let _ = self.tx.send(Command::Close {
             id: self.id,
             at: Instant::now(),
+            dropped_before: self.shared.dropped_pending.swap(0, Ordering::AcqRel),
         });
     }
 }
@@ -244,8 +252,7 @@ impl PaneRecorder {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
-        // Bytes dropped since the writer last caught up count as dropped too.
-        status.dropped_bytes += self.inner.shared.dropped_bytes.load(Ordering::Relaxed);
+        status.dropped_bytes = self.inner.shared.dropped_total.load(Ordering::Relaxed);
         status
     }
 
@@ -257,23 +264,27 @@ impl PaneRecorder {
         let pane = inner.shared.queued_bytes.fetch_add(len, Ordering::AcqRel);
         if pane.saturating_add(len) > inner.pane_queue_limit_bytes {
             inner.shared.queued_bytes.fetch_sub(len, Ordering::AcqRel);
-            inner
-                .shared
-                .dropped_bytes
-                .fetch_add(len as u64, Ordering::Relaxed);
+            self.count_dropped(len);
             return false;
         }
         let all = inner.queued_bytes.fetch_add(len, Ordering::AcqRel);
         if all.saturating_add(len) > inner.queue_limit_bytes {
             inner.queued_bytes.fetch_sub(len, Ordering::AcqRel);
             inner.shared.queued_bytes.fetch_sub(len, Ordering::AcqRel);
-            inner
-                .shared
-                .dropped_bytes
-                .fetch_add(len as u64, Ordering::Relaxed);
+            self.count_dropped(len);
             return false;
         }
         true
+    }
+
+    fn count_dropped(&self, len: usize) {
+        let shared = &self.inner.shared;
+        shared
+            .dropped_total
+            .fetch_add(len as u64, Ordering::Relaxed);
+        shared
+            .dropped_pending
+            .fetch_add(len as u64, Ordering::AcqRel);
     }
 
     fn send_reserved(&self, code: EventCode, bytes: Bytes) {
@@ -283,6 +294,7 @@ impl PaneRecorder {
             at: Instant::now(),
             code,
             bytes,
+            dropped_before: self.inner.shared.dropped_pending.swap(0, Ordering::AcqRel),
         });
         if sent.is_err() {
             self.inner.queued_bytes.fetch_sub(len, Ordering::AcqRel);
@@ -345,6 +357,7 @@ impl Writer {
                 at,
                 code,
                 bytes,
+                dropped_before,
             } => {
                 self.queued_bytes.fetch_sub(bytes.len(), Ordering::AcqRel);
                 if let Some(entry) = self.panes.get(&id) {
@@ -353,14 +366,21 @@ impl Writer {
                         .queued_bytes
                         .fetch_sub(bytes.len(), Ordering::AcqRel);
                 }
-                self.write(id, at, |file| file.write_bytes(at, code, &bytes));
+                self.write(id, |file| {
+                    write_drop_marker(file, at, dropped_before)?;
+                    file.write_bytes(at, code, &bytes)
+                });
             }
             Command::Resize { id, at, cols, rows } => {
-                self.write(id, at, |file| file.resize(at, cols, rows));
+                self.write(id, |file| file.resize(at, cols, rows));
             }
-            Command::Close { id, at } => {
+            Command::Close {
+                id,
+                at,
+                dropped_before,
+            } => {
                 if let Some(entry) = self.panes.remove(&id) {
-                    finish(entry, at);
+                    finish(entry, at, dropped_before);
                 }
             }
             Command::Shutdown { .. } => unreachable!("handled by run"),
@@ -397,29 +417,14 @@ impl Writer {
         self.panes.insert(id, PaneEntry { file, shared });
     }
 
-    fn write(
-        &mut self,
-        id: u64,
-        at: Instant,
-        op: impl FnOnce(&mut CastFile) -> std::io::Result<()>,
-    ) {
+    fn write(&mut self, id: u64, op: impl FnOnce(&mut CastFile) -> std::io::Result<()>) {
         let Some(entry) = self.panes.get_mut(&id) else {
             return;
         };
         let Some(file) = entry.file.as_mut() else {
             return;
         };
-        let result = (|| {
-            let dropped = entry.shared.dropped_bytes.swap(0, Ordering::Relaxed);
-            if dropped > 0 {
-                entry
-                    .shared
-                    .update(|status| status.dropped_bytes += dropped);
-                file.write_marker(at, &format!("herdr: {dropped} bytes not recorded"))?;
-            }
-            op(file)
-        })();
-        match result {
+        match op(file) {
             Ok(()) => {
                 if entry
                     .shared
@@ -459,31 +464,31 @@ impl Writer {
     fn finish_all(&mut self) {
         let at = Instant::now();
         for (_, entry) in self.panes.drain() {
-            finish(entry, at);
+            finish(entry, at, 0);
         }
     }
 }
 
-fn finish(entry: PaneEntry, at: Instant) {
+fn finish(entry: PaneEntry, at: Instant, dropped_before: u64) {
     let Some(mut file) = entry.file else {
         return;
     };
     let path = file.path().display().to_string();
-    // Why here too: the dropped tail of a pane that closes right after a
-    // flood has no later event to carry its marker.
-    let dropped = entry.shared.dropped_bytes.swap(0, Ordering::Relaxed);
-    let marked = if dropped > 0 {
-        entry
-            .shared
-            .update(|status| status.dropped_bytes += dropped);
-        file.write_marker(at, &format!("herdr: {dropped} bytes not recorded"))
-    } else {
-        Ok(())
-    };
+    // Why also the pending count: at shutdown no close carries the dropped
+    // tail of a pane that is still open.
+    let dropped = dropped_before + entry.shared.dropped_pending.swap(0, Ordering::AcqRel);
+    let marked = write_drop_marker(&mut file, at, dropped);
     if let Err(err) = marked.and_then(|()| file.finish(at).map(|_| ())) {
         tracing::warn!(%err, %path, "could not finish pane recording");
         entry.shared.fail(&err);
     }
+}
+
+fn write_drop_marker(file: &mut CastFile, at: Instant, dropped: u64) -> std::io::Result<()> {
+    if dropped == 0 {
+        return Ok(());
+    }
+    file.write_marker(at, &format!("herdr: {dropped} bytes not recorded"))
 }
 
 #[cfg(test)]
@@ -605,6 +610,33 @@ mod tests {
             vec![
                 ("m".to_owned(), "herdr: 8 bytes not recorded".to_owned()),
                 ("o".to_owned(), "ok".to_owned())
+            ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_marker_for_dropped_bytes_sits_between_the_events_around_the_gap() {
+        let mut config = config("marker-order", false);
+        config.pane_queue_limit_bytes = 4;
+        let root = config.dir.parent().unwrap().to_path_buf();
+        let recorder = Recorder::spawn(config).unwrap();
+        let pane = recorder.pane(1, 80, 24);
+        pane.output(b"a");
+        pane.output(b"b");
+        // Over the pane's whole share, so it is dropped however fast the
+        // writer drains `a` and `b`.
+        pane.output(b"too long");
+        pane.output(b"d");
+        recorder.shutdown();
+
+        assert_eq!(
+            codes_and_data(pane.status().path.as_ref().unwrap()),
+            vec![
+                ("o".to_owned(), "a".to_owned()),
+                ("o".to_owned(), "b".to_owned()),
+                ("m".to_owned(), "herdr: 8 bytes not recorded".to_owned()),
+                ("o".to_owned(), "d".to_owned())
             ]
         );
         std::fs::remove_dir_all(root).unwrap();

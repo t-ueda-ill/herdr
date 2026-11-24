@@ -579,6 +579,18 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // `--log` is taken first and steps over `--ssh <file>`, so either order of
+    // the two works before the command-word guards below run.
+    let (args, recording_request) = match recording::launch::extract_launch_args(&args)
+        .and_then(|(args, parsed)| Ok((args, recording::launch::resolve_request(parsed)?)))
+    {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("error: {err}");
+            eprintln!("run 'herdr --help' for usage");
+            std::process::exit(2);
+        }
+    };
     let (args, ssh_config_request) = match ssh_host::session_config::extract_launch_arg(&args)
         .and_then(|(args, raw)| {
             let request = raw
@@ -614,16 +626,6 @@ fn main() -> io::Result<()> {
         std::process::exit(2);
     }
 
-    let (args, recording_request) = match recording::launch::extract_launch_args(&args)
-        .and_then(|(args, parsed)| Ok((args, recording::launch::resolve_request(parsed)?)))
-    {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            eprintln!("error: {err}");
-            eprintln!("run 'herdr --help' for usage");
-            std::process::exit(2);
-        }
-    };
     if recording_request.is_some() {
         let socket_override = std::env::var_os(api::SOCKET_PATH_ENV_VAR).is_some()
             || std::env::var_os(server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR).is_some();
