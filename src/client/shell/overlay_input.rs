@@ -588,6 +588,7 @@ impl ClientShellState {
         // overlay's keys.
         if self.route_worktree_overlay_key(key, outcome)
             || self.route_previews_overlay_key(key, outcome)
+            || self.route_assist_overlay_key(key, outcome)
             || self.route_open_picker_overlay_key(key, outcome)
             || matches!(self.overlay, Some(ClientShellOverlay::FileViewer(_)))
                 && self.route_file_viewer_overlay_key(key, outcome)

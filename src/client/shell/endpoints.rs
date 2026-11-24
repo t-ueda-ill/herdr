@@ -516,7 +516,7 @@ impl ClientShellState {
     /// Why not `supports_endpoint_method`: it treats an unknown method list as
     /// supported, and an older server answers an unknown method with an error
     /// instead of the host tab this client falls back to.
-    fn endpoint_advertises_method(&self, method: &str) -> bool {
+    pub(super) fn endpoint_advertises_method(&self, method: &str) -> bool {
         self.endpoints
             .iter()
             .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)

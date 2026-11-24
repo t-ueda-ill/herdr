@@ -273,3 +273,15 @@ fn a_remote_server_keeps_the_picker_open_and_says_why() {
         Some(super::super::investigation::PREVIEW_ELSEWHERE)
     );
 }
+
+#[test]
+fn three_previews_are_all_shown_without_scrolling() {
+    let mut previews = running();
+    previews.push(preview("preview-3", "/srv/blog", 40003, None));
+    let mut state = picker(previews);
+
+    let text = frame_text(&mut state);
+
+    assert_eq!(state.hits.worktree_rows.len(), 3);
+    assert!(text.contains("/srv/blog"), "{text}");
+}

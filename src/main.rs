@@ -170,6 +170,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # open_ssh_workspace = "" # optional, unset by default; picks a Host from ~/.ssh/config
 # open_container_workspace = "" # optional, unset by default; picks a running Docker container
 # open_files = "prefix+f" # browses the focused pane's directory
+# ask_ai = "" # optional, unset by default; opens claude, codex or copilot beside the focused pane
 # rename_workspace = "prefix+shift+w"
 # close_workspace = "prefix+shift+d"
 # previous_workspace = "" # optional, unset by default

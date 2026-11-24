@@ -169,6 +169,7 @@ impl ClientShellConfig {
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
             prompt_new_workspace_name: config.ui.prompt_new_workspace_name,
             confirm_close: config.ui.confirm_close,
+            assist_product: config.ui.assist_product,
             file_viewer_show_hidden: config.ui.file_viewer_show_hidden,
             file_viewer_show_ignored: config.ui.file_viewer_show_ignored,
             file_workbench_keys: config.ui.file_workbench_keys.clone(),
@@ -389,6 +390,7 @@ impl ClientShellConfig {
                 self.prompt_new_tab_name = ui.prompt_new_tab_name;
                 self.prompt_new_workspace_name = ui.prompt_new_workspace_name;
                 self.confirm_close = ui.confirm_close;
+                self.assist_product = ui.assist_product;
                 self.file_viewer_show_hidden = ui.file_viewer_show_hidden;
                 self.file_viewer_show_ignored = ui.file_viewer_show_ignored;
                 self.file_workbench_keys = ui.file_workbench_keys.clone();

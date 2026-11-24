@@ -50,6 +50,17 @@ impl ClientShellState {
                     self.begin_open_picker(source, outcome);
                     return;
                 }
+                if action == crate::input::KeybindAction::AskAi {
+                    if let Some(pane_id) = self
+                        .snapshot
+                        .as_deref()
+                        .and_then(|snapshot| snapshot.focused_pane_id.clone())
+                    {
+                        self.begin_assist(pane_id, outcome);
+                    }
+                    outcome.repaint = true;
+                    return;
+                }
                 if action == crate::input::KeybindAction::OpenFiles {
                     self.open_file_viewer(outcome);
                     return;
@@ -389,6 +400,7 @@ impl ClientShellState {
             crate::api::schema::Method::TabCreateInherit(params) => params.create.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
             crate::api::schema::Method::PaneSplitInherit(params) => params.focus,
+            crate::api::schema::Method::AssistStart(params) => params.focus,
             crate::api::schema::Method::SshOpen(params) => params.target.focus(),
             crate::api::schema::Method::ContainerOpen(params) => params.target.focus(),
             crate::api::schema::Method::SshContainerOpen(params) => params.target.focus(),
@@ -974,6 +986,12 @@ impl ClientShellState {
                 let mut outcome = ClientShellInput::default();
                 let repaint = self.handle_open_picker_endpoint_result(kind, result, &mut outcome);
                 return (repaint || outcome.repaint, outcome.actions);
+            }
+            kind @ (PendingEndpointKind::AssistProducts { .. }
+            | PendingEndpointKind::AssistStart
+            | PendingEndpointKind::AssistRefresh
+            | PendingEndpointKind::AssistList) => {
+                return self.handle_assist_endpoint_result(kind, result);
             }
             kind @ (PendingEndpointKind::PreviewList | PendingEndpointKind::PreviewStop { .. }) => {
                 return (
