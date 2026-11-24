@@ -110,6 +110,7 @@ Raw socket method names use dot notation:
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
+| Assist | `assist.products`, `assist.list`, `assist.start`, `assist.refresh` |
 | Task | `task.submit`, `task.get`, `task.list`, `task.wait`, `task.cancel`, `task.result` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
@@ -676,6 +677,26 @@ Shell-mode TUI clients send these requests as `endpoint.download.request.v1` end
 | `platform_unsupported` | a container or SSH pane on a Windows server |
 
 Read failures in a container or over SSH show in the browser as the page, not as API errors.
+
+### Assists
+
+`assist.products`, `assist.list`, `assist.start`, and `assist.refresh` open a coding-agent CLI of the server's machine next to a pane, to advise on what the pane shows; `herdr assist` uses them.
+
+```json
+{ "id": "a1", "method": "assist.start", "params": { "pane_id": "w1:p2", "product": "codex", "placement": "auto" } }
+```
+
+`products` answers `assist_products` with `products`: `product` (`claude`, `codex`, or `copilot`) and the `path` found on the server's `PATH`. `start` takes `pane_id`, an optional `product` (default: the first found), `placement` (`auto`, `right`, or `below`; default `auto`), and `focus` (default `true`). It answers `assist_started` with `assist` and `created`; `created` is `false` when the pane already had an assist, which is focused instead. `assist` has `pane_id` (the assist's pane), `target_pane_id` (absent once the read pane has closed), `product`, and `context_path`, the file the assist reads. `refresh` takes the assist or the pane it reads, writes the file again, sends the assist one line through the `agent.prompt` path, and answers `assist_refreshed`; it refuses what `agent.prompt` refuses. `list` answers `assist_list` with `assists`. `task.submit` refuses an assist with `assist_not_task_target`.
+
+| Code | Meaning |
+| --- | --- |
+| `pane_not_found` | the pane is unknown |
+| `pane_is_assist` | `start` named an assist's own pane |
+| `assist_product_not_found` | the CLI is not on the server's `PATH`; the message lists what was found |
+| `assist_context_failed` | the server could not write the context file |
+| `assist_start_failed` | the CLI could not be started |
+| `assist_not_found` | the pane has no assist, or the assist has closed |
+| `assist_target_closed` | the pane the assist reads has closed |
 
 ## Prompt tasks
 

@@ -371,6 +371,7 @@ impl HeadlessServer {
         // Why not wait for it: a hung docker daemon or ssh master must not
         // stall shutdown, and the off-host age sweep removes anything this misses.
         crate::server::clipboard_image::remove_off_host_files(off_host_files);
+        self.app.remove_assist_contexts();
 
         // Remove socket files.
         self.cleanup_sockets()?;

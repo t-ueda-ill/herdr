@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 mod agent_declare;
 mod agent_view;
 mod agents;
+mod assist;
+pub(super) use assist::remove_context as remove_assist_context;
 mod command_marks;
 mod directory;
 mod files;
@@ -636,6 +638,15 @@ impl App {
         let Some(terminal) = self.state.terminals.get(&pane_state.attached_terminal_id) else {
             return RuntimeExitAction::ClosePane;
         };
+        // Why: a shell in its place would keep the assist link and context
+        // folder, so Ask AI would focus that shell and refresh would fail.
+        if self
+            .state
+            .assists
+            .is_helper(&pane_state.attached_terminal_id)
+        {
+            return RuntimeExitAction::ClosePane;
+        }
 
         if terminal.respawn_shell_on_exit || self.should_respawn_shell_after_agent_exit(terminal) {
             RuntimeExitAction::RespawnShell
@@ -1416,6 +1427,12 @@ impl App {
                 return self.handle_pane_declare_agent(request.id, params);
             }
             Method::PreviewStart(params) => return self.handle_preview_start(request.id, params),
+            Method::AssistProducts(_) => return self.handle_assist_products(request.id),
+            Method::AssistList(_) => return self.handle_assist_list(request.id),
+            Method::AssistStart(params) => return self.handle_assist_start(request.id, params),
+            Method::AssistRefresh(params) => {
+                return self.handle_assist_refresh(request.id, params);
+            }
             Method::PreviewList(_) => return self.handle_preview_list(request.id),
             Method::PreviewStop(params) => return self.handle_preview_stop(request.id, params),
             Method::PaneSendText(params) => return self.handle_pane_send_text(request.id, params),

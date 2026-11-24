@@ -16,11 +16,13 @@ pub use self::restore::restore;
 pub(crate) use self::restore::restored_worktree_space_membership;
 #[cfg(unix)]
 pub use self::restore::{handoff_pane_aliases, restore_handoff};
-pub use self::snapshot::{
-    capture, capture_history, DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot,
-    SessionSnapshot, TabSnapshot, WorkspaceSnapshot,
-};
-// Why Unix-only: only live handoff, which passes PTY descriptors, uses it.
-#[cfg(unix)]
+// Why not on Windows outside tests: session saves leave assists out, and only
+// live handoff, which keeps every running pane, captures all of them.
+#[cfg(any(unix, test))]
+pub use self::snapshot::capture;
 pub use self::snapshot::capture_history_where;
+pub use self::snapshot::{
+    capture_excluding, DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot,
+    TabSnapshot, WorkspaceSnapshot,
+};
 pub(crate) use self::writer::SessionWriter;

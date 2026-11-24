@@ -38,6 +38,9 @@ impl App {
         for terminal_id in terminal_ids {
             self.shutdown_terminal_runtime(terminal_id);
         }
+        for path in self.state.assists.take_removed_files() {
+            super::api::remove_assist_context(&path);
+        }
     }
 
     pub(crate) fn sync_agent_metadata_deadline(&mut self) {

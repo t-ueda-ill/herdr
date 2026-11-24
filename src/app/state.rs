@@ -878,6 +878,8 @@ pub struct AppState {
     pub(crate) installed_plugins: InstalledPluginRegistry,
     /// Pane ids opened through the plugin pane API.
     pub(crate) plugin_panes: std::collections::HashMap<PaneId, PluginPaneRecord>,
+    /// Which assist reads which pane. Not saved: an assist does not outlive the server.
+    pub(crate) assists: crate::assist::AssistLinks,
     /// Session-modal terminal popup. This is intentionally outside workspace layouts.
     pub(crate) popup_pane: Option<PopupPaneState>,
     /// Recent plugin action/event command executions.
@@ -1145,6 +1147,7 @@ impl AppState {
                 crate::detect::manifest_update::ManifestUpdateStatus::default(),
             installed_plugins: std::collections::HashMap::new(),
             plugin_panes: std::collections::HashMap::new(),
+            assists: crate::assist::AssistLinks::default(),
             popup_pane: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
@@ -1210,6 +1213,10 @@ impl AppState {
             assert!(
                 self.plugin_panes.is_empty(),
                 "empty app state must not keep plugin pane records"
+            );
+            assert!(
+                self.assists.is_empty(),
+                "empty app state must not keep assist links"
             );
             assert!(
                 self.pending_agent_notifications.is_empty(),

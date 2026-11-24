@@ -49,9 +49,9 @@ pub(crate) use self::terminal::test_encode_key_for_app;
 #[cfg(unix)]
 pub use self::terminal::InputState;
 pub(crate) use self::terminal::{
-    CommandMarkError, PromptMotion, TerminalCompressionStep, TerminalDirtyPatch,
-    TerminalDirtyPatchOutcome, TerminalReadSnapshot, TerminalSearchDirection, TerminalSearchWindow,
-    TerminalTextPoint, TerminalWordMotion,
+    CommandMarkError, CommandText, PromptMotion, RecentCommands, TerminalCompressionStep,
+    TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalReadSnapshot, TerminalSearchDirection,
+    TerminalSearchWindow, TerminalTextPoint, TerminalWordMotion,
 };
 use self::terminal::{GhosttyPaneTerminal, PaneTerminal};
 pub use self::{
@@ -4005,6 +4005,16 @@ impl PaneRuntime {
         row: u32,
     ) -> Result<(TerminalTextPoint, TerminalTextPoint), CommandMarkError> {
         let result = self.terminal.command_output_range(row);
+        self.compression.wake();
+        result
+    }
+
+    pub(crate) fn recent_commands(
+        &self,
+        max: usize,
+        max_rows: usize,
+    ) -> Result<RecentCommands, CommandMarkError> {
+        let result = self.terminal.recent_commands(max, max_rows);
         self.compression.wake();
         result
     }

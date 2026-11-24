@@ -625,6 +625,21 @@ impl AppState {
             .map(|pane| pane.attached_terminal_id.clone())
     }
 
+    /// The workspace and pane a terminal is attached to.
+    pub(crate) fn pane_of_terminal(
+        &self,
+        terminal_id: &crate::terminal::TerminalId,
+    ) -> Option<(usize, PaneId)> {
+        self.workspaces.iter().enumerate().find_map(|(ws_idx, ws)| {
+            ws.tabs.iter().find_map(|tab| {
+                tab.panes
+                    .iter()
+                    .find(|(_, pane)| &pane.attached_terminal_id == terminal_id)
+                    .map(|(pane_id, _)| (ws_idx, *pane_id))
+            })
+        })
+    }
+
     pub(crate) fn remove_unattached_terminal_ids(
         &mut self,
         terminal_ids: impl IntoIterator<Item = crate::terminal::TerminalId>,
@@ -637,10 +652,11 @@ impl AppState {
                         .any(|pane| pane.attached_terminal_id == terminal_id)
                 })
             });
-            if !still_attached
-                && self.terminals.remove(&terminal_id).is_some()
-                && !self.terminal_runtime_shutdowns.contains(&terminal_id)
-            {
+            if still_attached || self.terminals.remove(&terminal_id).is_none() {
+                continue;
+            }
+            self.assists.forget_terminal(&terminal_id);
+            if !self.terminal_runtime_shutdowns.contains(&terminal_id) {
                 self.terminal_runtime_shutdowns.push(terminal_id);
             }
         }

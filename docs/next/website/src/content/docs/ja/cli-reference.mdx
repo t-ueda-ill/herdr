@@ -439,6 +439,22 @@ herdr preview stop PREVIEW_ID [--json]
 
 TUI では、ファイルワークベンチのメニューの `preview in browser` で、ツリーのルートのプレビューを始め、選んだファイルかフォルダを開きます（ツリーの空いた所からはルートを開きます）。使えるのは Herdr サーバーが TUI と同じ機械で動いているときだけで、リモートのサーバーでは `preview needs the herdr server on this machine` と表示します。グローバルメニューの `previews` は、動いているプレビューを場所とアドレス付きで一覧します。Enter か `↵ open` のクリックで選んだプレビューをブラウザで開き、Delete か `del stop` で止めます。`/` でルート、場所、ポートを絞り込めます。
 
+## アシスト
+
+```bash
+herdr assist start [PANE] [--with claude|codex|copilot] [--right|--below] [--no-focus] [--json]
+herdr assist refresh [PANE] [--json]
+herdr assist list [--json]
+herdr assist products [--json]
+```
+
+`assist start` は、ペインの隣にコーディングエージェントの CLI を開き、ペインに出ている内容について助言させます。CLI は Herdr サーバーの機械で動きます。ペインのシェルがコンテナや SSH の先で動いていても同じです。`assist products` は、サーバーの `PATH` で見つかった CLI（`claude`、`codex`、`copilot`）を一覧します。`PANE` を省くと、コマンドを実行したペインが対象になります。`--with` で CLI を選びます（省くと、この順で最初に見つかったもの）。`--right` も `--below` も付けないと、幅が 120 列以上のペインでは右（幅の 5 分の 2）に、それより狭いペインでは下半分に開きます。新しいペインの名前は `assist ▸ <ペイン名>` です。同じペインで `assist start` をもう一度実行すると、開いているアシストに移ります。
+
+Herdr はペインの内容を、一時フォルダの下に新しく作るフォルダ（サーバーのユーザーだけが開ける）の `context.md` に書き、そのファイルを名指しする 1 行のプロンプトを CLI に渡します。プロンプトに印を付けるシェル（OSC 133）なら、直前の 3 コマンドとその出力（各 200 行まで）と、入力を待っているプロンプト（打ったがまだ実行していない文字を含む）を書きます。そうでなければ画面の末尾 200 行を、エージェントのペインならその画面を書きます。これからしたい操作は、アシストに直接打ち込んで伝えます。
+
+`assist refresh` は、ペインの今の出力でファイルを書き直し、読み直すよう伝える 1 行をアシストに送ります。アシストと、アシストが読むペインのどちらを指定しても構いません。アシストは助言だけをします。Herdr は `claude` を `--disallowedTools Bash(herdr:*)` で、`codex` を `--sandbox read-only` で、`copilot` を `--deny-tool=shell(herdr:*)` で起動します。これらは各 CLI の規則で、セキュリティ上の境界ではありません。アシストは `task submit` の送り先になりません。アシストを閉じるとフォルダを消します。読んでいるペインを閉じてもアシストは開いたままで、`assist list` には `for a closed pane` と出ます。アシストはサーバーを再起動すると残らず、サーバーを止めるとフォルダも消します。
+
+
 ## エージェント
 
 ペインとエージェントの使い分けや一連の連携例は、[エージェント自動化](/ja/docs/agent-automation/) を参照してください。

@@ -145,6 +145,9 @@ pub struct App {
     pub(crate) file_service: std::sync::Arc<api::FileService>,
     pub(crate) directory_read_slots: std::sync::Arc<tokio::sync::Semaphore>,
     pub(crate) previews: crate::preview::registry::PreviewRegistry,
+    /// `PATH` searched for assist products instead of the server's own.
+    #[cfg(test)]
+    pub(crate) test_assist_path: Option<std::ffi::OsString>,
     pub(crate) upload_sessions: crate::upload::registry::UploadRegistry,
     pub(crate) download_sessions: crate::download::DownloadRegistry,
     pub(crate) pending_api_worktree_removes: HashMap<String, u64>,
@@ -593,6 +596,7 @@ impl App {
                 &mut plugin_installation_leases,
             ),
             plugin_panes: std::collections::HashMap::new(),
+            assists: crate::assist::AssistLinks::default(),
             popup_pane: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
@@ -668,6 +672,8 @@ impl App {
                 api::DIRECTORY_READ_SLOTS,
             )),
             previews: crate::preview::registry::PreviewRegistry::default(),
+            #[cfg(test)]
+            test_assist_path: None,
             upload_sessions: crate::upload::registry::UploadRegistry::default(),
             download_sessions: crate::download::DownloadRegistry::default(),
             pending_api_worktree_removes: HashMap::new(),

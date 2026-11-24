@@ -52,7 +52,8 @@ pub(super) fn command() -> Command {
         .subcommand(integration_command())
         .subcommand(skill_command())
         .subcommand(plugin_command())
-        .subcommand(preview_command());
+        .subcommand(preview_command())
+        .subcommand(assist_command());
     configure_help(command, 0)
 }
 
@@ -369,6 +370,10 @@ fn preview_command() -> Command {
     super::preview::command()
 }
 
+fn assist_command() -> Command {
+    super::assist::command()
+}
+
 fn integration_target_arg() -> Arg {
     Arg::new("target")
         .value_name("TARGET")
@@ -509,6 +514,23 @@ mod tests {
         }
         command_path(&cmd, &["preview", "list"]);
         command_path(&cmd, &["preview", "stop"]);
+    }
+
+    #[test]
+    fn spec_offers_assist_commands_for_completion() {
+        let cmd = super::command();
+        let start = command_path(&cmd, &["assist", "start"]);
+        for option in ["with", "right", "below", "no-focus", "json"] {
+            assert!(
+                start
+                    .get_arguments()
+                    .any(|argument| argument.get_long() == Some(option)),
+                "{option}"
+            );
+        }
+        for leaf in ["refresh", "list", "products"] {
+            command_path(&cmd, &["assist", leaf]);
+        }
     }
 
     #[test]
