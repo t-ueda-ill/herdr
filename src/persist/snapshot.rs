@@ -687,6 +687,8 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
 }
 
 /// Capture pane screen history separately from the structural session snapshot.
+// Why test only: session saves and live handoff both choose their panes.
+#[cfg(test)]
 pub fn capture_history(
     snapshot: &SessionSnapshot,
     workspaces: &[Workspace],

@@ -55,9 +55,9 @@ pub(crate) fn find_products(
 
 /// The first prompt the assist gets. The pane's text stays in the file, so it
 /// is not in the argv that `ps` shows.
-pub(crate) fn ask_line(context_path: &Path, pane_label: &str) -> String {
+pub(crate) fn ask_line(context_path: &Path, pane_id: &str) -> String {
     format!(
-        "Read {}. It holds what the herdr pane \"{pane_label}\" shows: its recent commands, \
+        "Read {}. It holds what the herdr pane {pane_id} shows: its recent commands, \
          their output and its prompt. Help the user with what they do next in that pane. \
          Do not type into that pane and do not run herdr commands; suggest commands for the \
          user to run. Then wait for the user's question.",
@@ -230,10 +230,10 @@ mod tests {
 
     #[test]
     fn the_first_prompt_names_the_file_and_forbids_typing_into_the_pane() {
-        let ask = ask_line(Path::new("/run/assist/a.md"), "shell · 2");
+        let ask = ask_line(Path::new("/run/assist/a.md"), "w1:p2");
 
         assert!(ask.contains("/run/assist/a.md"));
-        assert!(ask.contains("\"shell · 2\""));
+        assert!(ask.contains("pane w1:p2 shows"));
         assert!(ask.contains("Do not type into that pane"));
         assert!(!ask.contains('\n'));
     }

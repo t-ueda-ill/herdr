@@ -25,7 +25,8 @@ pub(crate) enum ContextRead {
     Screen(String),
 }
 
-/// The context as Markdown. Each output keeps at most `max_lines` of its last lines.
+/// The context as Markdown. The screen keeps at most `max_lines` of its last
+/// lines; command output comes already cut by the reader.
 pub(crate) fn render_context(context: &AssistContext, max_lines: usize) -> String {
     let mut out = format!(
         "# herdr pane \"{}\" ({})\n\n- location: {}\n",
@@ -50,7 +51,15 @@ pub(crate) fn render_context(context: &AssistContext, max_lines: usize) -> Strin
                 out.push('\n');
                 out.push_str(&fenced("command", &command.command));
                 if !command.output.is_empty() {
-                    out.push_str(&fenced("output", &last_lines(&command.output, max_lines)));
+                    let output = if command.omitted_rows > 0 {
+                        format!(
+                            "[{} earlier lines left out]\n{}",
+                            command.omitted_rows, command.output
+                        )
+                    } else {
+                        command.output.clone()
+                    };
+                    out.push_str(&fenced("output", &output));
                 }
             }
             if let Some(prompt) = waiting_prompt {
@@ -124,6 +133,7 @@ mod tests {
                 commands: vec![CommandText {
                     command: "$ make".into(),
                     output: "error: x".into(),
+                    omitted_rows: 0,
                 }],
                 waiting_prompt: Some("$ git rebase main".into()),
             }),
@@ -143,6 +153,7 @@ mod tests {
                 commands: vec![CommandText {
                     command: "$ cd src".into(),
                     output: String::new(),
+                    omitted_rows: 0,
                 }],
                 waiting_prompt: None,
             }),
@@ -151,6 +162,26 @@ mod tests {
 
         assert!(!text.contains("```output"));
         assert!(!text.contains("Prompt waiting"));
+    }
+
+    #[test]
+    fn a_cut_command_output_says_how_many_rows_were_left_out() {
+        let text = render_context(
+            &context(ContextRead::Commands {
+                commands: vec![CommandText {
+                    command: "$ seq 5".into(),
+                    output: "4\n5".into(),
+                    omitted_rows: 3,
+                }],
+                waiting_prompt: None,
+            }),
+            10,
+        );
+
+        assert!(
+            text.contains("```output\n[3 earlier lines left out]\n4\n5\n```"),
+            "{text}"
+        );
     }
 
     #[test]

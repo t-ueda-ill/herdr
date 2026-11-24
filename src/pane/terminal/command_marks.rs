@@ -183,6 +183,8 @@ fn written_output_range(
 pub(crate) struct CommandText {
     pub(crate) command: String,
     pub(crate) output: String,
+    /// Output rows left out above `output`.
+    pub(crate) omitted_rows: usize,
 }
 
 /// The newest commands, oldest first, and the prompt that waits for input.
@@ -308,8 +310,13 @@ impl PaneTerminal {
             .find_map(|candidate| written_output_range(terminal, candidate))
             .ok_or_else(|| missing_mark_error(terminal, total_rows))
     }
-    /// The newest `max` commands and the prompt that waits for input.
-    pub(crate) fn recent_commands(&self, max: usize) -> Result<RecentCommands, CommandMarkError> {
+    /// The newest `max` commands, each with the last `max_rows` rows of its
+    /// output, and the prompt that waits for input.
+    pub(crate) fn recent_commands(
+        &self,
+        max: usize,
+        max_rows: usize,
+    ) -> Result<RecentCommands, CommandMarkError> {
         let core = self
             .ghostty
             .core
@@ -338,24 +345,50 @@ impl PaneTerminal {
         if waiting.is_some() {
             prompts.pop();
         }
+        // Why: rows above a lone waiting prompt are the output of a command
+        // whose prompt left the scrollback, which "no commands" would hide.
+        if prompts.is_empty() && waiting.is_some_and(|prompt| prompt.start > 0) {
+            return Err(CommandMarkError::NotFound);
+        }
         let waiting_prompt =
             waiting.and_then(|prompt| rows_text(terminal, prompt.start, prompt.end));
         let skip = prompts.len().saturating_sub(max);
         let commands = prompts
             .into_iter()
             .skip(skip)
-            .map(|prompt| CommandText {
-                command: rows_text(terminal, prompt.start, prompt.end).unwrap_or_default(),
-                output: prompt
+            .map(|prompt| {
+                let range = prompt
                     .output
-                    .and_then(|row| written_output_range(terminal, row))
-                    .and_then(|(start, end)| {
-                        terminal
-                            .read_text_screen((start.col, start.row), (end.col, end.row), false)
-                            .ok()
-                    })
-                    .map(|text| trim_line_ends(&text))
-                    .unwrap_or_default(),
+                    .and_then(|row| written_output_range(terminal, row));
+                // Why clamp before reading: the text is read under the core
+                // lock, and a long log would be copied only to be cut.
+                let (range, omitted_rows) = match range {
+                    Some((start, end)) => {
+                        let rows = (end.row - start.row) as usize + 1;
+                        if rows > max_rows {
+                            let first = end.row + 1 - max_rows as u32;
+                            (
+                                Some((TerminalTextPoint { row: first, col: 0 }, end)),
+                                rows - max_rows,
+                            )
+                        } else {
+                            (Some((start, end)), 0)
+                        }
+                    }
+                    None => (None, 0),
+                };
+                CommandText {
+                    command: rows_text(terminal, prompt.start, prompt.end).unwrap_or_default(),
+                    output: range
+                        .and_then(|(start, end)| {
+                            terminal
+                                .read_text_screen((start.col, start.row), (end.col, end.row), false)
+                                .ok()
+                        })
+                        .map(|text| trim_line_ends(&text))
+                        .unwrap_or_default(),
+                    omitted_rows,
+                }
             })
             .collect();
         Ok(RecentCommands {
@@ -767,7 +800,7 @@ mod tests {
     fn recent_commands_hold_each_command_line_and_its_output_oldest_first() {
         let shell = marked_shell(20, 4, &[("first", &["a1", "a2"]), ("second", &["b1"])]);
 
-        let recent = shell.recent_commands(3).unwrap();
+        let recent = shell.recent_commands(3, 200).unwrap();
 
         assert_eq!(
             recent.commands,
@@ -775,10 +808,12 @@ mod tests {
                 CommandText {
                     command: "$ first".into(),
                     output: "a1\na2".into(),
+                    omitted_rows: 0,
                 },
                 CommandText {
                     command: "$ second".into(),
                     output: "b1".into(),
+                    omitted_rows: 0,
                 },
             ]
         );
@@ -792,7 +827,7 @@ mod tests {
             &[("first", &["a1"]), ("second", &["b1"]), ("third", &["c1"])],
         );
 
-        let recent = shell.recent_commands(2).unwrap();
+        let recent = shell.recent_commands(2, 200).unwrap();
 
         let commands: Vec<_> = recent.commands.iter().map(|c| c.command.as_str()).collect();
         assert_eq!(commands, ["$ second", "$ third"]);
@@ -807,7 +842,7 @@ mod tests {
         terminal.write(b"git rebase main");
         let shell = pane(terminal);
 
-        let recent = shell.recent_commands(3).unwrap();
+        let recent = shell.recent_commands(3, 200).unwrap();
 
         assert_eq!(recent.waiting_prompt.as_deref(), Some("$ git rebase main"));
         assert_eq!(recent.commands.len(), 1);
@@ -817,7 +852,7 @@ mod tests {
     fn an_empty_waiting_prompt_is_reported_as_the_prompt_alone() {
         let shell = marked_shell(20, 4, &[("first", &["a1"])]);
 
-        let recent = shell.recent_commands(3).unwrap();
+        let recent = shell.recent_commands(3, 200).unwrap();
 
         assert_eq!(recent.waiting_prompt.as_deref(), Some("$"));
         assert_eq!(recent.commands.len(), 1);
@@ -827,7 +862,7 @@ mod tests {
     fn a_command_that_printed_nothing_has_empty_output() {
         let shell = marked_shell(20, 4, &[("cd src", &[]), ("ls", &["main.rs"])]);
 
-        let recent = shell.recent_commands(3).unwrap();
+        let recent = shell.recent_commands(3, 200).unwrap();
 
         assert_eq!(recent.commands[0].command, "$ cd src");
         assert_eq!(recent.commands[0].output, "");
@@ -841,7 +876,7 @@ mod tests {
         terminal.write(b"npm test\r\n\x1b]133;C\x07running 3 tests\r\n");
         let shell = pane(terminal);
 
-        let recent = shell.recent_commands(3).unwrap();
+        let recent = shell.recent_commands(3, 200).unwrap();
 
         assert_eq!(recent.waiting_prompt, None);
         assert_eq!(recent.commands[0].output, "running 3 tests");
@@ -853,6 +888,37 @@ mod tests {
         terminal.write(b"$ first\r\na1\r\n$ ");
         let shell = pane(terminal);
 
-        assert_eq!(shell.recent_commands(3), Err(CommandMarkError::Unmarked));
+        assert_eq!(
+            shell.recent_commands(3, 200),
+            Err(CommandMarkError::Unmarked)
+        );
+    }
+
+    #[test]
+    fn a_long_output_keeps_only_its_last_rows_and_counts_the_rest() {
+        let shell = marked_shell(20, 4, &[("seq", &["1", "2", "3", "4", "5"])]);
+
+        let recent = shell.recent_commands(3, 2).unwrap();
+
+        assert_eq!(recent.commands[0].output, "4\n5");
+        assert_eq!(recent.commands[0].omitted_rows, 3);
+    }
+
+    #[test]
+    fn a_waiting_prompt_whose_command_left_the_scrollback_is_not_found() {
+        let mut terminal = Terminal::new(20, 4, 1).unwrap();
+        terminal.write(PROMPT);
+        terminal.write(b"seq\r\n\x1b]133;C\x07");
+        // Why this many: scrollback is dropped a page at a time.
+        for line in 1..=20_000 {
+            terminal.write(format!("line {line:>12}\r\n").as_bytes());
+        }
+        terminal.write(PROMPT);
+        let shell = pane(terminal);
+
+        assert_eq!(
+            shell.recent_commands(3, 200),
+            Err(CommandMarkError::NotFound)
+        );
     }
 }

@@ -4009,8 +4009,12 @@ impl PaneRuntime {
         result
     }
 
-    pub(crate) fn recent_commands(&self, max: usize) -> Result<RecentCommands, CommandMarkError> {
-        let result = self.terminal.recent_commands(max);
+    pub(crate) fn recent_commands(
+        &self,
+        max: usize,
+        max_rows: usize,
+    ) -> Result<RecentCommands, CommandMarkError> {
+        let result = self.terminal.recent_commands(max, max_rows);
         self.compression.wake();
         result
     }

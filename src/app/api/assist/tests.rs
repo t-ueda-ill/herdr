@@ -382,3 +382,73 @@ async fn stopping_the_server_removes_the_context_folders_of_open_assists() {
         .unwrap()
         .exists());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_cli_argv_names_the_pane_by_id_and_not_by_its_label() {
+    let mut fixture = fixture(80, MARKED_SHELL);
+    let target_pane = fixture.app.state.workspaces[0].tabs[0].root_pane;
+    let target = fixture
+        .app
+        .state
+        .terminal_id_for_pane(0, target_pane)
+        .unwrap();
+    fixture
+        .app
+        .state
+        .terminals
+        .get_mut(&target)
+        .unwrap()
+        .set_manual_label("deploy --token s3cret".into());
+
+    started(&start(&mut fixture, AssistPlacement::Auto));
+
+    let helper = fixture
+        .app
+        .state
+        .assists
+        .iter()
+        .next()
+        .unwrap()
+        .helper
+        .clone();
+    let argv = fixture.app.state.terminals[&helper]
+        .launch_argv
+        .clone()
+        .expect("argv");
+    let joined = argv.join(" ");
+    assert!(joined.contains(&fixture.target), "{joined}");
+    assert!(!joined.contains("s3cret"), "{joined}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_session_save_keeps_neither_the_assist_pane_nor_its_screen_history() {
+    let mut fixture = fixture(80, MARKED_SHELL);
+    started(&start(&mut fixture, AssistPlacement::Auto));
+    let helper = fixture
+        .app
+        .state
+        .assists
+        .iter()
+        .next()
+        .unwrap()
+        .helper
+        .clone();
+    let (_, helper_pane) = fixture.app.state.pane_of_terminal(&helper).unwrap();
+    fixture.app.persist_pane_history = true;
+
+    let crate::app::session::SessionSaveJob::Save { snapshot, history } =
+        fixture.app.capture_session_save_job()
+    else {
+        panic!("expected a save");
+    };
+
+    let tab = &snapshot.workspaces[0].tabs[0];
+    assert!(!tab.panes.contains_key(&helper_pane.raw()));
+    let history = history.expect("history");
+    assert!(history.workspaces[0].tabs[0]
+        .panes
+        .keys()
+        .all(|pane| *pane != helper_pane.raw()));
+}

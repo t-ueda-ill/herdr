@@ -110,7 +110,9 @@ impl App {
             .parent()
             .unwrap_or(Path::new("/"))
             .to_path_buf();
-        let ask = crate::assist::ask_line(&context_path, &context.label);
+        // Why the pane id and not its label: the label can hold a terminal
+        // title with command arguments, and argv shows in process listings.
+        let ask = crate::assist::ask_line(&context_path, &context.pane_id);
         let Some(argv) = crate::assist::product_argv(product, &executable, &ask, &context_dir)
         else {
             remove_context(&context_path);
@@ -354,18 +356,25 @@ impl App {
         let runtime =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)?;
-        let read = match runtime.recent_commands(crate::assist::CONTEXT_COMMANDS) {
-            // Why not for an agent: its own TUI draws over the shell's marks.
-            Ok(recent) if pane.agent.is_none() => ContextRead::Commands {
-                commands: recent.commands,
-                waiting_prompt: recent.waiting_prompt,
-            },
-            _ if pane.agent.is_some() => ContextRead::Screen(runtime.detection_text()),
-            _ => ContextRead::Screen(
-                runtime
-                    .recent_text_snapshot(crate::assist::CONTEXT_LINES)
-                    .text,
-            ),
+        // Why an agent is never read by command: its own TUI draws over the
+        // shell's marks, and scanning them would only hold the core lock.
+        let read = if pane.agent.is_some() {
+            ContextRead::Screen(runtime.detection_text())
+        } else {
+            match runtime.recent_commands(
+                crate::assist::CONTEXT_COMMANDS,
+                crate::assist::CONTEXT_LINES,
+            ) {
+                Ok(recent) => ContextRead::Commands {
+                    commands: recent.commands,
+                    waiting_prompt: recent.waiting_prompt,
+                },
+                Err(_) => ContextRead::Screen(
+                    runtime
+                        .recent_text_snapshot(crate::assist::CONTEXT_LINES)
+                        .text,
+                ),
+            }
         };
         let label = pane
             .label

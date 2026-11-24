@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use super::{App, SESSION_SAVE_DEBOUNCE};
 
-enum SessionSaveJob {
+pub(super) enum SessionSaveJob {
     Clear,
     Save {
         snapshot: crate::persist::SessionSnapshot,
@@ -37,13 +37,13 @@ impl App {
         }
     }
 
-    fn capture_session_save_job(&self) -> SessionSaveJob {
+    pub(super) fn capture_session_save_job(&self) -> SessionSaveJob {
         if self.state.workspaces.is_empty() {
             SessionSaveJob::Clear
         } else {
             // Why without assists: a restored assist would run its CLI
             // again with a prompt that names a context file already deleted.
-            let assists = self
+            let assists: std::collections::HashSet<_> = self
                 .state
                 .assists
                 .iter()
@@ -58,11 +58,12 @@ impl App {
                 &assists,
             );
             let history = self.persist_pane_history.then(|| {
-                crate::persist::capture_history(
+                crate::persist::capture_history_where(
                     &snapshot,
                     &self.state.workspaces,
                     &self.state.terminals,
                     &self.terminal_runtimes,
+                    |terminal| !assists.contains(terminal),
                 )
             });
             SessionSaveJob::Save { snapshot, history }

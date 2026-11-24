@@ -20,11 +20,9 @@ pub use self::restore::{handoff_pane_aliases, restore_handoff};
 // live handoff, which keeps every running pane, captures all of them.
 #[cfg(any(unix, test))]
 pub use self::snapshot::capture;
-pub use self::snapshot::{
-    capture_excluding, capture_history, DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot,
-    SessionSnapshot, TabSnapshot, WorkspaceSnapshot,
-};
-// Why Unix-only: only live handoff, which passes PTY descriptors, uses it.
-#[cfg(unix)]
 pub use self::snapshot::capture_history_where;
+pub use self::snapshot::{
+    capture_excluding, DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot,
+    TabSnapshot, WorkspaceSnapshot,
+};
 pub(crate) use self::writer::SessionWriter;
