@@ -444,33 +444,34 @@ impl App {
             repo_key: api.repo_key,
             repo_name: api.repo_name,
         };
-        if let Err(err) = self.ensure_source_parent_membership(&mut source, true) {
+        if let Err(err) = self.ensure_source_parent_membership(&mut source, true, None) {
             Self::send_api_response(api.respond_to, encode_error(api.id, err.code, err.message));
             return;
         }
 
-        let (ws_idx, created_workspace) =
-            if let Some(ws_idx) = self.open_workspace_idx_for_checkout(&result.path) {
-                if api.focus {
-                    self.state.switch_workspace(ws_idx);
+        let (ws_idx, created_workspace) = if let Some(ws_idx) =
+            self.open_workspace_idx_for_checkout(&result.path)
+        {
+            if api.focus {
+                self.state.switch_workspace(ws_idx);
+            }
+            (ws_idx, false)
+        } else {
+            match self.create_workspace_labeled(result.path.clone(), api.focus, api.label.clone()) {
+                Ok(ws_idx) => (ws_idx, true),
+                Err(err) => {
+                    Self::send_api_response(
+                        api.respond_to,
+                        encode_error(
+                            api.id,
+                            "worktree_open_failed",
+                            format!("created worktree but failed to open workspace: {err}"),
+                        ),
+                    );
+                    return;
                 }
-                (ws_idx, false)
-            } else {
-                match self.create_workspace_with_options(result.path.clone(), api.focus) {
-                    Ok(ws_idx) => (ws_idx, true),
-                    Err(err) => {
-                        Self::send_api_response(
-                            api.respond_to,
-                            encode_error(
-                                api.id,
-                                "worktree_open_failed",
-                                format!("created worktree but failed to open workspace: {err}"),
-                            ),
-                        );
-                        return;
-                    }
-                }
-            };
+            }
+        };
 
         self.mark_worktree_membership(
             &source,

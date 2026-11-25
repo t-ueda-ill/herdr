@@ -1589,6 +1589,24 @@
       ]
     },
     {
+      "id": "log",
+      "title": "Pane recordings",
+      "keys": [
+        {
+          "key": "log.file_name",
+          "type": "string",
+          "default": "\"{space}-{start}-pane-{pane}\"",
+          "description": "Name of each file `herdr --log` writes, without the extension. `{space}` is the chosen workspace label, else the container, else the SSH host, else the label derived from the workspace folder; `{pane}` (required) the pane number; `{session}` the session; `{start}` the local start time as `yyyymmdd-hhmmss`. Read when the server starts."
+        },
+        {
+          "key": "log.time_format",
+          "type": "string",
+          "default": "\"[yyyy/mm/dd hh:mi:ss.sss]\"",
+          "description": "Local date and time written as a marker at the first event of each minute, and in front of every event by `herdr log show`. `yyyy mm dd hh mi ss sss` are replaced, other text is kept. Read when the server starts."
+        }
+      ]
+    },
+    {
       "id": "advanced",
       "title": "Advanced",
       "keys": [

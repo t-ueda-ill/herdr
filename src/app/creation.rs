@@ -122,11 +122,21 @@ impl App {
         initial_cwd: PathBuf,
         focus: bool,
     ) -> std::io::Result<usize> {
+        self.create_workspace_labeled(initial_cwd, focus, None)
+    }
+
+    pub(crate) fn create_workspace_labeled(
+        &mut self,
+        initial_cwd: PathBuf,
+        focus: bool,
+        label: Option<String>,
+    ) -> std::io::Result<usize> {
         self.create_workspace_with_launch_env(
             initial_cwd,
             focus,
             Vec::new(),
             crate::pane::PaneLaunchTarget::Host,
+            label,
         )
     }
 
@@ -136,6 +146,7 @@ impl App {
         focus: bool,
         extra_env: Vec<(String, String)>,
         launch: crate::pane::PaneLaunchTarget<'_>,
+        label: Option<String>,
     ) -> std::io::Result<usize> {
         let (rows, cols) = self.state.new_pane_size(crate::ui::NewPanePlacement::Alone);
         let (ws, terminal, runtime) = Workspace::new_with_extra_env(
@@ -152,6 +163,7 @@ impl App {
             self.render_notify.clone(),
             self.render_dirty.clone(),
             extra_env,
+            label,
         )?;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
         self.state.terminals.insert(terminal.id.clone(), terminal);

@@ -823,7 +823,9 @@ fn main() -> io::Result<()> {
         println!("  --remote-keybindings <local|server>");
         println!("                      Keybindings for --remote app attach (default: local)");
         println!("  --log <dir|none>    Record each pane's output under <dir>/<session>/ as");
-        println!("                      gzipped asciicast (remembered by the session)");
+        println!("                      gzipped asciicast (remembered by the session; names");
+        println!("                      and time format: [log] in config.toml; read with");
+        println!("                      herdr log show <file>)");
         println!("  --log-input         With --log, also record what is typed or sent to panes");
         println!("  --handoff           Opt into live handoff for update or remote attach");
         println!("  --default-config    Print default configuration and exit");

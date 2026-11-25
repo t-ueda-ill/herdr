@@ -28,8 +28,12 @@ pub fn run_server() -> io::Result<()> {
         ) {
             warn!(%err, "could not settle the session ssh config during handoff");
         }
+        // Why load here: the import server loads config only after it takes
+        // the panes, and their recordings open as they arrive.
+        let recording_format =
+            crate::recording::RecordingFormat::from_config(&config::Config::load().config.log);
         // A failure must not drop the panes this server takes over.
-        if let Err(err) = crate::recording::start_server(recording_request) {
+        if let Err(err) = crate::recording::start_server(recording_request, recording_format) {
             warn!(%err, "could not start pane recording during handoff");
         }
         let socket_path = args
@@ -75,7 +79,10 @@ pub fn run_server() -> io::Result<()> {
                 format!("cannot remember the session ssh config: {err}"),
             )
         })?;
-    crate::recording::start_server(recording_request)?;
+    crate::recording::start_server(
+        recording_request,
+        crate::recording::RecordingFormat::from_config(&loaded_config.config.log),
+    )?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

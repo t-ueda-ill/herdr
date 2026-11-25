@@ -51,6 +51,7 @@ pub(super) fn command() -> Command {
         .subcommand(session_command())
         .subcommand(integration_command())
         .subcommand(skill_command())
+        .subcommand(log_command())
         .subcommand(plugin_command())
         .subcommand(preview_command())
         .subcommand(assist_command());
@@ -329,6 +330,24 @@ fn integration_command() -> Command {
                         .long("shell")
                         .value_name("SHELL")
                         .value_parser(["bash", "zsh", "fish"]),
+                ),
+        )
+}
+
+fn log_command() -> Command {
+    Command::new("log")
+        .about("Read pane recordings made with --log")
+        .subcommand(
+            Command::new("show")
+                .about("Print a recording with the local date and time on every event")
+                .arg(Arg::new("file").value_name("FILE").required(true))
+                .arg(
+                    Arg::new("time-format")
+                        .long("time-format")
+                        .value_name("FORMAT")
+                        .help(
+                            "Spell times with yyyy mm dd hh mi ss sss instead of [log] time_format",
+                        ),
                 ),
         )
 }

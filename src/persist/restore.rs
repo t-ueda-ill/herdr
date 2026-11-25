@@ -368,6 +368,14 @@ fn restore_workspace(
         .unwrap_or(1)
         .max(snap.next_public_tab_number);
     let mut failed_imports = 0;
+    // Why the folder name and not the git-aware label: repository metadata is
+    // refreshed after restore, and reading it here may block on storage.
+    let space_label = match &snap.custom_name {
+        Some(label) => crate::recording::WorkspaceLabel::Custom(label.clone()),
+        None => crate::recording::WorkspaceLabel::Auto(crate::workspace::fallback_label_from_cwd(
+            &snap.identity_cwd,
+        )),
+    };
 
     for (idx, tab_snap) in snap.tabs.iter().enumerate() {
         let tab_number = snap.public_tab_numbers.get(idx).copied().unwrap_or(idx + 1);
@@ -376,6 +384,7 @@ fn restore_workspace(
             history.and_then(|history| history.tabs.get(idx)),
             tab_number,
             &workspace_id,
+            &space_label,
             rows,
             cols,
             runtime_context,
@@ -561,6 +570,7 @@ fn restore_tab(
     history: Option<&TabHistorySnapshot>,
     number: usize,
     workspace_id: &str,
+    space_label: &crate::recording::WorkspaceLabel,
     rows: u16,
     cols: u16,
     runtime_context: &RestoreRuntimeContext<'_>,
@@ -664,7 +674,8 @@ fn restore_tab(
                     pane_id.to_string(),
                 )
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .with_space(space_label.clone());
         let imported_runtime = old_pane_id.and_then(|old_id| imported_panes.remove(&old_id));
         let was_imported = imported_runtime.is_some();
         #[cfg(unix)]
@@ -767,6 +778,12 @@ fn restore_tab(
                         master_fd: imported.master_fd,
                         state: imported.state.with_pane_id(*id),
                     },
+                    &crate::recording::SpaceSource {
+                        container: saved_container.as_ref().map(|c| c.canonical.as_str()),
+                        ssh: saved_ssh.as_ref().map(|s| s.canonical.as_str()),
+                        label: Some(space_label),
+                    }
+                    .name(&cwd),
                     runtime_context.scrollback_limit_bytes,
                     crate::terminal_theme::TerminalTheme::default(),
                     None,

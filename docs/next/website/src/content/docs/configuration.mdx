@@ -132,6 +132,20 @@ shell_integration = true
 
 Set `shell_integration = false` to start the plain shell. The setting applies to panes opened afterwards. A new tab or split from an SSH or container pane opens in the directory its shell last reported and falls back to the directory the pane started in when that directory no longer exists. An SSH host with a `RemoteCommand` in `~/.ssh/config` always starts as configured, without the launcher. A shell that tmux starts inside the pane does not load the script. bash, zsh, fish, and sh (dash, ash) are supported; other shells start unchanged. In sh, a login profile that sets `ENV` replaces the integration.
 
+### Pane recordings
+
+`[log]` sets how [`herdr --log`](/docs/cli-reference) names its files and spells the local date and time. The server reads it when it starts.
+
+```toml
+[log]
+file_name = "{space}-{start}-pane-{pane}"
+time_format = "[yyyy/mm/dd hh:mi:ss.sss]"
+```
+
+In `file_name`, `{space}` is the workspace label when one was chosen (by a rename, or when the workspace was opened, such as the Docker name the container picker gives), else the container a pane runs in, else its SSH host, else the label derived from the workspace folder; `{pane}` is the pane number and must be present; `{session}` is the session name; `{start}` is the local time the file was opened, as `yyyymmdd-hhmmss`. Characters that cannot appear in a file name, such as `/`, become `_`, and the home folder's `~` becomes `home`. The space is taken when the pane opens and does not follow a later rename.
+
+Recordings stay asciicast v2, so asciinema plays them. Event times count from the whole second in the header `timestamp`, so each event happened at `timestamp` plus its time. At the first event of each minute, Herdr also writes a marker with the local date and time, such as `[61.250000, "m", "[2026/11/25 10:31:00.250]"]`, which shows in a player's marker list and when reading the file with `zless`. `herdr log show FILE` prints a recording with the local date and time in front of every event, for example `[2026/11/25 10:30:12.250] o "$ ls\r\n"`. In `time_format`, `yyyy`, `mm`, `dd`, `hh`, `mi`, `ss`, and `sss` (milliseconds) stand for the local date and time, and other text is kept; it spells both the markers and `herdr log show`. An invalid value is reported and the default is used.
+
 ## Keybindings
 
 For a guided introduction to the prefix and a vetted prefix-free setup, see [Keyboard](/docs/keyboard/).

@@ -26,6 +26,7 @@ mod completion;
 mod container;
 pub(crate) mod directory;
 mod integration;
+mod log;
 mod machine;
 pub(crate) mod notification;
 pub(crate) mod pane;
@@ -149,6 +150,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "assist" => assist::run_assist_command(&args[2..])?,
         "integration" => integration::run_integration_command(&args[2..])?,
         "skill" => skill::run_skill_command(&args[2..])?,
+        "log" => log::run_log_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
     };
