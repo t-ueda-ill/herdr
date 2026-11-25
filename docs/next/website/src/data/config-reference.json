@@ -1596,7 +1596,7 @@
           "key": "log.file_name",
           "type": "string",
           "default": "\"{space}-{start}-pane-{pane}\"",
-          "description": "Name of each file `herdr --log` writes, without the extension. `{space}` is the container, the SSH host, or the workspace label; `{pane}` (required) the pane number; `{session}` the session; `{start}` the local start time as `yyyymmdd-hhmmss`. Read when the server starts."
+          "description": "Name of each file `herdr --log` writes, without the extension. `{space}` is the chosen workspace label, else the container, else the SSH host, else the label derived from the workspace folder; `{pane}` (required) the pane number; `{session}` the session; `{start}` the local start time as `yyyymmdd-hhmmss`. Read when the server starts."
         },
         {
           "key": "log.time_format",
