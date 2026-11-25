@@ -1,6 +1,7 @@
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -24,6 +25,17 @@ fn source(paths: &[&Path], options: HostOptions) -> HostSource {
         paths.iter().map(|path| path.to_path_buf()).collect(),
         options,
     )
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if done() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timed out waiting for {what}");
 }
 
 fn is_root() -> bool {
@@ -542,7 +554,7 @@ fn parked(dir: &TempDir, options: HostOptions) -> HostSource {
             ..options
         },
     );
-    std::thread::sleep(Duration::from_millis(100));
+    wait_until("the source queue to fill", || source.is_queue_blocked());
     source
 }
 
@@ -703,8 +715,13 @@ fn a_filesystem_that_stops_answering_fails_the_stream_as_stalled() {
     let dir = TempDir::new("host-stall");
     std::fs::create_dir(dir.join("t")).unwrap();
     std::fs::write(dir.join("t/f"), b"x").unwrap();
-    let hook: Arc<dyn Fn(&Path) + Send + Sync> =
-        Arc::new(|_| std::thread::sleep(Duration::from_millis(600)));
+    // The read stays stuck until the stall is seen. Dropping `release`, also
+    // on unwind when an assertion fails, lets the reading thread go.
+    let (release, stuck) = std::sync::mpsc::channel::<()>();
+    let stuck = Mutex::new(stuck);
+    let hook: Arc<dyn Fn(&Path) + Send + Sync> = Arc::new(move |_| {
+        let _ = stuck.lock().unwrap().recv();
+    });
     let options = HostOptions {
         stall: Duration::from_millis(100),
         before_read: Some(hook),
@@ -719,7 +736,8 @@ fn a_filesystem_that_stops_answering_fails_the_stream_as_stalled() {
         error,
         ("download_failed", "the source stopped sending".into())
     );
-    assert!(started.elapsed() < Duration::from_millis(550));
+    assert!(started.elapsed() < Duration::from_secs(5));
+    drop(release);
 }
 
 #[test]
@@ -727,8 +745,13 @@ fn a_stuck_read_does_not_stop_the_caller_from_cancelling() {
     let dir = TempDir::new("host-stuck-cancel");
     std::fs::create_dir(dir.join("t")).unwrap();
     std::fs::write(dir.join("t/f"), b"x").unwrap();
-    let hook: Arc<dyn Fn(&Path) + Send + Sync> =
-        Arc::new(|_| std::thread::sleep(Duration::from_millis(800)));
+    let (read_started, reading) = std::sync::mpsc::sync_channel(0);
+    let (release_read, blocked_read) = std::sync::mpsc::channel();
+    let blocked_read = Mutex::new(blocked_read);
+    let hook: Arc<dyn Fn(&Path) + Send + Sync> = Arc::new(move |_| {
+        let _ = read_started.send(());
+        let _ = blocked_read.lock().unwrap().recv();
+    });
     let (mut source, _) = begun(
         &[&dir.join("t")],
         HostOptions {
@@ -738,11 +761,15 @@ fn a_stuck_read_does_not_stop_the_caller_from_cancelling() {
     );
     let control = Arc::new(Control::default());
     let flag = Arc::clone(&control);
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(30));
-        flag.cancel();
-    });
+    assert!(source
+        .next(Duration::from_secs(10), &control)
+        .unwrap()
+        .is_some());
+    reading
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the read should start");
     let started = Instant::now();
+    flag.cancel();
 
     let result = loop {
         match source.next(Duration::from_secs(10), &control) {
@@ -750,9 +777,10 @@ fn a_stuck_read_does_not_stop_the_caller_from_cancelling() {
             other => break other,
         }
     };
+    release_read.send(()).unwrap();
 
     assert_eq!(result, Err(cancelled()));
-    assert!(started.elapsed() < Duration::from_millis(600));
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
 
 #[test]
@@ -773,7 +801,13 @@ fn aborting_ends_the_reading_thread_and_later_reads_report_a_cancel() {
             ..fast()
         },
     );
-    std::thread::sleep(Duration::from_millis(100));
+    assert!(source
+        .next(Duration::from_secs(10), &Control::default())
+        .unwrap()
+        .is_some());
+    wait_until("the host reader to start reading", || {
+        reads.load(Ordering::SeqCst) > 0
+    });
 
     source.abort();
     std::thread::sleep(Duration::from_millis(100));

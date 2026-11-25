@@ -138,6 +138,17 @@ fn stage_path(dest: &Path) -> std::path::PathBuf {
     dest.join(format!(".herdr-upload-{STAGE_TOKEN}"))
 }
 
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if done() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("timed out waiting for {what}");
+}
+
 fn published(tokens: &[Token]) -> Vec<(String, String)> {
     tokens
         .iter()
@@ -238,15 +249,25 @@ fn a_body_trickling_in_one_byte_at_a_time_is_read_without_overrun() {
         let dest = TempDir::new("trickle");
         let body: Vec<u8> = (0..1_500u32).map(|i| (i % 251) as u8).collect();
         let input = Input::default().file("slow", &body, 0o600, None);
+        let staged = stage_path(dest.path()).join("i/slow");
         let mut running = spawn(&shell, dest.str(), None);
         running.write(&input.0[..input.0.len() - body.len()]);
-        for (index, byte) in body.iter().enumerate() {
-            running.write(&[*byte]);
-            if index % 200 == 0 {
-                std::thread::sleep(Duration::from_millis(5));
-            }
+        // Each part is sent only after the receiver has staged everything
+        // before it, so every read but the last comes back short and the
+        // receiver has to resume.
+        let mut sent = 0;
+        for end in [1, 2, 3, 500] {
+            running.write(&body[sent..end]);
+            sent = end;
+            wait_until("the receiver to stage what was sent", || {
+                std::fs::metadata(&staged).is_ok_and(|meta| meta.len() == sent as u64)
+            });
         }
-        running.write(commit_line(PaneUploadCollision::Fail).unwrap().as_bytes());
+        // The rest arrives together with the next header, which the last read
+        // must leave alone.
+        let mut rest = body[sent..].to_vec();
+        rest.extend_from_slice(commit_line(PaneUploadCollision::Fail).unwrap().as_bytes());
+        running.write(&rest);
 
         let tokens = running.finish();
 
@@ -589,7 +610,7 @@ fn a_short_write_is_an_error_and_never_reported_ok() {
 
 #[test]
 fn end_of_input_or_terminate_while_staging_removes_the_stage() {
-    for shell in posix_shells() {
+    for shell in shells_honouring_path() {
         let dest = TempDir::new("eof");
         let tokens = run(
             &shell,
@@ -600,7 +621,17 @@ fn end_of_input_or_terminate_while_staging_removes_the_stage() {
         assert!(!stage_path(dest.path()).exists());
 
         let dest = TempDir::new("term");
-        let mut running = spawn(&shell, dest.str(), None);
+        let tools = TempDir::new("term-tools");
+        let started = tools.join("read-started");
+        let release = tools.join("read-release");
+        let bin = fake_bin(
+            &tools,
+            "dd",
+            &format!(
+                ": > {started:?}; while [ ! -e {release:?} ]; do sleep 0.01; done; exec /bin/dd \"$@\""
+            ),
+        );
+        let mut running = spawn(&shell, dest.str(), Some(&bin));
         // A file header whose body never comes leaves the receiver waiting in dd.
         running.write(file_line("big", 10, 0o644, None).as_bytes());
         running.wait_for(&Token::Ready(
@@ -610,9 +641,9 @@ fn end_of_input_or_terminate_while_staging_removes_the_stage() {
                 .unwrap()
                 .into(),
         ));
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(stage_path(dest.path()).exists());
+        wait_until("the file body read to start", || started.exists());
         crate::platform::signal_processes(&[running.pid()], crate::platform::Signal::Terminate);
+        std::fs::write(&release, b"").unwrap();
         let _ = running.finish();
         assert!(!stage_path(dest.path()).exists(), "{shell:?}");
     }
@@ -620,7 +651,7 @@ fn end_of_input_or_terminate_while_staging_removes_the_stage() {
 
 #[test]
 fn terminate_during_commit_still_ends_published_or_rolled_back_with_originals_intact() {
-    for shell in posix_shells() {
+    for shell in shells_honouring_path() {
         let dest = TempDir::new("commit-term");
         let names: Vec<String> = (0..300).map(|i| format!("n{i:03}")).collect();
         for name in &names {
@@ -630,7 +661,17 @@ fn terminate_during_commit_still_ends_published_or_rolled_back_with_originals_in
         for name in &names {
             input = input.file(name, b"new", 0o644, None);
         }
-        let mut running = spawn(&shell, dest.str(), None);
+        let tools = TempDir::new("commit-term-tools");
+        let started = tools.join("commit-started");
+        let release = tools.join("commit-release");
+        let bin = fake_bin(
+            &tools,
+            "mv",
+            &format!(
+                ": > {started:?}; while [ ! -e {release:?} ]; do sleep 0.01; done; exec /bin/mv \"$@\""
+            ),
+        );
+        let mut running = spawn(&shell, dest.str(), Some(&bin));
         running.write(&input.0);
         running.wait_for(&Token::Ok(names.len() as u64));
         running.write(
@@ -638,8 +679,9 @@ fn terminate_during_commit_still_ends_published_or_rolled_back_with_originals_in
                 .unwrap()
                 .as_bytes(),
         );
-        std::thread::sleep(Duration::from_millis(20));
+        wait_until("the commit to start publishing", || started.exists());
         crate::platform::signal_processes(&[running.pid()], crate::platform::Signal::Terminate);
+        std::fs::write(&release, b"").unwrap();
 
         let tokens = running.finish();
 

@@ -256,13 +256,14 @@ fn scripted_sink(script: &'static str, budget: Duration, control: Arc<Control>) 
 
 #[test]
 fn a_commit_that_keeps_reporting_steps_may_outlast_its_budget() {
-    // Ten steps 150 ms apart: 1.5 s in all, each well inside the 400 ms budget.
+    // Fifteen steps 150 ms apart: longer than the 2 s budget in all, but each
+    // comfortably inside it even on a loaded runner.
     let mut sink = scripted_sink(
         r#"printf 'HERDR-OFFHOST-1\0ready\0/x\0qend\0'
 while IFS= read -r h; do case $h in 'C '*) break ;; esac; done
-i=0; while [ $i -lt 10 ]; do sleep 0.15; printf 's\0'; i=$((i+1)); done
+i=0; while [ $i -lt 15 ]; do sleep 0.15; printf 's\0'; i=$((i+1)); done
 printf 'committed\0p\0a\0/x/a\0'"#,
-        Duration::from_millis(400),
+        Duration::from_secs(2),
         Arc::default(),
     );
     sink.begin(&sink_tests::names(&["a"])).unwrap();
