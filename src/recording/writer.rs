@@ -96,6 +96,16 @@ struct PaneShared {
 pub(crate) type FailureNotice = Box<dyn Fn() + Send + Sync>;
 
 impl PaneShared {
+    fn status(&self) -> PaneRecordingStatus {
+        let mut status = self
+            .status
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        status.dropped_bytes = self.dropped_total.load(Ordering::Relaxed);
+        status
+    }
+
     fn update(&self, change: impl FnOnce(&mut PaneRecordingStatus)) {
         change(&mut self.status.lock().unwrap_or_else(|p| p.into_inner()));
     }
@@ -255,15 +265,7 @@ impl PaneRecorder {
     }
 
     pub(crate) fn status(&self) -> PaneRecordingStatus {
-        let mut status = self
-            .inner
-            .shared
-            .status
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        status.dropped_bytes = self.inner.shared.dropped_total.load(Ordering::Relaxed);
-        status
+        self.inner.shared.status()
     }
 
     fn reserve(&self, len: usize) -> bool {
@@ -552,6 +554,14 @@ mod tests {
             .collect()
     }
 
+    /// Drops the last handle so the writer gets `Command::Close`, and keeps
+    /// what is needed to read the status afterwards.
+    fn close(pane: PaneRecorder) -> Arc<PaneShared> {
+        let shared = pane.inner.shared.clone();
+        drop(pane);
+        shared
+    }
+
     fn codes_and_data(path: &Path) -> Vec<(String, String)> {
         events(path)
             .into_iter()
@@ -572,12 +582,10 @@ mod tests {
         let pane = recorder.pane(7, 80, 24);
         pane.output(b"hello");
         pane.resize(100, 30);
-        let path_holder = pane.clone();
-        drop(pane);
+        let shared = close(pane);
         recorder.shutdown();
 
-        let path = path_holder.status().path.unwrap();
-        drop(path_holder);
+        let path = shared.status().path.unwrap();
         let name = path.file_name().unwrap().to_str().unwrap().to_owned();
         assert!(name.ends_with("-pane-7.cast.gz"), "{name}");
         assert_eq!(
@@ -686,10 +694,9 @@ mod tests {
         if let Some(after) = after {
             pane.output(after);
         }
-        let holder = pane.clone();
-        drop(pane);
+        let shared = close(pane);
         recorder.shutdown();
-        let recorded = codes_and_data(holder.status().path.as_ref().unwrap());
+        let recorded = codes_and_data(shared.status().path.as_ref().unwrap());
         std::fs::remove_dir_all(root).unwrap();
         recorded
     }
@@ -786,11 +793,10 @@ mod tests {
         let recorder = Recorder::spawn(config).unwrap();
         let pane = recorder.pane(1, 80, 24);
         pane.output(b"too long");
-        let holder = pane.clone();
-        drop(pane);
+        let shared = close(pane);
         recorder.shutdown();
 
-        let status = holder.status();
+        let status = shared.status();
         assert_eq!(status.dropped_bytes, 8);
         assert_eq!(
             codes_and_data(status.path.as_ref().unwrap()),
