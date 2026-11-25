@@ -93,11 +93,17 @@ impl App {
         let target_is_source = canonical_path == canonical_source;
         let already_open = self.open_workspace_idx_for_checkout(&canonical_path);
         let defer_source_created_event = target_is_source && already_open.is_none();
-        let created_source_workspace =
-            match self.ensure_source_parent_membership(&mut source, !defer_source_created_event) {
-                Ok(created) => created,
-                Err(err) => return encode_error(id, err.code, err.message),
-            };
+        // Why only for the source itself: a parent opened on the way to
+        // another checkout is not the workspace the label names.
+        let source_label = target_is_source.then(|| params.label.clone()).flatten();
+        let created_source_workspace = match self.ensure_source_parent_membership(
+            &mut source,
+            !defer_source_created_event,
+            source_label,
+        ) {
+            Ok(created) => created,
+            Err(err) => return encode_error(id, err.code, err.message),
+        };
         let (ws_idx, created_workspace) = if let Some(ws_idx) = already_open {
             if params.focus {
                 self.state.switch_workspace(ws_idx);
@@ -310,10 +316,13 @@ impl App {
         Ok(())
     }
 
+    /// `label` names the source workspace if this creates it, so its first
+    /// pane's `--log` recording is filed under that label.
     fn ensure_source_parent_membership(
         &mut self,
         source: &mut WorktreeSource,
         emit_created_event: bool,
+        label: Option<String>,
     ) -> Result<bool, ApiFailure> {
         if source.workspace_idx.is_none() {
             source.workspace_idx = self.find_parent_workspace_by_key(&source.repo_key);
@@ -321,7 +330,7 @@ impl App {
         let mut created_parent = false;
         if source.workspace_idx.is_none() {
             let ws_idx = self
-                .create_workspace_with_options(source.source_checkout_path.clone(), false)
+                .create_workspace_labeled(source.source_checkout_path.clone(), false, label)
                 .map_err(|err| ApiFailure::new("worktree_open_failed", err.to_string()))?;
             source.workspace_idx = Some(ws_idx);
             created_parent = true;

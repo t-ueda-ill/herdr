@@ -7,9 +7,13 @@ use std::path::Path;
 /// `{start}` so a restarted server never reuses the same name for pane 1.
 pub(crate) const DEFAULT_FILE_NAME: &str = "{space}-{start}-pane-{pane}";
 
-/// Why a cap: names land in a folder listing and some file systems limit a
-/// name to 255 bytes, and the template adds its own text around the space.
-const MAX_SPACE_CHARS: usize = 64;
+/// Why in bytes: file systems limit a name to 255 bytes, not characters, and
+/// one CJK or emoji character takes 3 or 4. With each placeholder used at
+/// most once, the longest name is 80 (template text) + 2 x 49 (space and
+/// session, a `~` may add a byte) + 15 (start) + 10 (pane) + 13
+/// (`.1000.cast.gz`) = 216 bytes.
+const MAX_COMPONENT_BYTES: usize = 48;
+const MAX_LITERAL_BYTES: usize = 80;
 
 /// A workspace's label, and whether someone chose it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,14 +134,23 @@ impl FileNameTemplate {
         if !literal.is_empty() {
             parts.push(Part::Literal(literal));
         }
-        for part in &parts {
+        let mut literal_bytes = 0;
+        for (index, part) in parts.iter().enumerate() {
             if let Part::Literal(text) = part {
                 if let Some(bad) = text.chars().find(|&c| !is_name_char(c)) {
                     return Err(format!(
                         "file_name may not contain {bad:?}; it names a file inside the session folder"
                     ));
                 }
+                literal_bytes += text.len();
+            } else if parts[..index].contains(part) {
+                return Err(format!("file_name {text:?} may use each placeholder once"));
             }
+        }
+        if literal_bytes > MAX_LITERAL_BYTES {
+            return Err(format!(
+                "file_name {text:?} has more than {MAX_LITERAL_BYTES} bytes of text besides placeholders"
+            ));
         }
         // Why required: without it every pane of a space writes the same name,
         // and the never-overwrite rule turns them into indistinguishable `.N` parts.
@@ -176,11 +189,13 @@ pub(crate) fn sanitize_component(text: &str) -> String {
     if text == "~" {
         return "home".to_owned();
     }
-    let replaced: String = text
-        .chars()
-        .map(|c| if is_name_char(c) { c } else { '_' })
-        .take(MAX_SPACE_CHARS)
-        .collect();
+    let mut replaced = String::new();
+    for c in text.chars().map(|c| if is_name_char(c) { c } else { '_' }) {
+        if replaced.len() + c.len_utf8() > MAX_COMPONENT_BYTES {
+            break;
+        }
+        replaced.push(c);
+    }
     let trimmed = replaced.trim_matches(|c: char| c == '.' || c.is_whitespace());
     match trimmed.strip_prefix('~') {
         _ if trimmed.is_empty() => "_".to_owned(),
@@ -294,7 +309,40 @@ mod tests {
         let template = FileNameTemplate::parse("{space}-{pane}").unwrap();
         let long = "x".repeat(300);
         let name = template.render(&vars(&long));
-        assert_eq!(name, format!("{}-3", "x".repeat(MAX_SPACE_CHARS)));
+        assert_eq!(name, format!("{}-3", "x".repeat(MAX_COMPONENT_BYTES)));
+    }
+
+    #[test]
+    fn a_space_name_of_wide_characters_is_cut_by_bytes_on_a_character_boundary() {
+        let template = FileNameTemplate::default();
+        let wide = "🦀".repeat(64);
+        let name = template.render(&vars(&wide));
+        let space = name.split('-').next().unwrap();
+        assert_eq!(space, "🦀".repeat(MAX_COMPONENT_BYTES / 4));
+    }
+
+    #[test]
+    fn the_longest_allowed_name_fits_in_255_bytes_with_a_numbered_extension() {
+        let literal = "a".repeat(MAX_LITERAL_BYTES - 3);
+        let template = FileNameTemplate::parse(&format!(
+            "{literal}{{space}}-{{session}}-{{start}}-{{pane}}"
+        ))
+        .unwrap();
+        let wide = "あ".repeat(100);
+        let name = template.render(&FileNameVars {
+            space: &wide,
+            pane: u32::MAX,
+            session: &wide,
+            start: "20261125-103012",
+        });
+        assert!(name.len() + ".1000.cast.gz".len() <= 255, "{}", name.len());
+    }
+
+    #[test]
+    fn a_placeholder_used_twice_or_too_much_template_text_is_rejected() {
+        assert!(FileNameTemplate::parse("{space}{space}{pane}").is_err());
+        let long = "a".repeat(MAX_LITERAL_BYTES + 1);
+        assert!(FileNameTemplate::parse(&format!("{long}{{pane}}")).is_err());
     }
 
     #[test]

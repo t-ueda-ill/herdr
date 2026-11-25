@@ -444,7 +444,7 @@ impl App {
             repo_key: api.repo_key,
             repo_name: api.repo_name,
         };
-        if let Err(err) = self.ensure_source_parent_membership(&mut source, true) {
+        if let Err(err) = self.ensure_source_parent_membership(&mut source, true, None) {
             Self::send_api_response(api.respond_to, encode_error(api.id, err.code, err.message));
             return;
         }

@@ -2097,6 +2097,22 @@ upload_confirm_entries = 5
     }
 
     #[test]
+    fn config_check_reports_log_values_that_fall_back_to_the_default() {
+        let config: Config = toml::from_str(
+            r#"
+[log]
+file_name = "{space}"
+time_format = "when"
+"#,
+        )
+        .unwrap();
+
+        let diagnostics = config.collect_diagnostics().join("\n");
+        assert!(diagnostics.contains("{pane}"), "{diagnostics}");
+        assert!(diagnostics.contains("time_format"), "{diagnostics}");
+    }
+
+    #[test]
     fn mouse_scroll_lines_rejects_zero() {
         let toml = r#"
 [ui]
