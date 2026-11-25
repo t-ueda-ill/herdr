@@ -112,7 +112,11 @@ impl App {
             }
             (ws_idx, created_source_workspace)
         } else {
-            match self.create_workspace_with_options(entry.path.clone(), params.focus) {
+            match self.create_workspace_labeled(
+                entry.path.clone(),
+                params.focus,
+                params.label.clone(),
+            ) {
                 Ok(ws_idx) => (ws_idx, true),
                 Err(err) => return encode_error(id, "worktree_open_failed", err.to_string()),
             }

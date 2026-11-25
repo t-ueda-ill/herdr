@@ -78,11 +78,11 @@ impl App {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
         };
-        match self.create_workspace_with_launch_env(cwd, params.focus, extra_env, launch) {
+        let label = params.label.clone();
+        match self.create_workspace_with_launch_env(cwd, params.focus, extra_env, launch, label) {
             Ok(index) => {
-                if let Some(label) = params.label {
-                    if let Some(workspace) = self.state.workspaces.get_mut(index) {
-                        workspace.set_custom_name(label);
+                if params.label.is_some() {
+                    if let Some(workspace) = self.state.workspaces.get(index) {
                         crate::logging::workspace_renamed(&workspace.id);
                     }
                 }

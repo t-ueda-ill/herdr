@@ -4,12 +4,13 @@
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
 use super::cast::{self, EventCode, Utf8Stream};
+use super::clock::{LocalClock, Stamp, TimeFormat};
 
 pub(crate) const FILE_EXTENSION: &str = "cast.gz";
 /// Why a cap at all: one long-lived pane would otherwise grow one file that
@@ -25,6 +26,8 @@ pub(crate) struct CastIdentity {
     pub dir: PathBuf,
     pub stem: String,
     pub title: String,
+    /// Spells the local time in the time markers.
+    pub time_format: TimeFormat,
 }
 
 pub(crate) struct CastFile {
@@ -33,7 +36,14 @@ pub(crate) struct CastFile {
     part: u32,
     path: PathBuf,
     encoder: GzEncoder<CountingFile>,
-    origin: Instant,
+    /// The header `timestamp`: the whole second the part started in, so that
+    /// `timestamp + event time` is the event's wall-clock time.
+    origin_secs: u64,
+    /// The last event time written; times never step back.
+    last_elapsed: Duration,
+    /// The minute (since the epoch) of the last time marker.
+    marked_minute: Option<u64>,
+    clock: LocalClock,
     size: (u16, u16),
     output: Utf8Stream,
     input: Utf8Stream,
@@ -46,7 +56,7 @@ impl CastFile {
         part_limit_bytes: u64,
         cols: u16,
         rows: u16,
-        at: Instant,
+        at: Stamp,
     ) -> io::Result<Self> {
         ensure_private_dir(&identity.dir)?;
         let (part, path, file) = create_part(&identity, 1)?;
@@ -56,7 +66,10 @@ impl CastFile {
             part,
             path,
             encoder: GzEncoder::new(CountingFile::new(file), Compression::fast()),
-            origin: at,
+            origin_secs: epoch_secs(at),
+            last_elapsed: Duration::ZERO,
+            marked_minute: None,
+            clock: LocalClock::default(),
             size: (cols, rows),
             output: Utf8Stream::default(),
             input: Utf8Stream::default(),
@@ -72,7 +85,7 @@ impl CastFile {
 
     pub(crate) fn write_bytes(
         &mut self,
-        at: Instant,
+        at: Stamp,
         code: EventCode,
         bytes: &[u8],
     ) -> io::Result<()> {
@@ -87,11 +100,11 @@ impl CastFile {
         self.write_event(at, code, &text)
     }
 
-    pub(crate) fn write_marker(&mut self, at: Instant, label: &str) -> io::Result<()> {
+    pub(crate) fn write_marker(&mut self, at: Stamp, label: &str) -> io::Result<()> {
         self.write_event(at, EventCode::Marker, label)
     }
 
-    pub(crate) fn resize(&mut self, at: Instant, cols: u16, rows: u16) -> io::Result<()> {
+    pub(crate) fn resize(&mut self, at: Stamp, cols: u16, rows: u16) -> io::Result<()> {
         if self.size == (cols, rows) {
             return Ok(());
         }
@@ -110,33 +123,54 @@ impl CastFile {
     }
 
     /// Writes the gzip trailer so the file passes `gzip -t`.
-    pub(crate) fn finish(mut self, at: Instant) -> io::Result<PathBuf> {
+    pub(crate) fn finish(mut self, at: Stamp) -> io::Result<PathBuf> {
         self.release_partial_characters(at)?;
         self.encoder.try_finish()?;
         Ok(self.path)
     }
 
-    fn write_event(&mut self, at: Instant, code: EventCode, data: &str) -> io::Result<()> {
-        let line = cast::event(self.elapsed(at), code, data);
-        self.encoder.write_all(line.as_bytes())?;
-        self.unflushed = true;
+    fn write_event(&mut self, at: Stamp, code: EventCode, data: &str) -> io::Result<()> {
+        self.mark_time(at)?;
+        self.write_line(at, code, data)?;
         if self.encoder.get_ref().written() >= self.part_limit_bytes {
             self.roll_over(at)?;
         }
         Ok(())
     }
 
-    fn roll_over(&mut self, at: Instant) -> io::Result<()> {
+    /// Writes the local date and time as a marker before the first event of
+    /// each minute, so a player's marker list and `zless` show when things
+    /// happened without converting the file.
+    fn mark_time(&mut self, at: Stamp) -> io::Result<()> {
+        let minute = epoch_secs(at) / 60;
+        if self.marked_minute == Some(minute) {
+            return Ok(());
+        }
+        self.marked_minute = Some(minute);
+        let label = self.identity.time_format.spell(self.clock.local(at));
+        self.write_line(at, EventCode::Marker, &label)
+    }
+
+    fn write_line(&mut self, at: Stamp, code: EventCode, data: &str) -> io::Result<()> {
+        let line = cast::event(self.elapsed(at), code, data);
+        self.encoder.write_all(line.as_bytes())?;
+        self.unflushed = true;
+        Ok(())
+    }
+
+    fn roll_over(&mut self, at: Stamp) -> io::Result<()> {
         self.encoder.try_finish()?;
         let (part, path, file) = create_part(&self.identity, self.part + 1)?;
         self.part = part;
         self.path = path;
         self.encoder = GzEncoder::new(CountingFile::new(file), Compression::fast());
-        self.origin = at;
+        self.origin_secs = epoch_secs(at);
+        self.last_elapsed = Duration::ZERO;
+        self.marked_minute = None;
         self.write_header()
     }
 
-    fn release_partial_characters(&mut self, at: Instant) -> io::Result<()> {
+    fn release_partial_characters(&mut self, at: Stamp) -> io::Result<()> {
         if let Some(text) = self.output.finish() {
             self.write_event(at, EventCode::Output, &text)?;
         }
@@ -147,19 +181,37 @@ impl CastFile {
     }
 
     fn write_header(&mut self) -> io::Result<()> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_secs();
-        let header = cast::header(self.size.0, self.size.1, timestamp, &self.identity.title);
+        let header = cast::header(
+            self.size.0,
+            self.size.1,
+            self.origin_secs,
+            &self.identity.title,
+        );
         self.encoder.write_all(header.as_bytes())?;
         self.unflushed = true;
         Ok(())
     }
 
-    fn elapsed(&self, at: Instant) -> Duration {
-        at.saturating_duration_since(self.origin)
+    /// Seconds since `origin_secs` by the wall clock.
+    ///
+    /// Why not the monotonic clock: it stops while the machine sleeps, and
+    /// `herdr log show` would then print times that are behind. Why clamp:
+    /// asciicast times must not decrease when the clock is set back.
+    fn elapsed(&mut self, at: Stamp) -> Duration {
+        let since = at
+            .wall
+            .duration_since(UNIX_EPOCH + Duration::from_secs(self.origin_secs))
+            .unwrap_or(Duration::ZERO);
+        self.last_elapsed = self.last_elapsed.max(since);
+        self.last_elapsed
     }
+}
+
+fn epoch_secs(at: Stamp) -> u64 {
+    at.wall
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
 }
 
 pub(crate) fn part_path(identity: &CastIdentity, part: u32) -> PathBuf {
@@ -215,20 +267,6 @@ pub(super) fn ensure_private_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The UTC start time in a form that sorts by name: `20261124T063012Z`.
-pub(crate) fn start_stamp(at: SystemTime) -> String {
-    let at = time::OffsetDateTime::from(at);
-    format!(
-        "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
-        at.year(),
-        u8::from(at.month()),
-        at.day(),
-        at.hour(),
-        at.minute(),
-        at.second()
-    )
-}
-
 struct CountingFile {
     file: File,
     written: u64,
@@ -276,7 +314,22 @@ mod tests {
             dir: dir.to_path_buf(),
             stem: "20261124T063012Z-pane-3".into(),
             title: "herdr default pane 3".into(),
+            time_format: TimeFormat::default(),
         }
+    }
+
+    /// 2026-11-18 11:06:40 UTC, on a whole second.
+    fn start() -> Stamp {
+        Stamp {
+            mono: std::time::Instant::now(),
+            wall: UNIX_EPOCH + Duration::from_secs(1_795_000_000),
+        }
+    }
+
+    fn create(dir: &Path, part_limit_bytes: u64, at: Stamp) -> CastFile {
+        let mut cast = CastFile::create(identity(dir), part_limit_bytes, 80, 24, at).unwrap();
+        cast.clock = LocalClock::with_source(|| None);
+        cast
     }
 
     fn gunzip(path: &Path) -> String {
@@ -297,8 +350,8 @@ mod tests {
     #[test]
     fn a_finished_file_is_gzip_with_a_header_and_timed_events() {
         let dir = scratch("finished");
-        let start = Instant::now();
-        let mut cast = CastFile::create(identity(&dir), u64::MAX, 80, 24, start).unwrap();
+        let start = start();
+        let mut cast = create(&dir, u64::MAX, start);
         cast.write_bytes(start + Duration::from_millis(250), EventCode::Output, b"$ ")
             .unwrap();
         cast.write_bytes(
@@ -314,17 +367,22 @@ mod tests {
         assert_eq!(path, dir.join("20261124T063012Z-pane-3.cast.gz"));
         let lines = lines(&path);
         assert_eq!(lines[0]["width"], 80);
-        assert_eq!(lines[1], serde_json::json!([0.25, "o", "$ "]));
-        assert_eq!(lines[2], serde_json::json!([0.5, "i", "ls\r"]));
-        assert_eq!(lines[3], serde_json::json!([1.0, "r", "100x30"]));
+        assert_eq!(lines[0]["timestamp"], 1_795_000_000u64);
+        assert_eq!(
+            lines[1],
+            serde_json::json!([0.25, "m", "[2026/11/18 11:06:40.250]"])
+        );
+        assert_eq!(lines[2], serde_json::json!([0.25, "o", "$ "]));
+        assert_eq!(lines[3], serde_json::json!([0.5, "i", "ls\r"]));
+        assert_eq!(lines[4], serde_json::json!([1.0, "r", "100x30"]));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_flushed_open_file_is_already_readable_by_gzip_readers() {
         let dir = scratch("flushed");
-        let start = Instant::now();
-        let mut cast = CastFile::create(identity(&dir), u64::MAX, 80, 24, start).unwrap();
+        let start = start();
+        let mut cast = create(&dir, u64::MAX, start);
         cast.write_bytes(start, EventCode::Output, b"hello")
             .unwrap();
         cast.flush().unwrap();
@@ -342,8 +400,8 @@ mod tests {
     #[test]
     fn output_and_input_keep_their_own_partial_characters() {
         let dir = scratch("partial");
-        let start = Instant::now();
-        let mut cast = CastFile::create(identity(&dir), u64::MAX, 80, 24, start).unwrap();
+        let start = start();
+        let mut cast = create(&dir, u64::MAX, start);
         let a = "あ".as_bytes();
         let i = "い".as_bytes();
         cast.write_bytes(start, EventCode::Output, &a[..1]).unwrap();
@@ -353,17 +411,17 @@ mod tests {
         let path = cast.finish(start).unwrap();
 
         let lines = lines(&path);
-        assert_eq!(lines[1][2], "あ");
-        assert_eq!(lines[2][2], "い");
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[2][2], "あ");
+        assert_eq!(lines[3][2], "い");
+        assert_eq!(lines.len(), 4);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_resize_to_the_same_size_writes_nothing() {
         let dir = scratch("same-size");
-        let start = Instant::now();
-        let mut cast = CastFile::create(identity(&dir), u64::MAX, 80, 24, start).unwrap();
+        let start = start();
+        let mut cast = create(&dir, u64::MAX, start);
         cast.resize(start, 80, 24).unwrap();
         let path = cast.finish(start).unwrap();
         assert_eq!(lines(&path).len(), 1);
@@ -373,8 +431,8 @@ mod tests {
     #[test]
     fn a_part_over_its_limit_rolls_over_to_a_numbered_file_with_its_own_header() {
         let dir = scratch("roll-over");
-        let start = Instant::now();
-        let mut cast = CastFile::create(identity(&dir), 1, 80, 24, start).unwrap();
+        let start = start();
+        let mut cast = create(&dir, 1, start);
         cast.write_bytes(start + Duration::from_secs(5), EventCode::Output, b"one")
             .unwrap();
         cast.write_bytes(start + Duration::from_secs(6), EventCode::Output, b"two")
@@ -383,9 +441,11 @@ mod tests {
 
         let first = dir.join("20261124T063012Z-pane-3.cast.gz");
         let second = dir.join("20261124T063012Z-pane-3.2.cast.gz");
-        assert_eq!(lines(&first)[1][2], "one");
+        assert_eq!(lines(&first)[2][2], "one");
         assert_eq!(lines(&second)[0]["version"], 2);
-        assert_eq!(lines(&second)[1], serde_json::json!([1.0, "o", "two"]));
+        assert_eq!(lines(&second)[0]["timestamp"], 1_795_000_005u64);
+        assert_eq!(lines(&second)[1][1], "m");
+        assert_eq!(lines(&second)[2], serde_json::json!([1.0, "o", "two"]));
         assert_eq!(last, dir.join("20261124T063012Z-pane-3.3.cast.gz"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -396,8 +456,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let taken = dir.join("20261124T063012Z-pane-3.cast.gz");
         std::fs::write(&taken, b"earlier").unwrap();
-        let start = Instant::now();
-        let cast = CastFile::create(identity(&dir), u64::MAX, 80, 24, start).unwrap();
+        let start = start();
+        let cast = create(&dir, u64::MAX, start);
         assert_eq!(cast.path(), dir.join("20261124T063012Z-pane-3.2.cast.gz"));
         assert_eq!(std::fs::read(&taken).unwrap(), b"earlier");
         drop(cast);
@@ -410,8 +470,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = scratch("private");
         let dir = root.join("logs").join("default");
-        let start = Instant::now();
-        let cast = CastFile::create(identity(&dir), u64::MAX, 80, 24, start).unwrap();
+        let start = start();
+        let cast = create(&dir, u64::MAX, start);
         let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&root), 0o700);
         assert_eq!(mode(&dir), 0o700);
@@ -434,8 +494,69 @@ mod tests {
     }
 
     #[test]
-    fn the_start_stamp_sorts_by_name_in_utc() {
-        let at = UNIX_EPOCH + Duration::from_secs(1_795_000_000);
-        assert_eq!(start_stamp(at), "20261118T110640Z");
+    fn a_time_marker_is_written_once_per_minute_in_local_time() {
+        let dir = scratch("minutes");
+        let start = start();
+        let mut cast = create(&dir, u64::MAX, start);
+        cast.clock = LocalClock::with_source(|| Some(9 * 3600));
+        cast.write_bytes(start, EventCode::Output, b"a").unwrap();
+        cast.write_bytes(start + Duration::from_secs(10), EventCode::Output, b"b")
+            .unwrap();
+        cast.write_bytes(start + Duration::from_secs(20), EventCode::Output, b"c")
+            .unwrap();
+        let path = cast.finish(start + Duration::from_secs(21)).unwrap();
+
+        let events: Vec<_> = lines(&path).into_iter().skip(1).collect();
+        assert_eq!(
+            events,
+            vec![
+                serde_json::json!([0.0, "m", "[2026/11/18 20:06:40.000]"]),
+                serde_json::json!([0.0, "o", "a"]),
+                serde_json::json!([10.0, "o", "b"]),
+                serde_json::json!([20.0, "m", "[2026/11/18 20:07:00.000]"]),
+                serde_json::json!([20.0, "o", "c"]),
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn event_times_count_from_the_whole_second_in_the_header() {
+        let dir = scratch("origin");
+        let start = start() + Duration::from_millis(700);
+        let mut cast = create(&dir, u64::MAX, start);
+        cast.write_bytes(start + Duration::from_millis(100), EventCode::Output, b"x")
+            .unwrap();
+        let path = cast.finish(start).unwrap();
+
+        let lines = lines(&path);
+        assert_eq!(lines[0]["timestamp"], 1_795_000_000u64);
+        assert_eq!(lines[2], serde_json::json!([0.8, "o", "x"]));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn event_times_never_step_back_when_the_clock_is_set_back() {
+        let dir = scratch("set-back");
+        let start = start() + Duration::from_secs(5);
+        let mut cast = create(&dir, u64::MAX, start);
+        cast.write_bytes(start, EventCode::Output, b"before")
+            .unwrap();
+        let earlier = Stamp {
+            wall: start.wall - Duration::from_secs(3),
+            ..start
+        };
+        cast.write_bytes(earlier, EventCode::Output, b"after")
+            .unwrap();
+        let path = cast.finish(start).unwrap();
+
+        let times: Vec<_> = lines(&path)
+            .into_iter()
+            .skip(1)
+            .filter(|event| event[1] == "o")
+            .map(|event| event[0].as_f64().unwrap())
+            .collect();
+        assert_eq!(times, vec![0.0, 0.0]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

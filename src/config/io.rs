@@ -8,6 +8,7 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
     "experimental",
     "keys",
+    "log",
     "offhost",
     "onboarding",
     "remote",
@@ -385,7 +386,17 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         |section| config.remote = section,
     );
 
+    load_live_section(
+        table,
+        "log",
+        "log config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.log = section,
+    );
+
     diagnostics.extend(config.theme.diagnostics());
+    diagnostics.extend(config.log.diagnostics());
 
     Ok(LoadedConfig {
         config,
@@ -907,6 +918,42 @@ resume_agents_on_restore = true
         assert!(loaded.config.session.resume_agents_on_restore);
         assert!(loaded.diagnostics.is_empty());
         assert!(loaded.invalid_sections.is_empty());
+    }
+
+    #[test]
+    fn load_live_config_reads_the_log_section() {
+        let loaded = load_live_config_from_str(
+            r#"
+[log]
+file_name = "{session}-{space}-{pane}"
+time_format = "hh:mi:ss"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.config.log.file_name, "{session}-{space}-{pane}");
+        assert_eq!(loaded.config.log.time_format, "hh:mi:ss");
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    }
+
+    #[test]
+    fn load_live_config_reports_log_values_that_fall_back_to_the_default() {
+        let loaded = load_live_config_from_str(
+            r#"
+[log]
+file_name = "{space}"
+time_format = "when"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.diagnostics.len(), 2, "{:?}", loaded.diagnostics);
+        assert!(loaded.diagnostics[0].contains("{pane}"));
+        assert!(loaded.diagnostics[1].contains("yyyy"));
+        assert!(loaded
+            .diagnostics
+            .iter()
+            .all(|d| d.contains("using the default")));
     }
 
     #[test]

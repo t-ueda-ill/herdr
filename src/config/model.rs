@@ -324,6 +324,7 @@ pub struct Config {
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
     pub offhost: OffhostConfig,
+    pub log: LogConfig,
 }
 
 #[derive(Debug)]
@@ -1140,6 +1141,36 @@ impl Default for OffhostConfig {
         Self {
             shell_integration: true,
         }
+    }
+}
+
+/// How `herdr --log` names and stamps pane recordings. Read when the
+/// server starts.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct LogConfig {
+    /// Recording file name without the extension. Placeholders: `{space}`
+    /// (folder name, ssh host or container), `{pane}` (required), `{session}`
+    /// and `{start}` (local start time). Default: "{space}-{start}-pane-{pane}".
+    pub file_name: String,
+    /// Local date and time in the per-minute markers and in `herdr log show`:
+    /// `yyyy mm dd hh mi ss sss` are replaced, anything else is kept.
+    /// Default: "[yyyy/mm/dd hh:mi:ss.sss]".
+    pub time_format: String,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            file_name: crate::recording::DEFAULT_FILE_NAME.to_owned(),
+            time_format: crate::recording::DEFAULT_TIME_FORMAT.to_owned(),
+        }
+    }
+}
+
+impl LogConfig {
+    pub fn diagnostics(&self) -> Vec<String> {
+        crate::recording::RecordingFormat::problems(self)
     }
 }
 

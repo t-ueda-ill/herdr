@@ -272,34 +272,8 @@ impl Workspace {
         }
     }
 
-    pub fn new(
-        initial_cwd: PathBuf,
-        rows: u16,
-        cols: u16,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
-        Self::new_with_tab(
-            initial_cwd,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            events,
-            render_notify,
-            render_dirty,
-            None,
-            Vec::new(),
-        )
-    }
-
+    /// `label` names the workspace from the start, so the first pane's
+    /// `--log` recording is filed under it too.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_extra_env(
         initial_cwd: PathBuf,
@@ -313,21 +287,8 @@ impl Workspace {
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
         extra_env: Vec<(String, String)>,
+        label: Option<String>,
     ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
-        if extra_env.is_empty() {
-            return Self::new(
-                initial_cwd,
-                rows,
-                cols,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                events,
-                render_notify,
-                render_dirty,
-            );
-        }
         Self::new_with_tab(
             initial_cwd,
             rows,
@@ -341,6 +302,7 @@ impl Workspace {
             render_dirty,
             None,
             extra_env,
+            label,
         )
     }
 
@@ -358,13 +320,21 @@ impl Workspace {
         render_dirty: Arc<RenderSignal>,
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
+        label: Option<String>,
     ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
         let id = generate_workspace_id();
-        let launch_env = PaneLaunchEnv::from_extra(extra_env).with_identity(
-            id.clone(),
-            public_tab_id_for_number(&id, 1),
-            public_pane_id_for_number(&id, 1),
-        );
+        let (cached_git_space, cached_auto_label, cached_git_status_key) =
+            discover_workspace_git_identity(&initial_cwd);
+        let launch_env = PaneLaunchEnv::from_extra(extra_env)
+            .with_identity(
+                id.clone(),
+                public_tab_id_for_number(&id, 1),
+                public_pane_id_for_number(&id, 1),
+            )
+            .with_space(match &label {
+                Some(label) => crate::recording::WorkspaceLabel::Custom(label.clone()),
+                None => crate::recording::WorkspaceLabel::Auto(cached_auto_label.clone()),
+            });
         let (tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 1,
@@ -398,12 +368,10 @@ impl Workspace {
         };
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(tab.root_pane, 1);
-        let (cached_git_space, cached_auto_label, cached_git_status_key) =
-            discover_workspace_git_identity(&initial_cwd);
         Ok((
             Self {
                 id,
-                custom_name: None,
+                custom_name: label,
                 identity_cwd: initial_cwd.clone(),
                 cached_identity_cwd: initial_cwd.clone(),
                 cached_auto_label,
@@ -982,11 +950,24 @@ impl Workspace {
         pane_number: usize,
         extra_env: Vec<(String, String)>,
     ) -> PaneLaunchEnv {
-        PaneLaunchEnv::from_extra(extra_env).with_identity(
-            self.id.clone(),
-            public_tab_id_for_number(&self.id, tab_number),
-            public_pane_id_for_number(&self.id, pane_number),
-        )
+        PaneLaunchEnv::from_extra(extra_env)
+            .with_identity(
+                self.id.clone(),
+                public_tab_id_for_number(&self.id, tab_number),
+                public_pane_id_for_number(&self.id, pane_number),
+            )
+            .with_space(self.recording_label())
+    }
+
+    /// The label a new pane's `--log` recording is filed under.
+    ///
+    /// Why the cached label and not `display_name_from`: it needs the terminal
+    /// registries, which pane creation inside the workspace does not have.
+    pub(crate) fn recording_label(&self) -> crate::recording::WorkspaceLabel {
+        match &self.custom_name {
+            Some(label) => crate::recording::WorkspaceLabel::Custom(label.clone()),
+            None => crate::recording::WorkspaceLabel::Auto(self.cached_auto_label.clone()),
+        }
     }
 
     pub fn public_tab_number(&self, tab_idx: usize) -> Option<usize> {
@@ -1427,6 +1408,23 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_pane_is_recorded_under_the_derived_label_until_one_is_chosen() {
+        use crate::recording::WorkspaceLabel;
+        let mut ws = Workspace::test_new("repo");
+        ws.custom_name = None;
+        ws.cached_auto_label = "repo".into();
+        let env = ws.launch_env_for_new_pane(1, 2, Vec::new());
+        assert_eq!(env.space(), Some(&WorkspaceLabel::Auto("repo".into())));
+
+        ws.set_custom_name("shop-web-1".into());
+        let env = ws.launch_env_for_new_pane(1, 3, Vec::new());
+        assert_eq!(
+            env.space(),
+            Some(&WorkspaceLabel::Custom("shop-web-1".into()))
+        );
+    }
 
     #[test]
     fn generated_workspace_ids_are_short_base32_handles() {

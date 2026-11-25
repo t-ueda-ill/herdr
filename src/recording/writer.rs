@@ -7,12 +7,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
 use super::cast::EventCode;
-use super::sink::{start_stamp, CastFile, CastIdentity};
+use super::clock::{file_stamp, LocalClock, Stamp, TimeFormat};
+use super::naming::{FileNameTemplate, FileNameVars};
+use super::sink::{CastFile, CastIdentity};
 use super::PaneRecordingStatus;
 
 /// How stale a file read with `zless` during recording may be.
@@ -26,6 +28,10 @@ pub(crate) struct RecorderConfig {
     pub dir: PathBuf,
     pub session: String,
     pub input: bool,
+    /// `[log] file_name`, read once when the server starts.
+    pub file_name: FileNameTemplate,
+    /// `[log] time_format`, read once when the server starts.
+    pub time_format: TimeFormat,
     pub part_limit_bytes: u64,
     /// Bytes waiting for the writer across all panes before new bytes are
     /// dropped. Why drop instead of wait: a PTY reader that waits on a slow
@@ -41,14 +47,15 @@ enum Command {
     Open {
         id: u64,
         pane: u32,
-        at: Instant,
+        space: String,
+        at: Stamp,
         cols: u16,
         rows: u16,
         shared: Arc<PaneShared>,
     },
     Data {
         id: u64,
-        at: Instant,
+        at: Stamp,
         code: EventCode,
         bytes: Bytes,
         /// Bytes dropped since the pane's previous accepted event; the
@@ -57,13 +64,13 @@ enum Command {
     },
     Resize {
         id: u64,
-        at: Instant,
+        at: Stamp,
         cols: u16,
         rows: u16,
     },
     Close {
         id: u64,
-        at: Instant,
+        at: Stamp,
         dropped_before: u64,
     },
     Shutdown {
@@ -119,6 +126,7 @@ impl Recorder {
             config: config.clone(),
             queued_bytes: queued_bytes.clone(),
             panes: HashMap::new(),
+            clock: LocalClock::default(),
         };
         let thread = std::thread::Builder::new()
             .name("herdr-recording".into())
@@ -134,12 +142,13 @@ impl Recorder {
 
     #[cfg(test)]
     pub(crate) fn pane(&self, pane: u32, cols: u16, rows: u16) -> PaneRecorder {
-        self.pane_with_failure_notice(pane, cols, rows, None)
+        self.pane_with_failure_notice(pane, "space", cols, rows, None)
     }
 
     pub(crate) fn pane_with_failure_notice(
         &self,
         pane: u32,
+        space: &str,
         cols: u16,
         rows: u16,
         on_failure: Option<FailureNotice>,
@@ -153,7 +162,8 @@ impl Recorder {
         let _ = self.tx.send(Command::Open {
             id,
             pane,
-            at: Instant::now(),
+            space: space.to_owned(),
+            at: Stamp::now(),
             cols,
             rows,
             shared: shared.clone(),
@@ -208,7 +218,7 @@ impl Drop for PaneRecorderInner {
     fn drop(&mut self) {
         let _ = self.tx.send(Command::Close {
             id: self.id,
-            at: Instant::now(),
+            at: Stamp::now(),
             dropped_before: self.shared.dropped_pending.swap(0, Ordering::AcqRel),
         });
     }
@@ -232,7 +242,7 @@ impl PaneRecorder {
     pub(crate) fn resize(&self, cols: u16, rows: u16) {
         let _ = self.inner.tx.send(Command::Resize {
             id: self.inner.id,
-            at: Instant::now(),
+            at: Stamp::now(),
             cols,
             rows,
         });
@@ -291,7 +301,7 @@ impl PaneRecorder {
         let len = bytes.len();
         let sent = self.inner.tx.send(Command::Data {
             id: self.inner.id,
-            at: Instant::now(),
+            at: Stamp::now(),
             code,
             bytes,
             dropped_before: self.inner.shared.dropped_pending.swap(0, Ordering::AcqRel),
@@ -310,6 +320,8 @@ struct Writer {
     config: RecorderConfig,
     queued_bytes: Arc<AtomicUsize>,
     panes: HashMap<u64, PaneEntry>,
+    /// Local time for `{start}` in file names.
+    clock: LocalClock,
 }
 
 struct PaneEntry {
@@ -347,11 +359,12 @@ impl Writer {
             Command::Open {
                 id,
                 pane,
+                space,
                 at,
                 cols,
                 rows,
                 shared,
-            } => self.open(id, pane, at, cols, rows, shared),
+            } => self.open(id, pane, &space, at, cols, rows, shared),
             Command::Data {
                 id,
                 at,
@@ -387,19 +400,29 @@ impl Writer {
         }
     }
 
+    // Why not a struct: the arguments are the fields of `Command::Open`.
+    #[allow(clippy::too_many_arguments)]
     fn open(
         &mut self,
         id: u64,
         pane: u32,
-        at: Instant,
+        space: &str,
+        at: Stamp,
         cols: u16,
         rows: u16,
         shared: Arc<PaneShared>,
     ) {
+        let start = file_stamp(self.clock.local(at));
         let identity = CastIdentity {
             dir: self.config.dir.clone(),
-            stem: format!("{}-pane-{pane}", start_stamp(SystemTime::now())),
-            title: format!("herdr {} pane {pane}", self.config.session),
+            stem: self.config.file_name.render(&FileNameVars {
+                space,
+                pane,
+                session: &self.config.session,
+                start: &start,
+            }),
+            title: format!("herdr {} {space} pane {pane}", self.config.session),
+            time_format: self.config.time_format.clone(),
         };
         let file = match CastFile::create(identity, self.config.part_limit_bytes, cols, rows, at) {
             Ok(file) => {
@@ -462,14 +485,14 @@ impl Writer {
     }
 
     fn finish_all(&mut self) {
-        let at = Instant::now();
+        let at = Stamp::now();
         for (_, entry) in self.panes.drain() {
             finish(entry, at, 0);
         }
     }
 }
 
-fn finish(entry: PaneEntry, at: Instant, dropped_before: u64) {
+fn finish(entry: PaneEntry, at: Stamp, dropped_before: u64) {
     let Some(mut file) = entry.file else {
         return;
     };
@@ -484,7 +507,7 @@ fn finish(entry: PaneEntry, at: Instant, dropped_before: u64) {
     }
 }
 
-fn write_drop_marker(file: &mut CastFile, at: Instant, dropped: u64) -> std::io::Result<()> {
+fn write_drop_marker(file: &mut CastFile, at: Stamp, dropped: u64) -> std::io::Result<()> {
     if dropped == 0 {
         return Ok(());
     }
@@ -508,12 +531,15 @@ mod tests {
             dir: dir.join("default"),
             session: "default".into(),
             input,
+            file_name: FileNameTemplate::default(),
+            time_format: TimeFormat::default(),
             part_limit_bytes: u64::MAX,
             queue_limit_bytes: 1024 * 1024,
             pane_queue_limit_bytes: 1024 * 1024,
         }
     }
 
+    /// Events after the header, leaving out the per-minute time markers.
     fn events(path: &Path) -> Vec<serde_json::Value> {
         let mut text = String::new();
         flate2::read::GzDecoder::new(std::fs::File::open(path).unwrap())
@@ -521,7 +547,8 @@ mod tests {
             .unwrap();
         text.lines()
             .skip(1)
-            .map(|line| serde_json::from_str(line).unwrap())
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|event| !(event[1] == "m" && event[2].as_str().unwrap().starts_with('[')))
             .collect()
     }
 
@@ -700,6 +727,7 @@ mod tests {
         let recorder = Recorder::spawn(config).unwrap();
         let pane = recorder.pane_with_failure_notice(
             1,
+            "space",
             80,
             24,
             Some(Box::new(move || {
@@ -750,6 +778,23 @@ mod tests {
         assert_ne!(first_path, second_path);
         assert_eq!(codes_and_data(&first_path)[0].1, "before");
         assert_eq!(codes_and_data(&second_path)[0].1, "after");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_file_is_named_by_the_template_with_the_space_and_pane() {
+        let config = RecorderConfig {
+            file_name: FileNameTemplate::parse("{space}-pane-{pane}").unwrap(),
+            ..config("template", false)
+        };
+        let root = config.dir.parent().unwrap().to_path_buf();
+        let recorder = Recorder::spawn(config).unwrap();
+        let pane = recorder.pane_with_failure_notice(7, "shop/web", 80, 24, None);
+        pane.output(b"hello");
+        recorder.shutdown();
+
+        let path = pane.status().path.unwrap();
+        assert_eq!(path.file_name().unwrap(), "shop_web-pane-7.cast.gz");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

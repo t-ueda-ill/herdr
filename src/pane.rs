@@ -142,6 +142,9 @@ fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
 pub(crate) struct PaneLaunchEnv {
     extra: Vec<(String, String)>,
     identity: PaneLaunchIdentity,
+    /// The workspace label the pane opens in, which names its `--log`
+    /// recording. Not exported to the process.
+    space: Option<crate::recording::WorkspaceLabel>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -161,7 +164,17 @@ impl PaneLaunchEnv {
         Self {
             extra,
             identity: PaneLaunchIdentity::Inherit,
+            space: None,
         }
+    }
+
+    pub(crate) fn with_space(mut self, label: crate::recording::WorkspaceLabel) -> Self {
+        self.space = Some(label);
+        self
+    }
+
+    pub(crate) fn space(&self) -> Option<&crate::recording::WorkspaceLabel> {
+        self.space.as_ref()
     }
 
     pub(crate) fn with_identity(
@@ -228,13 +241,30 @@ struct PendingAgentRelease {
     until: std::time::Instant,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct SpawnInitialState<'a> {
     detected_agent: Option<Agent>,
     history_ansi: Option<&'a str>,
     windows_powershell_prompt_cwd_reporting: bool,
     in_container: bool,
     in_ssh: bool,
+    /// The space the pane's `--log` recording is filed under.
+    recording_space: String,
+}
+
+impl SpawnInitialState<'_> {
+    /// A command pane runs on this host even inside an ssh or container
+    /// workspace, so only the workspace label names its recording.
+    fn for_host_command(launch_env: &PaneLaunchEnv, cwd: &std::path::Path) -> Self {
+        Self {
+            recording_space: crate::recording::SpaceSource {
+                label: launch_env.space(),
+                ..Default::default()
+            }
+            .name(cwd),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2808,6 +2838,12 @@ impl PaneRuntime {
                 windows_powershell_prompt_cwd_reporting,
                 in_container: shell_config.container.is_some(),
                 in_ssh: shell_config.ssh.is_some(),
+                recording_space: crate::recording::SpaceSource {
+                    container: shell_config.container.map(|c| c.canonical.as_str()),
+                    ssh: shell_config.ssh.map(|s| s.canonical.as_str()),
+                    label: launch_env.space(),
+                }
+                .name(&cwd),
             },
             AgentDetection::Enabled,
         )
@@ -2846,7 +2882,7 @@ impl PaneRuntime {
             render_dirty,
             cmd,
             "failed to spawn command pane",
-            SpawnInitialState::default(),
+            SpawnInitialState::for_host_command(launch_env, &cwd),
             agent_detection,
         )
     }
@@ -2893,14 +2929,17 @@ impl PaneRuntime {
             render_dirty,
             cmd,
             "failed to spawn argv command pane",
-            SpawnInitialState::default(),
+            SpawnInitialState::for_host_command(launch_env, &cwd),
             agent_detection,
         )
     }
 
     #[cfg(unix)]
+    // Handoff construction threads the imported PTY, theme, and render hooks together.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_handoff_fd(
         import: crate::handoff_runtime::ImportedHandoffRuntime,
+        recording_space: &str,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
@@ -2985,7 +3024,7 @@ impl PaneRuntime {
             let render_notify = render_notify.clone();
             // The sidebar mark comes from the shell snapshot, which only a
             // full render rebuilds.
-            crate::recording::open_pane(pane_id.raw(), cols, rows, move || {
+            crate::recording::open_pane(pane_id.raw(), recording_space, cols, rows, move || {
                 render_dirty.request_generic();
                 render_notify.notify_one();
             })
@@ -3217,10 +3256,16 @@ impl PaneRuntime {
             let render_notify = render_notify.clone();
             // The sidebar mark comes from the shell snapshot, which only a
             // full render rebuilds.
-            crate::recording::open_pane(pane_id.raw(), cols, rows, move || {
-                render_dirty.request_generic();
-                render_notify.notify_one();
-            })
+            crate::recording::open_pane(
+                pane_id.raw(),
+                &initial_state.recording_space,
+                cols,
+                rows,
+                move || {
+                    render_dirty.request_generic();
+                    render_notify.notify_one();
+                },
+            )
         };
         let io = {
             let read_recorder = recorder.clone();
@@ -4851,7 +4896,9 @@ mod tests {
         let events: Vec<serde_json::Value> = text
             .lines()
             .skip(1)
-            .map(|line| serde_json::from_str(line).expect("json"))
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json"))
+            // The per-minute time markers are not what this test is about.
+            .filter(|event| event[1] != "m")
             .collect();
         assert_eq!(events[0][1], "i");
         assert_eq!(events[0][2], "ls\r");

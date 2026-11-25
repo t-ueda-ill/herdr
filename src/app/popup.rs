@@ -137,7 +137,9 @@ impl App {
         let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let pane_id = PaneId::alloc();
         let terminal_id = TerminalId::alloc();
-        let launch_env = PaneLaunchEnv::from_extra(extra_env).without_pane_identity();
+        let launch_env = PaneLaunchEnv::from_extra(extra_env)
+            .without_pane_identity()
+            .with_space(ws.recording_label());
         let terminal_area = if self.state.view.terminal_area.width >= 4
             && self.state.view.terminal_area.height >= 4
         {
