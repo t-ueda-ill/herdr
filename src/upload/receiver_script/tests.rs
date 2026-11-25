@@ -597,7 +597,7 @@ fn a_short_write_is_an_error_and_never_reported_ok() {
 
 #[test]
 fn end_of_input_or_terminate_while_staging_removes_the_stage() {
-    for shell in posix_shells() {
+    for shell in shells_honouring_path() {
         let dest = TempDir::new("eof");
         let tokens = run(
             &shell,
@@ -608,7 +608,17 @@ fn end_of_input_or_terminate_while_staging_removes_the_stage() {
         assert!(!stage_path(dest.path()).exists());
 
         let dest = TempDir::new("term");
-        let mut running = spawn(&shell, dest.str(), None);
+        let tools = TempDir::new("term-tools");
+        let started = tools.join("read-started");
+        let release = tools.join("read-release");
+        let bin = fake_bin(
+            &tools,
+            "dd",
+            &format!(
+                ": > {started:?}; while [ ! -e {release:?} ]; do sleep 0.01; done; exec /bin/dd \"$@\""
+            ),
+        );
+        let mut running = spawn(&shell, dest.str(), Some(&bin));
         // A file header whose body never comes leaves the receiver waiting in dd.
         running.write(file_line("big", 10, 0o644, None).as_bytes());
         running.wait_for(&Token::Ready(
@@ -618,9 +628,9 @@ fn end_of_input_or_terminate_while_staging_removes_the_stage() {
                 .unwrap()
                 .into(),
         ));
-        wait_until("the upload stage to exist", || stage_path(dest.path()).exists());
-        assert!(stage_path(dest.path()).exists());
+        wait_until("the file body read to start", || started.exists());
         crate::platform::signal_processes(&[running.pid()], crate::platform::Signal::Terminate);
+        std::fs::write(&release, b"").unwrap();
         let _ = running.finish();
         assert!(!stage_path(dest.path()).exists(), "{shell:?}");
     }
@@ -628,7 +638,7 @@ fn end_of_input_or_terminate_while_staging_removes_the_stage() {
 
 #[test]
 fn terminate_during_commit_still_ends_published_or_rolled_back_with_originals_intact() {
-    for shell in posix_shells() {
+    for shell in shells_honouring_path() {
         let dest = TempDir::new("commit-term");
         let names: Vec<String> = (0..300).map(|i| format!("n{i:03}")).collect();
         for name in &names {
@@ -640,10 +650,13 @@ fn terminate_during_commit_still_ends_published_or_rolled_back_with_originals_in
         }
         let tools = TempDir::new("commit-term-tools");
         let started = tools.join("commit-started");
+        let release = tools.join("commit-release");
         let bin = fake_bin(
             &tools,
             "mv",
-            &format!(": > {:?}; exec /bin/mv \"$@\"", started),
+            &format!(
+                ": > {started:?}; while [ ! -e {release:?} ]; do sleep 0.01; done; exec /bin/mv \"$@\""
+            ),
         );
         let mut running = spawn(&shell, dest.str(), Some(&bin));
         running.write(&input.0);
@@ -655,6 +668,7 @@ fn terminate_during_commit_still_ends_published_or_rolled_back_with_originals_in
         );
         wait_until("the commit to start publishing", || started.exists());
         crate::platform::signal_processes(&[running.pid()], crate::platform::Signal::Terminate);
+        std::fs::write(&release, b"").unwrap();
 
         let tokens = running.finish();
 

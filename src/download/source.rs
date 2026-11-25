@@ -207,6 +207,17 @@ mod tests {
 
     const TICK: Duration = Duration::from_millis(5);
 
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if done() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
     fn queue(capacity: usize, stall_ms: u64) -> (FrameSender, FrameFeed) {
         frame_queue(capacity, Duration::from_millis(stall_ms), TICK)
     }
@@ -300,6 +311,9 @@ mod tests {
             // Full: this waits until the consumer takes the first frame.
             sender.send(Ok(Frame::End))
         });
+        wait_until("the sender to block on the full queue", || {
+            feed.is_blocked_on_full()
+        });
         std::thread::sleep(Duration::from_millis(120));
 
         assert!(!feed.stalled());
@@ -325,7 +339,9 @@ mod tests {
         let (sender, feed) = queue(1, 10_000);
         sender.send(Ok(Frame::End)).unwrap();
         let blocked = std::thread::spawn(move || sender.send(Ok(Frame::End)));
-        std::thread::sleep(Duration::from_millis(30));
+        wait_until("the sender to block on the full queue", || {
+            feed.is_blocked_on_full()
+        });
 
         drop(feed);
 

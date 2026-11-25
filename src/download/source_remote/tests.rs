@@ -211,14 +211,14 @@ IFS= read -r go || exit 0
 printf 'end\0'"#,
         &[],
         RemoteOptions {
-            // The long stall leaves room for the helper to resume on a loaded
-            // runner while the pre-read wait itself remains five hundred ms.
-            stall: Duration::from_secs(10),
+            stall: Duration::from_secs(2),
             ..fast()
         },
     );
     source.begin().unwrap();
-    std::thread::sleep(Duration::from_millis(500));
+    // The idle is longer than the stall threshold, while the post-G window
+    // gives a loaded helper plenty of time to resume.
+    std::thread::sleep(Duration::from_secs(3));
 
     assert_eq!(drain(&mut source).unwrap(), [Frame::End]);
 }
@@ -259,10 +259,10 @@ fn a_full_queue_holds_the_helper_back_without_counting_as_a_stall() {
     let dir = TempDir::new("remote-backpressure");
     std::fs::write(dir.join("big"), pattern(4 * 1024 * 1024)).unwrap();
     // Why not a shorter stall: a loaded CI runner can pause the helper's own
-    // reads for longer than 150 ms while the queue drains, which is a real stall.
+    // reads for a while as the queue drains, which is a real stall.
     let options = RemoteOptions {
         queue: 2,
-        stall: Duration::from_millis(400),
+        stall: Duration::from_secs(2),
         ..fast()
     };
     let mut source = real(&["/bin/sh".to_owned()], &[&dir.join("big")], options);
@@ -275,7 +275,7 @@ fn a_full_queue_holds_the_helper_back_without_counting_as_a_stall() {
         first.is_some()
     });
     wait_until("the source queue to fill", || source.is_queue_blocked());
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(2500));
 
     let mut frames = vec![first.unwrap()];
     frames.extend(drain(&mut source).unwrap());

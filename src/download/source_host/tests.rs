@@ -1,6 +1,7 @@
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -739,9 +740,11 @@ fn a_stuck_read_does_not_stop_the_caller_from_cancelling() {
     std::fs::create_dir(dir.join("t")).unwrap();
     std::fs::write(dir.join("t/f"), b"x").unwrap();
     let (read_started, reading) = std::sync::mpsc::sync_channel(0);
+    let (release_read, blocked_read) = std::sync::mpsc::channel();
+    let blocked_read = Mutex::new(blocked_read);
     let hook: Arc<dyn Fn(&Path) + Send + Sync> = Arc::new(move |_| {
         let _ = read_started.send(());
-        std::thread::sleep(Duration::from_millis(800));
+        let _ = blocked_read.lock().unwrap().recv();
     });
     let (mut source, _) = begun(
         &[&dir.join("t")],
@@ -752,10 +755,14 @@ fn a_stuck_read_does_not_stop_the_caller_from_cancelling() {
     );
     let control = Arc::new(Control::default());
     let flag = Arc::clone(&control);
-    let started = Instant::now();
+    assert!(source
+        .next(Duration::from_secs(10), &control)
+        .unwrap()
+        .is_some());
     reading
         .recv_timeout(Duration::from_secs(10))
         .expect("the read should start");
+    let started = Instant::now();
     flag.cancel();
 
     let result = loop {
@@ -764,9 +771,10 @@ fn a_stuck_read_does_not_stop_the_caller_from_cancelling() {
             other => break other,
         }
     };
+    release_read.send(()).unwrap();
 
     assert_eq!(result, Err(cancelled()));
-    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
 
 #[test]
@@ -787,6 +795,10 @@ fn aborting_ends_the_reading_thread_and_later_reads_report_a_cancel() {
             ..fast()
         },
     );
+    assert!(source
+        .next(Duration::from_secs(10), &Control::default())
+        .unwrap()
+        .is_some());
     wait_until("the host reader to start reading", || {
         reads.load(Ordering::SeqCst) > 0
     });
