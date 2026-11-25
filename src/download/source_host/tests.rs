@@ -715,8 +715,13 @@ fn a_filesystem_that_stops_answering_fails_the_stream_as_stalled() {
     let dir = TempDir::new("host-stall");
     std::fs::create_dir(dir.join("t")).unwrap();
     std::fs::write(dir.join("t/f"), b"x").unwrap();
-    let hook: Arc<dyn Fn(&Path) + Send + Sync> =
-        Arc::new(|_| std::thread::sleep(Duration::from_millis(600)));
+    // The read stays stuck until the stall is seen. Dropping `release`, also
+    // on unwind when an assertion fails, lets the reading thread go.
+    let (release, stuck) = std::sync::mpsc::channel::<()>();
+    let stuck = Mutex::new(stuck);
+    let hook: Arc<dyn Fn(&Path) + Send + Sync> = Arc::new(move |_| {
+        let _ = stuck.lock().unwrap().recv();
+    });
     let options = HostOptions {
         stall: Duration::from_millis(100),
         before_read: Some(hook),
@@ -732,6 +737,7 @@ fn a_filesystem_that_stops_answering_fails_the_stream_as_stalled() {
         ("download_failed", "the source stopped sending".into())
     );
     assert!(started.elapsed() < Duration::from_secs(5));
+    drop(release);
 }
 
 #[test]

@@ -90,7 +90,7 @@ impl HostSource {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn is_queue_blocked(&self) -> bool {
         matches!(&self.state, State::Streaming { feed, .. } if feed.is_blocked_on_full())
     }

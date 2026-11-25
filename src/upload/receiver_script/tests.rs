@@ -249,12 +249,25 @@ fn a_body_trickling_in_one_byte_at_a_time_is_read_without_overrun() {
         let dest = TempDir::new("trickle");
         let body: Vec<u8> = (0..1_500u32).map(|i| (i % 251) as u8).collect();
         let input = Input::default().file("slow", &body, 0o600, None);
+        let staged = stage_path(dest.path()).join("i/slow");
         let mut running = spawn(&shell, dest.str(), None);
         running.write(&input.0[..input.0.len() - body.len()]);
-        for byte in &body {
-            running.write(&[*byte]);
+        // Each part is sent only after the receiver has staged everything
+        // before it, so every read but the last comes back short and the
+        // receiver has to resume.
+        let mut sent = 0;
+        for end in [1, 2, 3, 500] {
+            running.write(&body[sent..end]);
+            sent = end;
+            wait_until("the receiver to stage what was sent", || {
+                std::fs::metadata(&staged).is_ok_and(|meta| meta.len() == sent as u64)
+            });
         }
-        running.write(commit_line(PaneUploadCollision::Fail).unwrap().as_bytes());
+        // The rest arrives together with the next header, which the last read
+        // must leave alone.
+        let mut rest = body[sent..].to_vec();
+        rest.extend_from_slice(commit_line(PaneUploadCollision::Fail).unwrap().as_bytes());
+        running.write(&rest);
 
         let tokens = running.finish();
 

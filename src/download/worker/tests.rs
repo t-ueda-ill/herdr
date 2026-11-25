@@ -399,20 +399,30 @@ fn dropping_the_registry_handle_cancels_even_when_the_source_never_looks_at_the_
 #[test]
 fn a_finished_session_answers_queued_reads_and_frees_its_slot_before_its_source_stops() {
     let script = Arc::new(Script::default());
-    script
-        .frames
-        .lock()
-        .unwrap()
-        .extend([Ok(dir("a")), Ok(Frame::End)]);
+    script.frames.lock().unwrap().push_back(Ok(dir("a")));
     let (release_abort, blocked_abort) = mpsc::channel();
     *script.abort_gate.lock().unwrap() = Some(blocked_abort);
-    let harness = start_with(script, Limits::new(4096), fast(), true);
+    // A long heartbeat keeps read 1 waiting for the end of the stream instead
+    // of answering it empty while read 2 is still unsent.
+    let timeouts = Timeouts {
+        heartbeat: Duration::from_secs(10),
+        ..fast()
+    };
+    let harness = start_with(script, Limits::new(4096), timeouts, true);
     harness.answer().unwrap();
     harness.read(0);
     harness.chunk();
 
     harness.read(1);
     harness.read(2);
+    // The stream ends only once both reads are queued, so the worker cannot
+    // finish read 1 and stop the source before read 2 arrives.
+    harness
+        .script
+        .frames
+        .lock()
+        .unwrap()
+        .push_back(Ok(Frame::End));
 
     assert!(harness.chunk().done);
     let late = harness
@@ -420,7 +430,9 @@ fn a_finished_session_answers_queued_reads_and_frees_its_slot_before_its_source_
         .recv_timeout(Duration::from_secs(10))
         .expect("a queued read should not wait for the source to stop");
     assert_eq!(late.unwrap_err().0, "download_not_found");
-    assert_eq!(harness.control.phase(), PHASE_DONE);
+    wait_until("the session to free its slot", || {
+        harness.control.phase() == PHASE_DONE
+    });
     assert!(!harness.script.aborted.load(Ordering::Acquire));
     release_abort.send(()).unwrap();
     let script = harness.join();
