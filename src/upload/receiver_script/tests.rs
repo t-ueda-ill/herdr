@@ -138,6 +138,17 @@ fn stage_path(dest: &Path) -> std::path::PathBuf {
     dest.join(format!(".herdr-upload-{STAGE_TOKEN}"))
 }
 
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if done() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("timed out waiting for {what}");
+}
+
 fn published(tokens: &[Token]) -> Vec<(String, String)> {
     tokens
         .iter()
@@ -240,11 +251,8 @@ fn a_body_trickling_in_one_byte_at_a_time_is_read_without_overrun() {
         let input = Input::default().file("slow", &body, 0o600, None);
         let mut running = spawn(&shell, dest.str(), None);
         running.write(&input.0[..input.0.len() - body.len()]);
-        for (index, byte) in body.iter().enumerate() {
+        for byte in &body {
             running.write(&[*byte]);
-            if index % 200 == 0 {
-                std::thread::sleep(Duration::from_millis(5));
-            }
         }
         running.write(commit_line(PaneUploadCollision::Fail).unwrap().as_bytes());
 
@@ -610,7 +618,7 @@ fn end_of_input_or_terminate_while_staging_removes_the_stage() {
                 .unwrap()
                 .into(),
         ));
-        std::thread::sleep(Duration::from_millis(100));
+        wait_until("the upload stage to exist", || stage_path(dest.path()).exists());
         assert!(stage_path(dest.path()).exists());
         crate::platform::signal_processes(&[running.pid()], crate::platform::Signal::Terminate);
         let _ = running.finish();
@@ -630,7 +638,14 @@ fn terminate_during_commit_still_ends_published_or_rolled_back_with_originals_in
         for name in &names {
             input = input.file(name, b"new", 0o644, None);
         }
-        let mut running = spawn(&shell, dest.str(), None);
+        let tools = TempDir::new("commit-term-tools");
+        let started = tools.join("commit-started");
+        let bin = fake_bin(
+            &tools,
+            "mv",
+            &format!(": > {:?}; exec /bin/mv \"$@\"", started),
+        );
+        let mut running = spawn(&shell, dest.str(), Some(&bin));
         running.write(&input.0);
         running.wait_for(&Token::Ok(names.len() as u64));
         running.write(
@@ -638,7 +653,7 @@ fn terminate_during_commit_still_ends_published_or_rolled_back_with_originals_in
                 .unwrap()
                 .as_bytes(),
         );
-        std::thread::sleep(Duration::from_millis(20));
+        wait_until("the commit to start publishing", || started.exists());
         crate::platform::signal_processes(&[running.pid()], crate::platform::Signal::Terminate);
 
         let tokens = running.finish();

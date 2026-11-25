@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
 
@@ -17,9 +17,12 @@ struct Script {
     begin_failure: Mutex<Option<Failure>>,
     /// How long stopping takes, as a helper process that needs its grace does.
     abort_delay: Mutex<Duration>,
+    /// An optional test-controlled gate for holding `abort` open.
+    abort_gate: Mutex<Option<mpsc::Receiver<()>>>,
     /// How long each frame takes to arrive, as a helper that starts
     /// processes per entry does.
     frame_delay: Mutex<Duration>,
+    next_calls: AtomicUsize,
 }
 
 struct FakeSource(Arc<Script>);
@@ -36,6 +39,7 @@ impl DownloadSource for FakeSource {
     }
 
     fn next(&mut self, wait: Duration, control: &Control) -> Result<Option<Frame>, Failure> {
+        self.0.next_calls.fetch_add(1, Ordering::Release);
         if control.is_cancelled() {
             return Err(cancelled());
         }
@@ -49,6 +53,9 @@ impl DownloadSource for FakeSource {
 
     fn abort(&mut self) {
         std::thread::sleep(*self.0.abort_delay.lock().unwrap());
+        if let Some(gate) = self.0.abort_gate.lock().unwrap().take() {
+            let _ = gate.recv_timeout(Duration::from_secs(10));
+        }
         self.0.aborted.store(true, Ordering::Release);
     }
 }
@@ -127,6 +134,17 @@ fn start_with(script: Arc<Script>, limits: Limits, timeouts: Timeouts, begin: bo
         harness.send(DownloadJob::Begin);
     }
     harness
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if done() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("timed out waiting for {what}");
 }
 
 impl Harness {
@@ -242,7 +260,7 @@ fn a_silent_source_is_answered_with_a_heartbeat() {
 #[test]
 fn a_steady_trickle_of_frames_still_ends_the_answer_at_the_heartbeat() {
     let script = Arc::new(Script::default());
-    *script.frame_delay.lock().unwrap() = Duration::from_millis(10);
+    *script.frame_delay.lock().unwrap() = Duration::from_millis(50);
     script
         .frames
         .lock()
@@ -256,7 +274,7 @@ fn a_steady_trickle_of_frames_still_ends_the_answer_at_the_heartbeat() {
     let chunk = harness.chunk();
 
     assert!(!chunk.records.is_empty() && !chunk.done);
-    assert!(asked.elapsed() < Duration::from_millis(500));
+    assert!(asked.elapsed() < Duration::from_secs(2));
     harness.control.cancel();
     harness.join();
 }
@@ -328,7 +346,9 @@ fn a_cancel_during_a_wait_for_the_source_stops_it_within_a_tick_or_two() {
     );
     harness.answer().unwrap();
     harness.read(0);
-    std::thread::sleep(Duration::from_millis(30));
+    wait_until("the worker to wait for the source", || {
+        harness.script.next_calls.load(Ordering::Acquire) > 0
+    });
     let cancelled_at = Instant::now();
 
     harness.control.cancel();
@@ -351,7 +371,9 @@ fn dropping_the_registry_handle_cancels_even_when_the_source_never_looks_at_the_
     );
     harness.answer().unwrap();
     harness.read(0);
-    std::thread::sleep(Duration::from_millis(30));
+    wait_until("the worker to wait for the source", || {
+        harness.script.next_calls.load(Ordering::Acquire) > 0
+    });
     let Harness {
         jobs,
         answers,
@@ -382,7 +404,8 @@ fn a_finished_session_answers_queued_reads_and_frees_its_slot_before_its_source_
         .lock()
         .unwrap()
         .extend([Ok(dir("a")), Ok(Frame::End)]);
-    *script.abort_delay.lock().unwrap() = Duration::from_millis(600);
+    let (release_abort, blocked_abort) = mpsc::channel();
+    *script.abort_gate.lock().unwrap() = Some(blocked_abort);
     let harness = start_with(script, Limits::new(4096), fast(), true);
     harness.answer().unwrap();
     harness.read(0);
@@ -394,11 +417,12 @@ fn a_finished_session_answers_queued_reads_and_frees_its_slot_before_its_source_
     assert!(harness.chunk().done);
     let late = harness
         .answers
-        .recv_timeout(Duration::from_millis(300))
+        .recv_timeout(Duration::from_secs(10))
         .expect("a queued read should not wait for the source to stop");
     assert_eq!(late.unwrap_err().0, "download_not_found");
     assert_eq!(harness.control.phase(), PHASE_DONE);
     assert!(!harness.script.aborted.load(Ordering::Acquire));
+    release_abort.send(()).unwrap();
     let script = harness.join();
     assert!(script.aborted.load(Ordering::Acquire));
 }

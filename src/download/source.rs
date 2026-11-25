@@ -140,6 +140,11 @@ pub(crate) fn frame_queue(
 }
 
 impl FrameFeed {
+    #[cfg(test)]
+    pub(crate) fn is_blocked_on_full(&self) -> bool {
+        self.progress.blocked_on_full.load(Ordering::Acquire)
+    }
+
     /// Restarts the stall clock from now, for a source that was idle by design
     /// (waiting to be told to go) until this moment.
     pub(crate) fn touch(&self) {

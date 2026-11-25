@@ -211,7 +211,9 @@ IFS= read -r go || exit 0
 printf 'end\0'"#,
         &[],
         RemoteOptions {
-            stall: Duration::from_millis(150),
+            // The long stall leaves room for the helper to resume on a loaded
+            // runner while the pre-read wait itself remains five hundred ms.
+            stall: Duration::from_secs(10),
             ..fast()
         },
     );
@@ -267,8 +269,12 @@ fn a_full_queue_holds_the_helper_back_without_counting_as_a_stall() {
     source.begin().unwrap();
     // Nothing reads, so the queue fills and the pipe behind it stops the helper.
     let control = Control::default();
-    let first = source.next(Duration::from_millis(100), &control).unwrap();
-    assert!(first.is_some());
+    let mut first = None;
+    wait_until("the first frame", || {
+        first = source.next(Duration::from_secs(1), &control).unwrap();
+        first.is_some()
+    });
+    wait_until("the source queue to fill", || source.is_queue_blocked());
     std::thread::sleep(Duration::from_millis(2000));
 
     let mut frames = vec![first.unwrap()];

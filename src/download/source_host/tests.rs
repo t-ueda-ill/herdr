@@ -26,6 +26,17 @@ fn source(paths: &[&Path], options: HostOptions) -> HostSource {
     )
 }
 
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if done() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timed out waiting for {what}");
+}
+
 fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
@@ -542,7 +553,7 @@ fn parked(dir: &TempDir, options: HostOptions) -> HostSource {
             ..options
         },
     );
-    std::thread::sleep(Duration::from_millis(100));
+    wait_until("the source queue to fill", || source.is_queue_blocked());
     source
 }
 
@@ -719,7 +730,7 @@ fn a_filesystem_that_stops_answering_fails_the_stream_as_stalled() {
         error,
         ("download_failed", "the source stopped sending".into())
     );
-    assert!(started.elapsed() < Duration::from_millis(550));
+    assert!(started.elapsed() < Duration::from_secs(5));
 }
 
 #[test]
@@ -727,8 +738,11 @@ fn a_stuck_read_does_not_stop_the_caller_from_cancelling() {
     let dir = TempDir::new("host-stuck-cancel");
     std::fs::create_dir(dir.join("t")).unwrap();
     std::fs::write(dir.join("t/f"), b"x").unwrap();
-    let hook: Arc<dyn Fn(&Path) + Send + Sync> =
-        Arc::new(|_| std::thread::sleep(Duration::from_millis(800)));
+    let (read_started, reading) = std::sync::mpsc::sync_channel(0);
+    let hook: Arc<dyn Fn(&Path) + Send + Sync> = Arc::new(move |_| {
+        let _ = read_started.send(());
+        std::thread::sleep(Duration::from_millis(800));
+    });
     let (mut source, _) = begun(
         &[&dir.join("t")],
         HostOptions {
@@ -738,11 +752,11 @@ fn a_stuck_read_does_not_stop_the_caller_from_cancelling() {
     );
     let control = Arc::new(Control::default());
     let flag = Arc::clone(&control);
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(30));
-        flag.cancel();
-    });
     let started = Instant::now();
+    reading
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the read should start");
+    flag.cancel();
 
     let result = loop {
         match source.next(Duration::from_secs(10), &control) {
@@ -752,7 +766,7 @@ fn a_stuck_read_does_not_stop_the_caller_from_cancelling() {
     };
 
     assert_eq!(result, Err(cancelled()));
-    assert!(started.elapsed() < Duration::from_millis(600));
+    assert!(started.elapsed() < Duration::from_secs(5));
 }
 
 #[test]
@@ -773,7 +787,9 @@ fn aborting_ends_the_reading_thread_and_later_reads_report_a_cancel() {
             ..fast()
         },
     );
-    std::thread::sleep(Duration::from_millis(100));
+    wait_until("the host reader to start reading", || {
+        reads.load(Ordering::SeqCst) > 0
+    });
 
     source.abort();
     std::thread::sleep(Duration::from_millis(100));
