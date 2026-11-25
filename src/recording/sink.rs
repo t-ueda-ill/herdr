@@ -100,7 +100,20 @@ impl CastFile {
         self.write_event(at, code, &text)
     }
 
-    pub(crate) fn write_marker(&mut self, at: Stamp, label: &str) -> io::Result<()> {
+    /// Marks bytes left out of the recording, cutting both text streams so
+    /// that characters on either side of the gap are not joined.
+    ///
+    /// Why both streams: the dropped count does not say whether output or
+    /// input lost bytes, and the marker rides on whichever event comes next,
+    /// so a partial input character can also come back as U+FFFD when only
+    /// output was dropped.
+    pub(crate) fn write_gap(&mut self, at: Stamp, label: &str) -> io::Result<()> {
+        if let Some(text) = self.output.break_at_gap() {
+            self.write_event(at, EventCode::Output, &text)?;
+        }
+        if let Some(text) = self.input.break_at_gap() {
+            self.write_event(at, EventCode::Input, &text)?;
+        }
         self.write_event(at, EventCode::Marker, label)
     }
 

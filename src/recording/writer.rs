@@ -96,6 +96,16 @@ struct PaneShared {
 pub(crate) type FailureNotice = Box<dyn Fn() + Send + Sync>;
 
 impl PaneShared {
+    fn status(&self) -> PaneRecordingStatus {
+        let mut status = self
+            .status
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        status.dropped_bytes = self.dropped_total.load(Ordering::Relaxed);
+        status
+    }
+
     fn update(&self, change: impl FnOnce(&mut PaneRecordingStatus)) {
         change(&mut self.status.lock().unwrap_or_else(|p| p.into_inner()));
     }
@@ -255,15 +265,7 @@ impl PaneRecorder {
     }
 
     pub(crate) fn status(&self) -> PaneRecordingStatus {
-        let mut status = self
-            .inner
-            .shared
-            .status
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        status.dropped_bytes = self.inner.shared.dropped_total.load(Ordering::Relaxed);
-        status
+        self.inner.shared.status()
     }
 
     fn reserve(&self, len: usize) -> bool {
@@ -511,7 +513,7 @@ fn write_drop_marker(file: &mut CastFile, at: Stamp, dropped: u64) -> std::io::R
     if dropped == 0 {
         return Ok(());
     }
-    file.write_marker(at, &format!("herdr: {dropped} bytes not recorded"))
+    file.write_gap(at, &format!("herdr: {dropped} bytes not recorded"))
 }
 
 #[cfg(test)]
@@ -552,6 +554,14 @@ mod tests {
             .collect()
     }
 
+    /// Drops the last handle so the writer gets `Command::Close`, and keeps
+    /// what is needed to read the status afterwards.
+    fn close(pane: PaneRecorder) -> Arc<PaneShared> {
+        let shared = pane.inner.shared.clone();
+        drop(pane);
+        shared
+    }
+
     fn codes_and_data(path: &Path) -> Vec<(String, String)> {
         events(path)
             .into_iter()
@@ -572,12 +582,10 @@ mod tests {
         let pane = recorder.pane(7, 80, 24);
         pane.output(b"hello");
         pane.resize(100, 30);
-        let path_holder = pane.clone();
-        drop(pane);
+        let shared = close(pane);
         recorder.shutdown();
 
-        let path = path_holder.status().path.unwrap();
-        drop(path_holder);
+        let path = shared.status().path.unwrap();
         let name = path.file_name().unwrap().to_str().unwrap().to_owned();
         assert!(name.ends_with("-pane-7.cast.gz"), "{name}");
         assert_eq!(
@@ -669,6 +677,90 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    fn record_around_a_gap(
+        name: &str,
+        before: &'static [u8],
+        after: Option<&'static [u8]>,
+    ) -> Vec<(String, String)> {
+        let mut config = config(name, false);
+        config.queue_limit_bytes = 8;
+        config.pane_queue_limit_bytes = 8;
+        let root = config.dir.parent().unwrap().to_path_buf();
+        let recorder = Recorder::spawn(config).unwrap();
+        let pane = recorder.pane(1, 80, 24);
+        pane.output(before);
+        // Over the whole queue, so it is dropped however fast the writer runs.
+        pane.output(b"too long!");
+        if let Some(after) = after {
+            pane.output(after);
+        }
+        let shared = close(pane);
+        recorder.shutdown();
+        let recorded = codes_and_data(shared.status().path.as_ref().unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+        recorded
+    }
+
+    #[test]
+    fn a_character_cut_by_dropped_bytes_is_not_joined_with_bytes_after_the_gap() {
+        assert_eq!(
+            record_around_a_gap("gap-joined", b"\xe3", Some(b"\x81\x82b")),
+            vec![
+                ("o".to_owned(), "\u{fffd}".to_owned()),
+                ("m".to_owned(), "herdr: 9 bytes not recorded".to_owned()),
+                ("o".to_owned(), "b".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn the_tail_of_a_dropped_character_after_the_gap_is_not_recorded() {
+        assert_eq!(
+            record_around_a_gap("gap-tail", b"a", Some(b"\x81\x82b")),
+            vec![
+                ("o".to_owned(), "a".to_owned()),
+                ("m".to_owned(), "herdr: 9 bytes not recorded".to_owned()),
+                ("o".to_owned(), "b".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_character_cut_by_bytes_dropped_before_close_is_released_before_the_marker() {
+        assert_eq!(
+            record_around_a_gap("gap-close", b"\xe3", None),
+            vec![
+                ("o".to_owned(), "\u{fffd}".to_owned()),
+                ("m".to_owned(), "herdr: 9 bytes not recorded".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_partial_input_character_is_cut_even_when_only_output_was_dropped() {
+        let mut config = config("gap-input", true);
+        config.queue_limit_bytes = 8;
+        config.pane_queue_limit_bytes = 8;
+        let root = config.dir.parent().unwrap().to_path_buf();
+        let recorder = Recorder::spawn(config).unwrap();
+        let pane = recorder.pane(1, 80, 24);
+        pane.input(&Bytes::from_static(b"\xe3"));
+        // Over the whole queue, so it is dropped however fast the writer runs.
+        pane.output(b"too long!");
+        pane.input(&Bytes::from_static(b"\x81\x82b"));
+        recorder.shutdown();
+
+        assert_eq!(
+            codes_and_data(pane.status().path.as_ref().unwrap()),
+            vec![
+                ("i".to_owned(), "\u{fffd}".to_owned()),
+                ("m".to_owned(), "herdr: 9 bytes not recorded".to_owned()),
+                ("i".to_owned(), "b".to_owned())
+            ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn a_flooding_pane_cannot_take_the_queue_share_of_a_quiet_one() {
         let mut config = config("fair", false);
@@ -701,11 +793,10 @@ mod tests {
         let recorder = Recorder::spawn(config).unwrap();
         let pane = recorder.pane(1, 80, 24);
         pane.output(b"too long");
-        let holder = pane.clone();
-        drop(pane);
+        let shared = close(pane);
         recorder.shutdown();
 
-        let status = holder.status();
+        let status = shared.status();
         assert_eq!(status.dropped_bytes, 8);
         assert_eq!(
             codes_and_data(status.path.as_ref().unwrap()),

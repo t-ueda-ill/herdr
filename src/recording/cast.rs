@@ -49,13 +49,25 @@ pub(crate) fn resize_data(cols: u16, rows: u16) -> String {
 #[derive(Debug, Default)]
 pub(crate) struct Utf8Stream {
     pending: Vec<u8>,
+    /// Continuation bytes still to skip after a gap in the stream.
+    skip_after_gap: u8,
+}
+
+/// The most continuation bytes one UTF-8 character carries.
+const MAX_CHARACTER_TAIL: u8 = 3;
+
+fn is_continuation(byte: u8) -> bool {
+    byte & 0xC0 == 0x80
 }
 
 impl Utf8Stream {
     /// Decodes `bytes` after what the last call held back. An incomplete
     /// character at the end waits for the next call; invalid bytes become
     /// U+FFFD, since asciicast data must be a JSON string.
-    pub(crate) fn decode(&mut self, bytes: &[u8]) -> String {
+    pub(crate) fn decode(&mut self, mut bytes: &[u8]) -> String {
+        if self.skip_after_gap > 0 {
+            bytes = self.skip_character_tail(bytes);
+        }
         let mut input = std::mem::take(&mut self.pending);
         input.extend_from_slice(bytes);
         let mut text = String::with_capacity(input.len());
@@ -84,6 +96,32 @@ impl Utf8Stream {
             }
         }
         text
+    }
+
+    /// Cuts the stream where bytes were left out: a held-back partial
+    /// character comes back as U+FFFD, and the tail of a character whose
+    /// start was left out is skipped from the next reads. Why not join them:
+    /// the bytes on both sides of the gap belong to different characters, so
+    /// joining them prints U+FFFD or a character the program never wrote.
+    pub(crate) fn break_at_gap(&mut self) -> Option<String> {
+        self.skip_after_gap = MAX_CHARACTER_TAIL;
+        self.finish()
+    }
+
+    fn skip_character_tail<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+        let tail = bytes
+            .iter()
+            .take(usize::from(self.skip_after_gap))
+            .take_while(|byte| is_continuation(**byte))
+            .count();
+        // Why not stop at the end of the read: a read can end inside the
+        // tail, and only a non-continuation byte proves the tail is over.
+        self.skip_after_gap = if tail == bytes.len() {
+            self.skip_after_gap - tail as u8
+        } else {
+            0
+        };
+        &bytes[tail..]
     }
 
     /// Releases a held-back partial character as U+FFFD, for the end of a file.
@@ -159,6 +197,46 @@ mod tests {
         let mut stream = Utf8Stream::default();
         assert_eq!(stream.decode(b"a\xffb\xc3"), "a\u{fffd}b");
         assert_eq!(stream.decode(b"\xa9"), "é");
+    }
+
+    #[test]
+    fn a_gap_releases_the_held_back_partial_character_as_one_replacement() {
+        let mut stream = Utf8Stream::default();
+        assert_eq!(stream.decode(&"あ".as_bytes()[..1]), "");
+        assert_eq!(stream.break_at_gap().as_deref(), Some("\u{fffd}"));
+        assert_eq!(stream.decode("い".as_bytes()), "い");
+    }
+
+    #[test]
+    fn continuation_bytes_right_after_a_gap_are_skipped() {
+        let mut stream = Utf8Stream::default();
+        assert_eq!(stream.decode(&"あ".as_bytes()[..1]), "");
+        assert_eq!(stream.break_at_gap().as_deref(), Some("\u{fffd}"));
+        assert_eq!(stream.decode(b"\x81\x82b"), "b");
+    }
+
+    #[test]
+    fn skipping_after_a_gap_carries_over_a_read_of_only_continuation_bytes() {
+        let mut stream = Utf8Stream::default();
+        assert_eq!(stream.break_at_gap(), None);
+        assert_eq!(stream.decode(b"\x81"), "");
+        assert_eq!(stream.decode(b"\x82b"), "b");
+    }
+
+    #[test]
+    fn skipping_after_a_gap_stops_at_the_longest_character_tail() {
+        let mut stream = Utf8Stream::default();
+        stream.break_at_gap();
+        assert_eq!(stream.decode(b"\x80\x80\x80\x80b"), "\u{fffd}b");
+    }
+
+    #[test]
+    fn a_gap_leaves_a_stream_that_starts_with_a_whole_character_unchanged() {
+        let mut stream = Utf8Stream::default();
+        assert_eq!(stream.decode(b"a"), "a");
+        assert_eq!(stream.break_at_gap(), None);
+        assert_eq!(stream.decode("い".as_bytes()), "い");
+        assert_eq!(stream.decode(b"\x81"), "\u{fffd}");
     }
 
     #[test]
