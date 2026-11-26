@@ -133,6 +133,14 @@ fn directory_refs<'a>(workspace_id: Option<&'a str>, pane_id: Option<&'a str>) -
     vec![pane_in(pane_id, workspace_id)]
 }
 
+fn worktree_source_refs<'a>(workspace_id: Option<&'a str>, cwd: Option<&str>) -> Vec<ApiRef<'a>> {
+    match (workspace_id, cwd) {
+        (Some(workspace_id), _) => vec![ApiRef::Workspace(workspace_id)],
+        (None, Some(_)) => Vec::new(),
+        (None, None) => vec![ApiRef::ActiveWorkspace],
+    }
+}
+
 /// The things `method` would reach. Why no wildcard arm: a new method must
 /// be classified here before it compiles, or it would reach protected panes.
 pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
@@ -270,13 +278,18 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
             workspace_id: &params.workspace_id,
             group: params.close_group,
         }],
-        Method::WorktreeCreate(params) => workspace(params.workspace_id.as_deref())
-            .into_iter()
-            .collect(),
-        Method::WorktreeOpen(params) => workspace(params.workspace_id.as_deref())
-            .into_iter()
-            .collect(),
-        Method::WorktreeRemove(params) => vec![Workspace(&params.workspace_id)],
+        // `resolve_worktree_source` falls back to the active workspace when
+        // neither a workspace nor a path names the repository.
+        Method::WorktreeCreate(params) => {
+            worktree_source_refs(params.workspace_id.as_deref(), params.cwd.as_deref())
+        }
+        Method::WorktreeOpen(params) => {
+            worktree_source_refs(params.workspace_id.as_deref(), params.cwd.as_deref())
+        }
+        Method::WorktreeRemove(params) => vec![WorkspaceClosure {
+            workspace_id: &params.workspace_id,
+            group: false,
+        }],
 
         Method::ContainerOpen(params) => container_open_target_refs(&params.target),
         Method::SshOpen(params) => std::iter::once(SshHost(&params.host))
@@ -563,10 +576,11 @@ impl App {
                     .focused_pane_id()
                     .is_some_and(|pane_id| self.pane_is_protected(ws_idx, pane_id))
             }),
-            ApiRef::ActiveWorkspace => self
-                .state
-                .active
-                .is_some_and(|ws_idx| self.workspace_is_protected(ws_idx)),
+            // Why the selected one without an active one: worktree and other
+            // defaults fall back to it.
+            ApiRef::ActiveWorkspace => {
+                self.workspace_is_protected(self.state.active.unwrap_or(self.state.selected))
+            }
             ApiRef::WorkspaceOfPane(id) => self
                 .parse_pane_id(id)
                 .is_some_and(|(ws_idx, _)| self.workspace_is_protected(ws_idx)),
@@ -645,6 +659,12 @@ impl App {
                         .is_some_and(|link| link.protected)
             }),
         }
+    }
+
+    /// The focused pane of the active workspace is on a protected host, or
+    /// is the assist of one.
+    pub(crate) fn focused_pane_is_protected(&self) -> bool {
+        self.reaches_protected_host(&ApiRef::FocusedPane)
     }
 
     fn workspace_is_protected(&self, ws_idx: usize) -> bool {

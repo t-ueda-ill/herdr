@@ -265,6 +265,16 @@ impl App {
         if !is_focused {
             return encode_error(id, "stale_pane_target", "pane is no longer focused");
         }
+        if self.focused_pane_is_protected() {
+            return encode_error(
+                id,
+                super::protected_hosts::ERROR_CODE,
+                format!(
+                    "pane {} is on a protected ssh host; its scrollback stays in the pane",
+                    target.pane_id
+                ),
+            );
+        }
         match self.open_focused_scrollback_in_editor() {
             Ok(()) => encode_success(id, ResponseResult::Ok {}),
             Err(err) => encode_error(id, "scrollback_editor_failed", err.to_string()),

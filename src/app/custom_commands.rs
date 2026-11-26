@@ -317,6 +317,13 @@ impl App {
         let pane_id = ws
             .focused_pane_id()
             .ok_or_else(|| std::io::Error::other("no focused pane"))?;
+        // Why refuse on every path: the editor is a new terminal without
+        // protection, so the CLI could read the protected output through it.
+        if self.focused_pane_is_protected() {
+            return Err(std::io::Error::other(
+                "the focused pane is on a protected ssh host; its scrollback stays in the pane",
+            ));
+        }
         let scrollback = self
             .state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)

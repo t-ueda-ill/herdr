@@ -570,3 +570,29 @@ fn a_live_handoff_waits_until_no_protected_assist_is_open() {
 
     assert!(app.protected_host_denial(&handoff).is_some());
 }
+
+#[test]
+fn a_worktree_without_a_source_branches_from_the_active_workspace() {
+    let (app, _, _) = app_with(Kind::Local, Kind::Ssh("noref_prod"));
+    let create = request(Method::WorktreeCreate(
+        serde_json::from_value(serde_json::json!({})).unwrap(),
+    ));
+    let from_path = request(Method::WorktreeCreate(
+        serde_json::from_value(serde_json::json!({ "cwd": "/repo/herdr" })).unwrap(),
+    ));
+
+    assert!(app.protected_host_denial(&create).is_some());
+    assert_eq!(app.protected_host_denial(&from_path), None);
+}
+
+#[tokio::test]
+async fn the_scrollback_of_a_protected_pane_never_opens_in_an_editor() {
+    let (mut app, prod, _) = app_with(Kind::Ssh("noref_prod"), Kind::Local);
+
+    let response = app.handle_api_request(request(Method::PaneEditScrollback(
+        crate::api::schema::PaneTarget { pane_id: prod },
+    )));
+
+    assert_eq!(error_code(&response), "protected_host");
+    assert!(app.open_focused_scrollback_in_editor().is_err());
+}
