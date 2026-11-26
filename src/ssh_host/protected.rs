@@ -9,6 +9,9 @@ use std::sync::OnceLock;
 
 pub(crate) const DEFAULT_PREFIX: &str = "noref_";
 
+/// Carries the prefix from a server to the one a live handoff starts.
+pub(crate) const HANDOFF_ENV_VAR: &str = "HERDR_PROTECTED_HOST_PREFIX";
+
 /// Why fixed at start: `server.reload_config` is itself a public API method,
 /// so a process that may not touch the host could otherwise edit the config
 /// and reload it to lift the protection.
@@ -49,7 +52,22 @@ pub(crate) fn init(prefix: &str) {
 
 /// The prefix fixed at server start, or the default before [`init`].
 pub(crate) fn current() -> ProtectedHosts {
-    ProtectedHosts::new(PREFIX.get().map_or(DEFAULT_PREFIX, String::as_str))
+    ProtectedHosts::new(fixed_prefix())
+}
+
+pub(crate) fn fixed_prefix() -> &'static str {
+    PREFIX.get().map_or(DEFAULT_PREFIX, String::as_str)
+}
+
+/// The prefix a handoff import server fixes: the one its predecessor sent.
+///
+/// Why not the config: a live handoff is a public API method, so editing the
+/// config and handing off would otherwise lift the protection from the very
+/// panes the new server takes over. A predecessor without this variable
+/// predates the protection, so the config is all there is.
+pub(crate) fn handoff_prefix(sent: Option<std::ffi::OsString>, configured: &str) -> String {
+    sent.and_then(|prefix| prefix.into_string().ok())
+        .unwrap_or_else(|| configured.to_owned())
 }
 
 #[cfg(test)]
@@ -80,6 +98,17 @@ mod tests {
     #[test]
     fn an_empty_prefix_protects_no_host() {
         assert!(!ProtectedHosts::new("").covers("prod"));
+    }
+
+    #[test]
+    fn a_handoff_keeps_the_prefix_of_the_server_it_replaces() {
+        assert_eq!(handoff_prefix(Some("noref_".into()), ""), "noref_");
+        assert_eq!(handoff_prefix(Some("".into()), "noref_"), "");
+    }
+
+    #[test]
+    fn a_handoff_from_a_server_that_sent_no_prefix_reads_the_config() {
+        assert_eq!(handoff_prefix(None, "lab_"), "lab_");
     }
 
     #[test]

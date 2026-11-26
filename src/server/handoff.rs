@@ -94,6 +94,10 @@ pub(crate) fn spawn_handoff_import(
         .arg("--handoff-import")
         .arg(socket_path)
         .arg(token)
+        .env(
+            crate::ssh_host::protected::HANDOFF_ENV_VAR,
+            crate::ssh_host::protected::fixed_prefix(),
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());

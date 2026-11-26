@@ -31,7 +31,13 @@ pub fn run_server() -> io::Result<()> {
         // Why load here: the import server loads config only after it takes
         // the panes, and their recordings open as they arrive.
         let handoff_config = config::Config::load().config;
-        crate::ssh_host::protected::init(&handoff_config.offhost.protected_host_prefix);
+        let sent_prefix = std::env::var_os(crate::ssh_host::protected::HANDOFF_ENV_VAR);
+        // Why remove it: panes this server spawns must not inherit it.
+        std::env::remove_var(crate::ssh_host::protected::HANDOFF_ENV_VAR);
+        crate::ssh_host::protected::init(&crate::ssh_host::protected::handoff_prefix(
+            sent_prefix,
+            &handoff_config.offhost.protected_host_prefix,
+        ));
         let recording_format = crate::recording::RecordingFormat::from_config(&handoff_config.log);
         // A failure must not drop the panes this server takes over.
         if let Err(err) = crate::recording::start_server(recording_request, recording_format) {
