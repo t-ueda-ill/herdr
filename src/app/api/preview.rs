@@ -85,6 +85,19 @@ impl App {
                 format!("pane {pane_id} has no running shell"),
             ));
         }
+        // Why refuse on the user's own client too: a preview serves the
+        // folder over a loopback URL that any local process can fetch.
+        let protected = self
+            .state
+            .terminal_id_for_pane(ws_idx, pane)
+            .and_then(|terminal| self.state.terminals.get(&terminal))
+            .is_some_and(super::protected_hosts::terminal_is_protected);
+        if protected {
+            return Err((
+                super::protected_hosts::ERROR_CODE,
+                format!("pane {pane_id} is on a protected ssh host; previews cannot serve it"),
+            ));
+        }
         let environment = match running_pane_off_host_shell(self, ws_idx, pane) {
             Some(crate::server::client_shell::RunningOffHostShell::Container(launch)) => {
                 PaneEnvironment::Container(Box::new(launch.clone()))

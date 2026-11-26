@@ -219,3 +219,23 @@ async fn an_unknown_pane_is_reported() {
         "pane_not_found"
     );
 }
+
+#[tokio::test]
+async fn no_preview_serves_a_container_on_a_protected_host() {
+    let (mut app, pane_id) = app_with(Kind::Container);
+    let (ws_idx, pane) = app.parse_pane_id(&pane_id).unwrap();
+    let terminal = app.state.terminal_id_for_pane(ws_idx, pane).unwrap();
+    app.state
+        .terminals
+        .get_mut(&terminal)
+        .unwrap()
+        .container
+        .as_mut()
+        .unwrap()
+        .ssh = SshLaunch::new("noref_prod".into(), None);
+
+    let response = start(&mut app, Some(&pane_id), "/srv/site", None);
+
+    assert_eq!(error_code(&response), "protected_host");
+    assert!(listed(&mut app).is_empty());
+}
