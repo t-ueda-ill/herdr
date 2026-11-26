@@ -505,3 +505,68 @@ fn a_split_ratio_named_by_a_local_pane_cannot_resize_a_protected_neighbour() {
 
     assert!(app.protected_host_denial(&ratio).is_some());
 }
+
+#[test]
+fn moving_a_local_pane_to_a_new_tab_lands_in_its_own_workspace() {
+    let (mut app, _, local) = app_with(Kind::Local, Kind::Ssh("noref_prod"));
+    let (_, other_local) = add_local_workspace(&mut app);
+    let move_to_new_tab = |pane_id: &str| {
+        request(Method::PaneMove(
+            serde_json::from_value(serde_json::json!({
+                "pane_id": pane_id,
+                "destination": { "type": "new_tab" },
+            }))
+            .unwrap(),
+        ))
+    };
+
+    assert!(app
+        .protected_host_denial(&move_to_new_tab(&local))
+        .is_some());
+    assert_eq!(
+        app.protected_host_denial(&move_to_new_tab(&other_local)),
+        None
+    );
+}
+
+#[test]
+fn a_layout_without_a_target_opens_a_tab_in_the_active_workspace() {
+    let (mut app, _, _) = app_with(Kind::Local, Kind::Local);
+    // The protected pane sits in another tab of the active workspace.
+    let tab_idx = app.state.workspaces[0].test_add_tab(Some("prod"));
+    app.state.ensure_test_terminals();
+    let tab = &app.state.workspaces[0].tabs[tab_idx];
+    let terminal_id = tab.terminal_id(tab.root_pane).unwrap().clone();
+    app.state.terminals.get_mut(&terminal_id).unwrap().ssh =
+        SshLaunch::new("noref_prod".into(), None);
+    app.state.workspaces[0].switch_tab(0);
+    let apply = request(Method::LayoutApply(
+        serde_json::from_value(serde_json::json!({ "root": { "type": "pane" } })).unwrap(),
+    ));
+
+    assert!(app.protected_host_denial(&apply).is_some());
+}
+
+#[test]
+fn an_inherited_tab_without_a_workspace_lands_in_the_source_panes_workspace() {
+    let (mut app, _, _) = app_with(Kind::Local, Kind::Ssh("noref_prod"));
+    let (_, other_local) = add_local_workspace(&mut app);
+    let inherit = request(Method::TabCreateInherit(
+        serde_json::from_value(serde_json::json!({ "source_pane_id": other_local })).unwrap(),
+    ));
+
+    assert_eq!(app.protected_host_denial(&inherit), None);
+}
+
+#[test]
+fn a_live_handoff_waits_until_no_protected_assist_is_open() {
+    let (mut app, prod, helper) = app_with(Kind::Ssh("noref_prod"), Kind::Local);
+    let handoff = request(Method::ServerLiveHandoff(
+        serde_json::from_value(serde_json::json!({})).unwrap(),
+    ));
+    assert_eq!(app.protected_host_denial(&handoff), None);
+
+    link_assist(&mut app, &prod, &helper, true);
+
+    assert!(app.protected_host_denial(&handoff).is_some());
+}

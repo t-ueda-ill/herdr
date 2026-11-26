@@ -33,6 +33,12 @@ pub(crate) enum ApiRef<'a> {
     ActiveTab,
     /// The active workspace, for requests that place something in it by default.
     ActiveWorkspace,
+    /// The workspace that holds this pane, for requests that place something
+    /// beside a named pane by default.
+    WorkspaceOfPane(&'a str),
+    /// Any open assist of a protected pane. A live handoff drops the links
+    /// that make those assists protected, so it waits until none is open.
+    ProtectedAssists,
     /// Every pane of the tab that holds this pane (the focused one when
     /// `None`): a directional request reaches a neighbour the guard cannot
     /// predict without the layout geometry.
@@ -132,9 +138,9 @@ fn directory_refs<'a>(workspace_id: Option<&'a str>, pane_id: Option<&'a str>) -
 pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
     use ApiRef::*;
     match method {
+        Method::ServerLiveHandoff(_) => vec![ProtectedAssists],
         Method::Ping(_)
         | Method::ServerStop(_)
-        | Method::ServerLiveHandoff(_)
         | Method::ServerReloadConfig(_)
         | Method::ServerSshAgentRegister(_)
         | Method::ServerAgentManifests(_)
@@ -283,12 +289,21 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
         Method::SshContainerList(params) => vec![SshHost(&params.host)],
 
         Method::TabCreate(params) => tab_create_refs(params),
+        // The tab opens in the named workspace, then the source pane's, then
+        // the active one, as `tab_inherit_source` resolves it.
         Method::TabCreateInherit(params) => vec![
             pane_in(
                 params.source_pane_id.as_deref(),
                 params.create.workspace_id.as_deref(),
             ),
-            workspace(params.create.workspace_id.as_deref()).unwrap_or(ActiveWorkspace),
+            match (
+                params.create.workspace_id.as_deref(),
+                params.source_pane_id.as_deref(),
+            ) {
+                (Some(workspace_id), _) => Workspace(workspace_id),
+                (None, Some(pane_id)) => WorkspaceOfPane(pane_id),
+                (None, None) => ActiveWorkspace,
+            },
         ],
         Method::TabFocus(target) => vec![Tab(&target.tab_id)],
         Method::TabClose(target) => vec![Tab(&target.tab_id), ClosingTab(&target.tab_id)],
@@ -337,8 +352,12 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
                     target_pane_id,
                     ..
                 } => vec![Some(Tab(tab_id)), target_pane_id.as_deref().map(Pane)],
+                // Without a workspace the new tab opens beside the pane.
                 PaneMoveDestination::NewTab { workspace_id, .. } => {
-                    vec![workspace(workspace_id.as_deref())]
+                    vec![Some(
+                        workspace(workspace_id.as_deref())
+                            .unwrap_or(WorkspaceOfPane(&params.pane_id)),
+                    )]
                 }
                 PaneMoveDestination::NewWorkspace { .. } => Vec::new(),
             };
@@ -357,8 +376,10 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
             .into_iter()
             .flatten()
             .collect();
+            // Without a target the layout opens as a new tab of the active
+            // workspace.
             if named.is_empty() {
-                vec![ActiveTab]
+                vec![ActiveWorkspace]
             } else {
                 named
             }
@@ -481,6 +502,17 @@ impl App {
             ApiRef::ActiveWorkspace => {
                 "the active workspace holds a pane on a protected ssh host".to_owned()
             }
+            ApiRef::WorkspaceOfPane(id) => {
+                format!("the workspace of pane {id} holds a pane on a protected ssh host")
+            }
+            ApiRef::ProtectedAssists => {
+                return Some(super::responses::encode_error(
+                    request.id.clone(),
+                    ERROR_CODE,
+                    "an Ask AI assist of a pane on a protected ssh host is open, and a live \
+                     handoff would drop its protection; close the assist first",
+                ));
+            }
             ApiRef::TabOfPane(Some(id)) => {
                 format!("the tab of pane {id} holds a pane on a protected ssh host")
             }
@@ -535,6 +567,10 @@ impl App {
                 .state
                 .active
                 .is_some_and(|ws_idx| self.workspace_is_protected(ws_idx)),
+            ApiRef::WorkspaceOfPane(id) => self
+                .parse_pane_id(id)
+                .is_some_and(|(ws_idx, _)| self.workspace_is_protected(ws_idx)),
+            ApiRef::ProtectedAssists => self.state.assists.iter().any(|link| link.protected),
             ApiRef::TabOfPane(id) => {
                 let pane = match id {
                     Some(id) => self.parse_pane_id(id),

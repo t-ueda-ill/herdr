@@ -3285,6 +3285,12 @@ impl HeadlessServer {
 
         let metadata_expired = self.app.expire_due_metadata(Instant::now());
         if let api::schema::Method::ServerLiveHandoff(params) = &msg.request.method {
+            if !client_local {
+                if let Some(denial) = self.app.protected_host_denial(&msg.request) {
+                    let _ = msg.respond_to.send(denial);
+                    return false;
+                }
+            }
             let handoff_result = self.perform_live_handoff(params.clone());
             let handoff_succeeded = handoff_result.is_ok();
             let response = match handoff_result {

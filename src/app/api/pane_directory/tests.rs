@@ -286,6 +286,26 @@ async fn the_editor_opens_only_over_the_focused_pane() {
     assert_eq!(error_code(&response), "stale_pane_target");
 }
 
+#[tokio::test]
+async fn no_editor_opens_over_a_container_on_a_protected_host() {
+    let mut protected = launch(None);
+    protected.ssh = SshLaunch::new("noref_prod".into(), None);
+    let (mut app, focused, _) = app_with_pane(PaneKind::Container(protected), None);
+
+    let request = Request {
+        id: "req".into(),
+        method: Method::PaneDirectoryOpenEditor(PaneDirectoryOpenEditorParams {
+            pane_id: focused,
+            path: "/etc/hosts".into(),
+        }),
+    };
+    let response = dispatch(&mut app, request)
+        .try_recv()
+        .expect("rejected before a worker starts");
+
+    assert_eq!(error_code(&response), "protected_host");
+}
+
 fn probed(
     app: &App,
     pane_id: &str,
