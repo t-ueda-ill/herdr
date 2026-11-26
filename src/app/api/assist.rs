@@ -72,9 +72,34 @@ impl App {
         if let Some(link) = self.state.assists.for_target(&target_terminal).cloned() {
             return self.focus_existing_assist(id, &link);
         }
+        let protected = self
+            .state
+            .terminals
+            .get(&target_terminal)
+            .is_some_and(super::protected_hosts::terminal_is_protected);
+        // Why only claude for a protected pane: it is the one product whose
+        // shell and MCP tools can both be turned off from its argv; codex runs
+        // the user's MCP servers outside its sandbox.
+        if protected
+            && params
+                .product
+                .is_some_and(|wanted| wanted != AssistProduct::Claude)
+        {
+            return encode_error(
+                id,
+                "assist_product_not_allowed",
+                format!(
+                    "pane {} is on a protected ssh host; only claude can read it",
+                    params.pane_id
+                ),
+            );
+        }
         let products = self.assist_products();
         let found = match params.product {
             Some(wanted) => products.iter().find(|(product, _)| *product == wanted),
+            None if protected => products
+                .iter()
+                .find(|(product, _)| *product == AssistProduct::Claude),
             None => products.first(),
         };
         let Some((product, executable)) = found.cloned() else {
@@ -90,7 +115,11 @@ impl App {
                     params
                         .product
                         .map(|product| format!("{product:?}").to_lowercase())
-                        .unwrap_or_else(|| "claude, codex or copilot".into()),
+                        .unwrap_or_else(|| if protected {
+                            "claude".into()
+                        } else {
+                            "claude, codex or copilot".into()
+                        }),
                     if found.is_empty() {
                         "none".into()
                     } else {
@@ -113,12 +142,7 @@ impl App {
         // Why the pane id and not its label: the label can hold a terminal
         // title with command arguments, and argv shows in process listings.
         let ask = crate::assist::ask_line(&context_path, &context.pane_id);
-        let shell = if self
-            .state
-            .terminals
-            .get(&target_terminal)
-            .is_some_and(super::protected_hosts::terminal_is_protected)
-        {
+        let shell = if protected {
             crate::assist::ShellAccess::None
         } else {
             crate::assist::ShellAccess::WithoutHerdr
@@ -204,6 +228,7 @@ impl App {
             target: Some(target_terminal),
             product,
             context_path,
+            protected,
         };
         self.state.assists.insert(link.clone());
         self.schedule_session_save();

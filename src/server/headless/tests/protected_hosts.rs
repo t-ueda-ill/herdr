@@ -73,12 +73,11 @@ async fn the_users_own_client_still_reads_a_protected_pane() {
 
 #[tokio::test]
 async fn the_cli_cannot_attach_to_or_drive_a_protected_terminal() {
-    const PENDING: u64 = 21;
     let mut fixture = protected_pane();
-    for open in ["attach", "control"] {
+    for (client_id, open) in [(21, "attach"), (22, "control")] {
         let (writer, control_rx, _render_rx) = test_client_writer();
         fixture.server.clients.insert(
-            PENDING,
+            client_id,
             ClientConnection::new_with_mode(
                 ClientConnectionMode::TerminalPending,
                 (80, 24),
@@ -90,28 +89,35 @@ async fn the_cli_cannot_attach_to_or_drive_a_protected_terminal() {
         );
         let terminal_id = fixture.terminal_id();
 
-        match open {
-            "attach" => {
-                fixture
-                    .server
-                    .attach_terminal_client(PENDING, terminal_id, false);
-            }
-            _ => {
-                fixture
-                    .server
-                    .resolve_terminal_session_target(PENDING, &terminal_id, "control");
-            }
+        if open == "attach" {
+            fixture
+                .server
+                .attach_terminal_client(client_id, terminal_id, false);
+        } else {
+            fixture
+                .server
+                .resolve_terminal_session_target(client_id, &terminal_id, "control");
         }
 
-        assert!(!fixture.server.clients.contains_key(&PENDING), "{open}");
-        let refused = std::iter::from_fn(|| control_rx.try_recv().ok()).any(|bytes| {
-            matches!(
-                read_server_message(bytes),
-                ServerMessage::ServerShutdown { reason: Some(reason) }
-                    if reason.contains("protected ssh host")
-            )
-        });
-        assert!(refused, "{open}");
+        assert!(!fixture.server.clients.contains_key(&client_id), "{open}");
+        // Why wait: the test writer forwards on its own thread, and the
+        // channel closes once the refused client's writer drains.
+        let reasons: Vec<_> = std::iter::from_fn(|| {
+            control_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .ok()
+        })
+        .filter_map(|bytes| match read_server_message(bytes) {
+            ServerMessage::ServerShutdown { reason } => reason,
+            _ => None,
+        })
+        .collect();
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains("protected ssh host")),
+            "{open}: {reasons:?}"
+        );
     }
     fixture.finish();
 }

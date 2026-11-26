@@ -420,3 +420,88 @@ fn closing_a_local_parent_with_its_group_cannot_close_a_protected_worktree() {
     assert!(app.protected_host_denial(&close_group).is_some());
     assert!(app.protected_host_denial(&close_last_pane).is_some());
 }
+
+/// Marks the second pane as the assist of the first, as `assist.start` links them.
+fn link_assist(app: &mut App, target: &str, helper: &str, protected: bool) {
+    let terminal = |app: &App, id: &str| {
+        let (ws_idx, pane_id) = app.parse_pane_id(id).unwrap();
+        app.state.terminal_id_for_pane(ws_idx, pane_id).unwrap()
+    };
+    let link = crate::assist::AssistLink {
+        helper: terminal(app, helper),
+        target: Some(terminal(app, target)),
+        product: crate::api::schema::AssistProduct::Claude,
+        context_path: "/tmp/herdr-assist-test/context.md".into(),
+        protected,
+    };
+    app.state.assists.insert(link);
+}
+
+#[test]
+fn the_assist_of_a_protected_pane_is_protected_too() {
+    let (mut app, prod, helper) = app_with(Kind::Ssh("noref_prod"), Kind::Local);
+    link_assist(&mut app, &prod, &helper, true);
+
+    assert!(app.protected_host_denial(&send_keys(&helper)).is_some());
+}
+
+#[test]
+fn the_assist_stays_protected_after_the_pane_it_read_closes() {
+    let (mut app, prod, helper) = app_with(Kind::Ssh("noref_prod"), Kind::Local);
+    link_assist(&mut app, &prod, &helper, true);
+    let (ws_idx, pane_id) = app.parse_pane_id(&prod).unwrap();
+    let target = app.state.terminal_id_for_pane(ws_idx, pane_id).unwrap();
+    app.state.assists.forget_terminal(&target);
+
+    assert!(app.protected_host_denial(&send_keys(&helper)).is_some());
+}
+
+#[test]
+fn the_assist_of_a_protected_pane_still_reports_its_own_agent() {
+    let (mut app, prod, helper) = app_with(Kind::Ssh("noref_prod"), Kind::Local);
+    link_assist(&mut app, &prod, &helper, true);
+    let report = request(Method::PaneReportAgent(
+        serde_json::from_value(serde_json::json!({
+            "pane_id": helper,
+            "source": "claude-hook",
+            "agent": "claude",
+            "state": "working",
+        }))
+        .unwrap(),
+    ));
+
+    assert_eq!(app.protected_host_denial(&report), None);
+}
+
+#[test]
+fn the_assist_of_a_local_pane_stays_reachable() {
+    let (mut app, local, helper) = app_with(Kind::Local, Kind::Local);
+    link_assist(&mut app, &local, &helper, false);
+
+    assert_eq!(app.protected_host_denial(&send_keys(&helper)), None);
+}
+
+#[test]
+fn a_plugin_action_without_context_runs_at_the_global_focus() {
+    let (app, _, _) = app_with(Kind::Ssh("noref_prod"), Kind::Local);
+    let invoke = request(Method::PluginActionInvoke(
+        serde_json::from_value(serde_json::json!({ "action_id": "a" })).unwrap(),
+    ));
+
+    assert!(app.protected_host_denial(&invoke).is_some());
+}
+
+#[test]
+fn a_split_ratio_named_by_a_local_pane_cannot_resize_a_protected_neighbour() {
+    let (app, _, local) = app_with(Kind::Ssh("noref_prod"), Kind::Local);
+    let ratio = request(Method::LayoutSetSplitRatio(
+        serde_json::from_value(serde_json::json!({
+            "pane_id": local,
+            "path": [],
+            "ratio": 0.5,
+        }))
+        .unwrap(),
+    ));
+
+    assert!(app.protected_host_denial(&ratio).is_some());
+}

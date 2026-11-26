@@ -20,6 +20,9 @@ pub(crate) const ERROR_CODE: &str = "protected_host";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ApiRef<'a> {
     Pane(&'a str),
+    /// A pane reporting its own agent. Why apart from `Pane`: an assist of a
+    /// protected pane is protected, but its agent's hooks must still report.
+    ReportingPane(&'a str),
     /// The pane a request without a pane id acts on: the focused pane of the
     /// active workspace.
     FocusedPane,
@@ -216,20 +219,22 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
                 named
             }
         }
-        Method::PluginActionInvoke(params) => params
-            .context
-            .as_ref()
-            .map(|context| {
-                [
-                    context.focused_pane_id.as_deref().map(Pane),
-                    context.tab_id.as_deref().map(Tab),
-                    workspace(context.workspace_id.as_deref()),
-                ]
-                .into_iter()
-                .flatten()
-                .collect()
-            })
-            .unwrap_or_default(),
+        // `merge_plugin_context` fills every missing id from the active
+        // workspace and the focused pane.
+        Method::PluginActionInvoke(params) => {
+            let context = params.context.as_ref();
+            vec![
+                context
+                    .and_then(|context| context.focused_pane_id.as_deref())
+                    .map_or(FocusedPane, Pane),
+                context
+                    .and_then(|context| context.tab_id.as_deref())
+                    .map_or(ActiveTab, Tab),
+                context
+                    .and_then(|context| context.workspace_id.as_deref())
+                    .map_or(ActiveWorkspace, Workspace),
+            ]
+        }
         // Without ids the placement resolves inside the active workspace.
         Method::PluginPaneOpen(params) => match (
             params.target_pane_id.as_deref(),
@@ -358,8 +363,9 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
                 named
             }
         }
+        // The pane only picks its tab; the ratio applies to that tab's layout.
         Method::LayoutSetSplitRatio(params) => match (&params.pane_id, &params.tab_id) {
-            (Some(pane_id), _) => vec![Pane(pane_id)],
+            (Some(pane_id), _) => vec![TabOfPane(Some(pane_id))],
             (None, Some(tab_id)) => vec![Tab(tab_id)],
             (None, None) => vec![ActiveTab],
         },
@@ -384,11 +390,11 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
         Method::PaneSendKeys(params) => vec![Pane(&params.pane_id)],
         Method::PaneSendInput(params) => vec![Pane(&params.pane_id)],
         Method::PaneRead(params) => vec![Pane(&params.pane_id)],
-        Method::PaneReportAgent(params) => vec![Pane(&params.pane_id)],
-        Method::PaneReportAgentSession(params) => vec![Pane(&params.pane_id)],
-        Method::PaneReportMetadata(params) => vec![Pane(&params.pane_id)],
-        Method::PaneClearAgentAuthority(params) => vec![Pane(&params.pane_id)],
-        Method::PaneReleaseAgent(params) => vec![Pane(&params.pane_id)],
+        Method::PaneReportAgent(params) => vec![ReportingPane(&params.pane_id)],
+        Method::PaneReportAgentSession(params) => vec![ReportingPane(&params.pane_id)],
+        Method::PaneReportMetadata(params) => vec![ReportingPane(&params.pane_id)],
+        Method::PaneClearAgentAuthority(params) => vec![ReportingPane(&params.pane_id)],
+        Method::PaneReleaseAgent(params) => vec![ReportingPane(&params.pane_id)],
         Method::PaneDeclareAgent(params) => vec![Pane(&params.pane_id)],
         Method::PaneWaitForOutput(params) => vec![Pane(&params.pane_id)],
         Method::EventsSubscribe(params) => params
@@ -458,7 +464,7 @@ impl App {
             .find(|reference| self.reaches_protected_host(reference))?;
         let what = match denied {
             ApiRef::SshHost(host) => format!("ssh host {host} is protected"),
-            ApiRef::Pane(id) | ApiRef::AssistPane(id) => {
+            ApiRef::Pane(id) | ApiRef::ReportingPane(id) | ApiRef::AssistPane(id) => {
                 format!("pane {id} is on a protected ssh host")
             }
             ApiRef::Terminal(id) => format!("target {id} is on a protected ssh host"),
@@ -507,6 +513,12 @@ impl App {
                 Some((ws_idx, pane_id)) => self.pane_is_protected(ws_idx, pane_id),
                 None => self.terminal_target_is_protected(id),
             },
+            ApiRef::ReportingPane(id) => self.parse_pane_id(id).is_some_and(|(ws_idx, pane_id)| {
+                self.state
+                    .terminal_id_for_pane(ws_idx, pane_id)
+                    .and_then(|terminal| self.state.terminals.get(&terminal))
+                    .is_some_and(terminal_is_protected)
+            }),
             ApiRef::FocusedPane => self.state.active.is_some_and(|ws_idx| {
                 self.state
                     .workspaces
@@ -579,14 +591,14 @@ impl App {
             ApiRef::Task(id) => crate::tasks::TaskId::parse(id)
                 .and_then(|task_id| self.state.tasks.get(task_id))
                 .is_some_and(|task| {
-                    self.state.terminals.get(&task.terminal).map_or_else(
-                        || {
-                            task.location.ssh_host.as_deref().is_some_and(|host| {
-                                crate::ssh_host::protected::current().covers(host)
-                            })
-                        },
-                        terminal_is_protected,
-                    )
+                    if self.state.terminals.contains_key(&task.terminal) {
+                        self.terminal_reaches_protected(task.terminal.as_str())
+                    } else {
+                        task.location
+                            .ssh_host
+                            .as_deref()
+                            .is_some_and(|host| crate::ssh_host::protected::current().covers(host))
+                    }
                 }),
             ApiRef::AssistPane(id) => self.parse_pane_id(id).is_some_and(|(ws_idx, pane_id)| {
                 self.pane_is_protected(ws_idx, pane_id)
@@ -594,9 +606,7 @@ impl App {
                         .state
                         .terminal_id_for_pane(ws_idx, pane_id)
                         .and_then(|terminal| self.state.assists.for_either(&terminal))
-                        .and_then(|link| link.target.as_ref())
-                        .and_then(|target| self.state.terminals.get(target))
-                        .is_some_and(terminal_is_protected)
+                        .is_some_and(|link| link.protected)
             }),
         }
     }
@@ -613,11 +623,23 @@ impl App {
             .any(|index| self.workspace_is_protected(index))
     }
 
+    /// A terminal on a protected host, or the assist of a pane that was.
+    pub(crate) fn terminal_reaches_protected(&self, terminal_id: &str) -> bool {
+        let Some((id, terminal)) = self.state.terminals.get_key_value(terminal_id) else {
+            return false;
+        };
+        terminal_is_protected(terminal)
+            || self
+                .state
+                .assists
+                .for_helper(id)
+                .is_some_and(|link| link.protected)
+    }
+
     fn pane_is_protected(&self, ws_idx: usize, pane_id: crate::layout::PaneId) -> bool {
         self.state
             .terminal_id_for_pane(ws_idx, pane_id)
-            .and_then(|terminal| self.state.terminals.get(&terminal))
-            .is_some_and(terminal_is_protected)
+            .is_some_and(|terminal| self.terminal_reaches_protected(terminal.as_str()))
     }
 
     fn tab_is_protected(&self, ws_idx: usize, tab_idx: usize) -> bool {
@@ -626,12 +648,9 @@ impl App {
             .get(ws_idx)
             .and_then(|ws| ws.tabs.get(tab_idx))
             .is_some_and(|tab| {
-                tab.panes.values().any(|pane| {
-                    self.state
-                        .terminals
-                        .get(&pane.attached_terminal_id)
-                        .is_some_and(terminal_is_protected)
-                })
+                tab.panes
+                    .values()
+                    .any(|pane| self.terminal_reaches_protected(pane.attached_terminal_id.as_str()))
             })
     }
 
@@ -646,19 +665,10 @@ impl App {
         ]
         .into_iter()
         .any(|resolved| match resolved {
-            Ok(resolved) => self
-                .state
-                .terminals
-                .get(resolved.terminal_id.as_str())
-                .is_some_and(terminal_is_protected),
-            Err(TerminalTargetError::Ambiguous { candidates, .. }) => {
-                candidates.iter().any(|candidate| {
-                    self.state
-                        .terminals
-                        .get(candidate.terminal_id.as_str())
-                        .is_some_and(terminal_is_protected)
-                })
-            }
+            Ok(resolved) => self.terminal_reaches_protected(&resolved.terminal_id),
+            Err(TerminalTargetError::Ambiguous { candidates, .. }) => candidates
+                .iter()
+                .any(|candidate| self.terminal_reaches_protected(&candidate.terminal_id)),
             Err(TerminalTargetError::NotFound { .. }) => false,
         })
     }

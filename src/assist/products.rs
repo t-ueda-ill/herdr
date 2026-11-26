@@ -79,12 +79,14 @@ pub(crate) enum ShellAccess {
     /// The product's shell, minus `herdr`.
     WithoutHerdr,
     /// No shell and no MCP tools, for a pane on a protected ssh host: a
-    /// shell could reach the host with the user's own `ssh` and keys.
+    /// shell could reach the host with the user's own `ssh` and keys. Only
+    /// claude can start this way; codex runs the user's MCP servers outside
+    /// its sandbox, and copilot cannot turn the user's MCP servers off.
     None,
 }
 
 /// The argv that opens `product` as an assist, or `None` for a product this
-/// server does not know.
+/// server does not know or that cannot start with `shell`.
 ///
 /// Why the deny rules: the assist only advises, and herdr's CLI is how a
 /// process in a pane would type into another pane. The rules are a guard of
@@ -132,18 +134,6 @@ pub(crate) fn product_argv(
         (AssistProduct::Codex, ShellAccess::WithoutHerdr) => {
             vec![executable, "--sandbox".into(), "read-only".into(), ask]
         }
-        // Why keep codex's shell: it reads files with it. The read-only
-        // sandbox refuses network and socket connections, so `ssh` cannot
-        // reach the host; `never` keeps the model from asking to run a
-        // command outside the sandbox.
-        (AssistProduct::Codex, ShellAccess::None) => vec![
-            executable,
-            "--sandbox".into(),
-            "read-only".into(),
-            "--ask-for-approval".into(),
-            "never".into(),
-            ask,
-        ],
         (AssistProduct::Copilot, ShellAccess::WithoutHerdr) => vec![
             executable,
             "-i".into(),
@@ -152,17 +142,7 @@ pub(crate) fn product_argv(
             context_dir,
             "--deny-tool=shell(herdr:*)".into(),
         ],
-        // A bare `shell` rule denies every shell command, and deny rules win
-        // over every allow. MCP servers the user configured still ask first.
-        (AssistProduct::Copilot, ShellAccess::None) => vec![
-            executable,
-            "-i".into(),
-            ask,
-            "--add-dir".into(),
-            context_dir,
-            "--deny-tool=shell".into(),
-            "--disable-builtin-mcps".into(),
-        ],
+        (AssistProduct::Codex | AssistProduct::Copilot, ShellAccess::None) => return None,
         (AssistProduct::Unknown, _) => return None,
     })
 }
@@ -297,52 +277,20 @@ mod tests {
     }
 
     #[test]
-    fn codex_for_a_protected_pane_never_leaves_the_read_only_sandbox() {
-        let argv = product_argv(
-            AssistProduct::Codex,
-            Path::new("/bin/codex"),
-            "ASK",
-            Path::new("/run/assist"),
-            ShellAccess::None,
-        )
-        .unwrap();
-
-        assert_eq!(
-            argv,
-            [
-                "/bin/codex",
-                "--sandbox",
-                "read-only",
-                "--ask-for-approval",
-                "never",
-                "ASK"
-            ]
-        );
-    }
-
-    #[test]
-    fn copilot_for_a_protected_pane_denies_every_shell_command() {
-        let argv = product_argv(
-            AssistProduct::Copilot,
-            Path::new("/bin/copilot"),
-            "ASK",
-            Path::new("/run/assist"),
-            ShellAccess::None,
-        )
-        .unwrap();
-
-        assert_eq!(
-            argv,
-            [
-                "/bin/copilot",
-                "-i",
-                "ASK",
-                "--add-dir",
-                "/run/assist",
-                "--deny-tool=shell",
-                "--disable-builtin-mcps"
-            ]
-        );
+    fn only_claude_starts_for_a_protected_pane() {
+        for product in [AssistProduct::Codex, AssistProduct::Copilot] {
+            assert_eq!(
+                product_argv(
+                    product,
+                    Path::new("/bin/x"),
+                    "ASK",
+                    Path::new("/run/assist"),
+                    ShellAccess::None,
+                ),
+                None,
+                "{product:?}"
+            );
+        }
     }
 
     #[test]

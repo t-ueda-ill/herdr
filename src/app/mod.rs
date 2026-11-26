@@ -13,7 +13,6 @@ pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
 pub(crate) use api::pane_download::DownloadOrigin;
 pub(crate) use api::pane_upload::{UploadOrigin, UploadResponder};
-pub(crate) use api::protected_hosts::terminal_is_protected;
 #[cfg(test)]
 pub(crate) use api::test_support::exiting_test_command;
 mod api_helpers;

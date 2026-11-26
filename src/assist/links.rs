@@ -14,6 +14,9 @@ pub(crate) struct AssistLink {
     pub(crate) target: Option<TerminalId>,
     pub(crate) product: AssistProduct,
     pub(crate) context_path: PathBuf,
+    /// The read pane was on a protected ssh host when the assist started.
+    /// Kept after that pane closes: the assist still holds what it read.
+    pub(crate) protected: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -87,6 +90,7 @@ mod tests {
             target: Some(target.clone()),
             product: AssistProduct::Claude,
             context_path: PathBuf::from(format!("/run/{helper}.md")),
+            protected: false,
         }
     }
 

@@ -1552,9 +1552,7 @@ impl HeadlessServer {
     /// a pane's screen and input through the client socket, and only the
     /// herdr CLI opens them; the TUI shows panes through its own endpoint.
     fn terminal_on_protected_host(&self, terminal_id: &str) -> bool {
-        self.terminal_id_by_string(terminal_id)
-            .and_then(|id| self.app.state.terminals.get(&id))
-            .is_some_and(crate::app::terminal_is_protected)
+        self.app.terminal_reaches_protected(terminal_id)
     }
 
     fn refuse_protected_terminal(&mut self, client_id: u64, what: &str) {
