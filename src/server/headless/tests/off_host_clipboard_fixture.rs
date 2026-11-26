@@ -79,6 +79,10 @@ impl OffHostPaneFixture {
         fixture
     }
 
+    pub(super) fn terminal_id(&self) -> String {
+        self.terminal_id.to_string()
+    }
+
     pub(super) fn pane_id(&self) -> &str {
         &self.public_pane_id
     }

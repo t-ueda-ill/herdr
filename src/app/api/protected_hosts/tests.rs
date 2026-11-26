@@ -291,3 +291,132 @@ fn a_terminal_id_in_place_of_a_pane_id_is_refused() {
         .protected_host_denial(&send_keys(terminal_id.as_str()))
         .is_some());
 }
+
+/// A second workspace with one local pane, after the protected-or-not pair
+/// of `app_with`. The first workspace stays active.
+fn add_local_workspace(app: &mut App) -> (String, String) {
+    app.state.workspaces.push(Workspace::test_new("local"));
+    app.state.ensure_test_terminals();
+    let pane = app.state.workspaces[1].tabs[0].root_pane;
+    (
+        app.public_workspace_id(1),
+        app.public_pane_id(1, pane).unwrap(),
+    )
+}
+
+#[test]
+fn a_split_in_a_named_local_workspace_ignores_the_global_focus() {
+    let (mut app, _, _) = app_with(Kind::Ssh("noref_prod"), Kind::Local);
+    let (local_workspace, _) = add_local_workspace(&mut app);
+    let mut params = split_params(None);
+    params.workspace_id = Some(local_workspace);
+
+    assert_eq!(
+        app.protected_host_denial(&request(Method::PaneSplit(params))),
+        None
+    );
+}
+
+#[test]
+fn a_tab_without_a_workspace_goes_to_the_active_one() {
+    let (app, _, _) = app_with(Kind::Local, Kind::Ssh("noref_prod"));
+    let create = request(Method::TabCreate(
+        serde_json::from_value(serde_json::json!({})).unwrap(),
+    ));
+
+    assert!(app.protected_host_denial(&create).is_some());
+}
+
+#[test]
+fn a_command_for_a_named_local_tab_ignores_the_global_focus() {
+    let (mut app, _, _) = app_with(Kind::Ssh("noref_prod"), Kind::Local);
+    add_local_workspace(&mut app);
+    let local_tab = app.public_tab_id(1, 0).unwrap();
+    let invoke = |tab_id: Option<String>| {
+        request(Method::CommandInvoke(
+            serde_json::from_value(serde_json::json!({
+                "command_id": "c",
+                "tab_id": tab_id,
+            }))
+            .unwrap(),
+        ))
+    };
+
+    assert_eq!(app.protected_host_denial(&invoke(Some(local_tab))), None);
+    assert!(app.protected_host_denial(&invoke(None)).is_some());
+}
+
+#[test]
+fn a_directional_request_from_a_local_pane_cannot_reach_a_protected_neighbour() {
+    let (app, _, local) = app_with(Kind::Ssh("noref_prod"), Kind::Local);
+    let swap = request(Method::PaneSwap(
+        serde_json::from_value(serde_json::json!({
+            "pane_id": local,
+            "direction": "left",
+        }))
+        .unwrap(),
+    ));
+
+    assert!(app.protected_host_denial(&swap).is_some());
+}
+
+#[test]
+fn a_plugin_pane_without_a_placement_opens_in_the_active_workspace() {
+    let (app, _, _) = app_with(Kind::Local, Kind::Ssh("noref_prod"));
+    let open = request(Method::PluginPaneOpen(
+        serde_json::from_value(serde_json::json!({
+            "plugin_id": "p",
+            "entrypoint": "e",
+        }))
+        .unwrap(),
+    ));
+
+    assert!(app.protected_host_denial(&open).is_some());
+}
+
+/// A local parent workspace and a linked worktree workspace whose one pane
+/// is on a protected host.
+fn app_with_protected_linked_worktree() -> (App, String, String) {
+    let (mut app, _, _) = app_with(Kind::Ssh("noref_prod"), Kind::Ssh("noref_prod"));
+    app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+        key: "repo-key".into(),
+        label: "herdr".into(),
+        repo_root: "/repo/herdr".into(),
+        checkout_path: "/repo/herdr-issue".into(),
+        is_linked_worktree: true,
+    });
+    let mut parent = Workspace::test_new("parent");
+    parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+        key: "repo-key".into(),
+        label: "herdr".into(),
+        repo_root: "/repo/herdr".into(),
+        checkout_path: "/repo/herdr".into(),
+        is_linked_worktree: false,
+    });
+    app.state.workspaces.insert(0, parent);
+    app.state.active = Some(0);
+    app.state.ensure_test_terminals();
+    let parent_pane = app.state.workspaces[0].tabs[0].root_pane;
+    let workspace = app.public_workspace_id(0);
+    let pane = app.public_pane_id(0, parent_pane).unwrap();
+    (app, workspace, pane)
+}
+
+#[test]
+fn closing_a_local_parent_with_its_group_cannot_close_a_protected_worktree() {
+    let (app, parent, parent_pane) = app_with_protected_linked_worktree();
+    assert!(
+        !app.state.workspace_group_close_indices(0).is_empty(),
+        "the fixture links the workspaces"
+    );
+    let close_group = request(Method::WorkspaceClose(WorkspaceCloseParams {
+        workspace_id: parent,
+        close_group: true,
+    }));
+    let close_last_pane = request(Method::PaneClose(crate::api::schema::PaneTarget {
+        pane_id: parent_pane,
+    }));
+
+    assert!(app.protected_host_denial(&close_group).is_some());
+    assert!(app.protected_host_denial(&close_last_pane).is_some());
+}

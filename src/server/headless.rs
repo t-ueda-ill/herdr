@@ -1540,8 +1540,33 @@ impl HeadlessServer {
             self.remove_client_and_resize_if_needed(client_id);
             return None;
         };
+        if self.terminal_on_protected_host(&terminal_id) {
+            self.refuse_protected_terminal(client_id, &format!("terminal session {action}"));
+            return None;
+        }
 
         Some(terminal_id)
+    }
+
+    /// Why direct attaches and terminal sessions are checked too: they reach
+    /// a pane's screen and input through the client socket, and only the
+    /// herdr CLI opens them; the TUI shows panes through its own endpoint.
+    fn terminal_on_protected_host(&self, terminal_id: &str) -> bool {
+        self.terminal_id_by_string(terminal_id)
+            .and_then(|id| self.app.state.terminals.get(&id))
+            .is_some_and(crate::app::terminal_is_protected)
+    }
+
+    fn refuse_protected_terminal(&mut self, client_id: u64, what: &str) {
+        self.send_to_client(
+            client_id,
+            ServerMessage::ServerShutdown {
+                reason: Some(format!(
+                    "{what} failed: the pane is on a protected ssh host; use the herdr window instead"
+                )),
+            },
+        );
+        self.remove_client_and_resize_if_needed(client_id);
     }
 
     fn observe_terminal_client(&mut self, client_id: u64, target: String) -> bool {
@@ -2018,6 +2043,10 @@ impl HeadlessServer {
             return false;
         }
 
+        if self.terminal_on_protected_host(&terminal_id) {
+            self.refuse_protected_terminal(client_id, "terminal attach");
+            return false;
+        }
         let Some(real_terminal_id) = self.terminal_id_by_string(&terminal_id) else {
             self.send_to_client(
                 client_id,
@@ -3316,6 +3345,16 @@ impl HeadlessServer {
         if self.host_shutdown_requested() {
             Self::reject_api_request_for_shutdown(msg);
             return changed;
+        }
+        // Why after the drain: a pending event can move the focus or finish
+        // opening a pane, and an id-less request must be judged on the state
+        // it will act on. Why not for `client_local`: the user's own clients
+        // come through the client endpoint and keep full control.
+        if !client_local {
+            if let Some(denial) = self.app.protected_host_denial(&msg.request) {
+                let _ = msg.respond_to.send(denial);
+                return changed;
+            }
         }
 
         // Capture toast and effective pane states before the API call so we can

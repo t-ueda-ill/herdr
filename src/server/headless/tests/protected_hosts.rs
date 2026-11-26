@@ -70,3 +70,48 @@ async fn the_users_own_client_still_reads_a_protected_pane() {
     assert_eq!(error_code(response.as_bytes()), None, "{response}");
     fixture.finish();
 }
+
+#[tokio::test]
+async fn the_cli_cannot_attach_to_or_drive_a_protected_terminal() {
+    const PENDING: u64 = 21;
+    let mut fixture = protected_pane();
+    for open in ["attach", "control"] {
+        let (writer, control_rx, _render_rx) = test_client_writer();
+        fixture.server.clients.insert(
+            PENDING,
+            ClientConnection::new_with_mode(
+                ClientConnectionMode::TerminalPending,
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                1,
+                RenderEncoding::SemanticFrame,
+                Some(writer),
+            ),
+        );
+        let terminal_id = fixture.terminal_id();
+
+        match open {
+            "attach" => {
+                fixture
+                    .server
+                    .attach_terminal_client(PENDING, terminal_id, false);
+            }
+            _ => {
+                fixture
+                    .server
+                    .resolve_terminal_session_target(PENDING, &terminal_id, "control");
+            }
+        }
+
+        assert!(!fixture.server.clients.contains_key(&PENDING), "{open}");
+        let refused = std::iter::from_fn(|| control_rx.try_recv().ok()).any(|bytes| {
+            matches!(
+                read_server_message(bytes),
+                ServerMessage::ServerShutdown { reason: Some(reason) }
+                    if reason.contains("protected ssh host")
+            )
+        });
+        assert!(refused, "{open}");
+    }
+    fixture.finish();
+}

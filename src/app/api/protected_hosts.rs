@@ -23,10 +23,29 @@ pub(crate) enum ApiRef<'a> {
     /// The pane a request without a pane id acts on: the focused pane of the
     /// active workspace.
     FocusedPane,
+    /// The focused pane of a named workspace, as requests that name only a
+    /// workspace resolve it.
+    WorkspaceFocusedPane(&'a str),
     /// The active tab, for requests that act on a whole tab by default.
     ActiveTab,
+    /// The active workspace, for requests that place something in it by default.
+    ActiveWorkspace,
+    /// Every pane of the tab that holds this pane (the focused one when
+    /// `None`): a directional request reaches a neighbour the guard cannot
+    /// predict without the layout geometry.
+    TabOfPane(Option<&'a str>),
     Tab(&'a str),
     Workspace(&'a str),
+    /// The workspaces `workspace.close` removes: the named one, or its linked
+    /// worktree group.
+    WorkspaceClosure {
+        workspace_id: &'a str,
+        group: bool,
+    },
+    /// A pane or tab whose closing can close its workspace and that
+    /// workspace's linked group when it is the last one.
+    ClosingPane(&'a str),
+    ClosingTab(&'a str),
     /// A terminal id, pane id or agent name, as agent targets accept.
     Terminal(&'a str),
     Task(&'a str),
@@ -43,14 +62,22 @@ fn workspace(workspace_id: Option<&str>) -> Option<ApiRef<'_>> {
     workspace_id.map(ApiRef::Workspace)
 }
 
+/// An explicit pane wins, then the focused pane of the named workspace, then
+/// the globally focused pane, as the split, inherit and directory handlers
+/// resolve it.
+fn pane_in<'a>(pane_id: Option<&'a str>, workspace_id: Option<&'a str>) -> ApiRef<'a> {
+    match (pane_id, workspace_id) {
+        (Some(pane_id), _) => ApiRef::Pane(pane_id),
+        (None, Some(workspace_id)) => ApiRef::WorkspaceFocusedPane(workspace_id),
+        (None, None) => ApiRef::FocusedPane,
+    }
+}
+
 fn split_refs(params: &PaneSplitParams) -> Vec<ApiRef<'_>> {
-    [
-        Some(pane_or_focused(params.target_pane_id.as_deref())),
-        workspace(params.workspace_id.as_deref()),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+    vec![pane_in(
+        params.target_pane_id.as_deref(),
+        params.workspace_id.as_deref(),
+    )]
 }
 
 fn workspace_create_refs(params: &WorkspaceCreateParams) -> Vec<ApiRef<'_>> {
@@ -59,10 +86,9 @@ fn workspace_create_refs(params: &WorkspaceCreateParams) -> Vec<ApiRef<'_>> {
         .collect()
 }
 
+/// `tab_create_location` falls back to the active workspace.
 fn tab_create_refs(params: &TabCreateParams) -> Vec<ApiRef<'_>> {
-    workspace(params.workspace_id.as_deref())
-        .into_iter()
-        .collect()
+    vec![workspace(params.workspace_id.as_deref()).unwrap_or(ApiRef::ActiveWorkspace)]
 }
 
 /// Where an `ssh.open` or `container.open` puts its new pane.
@@ -95,11 +121,7 @@ fn container_open_target_refs(target: &ContainerOpenTarget) -> Vec<ApiRef<'_>> {
 }
 
 fn directory_refs<'a>(workspace_id: Option<&'a str>, pane_id: Option<&'a str>) -> Vec<ApiRef<'a>> {
-    match (pane_id, workspace_id) {
-        (Some(pane_id), _) => vec![ApiRef::Pane(pane_id)],
-        (None, Some(workspace_id)) => vec![ApiRef::Workspace(workspace_id)],
-        (None, None) => vec![ApiRef::FocusedPane],
-    }
+    vec![pane_in(pane_id, workspace_id)]
 }
 
 /// The things `method` would reach. Why no wildcard arm: a new method must
@@ -177,14 +199,23 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
         | Method::PaneProcessInfo(_)
         | Method::LayoutExport(_) => Vec::new(),
 
-        Method::CommandInvoke(params) => [
-            Some(pane_or_focused(params.pane_id.as_deref())),
-            params.tab_id.as_deref().map(Tab),
-            workspace(params.workspace_id.as_deref()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect(),
+        // The handler moves to the named pane, tab or workspace first; only a
+        // request naming none of them runs at the global focus.
+        Method::CommandInvoke(params) => {
+            let named: Vec<_> = [
+                params.pane_id.as_deref().map(Pane),
+                params.tab_id.as_deref().map(Tab),
+                workspace(params.workspace_id.as_deref()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            if named.is_empty() {
+                vec![FocusedPane]
+            } else {
+                named
+            }
+        }
         Method::PluginActionInvoke(params) => params
             .context
             .as_ref()
@@ -199,13 +230,18 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
                 .collect()
             })
             .unwrap_or_default(),
-        Method::PluginPaneOpen(params) => [
-            params.target_pane_id.as_deref().map(Pane),
-            workspace(params.workspace_id.as_deref()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect(),
+        // Without ids the placement resolves inside the active workspace.
+        Method::PluginPaneOpen(params) => match (
+            params.target_pane_id.as_deref(),
+            params.workspace_id.as_deref(),
+        ) {
+            (None, None) => vec![ActiveWorkspace],
+            (pane_id, workspace_id) => pane_id
+                .map(Pane)
+                .into_iter()
+                .chain(workspace(workspace_id))
+                .collect(),
+        },
         Method::PluginPaneFocus(params) => vec![Pane(&params.pane_id)],
         Method::PluginPaneClose(params) => vec![Pane(&params.pane_id)],
 
@@ -219,7 +255,10 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
             .map(|id| Workspace(id))
             .collect(),
         Method::WorkspaceReportMetadata(params) => vec![Workspace(&params.workspace_id)],
-        Method::WorkspaceClose(params) => vec![Workspace(&params.workspace_id)],
+        Method::WorkspaceClose(params) => vec![WorkspaceClosure {
+            workspace_id: &params.workspace_id,
+            group: params.close_group,
+        }],
         Method::WorktreeCreate(params) => workspace(params.workspace_id.as_deref())
             .into_iter()
             .collect(),
@@ -239,14 +278,15 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
         Method::SshContainerList(params) => vec![SshHost(&params.host)],
 
         Method::TabCreate(params) => tab_create_refs(params),
-        Method::TabCreateInherit(params) => [
-            Some(pane_or_focused(params.source_pane_id.as_deref())),
-            workspace(params.create.workspace_id.as_deref()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect(),
-        Method::TabFocus(target) | Method::TabClose(target) => vec![Tab(&target.tab_id)],
+        Method::TabCreateInherit(params) => vec![
+            pane_in(
+                params.source_pane_id.as_deref(),
+                params.create.workspace_id.as_deref(),
+            ),
+            workspace(params.create.workspace_id.as_deref()).unwrap_or(ActiveWorkspace),
+        ],
+        Method::TabFocus(target) => vec![Tab(&target.tab_id)],
+        Method::TabClose(target) => vec![Tab(&target.tab_id), ClosingTab(&target.tab_id)],
         Method::TabRename(params) => vec![Tab(&params.tab_id)],
         Method::TabMove(params) => vec![Tab(&params.tab_id)],
 
@@ -266,6 +306,9 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
         Method::TaskWait(params) => vec![Task(&params.task_id)],
 
         Method::PaneSplit(params) | Method::PaneSplitInherit(params) => split_refs(params),
+        Method::PaneSwap(params) if params.direction.is_some() => {
+            vec![TabOfPane(params.pane_id.as_deref())]
+        }
         Method::PaneSwap(params) => {
             let named: Vec<_> = [
                 params.pane_id.as_deref(),
@@ -299,8 +342,8 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
                 .collect()
         }
         Method::PaneZoom(params) => vec![pane_or_focused(params.pane_id.as_deref())],
-        Method::PaneFocusDirection(params) => vec![pane_or_focused(params.pane_id.as_deref())],
-        Method::PaneResize(params) => vec![pane_or_focused(params.pane_id.as_deref())],
+        Method::PaneFocusDirection(params) => vec![TabOfPane(params.pane_id.as_deref())],
+        Method::PaneResize(params) => vec![TabOfPane(params.pane_id.as_deref())],
         Method::LayoutApply(params) => {
             let named: Vec<_> = [
                 params.tab_id.as_deref().map(Tab),
@@ -325,8 +368,8 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
         Method::PaneClear(target)
         | Method::PaneReconnect(target)
         | Method::PaneEditScrollback(target)
-        | Method::PaneFocus(target)
-        | Method::PaneClose(target) => vec![Pane(&target.pane_id)],
+        | Method::PaneFocus(target) => vec![Pane(&target.pane_id)],
+        Method::PaneClose(target) => vec![Pane(&target.pane_id), ClosingPane(&target.pane_id)],
         Method::PaneSelectionRead(params) => vec![Pane(&params.pane_id)],
         Method::PaneCopyMotion(params) => vec![Pane(&params.pane_id)],
         Method::PaneCopySearch(params) => vec![Pane(&params.pane_id)],
@@ -359,20 +402,12 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
             })
             .collect(),
 
-        Method::PaneOpenEditor(params) => [
-            Some(pane_or_focused(params.pane_id.as_deref())),
-            workspace(params.workspace_id.as_deref()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect(),
-        Method::PaneOpenFile(params) => [
-            Some(pane_or_focused(params.pane_id.as_deref())),
-            workspace(params.workspace_id.as_deref()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect(),
+        Method::PaneOpenEditor(params) => {
+            directory_refs(params.workspace_id.as_deref(), params.pane_id.as_deref())
+        }
+        Method::PaneOpenFile(params) => {
+            directory_refs(params.workspace_id.as_deref(), params.pane_id.as_deref())
+        }
         // An explicit pane wins, then the focused pane of the named or the
         // focused workspace, as `directory_target` resolves it.
         Method::DirectoryList(params) => {
@@ -433,7 +468,28 @@ impl App {
                 format!("workspace {id} holds a pane on a protected ssh host")
             }
             ApiRef::FocusedPane => "the focused pane is on a protected ssh host".to_owned(),
+            ApiRef::WorkspaceFocusedPane(id) => {
+                format!("the focused pane of workspace {id} is on a protected ssh host")
+            }
             ApiRef::ActiveTab => "the active tab holds a pane on a protected ssh host".to_owned(),
+            ApiRef::ActiveWorkspace => {
+                "the active workspace holds a pane on a protected ssh host".to_owned()
+            }
+            ApiRef::TabOfPane(Some(id)) => {
+                format!("the tab of pane {id} holds a pane on a protected ssh host")
+            }
+            ApiRef::TabOfPane(None) => {
+                "the tab of the focused pane holds a pane on a protected ssh host".to_owned()
+            }
+            ApiRef::WorkspaceClosure { workspace_id, .. } => format!(
+                "closing workspace {workspace_id} would close a pane on a protected ssh host"
+            ),
+            ApiRef::ClosingPane(id) => {
+                format!("closing pane {id} would close a pane on a protected ssh host")
+            }
+            ApiRef::ClosingTab(id) => {
+                format!("closing tab {id} would close a pane on a protected ssh host")
+            }
         };
         Some(super::responses::encode_error(
             request.id.clone(),
@@ -458,6 +514,55 @@ impl App {
                     .and_then(|ws| ws.focused_pane_id())
                     .is_some_and(|pane_id| self.pane_is_protected(ws_idx, pane_id))
             }),
+            ApiRef::WorkspaceFocusedPane(id) => self.parse_workspace_id(id).is_some_and(|ws_idx| {
+                self.state.workspaces[ws_idx]
+                    .focused_pane_id()
+                    .is_some_and(|pane_id| self.pane_is_protected(ws_idx, pane_id))
+            }),
+            ApiRef::ActiveWorkspace => self
+                .state
+                .active
+                .is_some_and(|ws_idx| self.workspace_is_protected(ws_idx)),
+            ApiRef::TabOfPane(id) => {
+                let pane = match id {
+                    Some(id) => self.parse_pane_id(id),
+                    None => self.state.active.and_then(|ws_idx| {
+                        Some((
+                            ws_idx,
+                            self.state.workspaces.get(ws_idx)?.focused_pane_id()?,
+                        ))
+                    }),
+                };
+                pane.is_some_and(|(ws_idx, pane_id)| {
+                    self.state.workspaces[ws_idx]
+                        .find_tab_index_for_pane(pane_id)
+                        .is_some_and(|tab_idx| self.tab_is_protected(ws_idx, tab_idx))
+                })
+            }
+            ApiRef::WorkspaceClosure {
+                workspace_id,
+                group,
+            } => self.parse_workspace_id(workspace_id).is_some_and(|ws_idx| {
+                let closing = if group {
+                    self.state.workspace_group_close_indices(ws_idx)
+                } else {
+                    self.state.workspace_close_indices(ws_idx)
+                };
+                std::iter::once(ws_idx)
+                    .chain(closing)
+                    .any(|index| self.workspace_is_protected(index))
+            }),
+            // Why the whole group whatever `confirm_close` says: closing the
+            // last pane or tab closes the workspace, and the handler may take
+            // its linked group with it.
+            ApiRef::ClosingPane(id) => self.parse_pane_id(id).is_some_and(|(ws_idx, _)| {
+                let ws = &self.state.workspaces[ws_idx];
+                let last = ws.tabs.len() == 1 && ws.tabs[0].panes.len() == 1;
+                last && self.group_is_protected(ws_idx)
+            }),
+            ApiRef::ClosingTab(id) => self.parse_tab_id(id).is_some_and(|(ws_idx, _)| {
+                self.state.workspaces[ws_idx].tabs.len() == 1 && self.group_is_protected(ws_idx)
+            }),
             ApiRef::ActiveTab => self.state.active.is_some_and(|ws_idx| {
                 self.state
                     .workspaces
@@ -467,10 +572,9 @@ impl App {
             ApiRef::Tab(id) => self
                 .parse_tab_id(id)
                 .is_some_and(|(ws_idx, tab_idx)| self.tab_is_protected(ws_idx, tab_idx)),
-            ApiRef::Workspace(id) => self.parse_workspace_id(id).is_some_and(|ws_idx| {
-                (0..self.state.workspaces[ws_idx].tabs.len())
-                    .any(|tab_idx| self.tab_is_protected(ws_idx, tab_idx))
-            }),
+            ApiRef::Workspace(id) => self
+                .parse_workspace_id(id)
+                .is_some_and(|ws_idx| self.workspace_is_protected(ws_idx)),
             ApiRef::Terminal(target) => self.terminal_target_is_protected(target),
             ApiRef::Task(id) => crate::tasks::TaskId::parse(id)
                 .and_then(|task_id| self.state.tasks.get(task_id))
@@ -495,6 +599,18 @@ impl App {
                         .is_some_and(terminal_is_protected)
             }),
         }
+    }
+
+    fn workspace_is_protected(&self, ws_idx: usize) -> bool {
+        self.state.workspaces.get(ws_idx).is_some_and(|ws| {
+            (0..ws.tabs.len()).any(|tab_idx| self.tab_is_protected(ws_idx, tab_idx))
+        })
+    }
+
+    fn group_is_protected(&self, ws_idx: usize) -> bool {
+        std::iter::once(ws_idx)
+            .chain(self.state.workspace_group_close_indices(ws_idx))
+            .any(|index| self.workspace_is_protected(index))
     }
 
     fn pane_is_protected(&self, ws_idx: usize, pane_id: crate::layout::PaneId) -> bool {
