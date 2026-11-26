@@ -845,6 +845,12 @@ impl HeadlessServer {
         &mut self,
         mut msg: api::ApiRequestMessage,
     ) -> bool {
+        // Why only here: the user's own clients come through the client
+        // endpoint, and the protection keeps them in full control.
+        if let Some(denial) = self.app.protected_host_denial(&msg.request) {
+            let _ = msg.respond_to.send(denial);
+            return false;
+        }
         let target_before = self.default_shell_target();
         let popup_before = self.app.state.popup_pane.is_some();
         let method_claims_geometry = Self::public_request_may_change_geometry(&msg.request.method);

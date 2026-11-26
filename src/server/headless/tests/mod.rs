@@ -9,6 +9,8 @@ mod native_graphics;
 mod off_host_clipboard_fixture;
 #[path = "pane_move.rs"]
 mod pane_move_tests;
+#[path = "protected_hosts.rs"]
+mod protected_hosts_tests;
 #[path = "pane_graphics.rs"]
 mod retained_graphics_tests;
 #[path = "ssh_clipboard.rs"]

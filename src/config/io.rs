@@ -937,6 +937,24 @@ time_format = "hh:mi:ss"
     }
 
     #[test]
+    fn protected_host_prefix_defaults_to_noref_and_can_be_overridden() {
+        let default = load_live_config_from_str("").unwrap();
+        assert_eq!(default.config.offhost.protected_host_prefix, "noref_");
+
+        let loaded = load_live_config_from_str(
+            r#"
+[offhost]
+protected_host_prefix = "prod_"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.config.offhost.protected_host_prefix, "prod_");
+        assert!(loaded.config.offhost.shell_integration);
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    }
+
+    #[test]
     fn load_live_config_reports_log_values_that_fall_back_to_the_default() {
         let loaded = load_live_config_from_str(
             r#"

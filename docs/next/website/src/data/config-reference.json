@@ -1585,6 +1585,12 @@
           "type": "boolean",
           "default": "true",
           "description": "Load a temporary script when an SSH or container pane starts its shell, so the shell reports its working directory. Set false to start the plain shell."
+        },
+        {
+          "key": "offhost.protected_host_prefix",
+          "type": "string",
+          "default": "\"noref_\"",
+          "description": "SSH hosts whose Host alias starts with this prefix share no SSH connection, and the herdr CLI and API cannot read or drive their panes. An empty string protects no host. Read when the server starts."
         }
       ]
     },
