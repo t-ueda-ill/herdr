@@ -422,6 +422,52 @@ async fn the_cli_argv_names_the_pane_by_id_and_not_by_its_label() {
 }
 
 #[cfg(unix)]
+fn helper_argv(fixture: &Fixture) -> Vec<String> {
+    let helper = &fixture.app.state.assists.iter().next().unwrap().helper;
+    fixture.app.state.terminals[helper]
+        .launch_argv
+        .clone()
+        .expect("argv")
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_assist_for_a_pane_on_a_protected_host_never_leaves_its_sandbox() {
+    let mut fixture = fixture(80, MARKED_SHELL);
+    let target_pane = fixture.app.state.workspaces[0].tabs[0].root_pane;
+    let target = fixture
+        .app
+        .state
+        .terminal_id_for_pane(0, target_pane)
+        .unwrap();
+    fixture.app.state.terminals.get_mut(&target).unwrap().ssh =
+        crate::ssh_host::SshLaunch::new("noref_prod".into(), None);
+
+    started(&start(&mut fixture, AssistPlacement::Auto));
+
+    let argv = helper_argv(&fixture);
+    assert!(
+        argv.windows(2)
+            .any(|pair| pair == ["--ask-for-approval", "never"]),
+        "{argv:?}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_assist_for_a_local_pane_keeps_the_usual_approvals() {
+    let mut fixture = fixture(80, MARKED_SHELL);
+
+    started(&start(&mut fixture, AssistPlacement::Auto));
+
+    let argv = helper_argv(&fixture);
+    assert!(
+        !argv.iter().any(|arg| arg == "--ask-for-approval"),
+        "{argv:?}"
+    );
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn a_session_save_keeps_neither_the_assist_pane_nor_its_screen_history() {
     let mut fixture = fixture(80, MARKED_SHELL);

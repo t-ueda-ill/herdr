@@ -73,6 +73,16 @@ pub(crate) fn refresh_line(context_path: &Path) -> String {
     )
 }
 
+/// What the assist may run besides reading files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShellAccess {
+    /// The product's shell, minus `herdr`.
+    WithoutHerdr,
+    /// No shell and no MCP tools, for a pane on a protected ssh host: a
+    /// shell could reach the host with the user's own `ssh` and keys.
+    None,
+}
+
 /// The argv that opens `product` as an assist, or `None` for a product this
 /// server does not know.
 ///
@@ -84,17 +94,18 @@ pub(crate) fn product_argv(
     executable: &Path,
     ask: &str,
     context_dir: &Path,
+    shell: ShellAccess,
 ) -> Option<Vec<String>> {
     let executable = executable.to_string_lossy().into_owned();
     let context_dir = context_dir.to_string_lossy().into_owned();
     let ask = ask.to_owned();
-    Some(match product {
+    Some(match (product, shell) {
         // Why the prompt first: `--allowedTools` and `--disallowedTools`
         // take every argument after them up to the next option.
         // Why a read rule and not `--add-dir`: claude asks whether to trust
         // an added folder, and each assist has a new one. A leading `//`
         // makes the rule's path absolute.
-        AssistProduct::Claude => vec![
+        (AssistProduct::Claude, ShellAccess::WithoutHerdr) => vec![
             executable,
             ask,
             "--allowedTools".into(),
@@ -102,9 +113,38 @@ pub(crate) fn product_argv(
             "--disallowedTools".into(),
             "Bash(herdr:*)".into(),
         ],
+        // Why `--tools` and not `--restricted`: restricted mode confines
+        // reads to the working directory, and the context folder is outside
+        // it. `mcp__*` also removes tools that plugins bring, which
+        // `--strict-mcp-config` leaves in place.
+        (AssistProduct::Claude, ShellAccess::None) => vec![
+            executable,
+            ask,
+            "--tools".into(),
+            "Read,Grep,Glob".into(),
+            "--strict-mcp-config".into(),
+            "--allowedTools".into(),
+            format!("Read(/{context_dir}/**)"),
+            "--disallowedTools".into(),
+            "mcp__*".into(),
+        ],
         // The read-only sandbox reads any path, so no directory is added.
-        AssistProduct::Codex => vec![executable, "--sandbox".into(), "read-only".into(), ask],
-        AssistProduct::Copilot => vec![
+        (AssistProduct::Codex, ShellAccess::WithoutHerdr) => {
+            vec![executable, "--sandbox".into(), "read-only".into(), ask]
+        }
+        // Why keep codex's shell: it reads files with it. The read-only
+        // sandbox refuses network and socket connections, so `ssh` cannot
+        // reach the host; `never` keeps the model from asking to run a
+        // command outside the sandbox.
+        (AssistProduct::Codex, ShellAccess::None) => vec![
+            executable,
+            "--sandbox".into(),
+            "read-only".into(),
+            "--ask-for-approval".into(),
+            "never".into(),
+            ask,
+        ],
+        (AssistProduct::Copilot, ShellAccess::WithoutHerdr) => vec![
             executable,
             "-i".into(),
             ask,
@@ -112,7 +152,18 @@ pub(crate) fn product_argv(
             context_dir,
             "--deny-tool=shell(herdr:*)".into(),
         ],
-        AssistProduct::Unknown => return None,
+        // A bare `shell` rule denies every shell command, and deny rules win
+        // over every allow. MCP servers the user configured still ask first.
+        (AssistProduct::Copilot, ShellAccess::None) => vec![
+            executable,
+            "-i".into(),
+            ask,
+            "--add-dir".into(),
+            context_dir,
+            "--deny-tool=shell".into(),
+            "--disable-builtin-mcps".into(),
+        ],
+        (AssistProduct::Unknown, _) => return None,
     })
 }
 
@@ -163,6 +214,7 @@ mod tests {
             Path::new("/bin/claude"),
             "ASK",
             Path::new("/run/assist"),
+            ShellAccess::WithoutHerdr,
         )
         .unwrap();
 
@@ -186,6 +238,7 @@ mod tests {
             Path::new("/bin/codex"),
             "ASK",
             Path::new("/run/assist"),
+            ShellAccess::WithoutHerdr,
         )
         .unwrap();
 
@@ -199,6 +252,7 @@ mod tests {
             Path::new("/bin/copilot"),
             "ASK",
             Path::new("/run/assist"),
+            ShellAccess::WithoutHerdr,
         )
         .unwrap();
 
@@ -216,13 +270,90 @@ mod tests {
     }
 
     #[test]
+    fn claude_for_a_protected_pane_gets_only_file_reading_tools() {
+        let argv = product_argv(
+            AssistProduct::Claude,
+            Path::new("/bin/claude"),
+            "ASK",
+            Path::new("/run/assist"),
+            ShellAccess::None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            argv,
+            [
+                "/bin/claude",
+                "ASK",
+                "--tools",
+                "Read,Grep,Glob",
+                "--strict-mcp-config",
+                "--allowedTools",
+                "Read(//run/assist/**)",
+                "--disallowedTools",
+                "mcp__*"
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_for_a_protected_pane_never_leaves_the_read_only_sandbox() {
+        let argv = product_argv(
+            AssistProduct::Codex,
+            Path::new("/bin/codex"),
+            "ASK",
+            Path::new("/run/assist"),
+            ShellAccess::None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            argv,
+            [
+                "/bin/codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "ASK"
+            ]
+        );
+    }
+
+    #[test]
+    fn copilot_for_a_protected_pane_denies_every_shell_command() {
+        let argv = product_argv(
+            AssistProduct::Copilot,
+            Path::new("/bin/copilot"),
+            "ASK",
+            Path::new("/run/assist"),
+            ShellAccess::None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            argv,
+            [
+                "/bin/copilot",
+                "-i",
+                "ASK",
+                "--add-dir",
+                "/run/assist",
+                "--deny-tool=shell",
+                "--disable-builtin-mcps"
+            ]
+        );
+    }
+
+    #[test]
     fn an_unknown_product_has_no_argv() {
         assert_eq!(
             product_argv(
                 AssistProduct::Unknown,
                 Path::new("/bin/x"),
                 "ASK",
-                Path::new("/run")
+                Path::new("/run"),
+                ShellAccess::WithoutHerdr,
             ),
             None
         );

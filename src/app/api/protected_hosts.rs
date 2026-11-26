@@ -405,7 +405,7 @@ pub(crate) fn api_refs(method: &Method) -> Vec<ApiRef<'_>> {
     }
 }
 
-fn terminal_is_protected(terminal: &TerminalState) -> bool {
+pub(crate) fn terminal_is_protected(terminal: &TerminalState) -> bool {
     terminal.ssh.as_ref().is_some_and(|ssh| ssh.protected)
         || terminal
             .container

@@ -113,7 +113,18 @@ impl App {
         // Why the pane id and not its label: the label can hold a terminal
         // title with command arguments, and argv shows in process listings.
         let ask = crate::assist::ask_line(&context_path, &context.pane_id);
-        let Some(argv) = crate::assist::product_argv(product, &executable, &ask, &context_dir)
+        let shell = if self
+            .state
+            .terminals
+            .get(&target_terminal)
+            .is_some_and(super::protected_hosts::terminal_is_protected)
+        {
+            crate::assist::ShellAccess::None
+        } else {
+            crate::assist::ShellAccess::WithoutHerdr
+        };
+        let Some(argv) =
+            crate::assist::product_argv(product, &executable, &ask, &context_dir, shell)
         else {
             remove_context(&context_path);
             return encode_error(id, "assist_product_not_found", "unknown assist product");

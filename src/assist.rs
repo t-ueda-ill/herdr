@@ -8,7 +8,7 @@ mod products;
 
 pub(crate) use context::{render_context, AssistContext, ContextRead};
 pub(crate) use links::{AssistLink, AssistLinks};
-pub(crate) use products::{ask_line, find_products, product_argv, refresh_line};
+pub(crate) use products::{ask_line, find_products, product_argv, refresh_line, ShellAccess};
 
 use crate::api::schema::{AssistPlacement, SplitDirection};
 

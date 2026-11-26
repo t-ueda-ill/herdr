@@ -146,9 +146,9 @@ For a pane on a protected host, including a container on that host:
 - The herdr CLI and the JSON API refuse to read, type into, move, close, or open files in the pane, and refuse requests on the tab or space that holds it, with the error code `protected_host`. `ssh.open`, `ssh.container.open`, and `ssh.container.list` refuse the host itself. Lists such as `herdr pane list` still show the pane.
 - Herdr shares no SSH connection with the pane. It passes `-o ControlMaster=no -o ControlPath=none`, which also overrides connection sharing in your own SSH config, so a local process cannot run commands on the host through the pane's login. Features that depend on the shared connection, such as the file workbench, uploads, downloads, and image paste, are unavailable for the pane.
 
-The window you work in keeps full control of the pane, and Ask AI still reads it. The prefix matches without case. Set `protected_host_prefix = ""` to protect no host. The server reads the prefix when it starts, so reloading the config does not change it, and a live handoff keeps the prefix of the server it replaces.
+The window you work in keeps full control of the pane, and Ask AI still reads it. An Ask AI assist for the pane starts without a shell (see [`herdr assist`](/docs/cli-reference)). The prefix matches without case. Set `protected_host_prefix = ""` to protect no host. The server reads the prefix when it starts, so reloading the config does not change it, and a live handoff keeps the prefix of the server it replaces.
 
-A local process can still start its own `ssh` to the host when your keys allow it, for example through a loaded `ssh-agent`.
+Another local process can still start its own `ssh` to the host when your keys allow it, for example through a loaded `ssh-agent`.
 
 ### Pane recordings
 
