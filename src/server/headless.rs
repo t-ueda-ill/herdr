@@ -234,7 +234,9 @@ pub struct HeadlessServer {
     /// Deferred application-history reads currently driving alternate-screen viewports.
     pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
     /// Reads waiting for an alternate-screen traversal of the same terminal to finish.
-    deferred_alt_screen_reads: Vec<api::ApiRequestMessage>,
+    /// With whether each came from the user's own client, so the replay is
+    /// judged as the original request was.
+    deferred_alt_screen_reads: Vec<(api::ApiRequestMessage, bool)>,
     /// Monotonic activity counter used to pick the most recently active client.
     next_activity_stamp: u64,
     /// Configured virtual terminal size used when no clients are connected.
@@ -1540,8 +1542,31 @@ impl HeadlessServer {
             self.remove_client_and_resize_if_needed(client_id);
             return None;
         };
+        if self.terminal_on_protected_host(&terminal_id) {
+            self.refuse_protected_terminal(client_id, &format!("terminal session {action}"));
+            return None;
+        }
 
         Some(terminal_id)
+    }
+
+    /// Why direct attaches and terminal sessions are checked too: they reach
+    /// a pane's screen and input through the client socket, and only the
+    /// herdr CLI opens them; the TUI shows panes through its own endpoint.
+    fn terminal_on_protected_host(&self, terminal_id: &str) -> bool {
+        self.app.terminal_reaches_protected(terminal_id)
+    }
+
+    fn refuse_protected_terminal(&mut self, client_id: u64, what: &str) {
+        self.send_to_client(
+            client_id,
+            ServerMessage::ServerShutdown {
+                reason: Some(format!(
+                    "{what} failed: the pane is on a protected ssh host; use the herdr window instead"
+                )),
+            },
+        );
+        self.remove_client_and_resize_if_needed(client_id);
     }
 
     fn observe_terminal_client(&mut self, client_id: u64, target: String) -> bool {
@@ -2018,6 +2043,10 @@ impl HeadlessServer {
             return false;
         }
 
+        if self.terminal_on_protected_host(&terminal_id) {
+            self.refuse_protected_terminal(client_id, "terminal attach");
+            return false;
+        }
         let Some(real_terminal_id) = self.terminal_id_by_string(&terminal_id) else {
             self.send_to_client(
                 client_id,
@@ -3181,13 +3210,16 @@ impl HeadlessServer {
     fn process_deferred_alt_screen_reads(&mut self) -> bool {
         let deferred = std::mem::take(&mut self.deferred_alt_screen_reads);
         let mut changed = false;
-        for msg in deferred {
+        for (msg, client_local) in deferred {
             match self.alt_screen_read_conflict(&msg.request) {
+                AltScreenReadConflict::None if client_local => {
+                    changed |= self.handle_api_request_with_shutdown_check_inner(msg, false, true);
+                }
                 AltScreenReadConflict::None => {
                     changed |= self.handle_api_request_with_shutdown_check(msg);
                 }
                 AltScreenReadConflict::Frozen(_) | AltScreenReadConflict::Defer => {
-                    self.deferred_alt_screen_reads.push(msg);
+                    self.deferred_alt_screen_reads.push((msg, client_local));
                 }
             }
         }
@@ -3251,13 +3283,19 @@ impl HeadlessServer {
             AltScreenReadConflict::None => None,
             AltScreenReadConflict::Frozen(snapshot) => Some(snapshot),
             AltScreenReadConflict::Defer => {
-                self.deferred_alt_screen_reads.push(msg);
+                self.deferred_alt_screen_reads.push((msg, client_local));
                 return false;
             }
         };
 
         let metadata_expired = self.app.expire_due_metadata(Instant::now());
         if let api::schema::Method::ServerLiveHandoff(params) = &msg.request.method {
+            if !client_local {
+                if let Some(denial) = self.app.protected_host_denial(&msg.request) {
+                    let _ = msg.respond_to.send(denial);
+                    return false;
+                }
+            }
             let handoff_result = self.perform_live_handoff(params.clone());
             let handoff_succeeded = handoff_result.is_ok();
             let response = match handoff_result {
@@ -3316,6 +3354,16 @@ impl HeadlessServer {
         if self.host_shutdown_requested() {
             Self::reject_api_request_for_shutdown(msg);
             return changed;
+        }
+        // Why after the drain: a pending event can move the focus or finish
+        // opening a pane, and an id-less request must be judged on the state
+        // it will act on. Why not for `client_local`: the user's own clients
+        // come through the client endpoint and keep full control.
+        if !client_local {
+            if let Some(denial) = self.app.protected_host_denial(&msg.request) {
+                let _ = msg.respond_to.send(denial);
+                return changed;
+            }
         }
 
         // Capture toast and effective pane states before the API call so we can

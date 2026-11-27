@@ -79,6 +79,14 @@ impl OffHostPaneFixture {
         fixture
     }
 
+    pub(super) fn terminal_id(&self) -> String {
+        self.terminal_id.to_string()
+    }
+
+    pub(super) fn pane_id(&self) -> &str {
+        &self.public_pane_id
+    }
+
     pub(super) fn target(&self) -> crate::protocol::ClientClipboardImageTarget {
         crate::protocol::ClientClipboardImageTarget::Pane(self.public_pane_id.clone())
     }

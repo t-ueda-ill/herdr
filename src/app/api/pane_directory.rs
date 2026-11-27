@@ -382,6 +382,20 @@ impl App {
         if !is_focused {
             return Err(("stale_pane_target", "pane is no longer focused".to_owned()));
         }
+        // Why refuse on the user's own client too: the overlay is a new
+        // terminal that carries no protection, so the CLI could read and type
+        // into an editor on the protected host through it.
+        let protected = self
+            .state
+            .terminal_id_for_pane(ws_idx, pane)
+            .and_then(|terminal| self.state.terminals.get(&terminal))
+            .is_some_and(super::protected_hosts::terminal_is_protected);
+        if protected {
+            return Err((
+                super::protected_hosts::ERROR_CODE,
+                format!("pane {pane_id} is on a protected ssh host; open files in the pane itself"),
+            ));
+        }
         Ok(target)
     }
 

@@ -422,6 +422,95 @@ async fn the_cli_argv_names_the_pane_by_id_and_not_by_its_label() {
 }
 
 #[cfg(unix)]
+fn helper_argv(fixture: &Fixture) -> Vec<String> {
+    let helper = &fixture.app.state.assists.iter().next().unwrap().helper;
+    fixture.app.state.terminals[helper]
+        .launch_argv
+        .clone()
+        .expect("argv")
+}
+
+#[cfg(unix)]
+fn protect_target(fixture: &mut Fixture) {
+    let target_pane = fixture.app.state.workspaces[0].tabs[0].root_pane;
+    let target = fixture
+        .app
+        .state
+        .terminal_id_for_pane(0, target_pane)
+        .unwrap();
+    fixture.app.state.terminals.get_mut(&target).unwrap().ssh =
+        crate::ssh_host::SshLaunch::new("noref_prod".into(), None);
+}
+
+#[cfg(unix)]
+fn add_fake_claude(fixture: &Fixture) {
+    let claude = fixture.bin.join("claude");
+    std::fs::write(&claude, "#!/bin/sh\nsleep 30\n").unwrap();
+    crate::platform::set_permission_bits(&claude, 0o755).unwrap();
+}
+
+#[cfg(unix)]
+fn start_with(fixture: &mut Fixture, product: Option<AssistProduct>) -> String {
+    let target = fixture.target.clone();
+    call(
+        &mut fixture.app,
+        Method::AssistStart(AssistStartParams {
+            pane_id: target,
+            product,
+            placement: AssistPlacement::Auto,
+            focus: true,
+        }),
+    )
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_assist_for_a_protected_pane_is_claude_without_a_shell() {
+    let mut fixture = fixture(80, MARKED_SHELL);
+    add_fake_claude(&fixture);
+    protect_target(&mut fixture);
+
+    let (assist, _) = started(&start_with(&mut fixture, None));
+
+    assert_eq!(assist.product, AssistProduct::Claude);
+    let argv = helper_argv(&fixture);
+    assert!(
+        argv.windows(2)
+            .any(|pair| pair == ["--tools", "Read,Grep,Glob"]),
+        "{argv:?}"
+    );
+    assert!(argv.iter().all(|arg| arg != "Bash(herdr:*)"), "{argv:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_protected_pane_refuses_an_assist_that_could_keep_a_shell() {
+    let mut fixture = fixture(80, MARKED_SHELL);
+    protect_target(&mut fixture);
+
+    let explicit = start_with(&mut fixture, Some(AssistProduct::Codex));
+    let default = start_with(&mut fixture, None);
+
+    assert_eq!(error_code(&explicit), "assist_product_not_allowed");
+    assert_eq!(error_code(&default), "assist_product_not_found");
+    assert_eq!(pane_count(&fixture), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_assist_for_a_local_pane_keeps_the_usual_approvals() {
+    let mut fixture = fixture(80, MARKED_SHELL);
+
+    started(&start(&mut fixture, AssistPlacement::Auto));
+
+    let argv = helper_argv(&fixture);
+    assert!(
+        !argv.iter().any(|arg| arg == "--ask-for-approval"),
+        "{argv:?}"
+    );
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn a_session_save_keeps_neither_the_assist_pane_nor_its_screen_history() {
     let mut fixture = fixture(80, MARKED_SHELL);

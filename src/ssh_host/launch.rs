@@ -23,19 +23,27 @@ pub(crate) struct SshLaunch {
     /// a cold restore reaches the host it first opened. `None` reads ssh's
     /// defaults (`~/.ssh/config` and the system config).
     pub(crate) config: Option<PathBuf>,
+    /// The alias carries the protected prefix, so the pane shares no ssh
+    /// connection. Decided once here so every respawn, restore and side
+    /// channel sees the same answer.
+    pub(crate) protected: bool,
 }
 
 impl SshLaunch {
     /// `None` for a destination `ssh_destination_alias` rejects.
     pub(crate) fn new(host: String, control_path: Option<PathBuf>) -> Option<Self> {
         let canonical = ssh_destination_alias(&host)?.to_owned();
+        let protected = super::protected::current().covers(&canonical);
         Some(Self {
             host,
             canonical,
-            control_path,
+            // Why drop a saved path too: a restored pane must not rejoin a
+            // master it shared before the host became protected.
+            control_path: control_path.filter(|_| !protected),
             start_dir: None,
             has_remote_command: true,
             config: None,
+            protected,
         })
     }
 
@@ -92,16 +100,10 @@ pub(crate) fn ssh_destination_alias(host: &str) -> Option<&str> {
 pub(crate) fn ssh_argv(launch: &SshLaunch) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec!["ssh".into(), "-C".into()];
     argv.extend(config_args(launch.config.as_deref()));
-    if let Some(control_path) = &launch.control_path {
-        argv.extend([
-            "-S".into(),
-            control_path.as_os_str().to_owned(),
-            "-o".into(),
-            "ControlMaster=auto".into(),
-            "-o".into(),
-            "ControlPersist=600".into(),
-        ]);
-    }
+    argv.extend(connection_sharing_args(
+        launch.protected,
+        launch.control_path.as_deref(),
+    ));
     argv.push("-t".into());
     argv.push((&launch.host).into());
     argv
@@ -192,16 +194,9 @@ pub(crate) fn ssh_batch_argv(
     command: &str,
 ) -> Vec<OsString> {
     let mut argv: Vec<OsString> = config_args(config).collect();
-    if let Some(control_path) = control_path {
-        argv.extend([
-            "-S".into(),
-            control_path.as_os_str().to_owned(),
-            "-o".into(),
-            "ControlMaster=auto".into(),
-            "-o".into(),
-            "ControlPersist=600".into(),
-        ]);
-    }
+    let protected =
+        ssh_destination_alias(host).is_some_and(|alias| super::protected::current().covers(alias));
+    argv.extend(connection_sharing_args(protected, control_path));
     for option in [
         "BatchMode=yes",
         "ConnectTimeout=5",
@@ -218,6 +213,34 @@ pub(crate) fn ssh_batch_argv(
     argv.push(host.into());
     argv.push(command.into());
     argv
+}
+
+/// Joins herdr's master through `control_path`, or for a protected host
+/// turns sharing off.
+///
+/// Why `ControlPath=none` and not just leaving `-S` out: the user's own
+/// `~/.ssh/config` may set `ControlMaster`, and any local process could then
+/// run commands through that socket without logging in.
+fn connection_sharing_args(protected: bool, control_path: Option<&Path>) -> Vec<OsString> {
+    if protected {
+        return vec![
+            "-o".into(),
+            "ControlMaster=no".into(),
+            "-o".into(),
+            "ControlPath=none".into(),
+        ];
+    }
+    let Some(control_path) = control_path else {
+        return Vec::new();
+    };
+    vec![
+        "-S".into(),
+        control_path.as_os_str().to_owned(),
+        "-o".into(),
+        "ControlMaster=auto".into(),
+        "-o".into(),
+        "ControlPersist=600".into(),
+    ]
 }
 
 /// `-F <config>`, or nothing so ssh reads its default configs.
@@ -496,6 +519,56 @@ mod tests {
                 "prod",
                 "true"
             ]
+        );
+    }
+
+    #[test]
+    fn a_protected_host_gets_no_control_path_from_herdr() {
+        let launch = SshLaunch::new(
+            "deploy@noref_prod".into(),
+            Some("/tmp/hssh-1/abc-%C".into()),
+        )
+        .unwrap();
+
+        assert_eq!(launch.control_path, None);
+    }
+
+    #[test]
+    fn a_protected_host_disables_connection_sharing_from_the_users_ssh_config() {
+        let launch = SshLaunch::new("noref_prod".into(), None)
+            .unwrap()
+            .with_config(Some("/home/u/.ssh/prod-config".into()));
+
+        assert_eq!(
+            strings(ssh_argv(&launch)),
+            [
+                "ssh",
+                "-C",
+                "-F",
+                "/home/u/.ssh/prod-config",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ControlPath=none",
+                "-t",
+                "noref_prod"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_batch_command_to_a_protected_host_shares_no_connection() {
+        let argv = strings(ssh_batch_argv(
+            "noref_prod",
+            None,
+            Some(Path::new("/tmp/hssh-1/abc-%C")),
+            "true",
+        ));
+
+        assert!(!argv.iter().any(|arg| arg == "-S"), "{argv:?}");
+        assert_eq!(
+            argv[..4],
+            ["-o", "ControlMaster=no", "-o", "ControlPath=none"]
         );
     }
 

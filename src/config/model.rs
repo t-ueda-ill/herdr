@@ -1134,12 +1134,18 @@ pub struct OffhostConfig {
     /// by loading a temporary script at startup. Set false to start the plain
     /// shell. Default: true.
     pub shell_integration: bool,
+    /// ssh hosts whose config alias starts with this prefix share no ssh
+    /// connection, and the herdr CLI and API cannot read or drive their panes.
+    /// An empty string protects no host. Read when the server starts.
+    /// Default: "noref_".
+    pub protected_host_prefix: String,
 }
 
 impl Default for OffhostConfig {
     fn default() -> Self {
         Self {
             shell_integration: true,
+            protected_host_prefix: crate::ssh_host::protected::DEFAULT_PREFIX.to_owned(),
         }
     }
 }

@@ -395,8 +395,11 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 | `ssh_host_not_found` | `~/.ssh/config` に該当するリテラルな `Host` エイリアスがない |
 | `ssh_unavailable` | `ssh` クライアントが `PATH` にない、または `~/.ssh/config` を読み取れない |
 | `platform_unsupported` | サーバーが Windows 上で動作している |
+| `protected_host` | エイリアスが `[offhost] protected_host_prefix` で始まる |
 
 作成・分割パラメーターは変更されず、SSH ホストは `ssh.open` でのみ渡されます。
+
+このソケットへの要求のうち、保護されたホストのペインを読む・操作するもの、またはそのペインを含むタブやスペースに対するものは `protected_host` を返します。一覧と `*.get` ではペインの情報を返します。[保護する SSH ホスト](/docs/configuration#保護する-ssh-ホスト)を参照してください。
 
 ## ペインの実行場所で開く
 

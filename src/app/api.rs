@@ -10,6 +10,7 @@ mod directory;
 mod files;
 mod inherit;
 mod preview;
+pub(crate) mod protected_hosts;
 pub(crate) use files::FileService;
 mod env;
 mod integrations;

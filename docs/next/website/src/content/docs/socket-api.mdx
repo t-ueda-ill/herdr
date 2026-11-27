@@ -470,8 +470,11 @@ Create and split params stay unchanged; the container reference travels only in 
 | `ssh_host_not_found` | no such literal `Host` alias in `~/.ssh/config` |
 | `ssh_unavailable` | the `ssh` client is not on `PATH`, or `~/.ssh/config` cannot be read |
 | `platform_unsupported` | the server runs on Windows |
+| `protected_host` | the alias starts with `[offhost] protected_host_prefix` |
 
 Create and split params stay unchanged; the SSH host travels only in `ssh.open`.
+
+Any request on this socket that would read or drive a pane on a protected host, or act on the tab or space that holds one, returns `protected_host`. Listings and `*.get` still describe the pane. See [Protected SSH hosts](/docs/configuration#protected-ssh-hosts).
 
 ## Opening where a pane runs
 

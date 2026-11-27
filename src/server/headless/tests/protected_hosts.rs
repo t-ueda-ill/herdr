@@ -1,0 +1,146 @@
+use super::off_host_clipboard_fixture::{OffHostPaneFixture, OffHostShell};
+use super::*;
+
+fn protected_pane() -> OffHostPaneFixture {
+    let launch =
+        crate::ssh_host::SshLaunch::new("noref_prod".into(), None).expect("valid ssh destination");
+    OffHostPaneFixture::new(OffHostShell::Ssh(launch), true)
+}
+
+fn read_request(pane_id: &str) -> api::schema::Request {
+    api::schema::Request {
+        id: "read".into(),
+        method: api::schema::Method::PaneRead(api::schema::PaneReadParams {
+            pane_id: pane_id.into(),
+            source: api::schema::ReadSource::Recent,
+            lines: None,
+            format: api::schema::ReadFormat::Text,
+            strip_ansi: true,
+            intent: api::schema::ReadIntent::Passive,
+        }),
+    }
+}
+
+fn error_code(response: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(response).expect("json response");
+    value["error"]["code"].as_str().map(str::to_owned)
+}
+
+#[tokio::test]
+async fn the_public_socket_cannot_read_a_protected_pane() {
+    let mut fixture = protected_pane();
+    let request = read_request(fixture.pane_id());
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+
+    fixture
+        .server
+        .handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+            request,
+            respond_to,
+            response_write_complete: None,
+        });
+
+    let response = response_rx.recv().expect("response");
+    assert_eq!(
+        error_code(response.as_bytes()).as_deref(),
+        Some("protected_host")
+    );
+    fixture.finish();
+}
+
+/// The client endpoint hands its requests to the same dispatch with
+/// `client_local` set; the protection sits before it, on the public path only.
+#[tokio::test]
+async fn the_users_own_client_still_reads_a_protected_pane() {
+    let mut fixture = protected_pane();
+    let request = read_request(fixture.pane_id());
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+
+    fixture.server.handle_api_request_with_shutdown_check_inner(
+        api::ApiRequestMessage {
+            request,
+            respond_to,
+            response_write_complete: None,
+        },
+        false,
+        true,
+    );
+
+    let response = response_rx.recv().expect("response");
+    assert_eq!(error_code(response.as_bytes()), None, "{response}");
+    fixture.finish();
+}
+
+#[tokio::test]
+async fn the_cli_cannot_attach_to_or_drive_a_protected_terminal() {
+    let mut fixture = protected_pane();
+    for (client_id, open) in [(21, "attach"), (22, "control")] {
+        let (writer, control_rx, _render_rx) = test_client_writer();
+        fixture.server.clients.insert(
+            client_id,
+            ClientConnection::new_with_mode(
+                ClientConnectionMode::TerminalPending,
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                1,
+                RenderEncoding::SemanticFrame,
+                Some(writer),
+            ),
+        );
+        let terminal_id = fixture.terminal_id();
+
+        if open == "attach" {
+            fixture
+                .server
+                .attach_terminal_client(client_id, terminal_id, false);
+        } else {
+            fixture
+                .server
+                .resolve_terminal_session_target(client_id, &terminal_id, "control");
+        }
+
+        assert!(!fixture.server.clients.contains_key(&client_id), "{open}");
+        // Why wait: the test writer forwards on its own thread, and the
+        // channel closes once the refused client's writer drains.
+        let reasons: Vec<_> = std::iter::from_fn(|| {
+            control_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .ok()
+        })
+        .filter_map(|bytes| match read_server_message(bytes) {
+            ServerMessage::ServerShutdown { reason } => reason,
+            _ => None,
+        })
+        .collect();
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains("protected ssh host")),
+            "{open}: {reasons:?}"
+        );
+    }
+    fixture.finish();
+}
+
+/// A read that waited for an alternate-screen switch is replayed later; it
+/// must keep coming from the user's own client.
+#[tokio::test]
+async fn a_deferred_read_from_the_users_client_still_reads_a_protected_pane() {
+    let mut fixture = protected_pane();
+    let request = read_request(fixture.pane_id());
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    fixture.server.deferred_alt_screen_reads.push((
+        api::ApiRequestMessage {
+            request,
+            respond_to,
+            response_write_complete: None,
+        },
+        true,
+    ));
+
+    fixture.server.process_deferred_alt_screen_reads();
+
+    let response = response_rx.recv().expect("response");
+    assert_eq!(error_code(response.as_bytes()), None, "{response}");
+    fixture.finish();
+}
