@@ -617,10 +617,9 @@ impl App {
             // Why the whole group whatever `confirm_close` says: closing the
             // last pane or tab closes the workspace, and the handler may take
             // its linked group with it.
-            ApiRef::ClosingPane(id) => self.parse_pane_id(id).is_some_and(|(ws_idx, _)| {
-                let ws = &self.state.workspaces[ws_idx];
-                let last = ws.tabs.len() == 1 && ws.tabs[0].panes.len() == 1;
-                last && self.group_is_protected(ws_idx)
+            ApiRef::ClosingPane(id) => self.parse_pane_id(id).is_some_and(|(ws_idx, pane_id)| {
+                self.state.close_pane_would_close_workspace(ws_idx, pane_id)
+                    && self.group_is_protected(ws_idx)
             }),
             ApiRef::ClosingTab(id) => self.parse_tab_id(id).is_some_and(|(ws_idx, _)| {
                 self.state.workspaces[ws_idx].tabs.len() == 1 && self.group_is_protected(ws_idx)
