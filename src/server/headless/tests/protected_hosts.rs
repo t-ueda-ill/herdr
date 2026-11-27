@@ -121,3 +121,26 @@ async fn the_cli_cannot_attach_to_or_drive_a_protected_terminal() {
     }
     fixture.finish();
 }
+
+/// A read that waited for an alternate-screen switch is replayed later; it
+/// must keep coming from the user's own client.
+#[tokio::test]
+async fn a_deferred_read_from_the_users_client_still_reads_a_protected_pane() {
+    let mut fixture = protected_pane();
+    let request = read_request(fixture.pane_id());
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    fixture.server.deferred_alt_screen_reads.push((
+        api::ApiRequestMessage {
+            request,
+            respond_to,
+            response_write_complete: None,
+        },
+        true,
+    ));
+
+    fixture.server.process_deferred_alt_screen_reads();
+
+    let response = response_rx.recv().expect("response");
+    assert_eq!(error_code(response.as_bytes()), None, "{response}");
+    fixture.finish();
+}

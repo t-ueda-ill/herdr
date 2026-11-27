@@ -234,7 +234,9 @@ pub struct HeadlessServer {
     /// Deferred application-history reads currently driving alternate-screen viewports.
     pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
     /// Reads waiting for an alternate-screen traversal of the same terminal to finish.
-    deferred_alt_screen_reads: Vec<api::ApiRequestMessage>,
+    /// With whether each came from the user's own client, so the replay is
+    /// judged as the original request was.
+    deferred_alt_screen_reads: Vec<(api::ApiRequestMessage, bool)>,
     /// Monotonic activity counter used to pick the most recently active client.
     next_activity_stamp: u64,
     /// Configured virtual terminal size used when no clients are connected.
@@ -3208,13 +3210,16 @@ impl HeadlessServer {
     fn process_deferred_alt_screen_reads(&mut self) -> bool {
         let deferred = std::mem::take(&mut self.deferred_alt_screen_reads);
         let mut changed = false;
-        for msg in deferred {
+        for (msg, client_local) in deferred {
             match self.alt_screen_read_conflict(&msg.request) {
+                AltScreenReadConflict::None if client_local => {
+                    changed |= self.handle_api_request_with_shutdown_check_inner(msg, false, true);
+                }
                 AltScreenReadConflict::None => {
                     changed |= self.handle_api_request_with_shutdown_check(msg);
                 }
                 AltScreenReadConflict::Frozen(_) | AltScreenReadConflict::Defer => {
-                    self.deferred_alt_screen_reads.push(msg);
+                    self.deferred_alt_screen_reads.push((msg, client_local));
                 }
             }
         }
@@ -3278,7 +3283,7 @@ impl HeadlessServer {
             AltScreenReadConflict::None => None,
             AltScreenReadConflict::Frozen(snapshot) => Some(snapshot),
             AltScreenReadConflict::Defer => {
-                self.deferred_alt_screen_reads.push(msg);
+                self.deferred_alt_screen_reads.push((msg, client_local));
                 return false;
             }
         };
