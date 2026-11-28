@@ -144,6 +144,61 @@ pub(crate) fn inject_reload(page: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The page of a folder without an `index.html`: folders first, then files,
+/// each linked relative to the folder so the token in the URL stays.
+pub(crate) fn listing_page(relative: &str, listing: &super::source::Listing) -> String {
+    let mut entries: Vec<_> = listing.entries.iter().collect();
+    entries.sort_by(|a, b| b.folder.cmp(&a.folder).then_with(|| a.name.cmp(&b.name)));
+    let mut items = String::new();
+    if !relative.is_empty() {
+        items.push_str("<li><a href=\"../\">../</a></li>\n");
+    }
+    for entry in entries {
+        let slash = if entry.folder { "/" } else { "" };
+        items.push_str(&format!(
+            "<li><a href=\"./{href}{slash}\">{name}{slash}</a></li>\n",
+            href = percent_encode_path(&entry.name),
+            name = escape_html(&entry.name),
+        ));
+    }
+    let more = if listing.truncated {
+        format!(
+            "<p>More entries are in this folder than the {} shown.</p>\n",
+            super::source::LIST_LIMIT
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<link rel="stylesheet" href="/__herdr/assets/viewer.css"></head>
+<body><main class="herdr-message herdr-listing"><h1>{title}</h1>
+<ul>
+{items}</ul>
+{more}</main>
+{RELOAD_TAG}
+</body>
+</html>
+"#,
+        title = escape_html(&format!("/{relative}")),
+    )
+}
+
+/// The refusal of a request without the token. Why no link to the right
+/// address: anything that can reach the port could then read the token.
+pub(crate) fn token_missing_page() -> String {
+    message_page(
+        "This preview address is missing its token",
+        "Preview addresses look like http://127.0.0.1:PORT/TOKEN/file. \
+         Copy the full address from the url column of herdr preview list, or \
+         open the preview from previews in the herdr menu.",
+    )
+}
+
 pub(crate) fn message_page(title: &str, detail: &str) -> String {
     format!(
         r#"<!doctype html>

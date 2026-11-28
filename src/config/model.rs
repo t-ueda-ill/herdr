@@ -325,6 +325,7 @@ pub struct Config {
     pub remote: RemoteConfig,
     pub offhost: OffhostConfig,
     pub log: LogConfig,
+    pub preview: PreviewConfig,
 }
 
 #[derive(Debug)]
@@ -1146,6 +1147,31 @@ impl Default for OffhostConfig {
         Self {
             shell_integration: true,
             protected_host_prefix: crate::ssh_host::protected::DEFAULT_PREFIX.to_owned(),
+        }
+    }
+}
+
+/// Browser previews of folders (`herdr preview`, `preview in browser`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct PreviewConfig {
+    /// List the entries of a folder without an `index.html` instead of
+    /// answering 404. Applies to running previews when the config reloads.
+    /// Default: true.
+    pub directory_listing: bool,
+    /// The program and arguments that open a preview in a browser, run
+    /// without a shell. An argument `{url}` is replaced by the address; when
+    /// none is, the address is added last. Empty uses the platform's opener
+    /// (on WSL: `$BROWSER`, `wslview`, `explorer.exe`, then `xdg-open`).
+    /// Default: empty.
+    pub open_command: Vec<String>,
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        Self {
+            directory_listing: true,
+            open_command: Vec::new(),
         }
     }
 }

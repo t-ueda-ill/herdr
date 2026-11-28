@@ -85,6 +85,7 @@ fn send(port: u16, request: &str) -> Reply {
 
 struct Preview {
     server: PreviewServer,
+    listing: ListingSwitch,
     token: String,
     _root: TempDir,
 }
@@ -92,7 +93,13 @@ struct Preview {
 impl Preview {
     fn start(root: TempDir) -> Self {
         let source = LocalSource::new(root.path()).unwrap();
-        let server = PreviewServer::start(Box::new(source), Duration::from_millis(100)).unwrap();
+        let listing = ListingSwitch::new(true);
+        let server = PreviewServer::start(
+            Box::new(source),
+            Duration::from_millis(100),
+            listing.clone(),
+        )
+        .unwrap();
         let token = server
             .url("")
             .trim_start_matches("http://127.0.0.1:")
@@ -102,6 +109,7 @@ impl Preview {
             .to_owned();
         Self {
             server,
+            listing,
             token,
             _root: root,
         }
@@ -294,9 +302,81 @@ fn a_folder_redirects_to_its_slash_and_a_missing_page_waits_for_the_file() {
         folder.header("location"),
         Some(format!("/{}/docs/", preview.token).as_str())
     );
-    let missing = preview.get("/docs/", "Sec-Fetch-Dest: document\r\n");
+    let missing = preview.get("/docs/later.md", "Sec-Fetch-Dest: document\r\n");
     assert_eq!(missing.status, 404);
     assert!(missing.text().contains(crate::preview::page::RELOAD_TAG));
+}
+
+#[test]
+fn a_folder_without_an_index_lists_its_entries() {
+    let preview = Preview::start(site());
+    let reply = preview.get("/docs/", "Sec-Fetch-Dest: document\r\n");
+    assert_eq!(reply.status, 200);
+    assert_eq!(
+        reply.header("content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert!(reply.text().contains(r#"href="./README.md""#));
+    assert!(reply.header("content-security-policy").is_some());
+    // A folder with an index still serves the index.
+    assert!(preview.get("/", "").text().contains("<h1>home</h1>"));
+}
+
+#[test]
+fn a_missing_folder_is_not_found_even_with_listing_on() {
+    let preview = Preview::start(site());
+    assert_eq!(
+        preview
+            .get("/nowhere/", "Sec-Fetch-Dest: document\r\n")
+            .status,
+        404
+    );
+}
+
+#[test]
+fn turning_listing_off_brings_back_the_waiting_page_at_once() {
+    let preview = Preview::start(site());
+    preview.listing.set(false);
+    let reply = preview.get("/docs/", "Sec-Fetch-Dest: document\r\n");
+    assert_eq!(reply.status, 404);
+    preview.listing.set(true);
+    assert_eq!(
+        preview.get("/docs/", "Sec-Fetch-Dest: document\r\n").status,
+        200
+    );
+}
+
+#[test]
+fn a_file_added_to_a_listed_folder_does_not_reload_open_pages() {
+    let root = site();
+    let added = root.path().join("docs/new.md");
+    let preview = Preview::start(root);
+    assert_eq!(preview.get("/docs/", "").status, 200);
+    let mut reader = open_events(&preview, Duration::from_millis(1800));
+    std::thread::sleep(Duration::from_millis(400));
+    std::fs::write(&added, b"# new").unwrap();
+    let mut received = String::new();
+    let mut line = String::new();
+    while reader.read_line(&mut line).is_ok_and(|read| read > 0) {
+        received.push_str(&line);
+        line.clear();
+    }
+    assert!(!received.contains("data: reload"), "{received}");
+}
+
+#[test]
+fn the_refusal_without_the_token_tells_how_to_find_the_address() {
+    let preview = Preview::start(site());
+    let stranger = send(
+        preview.port(),
+        &format!(
+            "GET /docs/README.md HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            preview.port()
+        ),
+    );
+    assert_eq!(stranger.status, 403);
+    assert!(stranger.text().contains("herdr preview list"));
+    assert!(!stranger.text().contains(&preview.token));
 }
 
 #[test]
@@ -459,6 +539,7 @@ fn a_watcher_that_cannot_start_leaves_no_listener_behind() {
         listener,
         Box::new(LocalSource::new(root.path()).unwrap()),
         Duration::from_millis(100),
+        ListingSwitch::new(true),
     );
     assert!(started.is_err());
     let deadline = Instant::now() + Duration::from_secs(5);

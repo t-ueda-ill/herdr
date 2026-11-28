@@ -114,7 +114,24 @@ impl ClientShellState {
             return;
         }
         self.overlay = None;
-        outcome.actions.push(ClientShellAction::OpenSafeWebUrl(url));
+        outcome.actions.push(ClientShellAction::OpenPreviewUrl(url));
+    }
+
+    /// Says that no browser opened `url`, and whether the client copied it.
+    /// A preview started from the files region also shows the whole URL on
+    /// its notice line, where the user was looking.
+    pub(crate) fn url_open_failed(&mut self, url: &str, preview: bool, copied: bool) {
+        let message = if copied {
+            "browser did not open; URL copied"
+        } else {
+            "browser did not open"
+        };
+        if preview {
+            if let Some(tab) = self.investigation_mut() {
+                tab.notice = format!("{message}: {url}");
+            }
+        }
+        self.set_endpoint_error(message);
     }
 
     pub(super) fn submit_preview_stop(&mut self, outcome: &mut ClientShellInput) {

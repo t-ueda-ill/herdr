@@ -17,6 +17,8 @@ pub(super) struct ClientLoopConfig {
         Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
     pub(super) shell_config: Option<shell::ClientShellConfig>,
     pub(super) upload_settings: upload::UploadSettings,
+    /// `[preview] open_command`, read when the client starts.
+    pub(super) preview_open_command: Vec<String>,
     /// Direct attach: the terminal uploads are addressed to.
     pub(super) attach_terminal_id: Option<String>,
 }

@@ -5,7 +5,7 @@ pub(super) fn dispatch_client_shell_actions(
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
     endpoints: &mut endpoint::EndpointRegistry,
     mut shell: Option<&mut shell::ClientShellState>,
-    detached_process_children: &mut Vec<std::process::Child>,
+    url_launcher: &url_launcher::UrlLauncher,
     scheduled_activation: &mut Option<ClientLoopEvent>,
 ) -> Result<(Vec<crossterm::event::MouseEvent>, bool), ClientError> {
     let mut replay_mouse = Vec::new();
@@ -125,11 +125,12 @@ pub(super) fn dispatch_client_shell_actions(
             }
             shell::ClientShellAction::OpenSafeWebUrl(url) => {
                 if crate::app::actions::safe_web_url(&url).is_some() {
-                    match crate::platform::open_url(&url) {
-                        Ok(Some(child)) => detached_process_children.push(child),
-                        Ok(None) => {}
-                        Err(err) => warn!(err = %err, url = %url, "failed to open pane URL"),
-                    }
+                    url_launcher.open(url, false);
+                }
+            }
+            shell::ClientShellAction::OpenPreviewUrl(url) => {
+                if crate::app::actions::safe_web_url(&url).is_some() {
+                    url_launcher.open(url, true);
                 }
             }
             shell::ClientShellAction::ReplayMouse(events) => replay_mouse.extend(events),
@@ -404,7 +405,7 @@ pub(super) fn begin_endpoint_activation(
                 endpoint_commands,
                 endpoints,
                 Some(shell),
-                &mut state.detached_process_children,
+                &state.url_launcher,
                 scheduled_activation,
             )?;
             if repaint {
@@ -978,7 +979,7 @@ pub(super) fn finish_client_shell_input(
         endpoint_commands,
         endpoints,
         state.shell.as_mut(),
-        &mut state.detached_process_children,
+        &state.url_launcher,
         scheduled_activation,
     )?;
     let frame = if dispatch_repaint {

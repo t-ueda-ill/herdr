@@ -164,6 +164,20 @@ In `file_name`, `{space}` is the workspace label when one was chosen (by a renam
 
 Recordings stay asciicast v2, so asciinema plays them. Event times count from the whole second in the header `timestamp`, so each event happened at `timestamp` plus its time. At the first event of each minute, Herdr also writes a marker with the local date and time, such as `[61.250000, "m", "[2026/11/25 10:31:00.250]"]`, which shows in a player's marker list and when reading the file with `zless`. `herdr log show FILE` prints a recording with the local date and time in front of every event, for example `[2026/11/25 10:30:12.250] o "$ ls\r\n"`. In `time_format`, `yyyy`, `mm`, `dd`, `hh`, `mi`, `ss`, and `sss` (milliseconds) stand for the local date and time, and other text is kept; it spells both the markers and `herdr log show`. An invalid value is reported and the default is used.
 
+## Browser previews
+
+`[preview]` sets how [`herdr preview`](/docs/cli-reference#previews) and `preview in browser` serve folders and open the browser.
+
+```toml
+[preview]
+directory_listing = true
+open_command = []
+```
+
+`directory_listing` lists the files and folders of a folder that has no `index.html`, with links that keep the preview token; set it to `false` to answer such a folder with the page that waits for its `index.html`. A config reload applies it to running previews too.
+
+`open_command` is the program and arguments that open a preview in a browser, such as `["wslview"]` or `["firefox", "--new-tab", "{url}"]`. It runs without a shell; an argument `{url}` is replaced by the preview address, and the address is added last when no argument names it. It applies to previews only; links clicked in a pane keep the platform's opener. The TUI reads it when it starts, `herdr preview start --open` on every run. When it is empty, Herdr tries `$BROWSER` and then the platform's opener: `open` on macOS, the default browser on Windows, and `xdg-open` on Linux, with `wslview` and `explorer.exe` before `xdg-open` under WSL. An opener that exits with a failure is skipped for the next one; one still running after three seconds counts as opened.
+
 ## Keybindings
 
 For a guided introduction to the prefix and a vetted prefix-free setup, see [Keyboard](/docs/keyboard/).

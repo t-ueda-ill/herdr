@@ -913,14 +913,35 @@ pub fn clipboard_text_matches(_bytes: &[u8]) -> Option<bool> {
     None
 }
 
-pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
-    Command::new("xdg-open")
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(Some)
+/// The ways to open `url`, in the order to try them.
+pub(crate) fn url_openers(url: &str) -> Vec<super::UrlOpener> {
+    linux_url_openers(
+        url,
+        running_inside_wsl(),
+        std::env::var("BROWSER").ok().as_deref(),
+    )
+}
+
+/// Why WSL needs more than `xdg-open`: a WSL distribution often has no
+/// desktop opener installed, and the browser lives on the Windows side.
+/// `wslview` (wslu) hands the URL to Windows; `explorer.exe` is always
+/// there through interop. Why not `cmd.exe /c start`: cmd parses `&` in the
+/// URL as a command separator.
+fn linux_url_openers(url: &str, wsl: bool, browser: Option<&str>) -> Vec<super::UrlOpener> {
+    let mut openers = browser
+        .map(|value| super::browser_env_openers(value, url))
+        .unwrap_or_default();
+    if wsl {
+        openers.push(super::UrlOpener::command("wslview", vec![url.to_owned()]));
+        openers.push(super::UrlOpener::Command {
+            program: "explorer.exe".to_owned(),
+            args: vec![url.to_owned()],
+            // explorer.exe exits with 1 even after it opened the URL.
+            exit_status_reliable: false,
+        });
+    }
+    openers.push(super::UrlOpener::command("xdg-open", vec![url.to_owned()]));
+    super::dedup_by_program(openers)
 }
 
 pub fn read_clipboard_image() -> Option<ClipboardImage> {
@@ -1344,6 +1365,30 @@ pub(crate) fn copy_symbolic_link(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wsl_tries_browser_then_wslview_then_explorer_then_xdg_open() {
+        let url = "http://127.0.0.1:1/t/a&b";
+        let openers = super::linux_url_openers(url, true, Some("firefox"));
+        let names: Vec<_> = openers.iter().map(super::super::UrlOpener::name).collect();
+        assert_eq!(names, ["firefox", "wslview", "explorer.exe", "xdg-open"]);
+        assert!(matches!(
+            &openers[2],
+            super::super::UrlOpener::Command { args, exit_status_reliable: false, .. }
+                if args == &[url.to_owned()]
+        ));
+    }
+
+    #[test]
+    fn a_browser_naming_wslview_is_not_tried_twice_and_plain_linux_uses_xdg_open() {
+        let url = "http://127.0.0.1:1/t/";
+        let wsl = super::linux_url_openers(url, true, Some("wslview"));
+        let names: Vec<_> = wsl.iter().map(super::super::UrlOpener::name).collect();
+        assert_eq!(names, ["wslview", "explorer.exe", "xdg-open"]);
+        let plain = super::linux_url_openers(url, false, None);
+        let names: Vec<_> = plain.iter().map(super::super::UrlOpener::name).collect();
+        assert_eq!(names, ["xdg-open"]);
+    }
+
     use super::*;
     use std::sync::{Mutex, OnceLock};
     use std::{cell::RefCell, collections::HashMap};

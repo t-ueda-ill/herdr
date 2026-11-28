@@ -695,14 +695,15 @@ pub fn clipboard_text_matches(_bytes: &[u8]) -> Option<bool> {
     None
 }
 
-pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
-    Command::new("open")
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(Some)
+/// The ways to open `url`, in the order to try them: `$BROWSER` when set,
+/// then `open`.
+pub(crate) fn url_openers(url: &str) -> Vec<super::UrlOpener> {
+    let mut openers = std::env::var("BROWSER")
+        .ok()
+        .map(|value| super::browser_env_openers(&value, url))
+        .unwrap_or_default();
+    openers.push(super::UrlOpener::command("open", vec![url.to_owned()]));
+    super::dedup_by_program(openers)
 }
 
 pub fn read_clipboard_image() -> Option<ClipboardImage> {

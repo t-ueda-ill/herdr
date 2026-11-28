@@ -42,6 +42,7 @@ mod terminal_setup;
 mod timer;
 mod transport;
 mod upload;
+mod url_launcher;
 
 #[cfg(test)]
 use clipboard_forwarding::decode_clipboard_payload;
@@ -216,6 +217,7 @@ fn run_client_with_mode(
         .as_ref()
         .is_some_and(shell::ClientShellConfig::uses_endpoint_keybindings);
     let upload_settings = upload::UploadSettings::from_config(&loaded_config.config);
+    let preview_open_command = loaded_config.config.preview.open_command.clone();
     let mut loop_config = ClientLoopConfig {
         sound_config: loaded_config.config.ui.sound,
         mouse_scroll_lines,
@@ -232,6 +234,7 @@ fn run_client_with_mode(
         remote_image_paste_key,
         shell_config,
         upload_settings,
+        preview_open_command,
         attach_terminal_id: attach_request
             .as_ref()
             .map(|(terminal_id, _)| terminal_id.clone()),
@@ -498,7 +501,9 @@ async fn run_client_loop(
         presentation_frozen: false,
         deferred_local_activation: None,
         draw_host_cursor,
-        detached_process_children: Vec::new(),
+        url_launcher: url_launcher::UrlLauncher::new(std::mem::take(
+            &mut config.preview_open_command,
+        )),
         uploads: upload::runtime::UploadRuntime::new(config.upload_settings),
         downloads: download::runtime::DownloadRuntime::default(),
         shell: config.shell_config.take().map(shell::ClientShellState::new),
@@ -555,6 +560,7 @@ async fn run_client_loop(
     #[cfg(unix)]
     let stdin_tx = event_tx.clone();
 
+    state.url_launcher.connect(event_tx.clone());
     let mut endpoint_commands = endpoint_commands::EndpointCommands::default();
 
     // Spawn the stdin reader thread.
@@ -952,6 +958,25 @@ async fn run_client_loop(
                     present_shell_repaint(&mut state);
                 }
             }
+            ClientLoopEvent::UrlOpened {
+                url,
+                preview,
+                result,
+            } => match result {
+                Ok(()) => debug!(preview, "browser opened"),
+                Err(reason) => {
+                    // Why no URL in the log: a preview URL carries its token.
+                    warn!(%reason, preview, "could not open a browser");
+                    // Why copy: the URL is long and on a line that may be
+                    // cut, and OSC 52 reaches this terminal's clipboard even
+                    // over ssh.
+                    let copied = crate::selection::write_osc52_bytes(url.as_bytes());
+                    if let Some(shell) = state.shell.as_mut() {
+                        shell.url_open_failed(&url, preview, copied);
+                        present_shell_repaint(&mut state);
+                    }
+                }
+            },
             ClientLoopEvent::Download(event) => {
                 let effects = state.downloads.worker_event(event, now);
                 if download::runtime::apply_download_effects(
@@ -2287,7 +2312,7 @@ async fn run_client_loop(
                             &mut endpoint_commands,
                             &mut write_stream,
                             state.shell.as_mut(),
-                            &mut state.detached_process_children,
+                            &state.url_launcher,
                             &mut scheduled_activation,
                         )?;
                         let repaint = repaint || dispatch_repaint;
@@ -2670,9 +2695,6 @@ async fn run_client_loop(
                 if let Ok(mut matcher) = state.direct_graphics_response.lock() {
                     matcher.expire();
                 }
-                state
-                    .detached_process_children
-                    .retain_mut(|child| child.try_wait().ok().flatten().is_none());
                 write_stream.tick_health(now);
                 for failure in write_stream.take_failures() {
                     if write_stream.connection(&failure.endpoint_id).is_some()

@@ -6,7 +6,12 @@ use crate::preview::source::LocalSource;
 
 fn server() -> PreviewServer {
     let source = LocalSource::new(&std::env::temp_dir()).unwrap();
-    PreviewServer::start(Box::new(source), Duration::from_secs(1)).unwrap()
+    PreviewServer::start(
+        Box::new(source),
+        Duration::from_secs(1),
+        crate::preview::server::ListingSwitch::new(true),
+    )
+    .unwrap()
 }
 
 fn container() -> PaneLocation {

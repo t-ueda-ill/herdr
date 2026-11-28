@@ -2923,7 +2923,15 @@ fn read_clipboard_unicode_text() -> Option<String> {
     None
 }
 
-pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
+/// Why only the native call: ShellExecuteW opens the default browser and
+/// reports failure itself, with no console window.
+pub(crate) fn url_openers(url: &str) -> Vec<super::UrlOpener> {
+    vec![super::UrlOpener::Native {
+        url: url.to_owned(),
+    }]
+}
+
+pub(crate) fn open_url_natively(url: &str) -> std::io::Result<()> {
     let operation = wide_null("open");
     let url = wide_null(url);
     let result = unsafe {
@@ -2937,7 +2945,7 @@ pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
         )
     };
     if result as isize > 32 {
-        Ok(None)
+        Ok(())
     } else {
         Err(std::io::Error::other(format!(
             "failed to open URL with ShellExecuteW: code {}",

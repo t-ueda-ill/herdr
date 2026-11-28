@@ -150,9 +150,14 @@ pub(super) fn run_preview_command(args: &[String]) -> std::io::Result<i32> {
     // Why before choosing the printer: `--open` is its own request and must
     // not depend on whether the answer is printed as JSON or as text.
     let opened = match started_url(&response).filter(|_| parsed.open) {
-        Some(url) => crate::platform::open_url(&url).map(|_| ()).map_err(|err| {
-            eprintln!("could not open the browser: {err}");
-        }),
+        Some(url) => {
+            let command = crate::config::Config::load().config.preview.open_command;
+            crate::url_open::open(&url, &command)
+                .map(|_| ())
+                .map_err(|reason| {
+                    eprintln!("could not open the browser ({reason}); open the URL yourself");
+                })
+        }
         None => Ok(()),
     };
     if parsed.json || response.get("error").is_some() {
@@ -203,17 +208,21 @@ fn format_previews(previews: &[PreviewInfo]) -> String {
     if previews.is_empty() {
         return "No previews running.\n".into();
     }
-    let rows: Vec<[String; 4]> = std::iter::once(["id", "port", "place", "root"].map(String::from))
-        .chain(previews.iter().map(|preview| {
-            [
-                preview.preview_id.clone(),
-                preview.port.to_string(),
-                place(preview),
-                preview.root.clone(),
-            ]
-        }))
-        .collect();
-    let mut widths = [0; 4];
+    // Why the URL: it is the only address the browser accepts, and a refused
+    // page sends the user here to copy it.
+    let rows: Vec<[String; 5]> =
+        std::iter::once(["id", "port", "place", "root", "url"].map(String::from))
+            .chain(previews.iter().map(|preview| {
+                [
+                    preview.preview_id.clone(),
+                    preview.port.to_string(),
+                    place(preview),
+                    preview.root.clone(),
+                    preview.url.clone(),
+                ]
+            }))
+            .collect();
+    let mut widths = [0; 5];
     for row in &rows {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());

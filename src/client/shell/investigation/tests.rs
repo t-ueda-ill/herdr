@@ -2742,13 +2742,73 @@ mod offhost {
         );
         assert!(actions.iter().any(|action| matches!(
             action,
-            ClientShellAction::OpenSafeWebUrl(url)
+            ClientShellAction::OpenPreviewUrl(url)
                 if url == "http://127.0.0.1:40123/t/a.txt"
         )));
+        // The root keeps the token and fits the line; its listing leads on.
         assert_eq!(
             state.investigation().unwrap().notice,
-            "preview at http://127.0.0.1:40123"
+            "preview http://127.0.0.1:40123/t/"
         );
+    }
+
+    #[test]
+    fn a_preview_the_browser_did_not_open_says_so_with_the_whole_url() {
+        let mut state = offhost_state();
+        with_selected_file(&mut state);
+
+        state.url_open_failed("http://127.0.0.1:40123/t/a.txt", true, true);
+
+        assert_eq!(
+            state.investigation().unwrap().notice,
+            "browser did not open; URL copied: http://127.0.0.1:40123/t/a.txt"
+        );
+        assert_eq!(
+            state.endpoint_error.as_deref(),
+            Some("browser did not open; URL copied")
+        );
+    }
+
+    #[test]
+    fn a_link_the_browser_did_not_open_leaves_the_files_notice_alone() {
+        let mut state = offhost_state();
+        with_selected_file(&mut state);
+        let before = state.investigation().unwrap().notice.clone();
+
+        state.url_open_failed("https://example.test/", false, true);
+
+        assert_eq!(state.investigation().unwrap().notice, before);
+        assert_eq!(
+            state.endpoint_error.as_deref(),
+            Some("browser did not open; URL copied")
+        );
+    }
+
+    #[test]
+    fn a_url_that_could_not_be_copied_is_not_called_copied() {
+        let mut state = offhost_state();
+        with_selected_file(&mut state);
+
+        state.url_open_failed("http://127.0.0.1:40123/t/a.txt", true, false);
+
+        assert_eq!(
+            state.investigation().unwrap().notice,
+            "browser did not open: http://127.0.0.1:40123/t/a.txt"
+        );
+    }
+
+    #[test]
+    fn the_preview_root_is_the_url_up_to_its_token() {
+        use crate::client::shell::investigation::requests::preview_root_url;
+        assert_eq!(
+            preview_root_url("http://127.0.0.1:1/tok/docs/a.md"),
+            "http://127.0.0.1:1/tok/"
+        );
+        assert_eq!(
+            preview_root_url("http://127.0.0.1:1/tok/"),
+            "http://127.0.0.1:1/tok/"
+        );
+        assert_eq!(preview_root_url("odd"), "odd");
     }
 
     #[test]
@@ -2786,7 +2846,7 @@ mod offhost {
 
         assert!(!actions
             .iter()
-            .any(|action| matches!(action, ClientShellAction::OpenSafeWebUrl(_))));
+            .any(|action| matches!(action, ClientShellAction::OpenPreviewUrl(_))));
         assert_eq!(
             state.investigation().unwrap().notice,
             "/elsewhere is not under /work"

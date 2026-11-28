@@ -11,6 +11,7 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "log",
     "offhost",
     "onboarding",
+    "preview",
     "remote",
     "server",
     "session",
@@ -393,6 +394,15 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.log = section,
+    );
+
+    load_live_section(
+        table,
+        "preview",
+        "preview config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.preview = section,
     );
 
     diagnostics.extend(config.theme.diagnostics());
@@ -933,6 +943,29 @@ time_format = "hh:mi:ss"
 
         assert_eq!(loaded.config.log.file_name, "{session}-{space}-{pane}");
         assert_eq!(loaded.config.log.time_format, "hh:mi:ss");
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    }
+
+    #[test]
+    fn preview_lists_folders_and_uses_the_platform_opener_by_default() {
+        let default = load_live_config_from_str("").unwrap();
+        assert!(default.config.preview.directory_listing);
+        assert!(default.config.preview.open_command.is_empty());
+    }
+
+    #[test]
+    fn load_live_config_reads_the_preview_section() {
+        let loaded = load_live_config_from_str(
+            r#"
+[preview]
+directory_listing = false
+open_command = ["wslview", "{url}"]
+"#,
+        )
+        .unwrap();
+
+        assert!(!loaded.config.preview.directory_listing);
+        assert_eq!(loaded.config.preview.open_command, ["wslview", "{url}"]);
         assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
     }
 

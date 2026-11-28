@@ -2,7 +2,7 @@
 
 use crate::api::schema::{PaneLocation, PreviewInfo};
 
-use super::server::PreviewServer;
+use super::server::{ListingSwitch, PreviewServer};
 
 struct Entry {
     id: String,
@@ -11,10 +11,20 @@ struct Entry {
     server: PreviewServer,
 }
 
-#[derive(Default)]
 pub(crate) struct PreviewRegistry {
     entries: Vec<Entry>,
     next_id: u64,
+    listing: ListingSwitch,
+}
+
+impl Default for PreviewRegistry {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            next_id: 0,
+            listing: ListingSwitch::new(crate::config::PreviewConfig::default().directory_listing),
+        }
+    }
 }
 
 /// `root` without its trailing slashes, keeping `/` itself.
@@ -79,6 +89,15 @@ impl Entry {
 }
 
 impl PreviewRegistry {
+    /// The switch every preview started from here follows, now and later.
+    pub(crate) fn listing(&self) -> ListingSwitch {
+        self.listing.clone()
+    }
+
+    pub(crate) fn set_directory_listing(&mut self, enabled: bool) {
+        self.listing.set(enabled);
+    }
+
     fn prune(&mut self) {
         self.entries.retain(|entry| !entry.server.is_stopped());
     }

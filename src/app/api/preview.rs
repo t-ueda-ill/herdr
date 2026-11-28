@@ -159,12 +159,15 @@ impl App {
                 OFFHOST_WATCH,
             ),
         };
-        let server = PreviewServer::start(source, watch_every).map_err(|err| {
-            (
-                "preview_failed",
-                format!("could not start the preview: {err}"),
-            )
-        })?;
+        let server =
+            PreviewServer::start(source, watch_every, self.previews.listing()).map_err(|err| {
+                (
+                    "preview_failed",
+                    format!("could not start the preview: {err}"),
+                )
+            })?;
+        // Why the port and not the URL: the URL carries the token.
+        tracing::info!(port = server.port(), root = %root, "preview started");
         Ok(self.previews.insert(&root, location, server, &entry))
     }
 }

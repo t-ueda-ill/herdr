@@ -14,6 +14,9 @@ pub(crate) const SLICE_LIMIT: u64 = 8 * 1024 * 1024;
 /// Paths change detection follows, at most. Each is one argument of the
 /// off-host script, so the list stays far below a command line's limit.
 pub(crate) const WATCH_PATH_LIMIT: usize = 500;
+/// Entries a folder listing shows, at most. Off-host names pass through one
+/// process pipe, and a page of more is no longer read anyway.
+pub(crate) const LIST_LIMIT: usize = 2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Window {
@@ -43,9 +46,28 @@ pub(crate) enum ReadError {
     Failed(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirEntry {
+    pub(crate) name: String,
+    /// A folder, or a link to one.
+    pub(crate) folder: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Listing {
+    /// In the order the folder gave them.
+    pub(crate) entries: Vec<DirEntry>,
+    /// More than [`LIST_LIMIT`] entries were there.
+    pub(crate) truncated: bool,
+}
+
 pub(crate) trait FileSource: Send + Sync + 'static {
     /// `relative` is already free of `..` and empty components.
     fn read(&self, relative: &str, window: Window) -> Result<FileBytes, ReadError>;
+    /// The entries of the folder `relative` (`""` for the root, with or
+    /// without a trailing `/`). A missing folder, or a file, is
+    /// [`ReadError::NotFound`].
+    fn list(&self, relative: &str) -> Result<Listing, ReadError>;
     /// Changes whenever one of `paths` (relative, as served) appears,
     /// disappears, or is written.
     ///
@@ -112,6 +134,35 @@ impl FileSource for LocalSource {
         Ok(FileBytes { size, bytes })
     }
 
+    fn list(&self, relative: &str) -> Result<Listing, ReadError> {
+        let path = std::fs::canonicalize(self.root.join(relative.trim_end_matches('/')))
+            .map_err(io_error)?;
+        if !path.starts_with(&self.root) {
+            return Err(ReadError::Forbidden);
+        }
+        if !path.is_dir() {
+            return Err(ReadError::NotFound);
+        }
+        let mut listing = Listing {
+            entries: Vec::new(),
+            truncated: false,
+        };
+        for entry in std::fs::read_dir(&path).map_err(io_error)? {
+            let entry = entry.map_err(io_error)?;
+            if listing.entries.len() == LIST_LIMIT {
+                listing.truncated = true;
+                break;
+            }
+            listing.entries.push(DirEntry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                // Why the path and not the entry's type: a link to a folder
+                // opens as a folder.
+                folder: entry.path().is_dir(),
+            });
+        }
+        Ok(listing)
+    }
+
     fn fingerprint(&self, paths: &[String]) -> Result<String, ReadError> {
         use std::hash::{Hash, Hasher};
         if !self.root.is_dir() {
@@ -175,6 +226,36 @@ case "$5" in
   whole) cat -- "$f" ;;
   *) if [ "$3" -gt 0 ]; then tail -c +"$(($3 + 1))" -- "$f" | head -c "$4"; else head -c "$4" -- "$f"; fi ;;
 esac
+"#;
+
+/// `$1` root, `$2` relative folder, `$3` most entries to print.
+///
+/// Prints the marker, then `enoent`, `eacces`, or `escape`, or `list` and a
+/// `d` (folder) or `f` record with the name for each entry, and `more` when
+/// entries beyond `$3` were left out.
+///
+/// Why a glob and not `ls` or `find`: names may hold newlines, and the glob
+/// with NUL-separated records keeps them whole in every POSIX shell.
+pub(crate) const LIST_SCRIPT: &str = r#"
+printf 'HERDR-PREVIEW-1\0'
+d="$1/$2"
+if [ ! -d "$d" ]; then printf 'enoent\0'; exit 0; fi
+if [ ! -r "$d" ] || [ ! -x "$d" ]; then printf 'eacces\0'; exit 0; fi
+root=$(cd -P -- "$1" 2>/dev/null && pwd -P) || { printf 'enoent\0'; exit 0; }
+dir=$(cd -P -- "$d" 2>/dev/null && pwd -P) || { printf 'enoent\0'; exit 0; }
+if [ "$root" != / ]; then
+  case "$dir/" in "$root"/*) ;; *) printf 'escape\0'; exit 0 ;; esac
+fi
+printf 'list\0'
+n=0
+for f in "$dir"/* "$dir"/.*; do
+  name=${f##*/}
+  case "$name" in .|..) continue ;; esac
+  [ -e "$f" ] || [ -L "$f" ] || continue
+  n=$((n + 1))
+  if [ "$n" -gt "$3" ]; then printf 'more\0'; break; fi
+  if [ -d "$f" ]; then printf 'd\0%s\0' "$name"; else printf 'f\0%s\0' "$name"; fi
+done
 "#;
 
 /// `$1` root, then the relative paths to follow. Prints the marker and
@@ -251,6 +332,39 @@ pub(crate) fn parse_read(output: &[u8]) -> Result<FileBytes, ReadError> {
     }
 }
 
+pub(crate) fn parse_list(output: &[u8]) -> Result<Listing, ReadError> {
+    let (first, mut rest) = token(after_marker(output)?)?;
+    match first {
+        b"enoent" => return Err(ReadError::NotFound),
+        b"eacces" | b"escape" => return Err(ReadError::Forbidden),
+        b"list" => {}
+        _ => return Err(ReadError::Failed("unknown script record".into())),
+    }
+    let mut listing = Listing {
+        entries: Vec::new(),
+        truncated: false,
+    };
+    while !rest.is_empty() {
+        let (kind, after) = token(rest)?;
+        if kind == b"more" {
+            listing.truncated = true;
+            break;
+        }
+        let (name, after) = token(after)?;
+        let folder = match kind {
+            b"d" => true,
+            b"f" => false,
+            _ => return Err(ReadError::Failed("unknown listing record".into())),
+        };
+        listing.entries.push(DirEntry {
+            name: String::from_utf8_lossy(name).into_owned(),
+            folder,
+        });
+        rest = after;
+    }
+    Ok(listing)
+}
+
 pub(crate) fn parse_fingerprint(output: &[u8]) -> Result<String, ReadError> {
     let (first, rest) = token(after_marker(output)?)?;
     match first {
@@ -271,6 +385,16 @@ impl FileSource for OffHostSource {
         let output = (self.run)(READ_SCRIPT, &[&self.root, relative, &offset, &count, mode])
             .map_err(ReadError::Failed)?;
         parse_read(&output)
+    }
+
+    fn list(&self, relative: &str) -> Result<Listing, ReadError> {
+        let limit = LIST_LIMIT.to_string();
+        let output = (self.run)(
+            LIST_SCRIPT,
+            &[&self.root, relative.trim_end_matches('/'), &limit],
+        )
+        .map_err(ReadError::Failed)?;
+        parse_list(&output)
     }
 
     fn fingerprint(&self, paths: &[String]) -> Result<String, ReadError> {

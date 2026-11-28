@@ -104,3 +104,5 @@ tr:nth-child(2n) td { background: var(--soft); }
 
 .herdr-message h1 { font-size: 1.4em; }
 .herdr-message p { color: var(--muted); }
+.herdr-listing ul { list-style: none; padding: 0; }
+.herdr-listing li { padding: 2px 0; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
