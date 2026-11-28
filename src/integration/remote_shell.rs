@@ -44,8 +44,59 @@ impl RemoteShell {
 /// carried raw, which avoids an external command per prompt.
 /// Why `eval` for the array forms: dash parses the whole body, and `name=(...)`
 /// is a syntax error there even in a branch that never runs.
+///
+/// The same hooks report the branch of the directory (see
+/// [`POSIX_BRANCH_REPORT`]), so a checkout shows at the next prompt.
 pub(crate) fn injected_cwd_integration_posix() -> String {
-    r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
+    format!("{POSIX_CWD_REPORT_HEAD}{POSIX_BRANCH_REPORT}{POSIX_CWD_REPORT_HOOKS}")
+}
+
+/// Reports `herdr-git;v=1;<branch>` on the agent OSC: the branch `HEAD`
+/// names, or nothing when the directory is outside a repo or `HEAD` is
+/// detached, which is what the host shows for a host directory.
+///
+/// Why only builtins (`[`, `read`, parameter expansion): it runs at every
+/// prompt, and a `git` process per prompt would slow every command on a
+/// busy host. Why a `.git` file is followed: a linked worktree and a
+/// submodule point to their git dir that way, relative to the file.
+/// Why the report is sent at every prompt and not only on change: a nested
+/// shell may have reported its own branch in the meantime.
+const POSIX_BRANCH_REPORT: &str = r#"__herdr_git_branch() {
+  __herdr_dir=$PWD __herdr_head= __herdr_branch=
+  while :; do
+    if [ -f "$__herdr_dir/.git/HEAD" ]; then
+      __herdr_head=$__herdr_dir/.git/HEAD
+      break
+    fi
+    if [ -f "$__herdr_dir/.git" ]; then
+      __herdr_line=
+      { IFS= read -r __herdr_line <"$__herdr_dir/.git"; } 2>/dev/null || :
+      case $__herdr_line in
+        "gitdir: /"*) __herdr_head=${__herdr_line#gitdir: }/HEAD ;;
+        "gitdir: "?*) __herdr_head=$__herdr_dir/${__herdr_line#gitdir: }/HEAD ;;
+      esac
+      break
+    fi
+    [ -n "$__herdr_dir" ] || break
+    __herdr_dir=${__herdr_dir%/*}
+  done
+  if [ -n "$__herdr_head" ]; then
+    __herdr_line=
+    { IFS= read -r __herdr_line <"$__herdr_head"; } 2>/dev/null || :
+    case $__herdr_line in
+      "ref: refs/heads/"?*) __herdr_branch=${__herdr_line#ref: refs/heads/} ;;
+    esac
+  fi
+  if [ -n "${TMUX:-}" ]; then
+    { printf '\033Ptmux;\033\033]43737;herdr-git;v=1;%s\007\033\\' "$__herdr_branch" >/dev/tty; } 2>/dev/null || :
+  else
+    { printf '\033]43737;herdr-git;v=1;%s\007' "$__herdr_branch" >/dev/tty; } 2>/dev/null || :
+  fi
+  return 0
+}
+"#;
+
+const POSIX_CWD_REPORT_HEAD: &str = r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
 __herdr_host=${HOSTNAME:-}
 [ -n "$__herdr_host" ] || __herdr_host=$(hostname 2>/dev/null) || __herdr_host=
 __herdr_osc7() {
@@ -60,9 +111,12 @@ __herdr_osc7() {
   else
     { printf '\033]7;file://%s%s\007' "$__herdr_host" "$__herdr_path" >/dev/tty; } 2>/dev/null || :
   fi
+  __herdr_git_branch
   return 0
 }
-if [ -n "${BASH_VERSION:-}" ]; then
+"#;
+
+const POSIX_CWD_REPORT_HOOKS: &str = r#"if [ -n "${BASH_VERSION:-}" ]; then
   case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
     "declare -a"*) eval 'PROMPT_COMMAND=(__herdr_osc7 "${PROMPT_COMMAND[@]}")' ;;
     *) PROMPT_COMMAND="__herdr_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
@@ -74,16 +128,17 @@ else
   cd() { command cd "$@" || return; __herdr_osc7; }
 fi
 __herdr_osc7
-"#
-    .to_owned()
-}
+"#;
 
 /// Fish counterpart of [`injected_cwd_integration_posix`]. The host is read
 /// once, and the path is encoded with `string` so no process starts per `cd`.
 /// Why `$HOSTNAME` before fish's own `$hostname`: the POSIX body prefers it,
 /// and both bodies must name the same host for one machine.
 pub(crate) fn injected_cwd_integration_fish() -> String {
-    r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
+    format!("{FISH_CWD_REPORT}{FISH_BRANCH_REPORT}")
+}
+
+const FISH_CWD_REPORT: &str = r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
 if test -n "$HOSTNAME"
     set -g __herdr_host $HOSTNAME
 else
@@ -100,9 +155,48 @@ function __herdr_osc7 --on-variable PWD
     return 0
 end
 __herdr_osc7
-"#
-    .to_owned()
-}
+"#;
+
+/// Fish counterpart of [`POSIX_BRANCH_REPORT`], sent at every prompt.
+/// Why `test -r` before each `read`: fish prints its own error for a
+/// redirection from a missing file, which `2>/dev/null` does not silence.
+const FISH_BRANCH_REPORT: &str = r#"function __herdr_git_branch --on-event fish_prompt
+    isatty stdin; or return 0
+    set -l dir $PWD
+    set -l head
+    while true
+        if test -f "$dir/.git/HEAD"
+            set head "$dir/.git/HEAD"
+            break
+        end
+        if test -f "$dir/.git"
+            set -l line
+            test -r "$dir/.git"; and read -l line <"$dir/.git"
+            if string match -q 'gitdir: /*' -- "$line"
+                set head (string sub -s 9 -- "$line")/HEAD
+            else if string match -q 'gitdir: ?*' -- "$line"
+                set head "$dir/"(string sub -s 9 -- "$line")/HEAD
+            end
+            break
+        end
+        test -n "$dir"; or break
+        set dir (string replace -r '/[^/]*$' '' -- "$dir")
+    end
+    set -l branch
+    if test -n "$head"; and test -r "$head"
+        read -l line <"$head"
+        if string match -q 'ref: refs/heads/?*' -- "$line"
+            set branch (string sub -s 17 -- "$line")
+        end
+    end
+    if set -q TMUX
+        printf '\033Ptmux;\033\033]43737;herdr-git;v=1;%s\007\033\\' "$branch" >/dev/tty 2>/dev/null
+    else
+        printf '\033]43737;herdr-git;v=1;%s\007' "$branch" >/dev/tty 2>/dev/null
+    end
+    return 0
+end
+"#;
 
 /// Marks every prompt and the start of every command's output with OSC 133,
 /// so the herdr in front of the shell can move and copy by command. Shared by

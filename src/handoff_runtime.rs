@@ -41,6 +41,10 @@ pub(crate) struct HandoffRuntimeState {
     /// follow the remote directory right after the handoff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_cwd: Option<std::path::PathBuf>,
+    /// The shell's last branch report, so the sidebar keeps the remote
+    /// branch until the next prompt reports it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_branch: Option<String>,
     /// The agent an in-band claim says is running in the shell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offhost_claim: Option<HandoffOffHostClaim>,
@@ -93,6 +97,7 @@ mod tests {
         assert!(!state.in_container);
         assert!(!state.in_ssh);
         assert_eq!(state.reported_cwd, None);
+        assert_eq!(state.reported_branch, None);
         assert_eq!(state.offhost_claim, None);
     }
 
@@ -101,6 +106,7 @@ mod tests {
         let mut state: HandoffRuntimeState = serde_json::from_value(legacy_state()).unwrap();
         state.in_container = true;
         state.reported_cwd = Some("/srv/app".into());
+        state.reported_branch = Some("feature/x".into());
         state.offhost_claim = Some(HandoffOffHostClaim {
             kind: "codex".into(),
             token: "7-1".into(),
@@ -111,6 +117,7 @@ mod tests {
 
         assert!(back.in_container && !back.in_ssh);
         assert_eq!(back.reported_cwd, Some("/srv/app".into()));
+        assert_eq!(back.reported_branch.as_deref(), Some("feature/x"));
         assert_eq!(back.offhost_claim, state.offhost_claim);
     }
 
@@ -121,6 +128,7 @@ mod tests {
         let value = serde_json::to_value(&state).unwrap();
 
         assert!(value.get("reported_cwd").is_none());
+        assert!(value.get("reported_branch").is_none());
         assert!(value.get("offhost_claim").is_none());
     }
 }

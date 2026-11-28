@@ -45,9 +45,19 @@ pub struct WorkspaceGitStatus {
     pub status_cache_key: PathBuf,
     pub demand: GitStatusRefreshDemand,
     pub auto_label: String,
+    pub space: Option<GitSpaceMetadata>,
+}
+
+/// Branch facts for one pane's host cwd. The space label and repo stay on
+/// [`WorkspaceGitStatus`]; the branch follows the pane a client is looking at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalGitStatus {
+    pub terminal_id: TerminalId,
+    pub cwd: PathBuf,
+    pub status_cache_key: PathBuf,
+    pub demand: GitStatusRefreshDemand,
     pub branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
-    pub space: Option<GitSpaceMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +66,17 @@ pub struct WorkspaceGitStatusSnapshot {
     pub branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
+}
+
+/// Seeds the first pane's branch so the new space never shows an empty
+/// branch until the first refresh. Why nothing off host: the cwd here is the
+/// host directory the shell was launched from, not the one it is in, so its
+/// branch would be the source space's.
+fn launch_branch(shell_runs_off_host: bool, cwd: &std::path::Path) -> Option<String> {
+    if shell_runs_off_host {
+        return None;
+    }
+    git_branch(cwd)
 }
 
 pub(crate) fn discover_workspace_git_identity(
@@ -94,8 +115,6 @@ impl WorkspaceGitStatusSnapshot {
             status_cache_key,
             demand,
             auto_label,
-            branch: self.branch,
-            ahead_behind: self.ahead_behind,
             space: self.space,
         }
     }
@@ -186,10 +205,6 @@ pub struct Workspace {
     pub(crate) cached_auto_label: String,
     /// Cache key for periodic Git status associated with `cached_identity_cwd`.
     pub(crate) cached_git_status_key: PathBuf,
-    /// Cached current git branch for the workspace repo.
-    pub(crate) cached_git_branch: Option<String>,
-    /// Cached ahead/behind counts for the workspace repo's current branch upstream.
-    pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
     /// Cached derived Git repo metadata for worktree actions and status display.
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     /// Explicit Herdr-managed worktree grouping provenance.
@@ -256,8 +271,6 @@ impl Workspace {
             cached_identity_cwd: identity_cwd.clone(),
             cached_auto_label,
             cached_git_status_key,
-            cached_git_branch: git_branch(&identity_cwd),
-            cached_git_ahead_behind: None,
             cached_git_space,
             worktree_space: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
@@ -335,7 +348,7 @@ impl Workspace {
                 Some(label) => crate::recording::WorkspaceLabel::Custom(label.clone()),
                 None => crate::recording::WorkspaceLabel::Auto(cached_auto_label.clone()),
             });
-        let (tab, terminal, runtime) = if let Some(argv) = argv {
+        let (tab, mut terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 1,
                 initial_cwd.clone(),
@@ -366,6 +379,7 @@ impl Workspace {
                 render_dirty,
             )?
         };
+        terminal.git_branch = launch_branch(runtime.shell_runs_off_host(), &initial_cwd);
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(tab.root_pane, 1);
         Ok((
@@ -376,8 +390,6 @@ impl Workspace {
                 cached_identity_cwd: initial_cwd.clone(),
                 cached_auto_label,
                 cached_git_status_key,
-                cached_git_branch: git_branch(&initial_cwd),
-                cached_git_ahead_behind: None,
                 cached_git_space,
                 worktree_space: None,
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
@@ -1049,12 +1061,11 @@ impl Workspace {
         }
     }
 
-    pub fn branch(&self) -> Option<String> {
-        self.cached_git_branch.clone()
-    }
-
-    pub fn git_ahead_behind(&self) -> Option<(usize, usize)> {
-        self.cached_git_ahead_behind
+    /// The terminal whose branch stands for the space while `tab_idx` is
+    /// the tab on screen: the focused pane of that tab.
+    pub(crate) fn branch_terminal_id(&self, tab_idx: usize) -> Option<&TerminalId> {
+        let tab = self.tabs.get(tab_idx)?;
+        tab.terminal_id(tab.layout.focused())
     }
 
     pub fn git_space(&self) -> Option<&GitSpaceMetadata> {
@@ -1178,8 +1189,6 @@ impl Workspace {
             cached_identity_cwd: identity_cwd.clone(),
             cached_auto_label: fallback_label_from_cwd(&identity_cwd),
             cached_git_status_key: identity_cwd.clone(),
-            cached_git_branch: git_branch(&identity_cwd),
-            cached_git_ahead_behind: None,
             cached_git_space: None,
             worktree_space: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
@@ -1602,6 +1611,42 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove cwd after cache admission");
 
         assert_eq!(ws.display_name(), "cached-repo");
+    }
+
+    #[test]
+    fn launch_branch_reads_the_host_checkout_only_for_a_host_shell() {
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-launch-branch-{}-{}",
+            std::process::id(),
+            generate_workspace_id()
+        ));
+        std::fs::create_dir_all(repo.join(".git/objects")).expect("create repo");
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/launch-branch\n")
+            .expect("write HEAD");
+
+        let host = launch_branch(false, &repo);
+        let off_host = launch_branch(true, &repo);
+        std::fs::remove_dir_all(&repo).expect("remove repo");
+
+        assert_eq!(host.as_deref(), Some("launch-branch"));
+        assert_eq!(off_host, None);
+    }
+
+    #[test]
+    fn branch_terminal_is_the_focused_pane_of_the_tab_on_screen() {
+        let mut ws = Workspace::test_new("branch");
+        let first_root = ws.tabs[0].root_pane;
+        let split = ws.test_split(Direction::Horizontal);
+        let second = ws.test_add_tab(None);
+        let second_root = ws.tabs[second].root_pane;
+
+        assert_ne!(first_root, split);
+        assert_eq!(ws.branch_terminal_id(0), ws.tabs[0].terminal_id(split));
+        assert_eq!(
+            ws.branch_terminal_id(second),
+            ws.tabs[second].terminal_id(second_root)
+        );
+        assert_eq!(ws.branch_terminal_id(second + 1), None);
     }
 
     #[test]

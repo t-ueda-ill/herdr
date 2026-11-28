@@ -497,6 +497,9 @@ pub(super) struct AgentOscStateTracker {
     terminal_title: Option<String>,
     latest_progress: Option<String>,
     offhost_claim: OffHostClaimState,
+    /// Newest `herdr-git` report not taken yet; the inner `None` is a report
+    /// that the shell is outside a branch.
+    reported_branch: Option<Option<String>>,
 }
 
 /// Private OSC number carrying `herdr-agent;v=1;...` claims from a remote
@@ -510,6 +513,31 @@ pub(super) const OFFHOST_AGENT_OSC: &[u8] = b"43737";
 const OFFHOST_CLAIM_NAMESPACE: &[u8] = b"herdr-agent";
 const OFFHOST_CLAIM_VERSION: &[u8] = b"v=1";
 const OFFHOST_CLAIM_FIELD_MAX_BYTES: usize = 64;
+/// Same OSC as the agent claims, told apart by the first field:
+/// `herdr-git;v=1;<branch>`, where an empty branch means none.
+const OFFHOST_BRANCH_NAMESPACE: &[u8] = b"herdr-git";
+const OFFHOST_BRANCH_VERSION: &[u8] = b"v=1";
+/// Git caps a ref name at the file name limit of the platform, 255 bytes.
+const OFFHOST_BRANCH_MAX_BYTES: usize = 255;
+
+/// `Some(None)` reports that the shell is outside a branch.
+/// Why the branch is the rest of the payload and not one more `;` field:
+/// git allows `;` in branch names.
+fn parse_offhost_branch(payload: &[u8]) -> Option<Option<String>> {
+    let mut fields = payload.splitn(3, |&byte| byte == b';');
+    if fields.next()? != OFFHOST_BRANCH_NAMESPACE || fields.next()? != OFFHOST_BRANCH_VERSION {
+        return None;
+    }
+    let branch = fields.next()?;
+    if branch.is_empty() {
+        return Some(None);
+    }
+    if branch.len() > OFFHOST_BRANCH_MAX_BYTES {
+        return None;
+    }
+    let text = std::str::from_utf8(branch).ok()?;
+    (!text.chars().any(char::is_control)).then(|| Some(text.to_string()))
+}
 
 /// What a remote shell function said about an agent running in this pane.
 /// It is a claim, not evidence: any byte stream reaching the pane can forge it.
@@ -621,6 +649,7 @@ impl AgentOscStateTracker {
             &mut self.latest_progress,
             &mut self.offhost_claim,
         );
+        let reported_branch = &mut self.reported_branch;
         let mut terminal_title_changed = false;
         collector.observe(bytes, |body| {
             let Some((command, payload)) = parse_agent_osc_body(body) else {
@@ -638,6 +667,11 @@ impl AgentOscStateTracker {
                     *latest_progress =
                         Some(sanitize_agent_osc_string(payload, AGENT_OSC_MAX_CHARS));
                 }
+                OFFHOST_AGENT_OSC if payload.starts_with(OFFHOST_BRANCH_NAMESPACE) => {
+                    if let Some(branch) = parse_offhost_branch(payload) {
+                        *reported_branch = Some(branch);
+                    }
+                }
                 OFFHOST_AGENT_OSC => {
                     // The shell's own title and progress predate the agent and
                     // must not become its evidence.
@@ -651,6 +685,11 @@ impl AgentOscStateTracker {
             }
         });
         terminal_title_changed
+    }
+
+    /// The newest branch report since the last call, once.
+    pub(super) fn take_reported_branch(&mut self) -> Option<Option<String>> {
+        self.reported_branch.take()
     }
 
     /// Returns the newest claim only when it is newer than `seen_generation`,
@@ -1475,6 +1514,54 @@ mod tests {
         assert_eq!(t.latest_title(), "");
         assert_eq!(t.latest_progress(), "");
         assert_eq!(t.terminal_title(), Some("user@host: ~"));
+    }
+
+    fn branch_report(value: &str) -> Vec<u8> {
+        format!("\x1b]43737;herdr-git;v=1;{value}\x07").into_bytes()
+    }
+
+    #[test]
+    fn branch_report_names_the_branch_or_its_absence() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(&branch_report("feature/x"));
+        assert_eq!(t.take_reported_branch(), Some(Some("feature/x".into())));
+        assert_eq!(t.take_reported_branch(), None);
+
+        t.observe(&branch_report(""));
+        assert_eq!(t.take_reported_branch(), Some(None));
+    }
+
+    #[test]
+    fn branch_report_keeps_semicolons_in_the_branch_name() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(&branch_report("fix;odd"));
+        assert_eq!(t.take_reported_branch(), Some(Some("fix;odd".into())));
+    }
+
+    #[test]
+    fn branch_report_keeps_only_the_latest_in_a_chunk() {
+        let mut t = AgentOscStateTracker::default();
+        let mut bytes = branch_report("old");
+        bytes.extend(branch_report("new"));
+        t.observe(&bytes);
+        assert_eq!(t.take_reported_branch(), Some(Some("new".into())));
+    }
+
+    #[test]
+    fn unusable_branch_report_is_ignored() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(&branch_report(&"a".repeat(OFFHOST_BRANCH_MAX_BYTES + 1)));
+        t.observe(b"\x1b]43737;herdr-git;v=1;a\x01b\x07");
+        t.observe(b"\x1b]43737;herdr-git;v=2;main\x07");
+        t.observe(b"\x1b]43737;herdr-git;v=1\x07");
+        assert_eq!(t.take_reported_branch(), None);
+    }
+
+    #[test]
+    fn branch_report_is_not_an_agent_claim() {
+        let mut t = AgentOscStateTracker::default();
+        t.observe(&branch_report("main"));
+        assert_eq!(t.offhost_claim_generation(), 0);
     }
 
     #[test]

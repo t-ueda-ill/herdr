@@ -172,6 +172,14 @@ pub struct TerminalState {
     /// remains visible.
     pub disconnected: Option<Disconnected>,
     pub restore_error: Option<String>,
+    /// Branch of the directory the shell is in: read on this host for a host
+    /// shell, reported by the shell itself for a container or ssh shell.
+    pub git_branch: Option<String>,
+    /// Always `None` off host: the report carries no upstream counts.
+    pub git_ahead_behind: Option<(usize, usize)>,
+    /// Host cwd and repo cache key of the last refresh, so the next refresh
+    /// of the same cwd skips repo discovery.
+    pub(crate) git_status_source: Option<(PathBuf, PathBuf)>,
 }
 
 /// How a container or ssh pane's connection ended.
@@ -205,6 +213,14 @@ pub(crate) fn ending_with_a_line_break(mut history: String) -> String {
 /// reports a path inside the container or on the remote host (e.g. `/work`),
 /// which does not exist on this host.
 /// `plan_launch` maps the host launch cwd through the bind mounts instead.
+/// Whether the shell in this terminal sees another machine's files, so a
+/// host directory says nothing about its branch. `runtime_off_host` is the
+/// running shell's verdict; without a runtime the saved launch target
+/// decides, because that is what a restored pane reconnects to.
+pub fn shell_files_off_host(runtime_off_host: Option<bool>, terminal: &TerminalState) -> bool {
+    runtime_off_host.unwrap_or(terminal.container.is_some() || terminal.ssh.is_some())
+}
+
 pub fn inherited_cwd(
     runs_off_host: bool,
     runtime_cwd: Option<PathBuf>,
@@ -259,6 +275,9 @@ impl TerminalState {
             pending_offhost_connect: None,
             disconnected: None,
             restore_error: None,
+            git_branch: None,
+            git_ahead_behind: None,
+            git_status_source: None,
         }
     }
 

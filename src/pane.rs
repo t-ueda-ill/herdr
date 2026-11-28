@@ -1762,6 +1762,8 @@ pub struct PaneRuntime {
     current_size: Cell<(u16, u16, u32, u32)>,
     child_pid: Arc<AtomicU32>,
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
+    /// The branch the off-host shell last reported for its directory.
+    reported_branch: Arc<Mutex<Option<String>>>,
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
     cwd_process_exited: Arc<AtomicBool>,
     child_wait_completed: Option<Arc<AtomicBool>>,
@@ -2617,6 +2619,12 @@ fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<App
     }
 }
 
+fn store_reported_branch(reported_branch: &Mutex<Option<String>>, branch: Option<String>) {
+    if let Ok(mut current) = reported_branch.lock() {
+        *current = branch;
+    }
+}
+
 fn publish_reported_cwd(
     pane_id: PaneId,
     cwd: std::path::PathBuf,
@@ -2733,6 +2741,7 @@ impl PaneRuntime {
             in_container: self.in_container,
             in_ssh: self.in_ssh,
             reported_cwd: self.reported_cwd(),
+            reported_branch: self.reported_branch(),
             offhost_claim: self
                 .terminal
                 .offhost_active_claim()
@@ -2964,6 +2973,7 @@ impl PaneRuntime {
             in_container,
             in_ssh,
             reported_cwd: handoff_reported_cwd,
+            reported_branch: handoff_reported_branch,
             offhost_claim,
         } = state;
         let shell_off_host = in_container || in_ssh;
@@ -3013,6 +3023,7 @@ impl PaneRuntime {
             Arc::new(Mutex::new(handoff_reported_cwd.filter(|cwd| {
                 usable_reported_cwd(cwd.clone(), shell_off_host).is_some()
             })));
+        let reported_branch = Arc::new(Mutex::new(handoff_reported_branch));
         let cwd_process_exited = Arc::new(AtomicBool::new(false));
         let kitty_keyboard_flags = Arc::new(AtomicU16::new(keyboard_protocol_flags));
         let content_seq = Arc::new(AtomicU64::new(0));
@@ -3041,6 +3052,7 @@ impl PaneRuntime {
             let child_pid = child_pid.clone();
             let read_events = events.clone();
             let reported_cwd = reported_cwd.clone();
+            let reported_branch = reported_branch.clone();
             let compression_wake = compression.notifier();
             let rt = tokio::runtime::Handle::current();
             let delay_rt = rt.clone();
@@ -3079,6 +3091,9 @@ impl PaneRuntime {
                 }
                 if let Some(cwd) = result.reported_cwd.clone() {
                     publish_reported_cwd(pane_id, cwd, &reported_cwd, shell_off_host, &read_events);
+                }
+                if let Some(branch) = result.reported_branch.clone() {
+                    store_reported_branch(&reported_branch, branch);
                 }
                 for content in result.clipboard_writes {
                     if let Err(err) = read_events.try_send(AppEvent::ClipboardWrite { content }) {
@@ -3136,6 +3151,7 @@ impl PaneRuntime {
             current_size: Cell::new((rows, cols, cell_width_px, cell_height_px)),
             child_pid,
             reported_cwd,
+            reported_branch,
             persistence_cwd: Mutex::new(None),
             cwd_process_exited,
             child_wait_completed: None,
@@ -3205,6 +3221,7 @@ impl PaneRuntime {
         // --- Child watcher task ---
         let child_pid = Arc::new(AtomicU32::new(0));
         let reported_cwd = Arc::new(Mutex::new(None));
+        let reported_branch = Arc::new(Mutex::new(None));
         let child_wait_completed = Arc::new(AtomicBool::new(false));
         let content_seq = Arc::new(AtomicU64::new(0));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
@@ -3279,6 +3296,7 @@ impl PaneRuntime {
             let child_pid = child_pid.clone();
             let events = events.clone();
             let reported_cwd = reported_cwd.clone();
+            let reported_branch = reported_branch.clone();
             let compression_wake = compression.notifier();
             let rt = tokio::runtime::Handle::current();
             let on_read = Box::new(move |bytes: &[u8]| {
@@ -3318,6 +3336,9 @@ impl PaneRuntime {
                 }
                 if let Some(cwd) = result.reported_cwd.clone() {
                     publish_reported_cwd(pane_id, cwd, &reported_cwd, shell_off_host, &events);
+                }
+                if let Some(branch) = result.reported_branch.clone() {
+                    store_reported_branch(&reported_branch, branch);
                 }
                 for content in result.clipboard_writes {
                     if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
@@ -3876,6 +3897,7 @@ impl PaneRuntime {
             current_size: Cell::new((rows, cols, 0, 0)),
             child_pid,
             reported_cwd,
+            reported_branch,
             persistence_cwd: Mutex::new(None),
             cwd_process_exited: child_wait_completed.clone(),
             child_wait_completed: Some(child_wait_completed),
@@ -4572,6 +4594,15 @@ impl PaneRuntime {
         self.in_container || self.in_ssh
     }
 
+    /// Why no event: the git refresh reads it with the other branch facts,
+    /// so a report costs a lock and no wakeup.
+    pub fn reported_branch(&self) -> Option<String> {
+        self.reported_branch
+            .lock()
+            .ok()
+            .and_then(|branch| branch.clone())
+    }
+
     fn reported_cwd(&self) -> Option<std::path::PathBuf> {
         self.reported_cwd
             .lock()
@@ -4661,6 +4692,10 @@ impl PaneRuntime {
         if let Ok(mut reported) = self.reported_cwd.lock() {
             *reported = Some(cwd);
         }
+    }
+
+    pub(crate) fn test_set_reported_branch(&self, branch: Option<&str>) {
+        store_reported_branch(&self.reported_branch, branch.map(str::to_owned));
     }
 
     #[cfg(unix)]
@@ -4838,6 +4873,7 @@ impl PaneRuntime {
                 current_size: Cell::new((rows, cols, 0, 0)),
                 child_pid: Arc::new(AtomicU32::new(0)),
                 reported_cwd: Arc::new(Mutex::new(None)),
+                reported_branch: Arc::new(Mutex::new(None)),
                 persistence_cwd: Mutex::new(None),
                 cwd_process_exited: Arc::new(AtomicBool::new(false)),
                 child_wait_completed: None,
@@ -5090,6 +5126,20 @@ mod tests {
             exit.is_some(),
             "exit claim must publish a process-exit Idle"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn branch_reported_by_the_shell_is_kept_on_the_runtime() {
+        let script = r"printf '\033]43737;herdr-git;v=1;feature/x\007'; exec sleep 30";
+        let (runtime, _rx) = claim_loop::spawn(script, true);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while runtime.reported_branch().is_none() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(runtime.reported_branch().as_deref(), Some("feature/x"));
     }
 
     #[cfg(unix)]
@@ -7018,6 +7068,7 @@ mod tests {
             current_size: Cell::new((80, 24, 0, 0)),
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
+            reported_branch: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
             retired: AtomicBool::new(false),
             in_container: false,
@@ -7062,6 +7113,7 @@ mod tests {
             current_size: Cell::new((80, 24, 0, 0)),
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
+            reported_branch: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
             retired: AtomicBool::new(false),
             in_container: false,

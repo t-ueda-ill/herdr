@@ -8,12 +8,25 @@ use tracing::warn;
 
 use super::{App, GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
 use crate::events::AppEvent;
-use crate::workspace::{GitStatusCacheEntry, GitStatusRefreshDemand, WorkspaceGitStatus};
+use crate::terminal::TerminalId;
+use crate::workspace::{
+    GitStatusCacheEntry, GitStatusRefreshDemand, TerminalGitStatus, WorkspaceGitStatus,
+    WorkspaceGitStatusSnapshot,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkspaceGitRefreshItem {
     workspace_id: String,
     resolved_identity_cwd: PathBuf,
+    cache_key_hint: Option<PathBuf>,
+}
+
+/// The focused pane of one tab, whose host cwd names the branch shown while
+/// that tab is on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalGitRefreshItem {
+    terminal_id: TerminalId,
+    cwd: PathBuf,
     cache_key_hint: Option<PathBuf>,
 }
 
@@ -33,6 +46,7 @@ struct WorkspaceGitRefreshJob {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkspaceGitRefreshOutput {
     results: Vec<WorkspaceGitStatus>,
+    terminal_results: Vec<TerminalGitStatus>,
     cache_updates: Vec<(PathBuf, GitStatusCacheEntry)>,
 }
 
@@ -133,11 +147,13 @@ impl App {
         if self.git_identity_refresh_requested {
             demand.branch = true;
         }
+        let terminals = self.terminal_git_refresh_items(refresh_repo_discovery, demand);
         let spawned = crate::thread_spawn::spawn_named("herdr-git-refresh", move || {
             let output =
-                refresh_workspace_git_statuses_with_cache_and_demand(workspaces, &cache, demand);
+                refresh_git_statuses_with_cache_and_demand(workspaces, terminals, &cache, demand);
             let _ = event_tx.blocking_send(AppEvent::GitStatusRefreshed {
                 results: output.results,
+                terminal_results: output.terminal_results,
                 cache_updates: output.cache_updates,
             });
         });
@@ -215,6 +231,55 @@ impl App {
     }
 }
 
+impl App {
+    /// Why focused panes only: reading a host shell's cwd is a `/proc` lookup
+    /// per pane, and only the focused pane of a tab can stand for the space.
+    /// Off-host panes are left out; their shell reports its own branch.
+    fn terminal_git_refresh_items(
+        &self,
+        refresh_repo_discovery: bool,
+        demand: GitStatusRefreshDemand,
+    ) -> Vec<TerminalGitRefreshItem> {
+        if demand.is_empty() {
+            return Vec::new();
+        }
+        self.state
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.tabs.iter())
+            .filter_map(|tab| {
+                let pane_id = tab.layout.focused();
+                let terminal_id = tab.terminal_id(pane_id)?;
+                let runtime = self.terminal_runtimes.get(terminal_id);
+                if crate::terminal::shell_files_off_host(
+                    runtime.map(crate::terminal::TerminalRuntime::shell_runs_off_host),
+                    self.state.terminals.get(terminal_id)?,
+                ) {
+                    return None;
+                }
+                let cwd =
+                    tab.host_cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)?;
+                let cache_key_hint = (!refresh_repo_discovery)
+                    .then(|| {
+                        self.state
+                            .terminals
+                            .get(terminal_id)?
+                            .git_status_source
+                            .clone()
+                    })
+                    .flatten()
+                    .filter(|(source_cwd, _)| *source_cwd == cwd)
+                    .map(|(_, cache_key)| cache_key);
+                Some(TerminalGitRefreshItem {
+                    terminal_id: terminal_id.clone(),
+                    cwd,
+                    cache_key_hint,
+                })
+            })
+            .collect()
+    }
+}
+
 fn deduplicate_git_refresh_items(
     items: Vec<WorkspaceGitRefreshItem>,
     cache: &HashMap<PathBuf, GitStatusCacheEntry>,
@@ -250,13 +315,15 @@ fn deduplicate_git_refresh_items(
     jobs
 }
 
-fn refresh_workspace_git_statuses_with_cache_and_demand(
+fn refresh_git_statuses_with_cache_and_demand(
     items: Vec<WorkspaceGitRefreshItem>,
+    terminal_items: Vec<TerminalGitRefreshItem>,
     cache: &HashMap<PathBuf, GitStatusCacheEntry>,
     demand: GitStatusRefreshDemand,
 ) -> WorkspaceGitRefreshOutput {
     let mut results = Vec::new();
     let mut cache_updates = Vec::new();
+    let mut snapshots = HashMap::<PathBuf, WorkspaceGitStatusSnapshot>::new();
 
     for job in deduplicate_git_refresh_items(items, cache) {
         let (snapshot, cache_entry) = crate::workspace::git_status_snapshot_for_cwd_with_demand(
@@ -267,7 +334,8 @@ fn refresh_workspace_git_statuses_with_cache_and_demand(
         if let Some(cache_entry) = cache_entry {
             cache_updates.push((job.cache_key.clone(), cache_entry));
         }
-        results.extend(job.targets.into_iter().map(move |target| {
+        snapshots.insert(job.cache_key.clone(), snapshot.clone());
+        results.extend(job.targets.into_iter().map(|target| {
             snapshot.clone().into_workspace_status(
                 target.workspace_id,
                 target.resolved_identity_cwd,
@@ -277,8 +345,42 @@ fn refresh_workspace_git_statuses_with_cache_and_demand(
         }));
     }
 
+    let mut terminal_results = Vec::new();
+    for item in terminal_items {
+        // Same rule as the workspace jobs: a cwd without a known key is
+        // rediscovered and does not trust the cached snapshot.
+        let reconcile = item.cache_key_hint.is_none();
+        let cache_key = item.cache_key_hint.unwrap_or_else(|| {
+            crate::workspace::git_status_cache_key(&item.cwd).unwrap_or_else(|| item.cwd.clone())
+        });
+        let snapshot = match snapshots.get(&cache_key) {
+            Some(snapshot) => snapshot.clone(),
+            None => {
+                let cached = cache.get(&cache_key).filter(|_| !reconcile);
+                let (snapshot, cache_entry) =
+                    crate::workspace::git_status_snapshot_for_cwd_with_demand(
+                        &cache_key, cached, demand,
+                    );
+                if let Some(cache_entry) = cache_entry {
+                    cache_updates.push((cache_key.clone(), cache_entry));
+                }
+                snapshots.insert(cache_key.clone(), snapshot.clone());
+                snapshot
+            }
+        };
+        terminal_results.push(TerminalGitStatus {
+            terminal_id: item.terminal_id,
+            cwd: item.cwd,
+            status_cache_key: cache_key,
+            demand,
+            branch: snapshot.branch,
+            ahead_behind: snapshot.ahead_behind,
+        });
+    }
+
     WorkspaceGitRefreshOutput {
         results,
+        terminal_results,
         cache_updates,
     }
 }
@@ -303,7 +405,7 @@ mod tests {
             .output()
             .expect("run git init");
 
-        let output = refresh_workspace_git_statuses_with_cache_and_demand(
+        let output = refresh_git_statuses_with_cache_and_demand(
             vec![
                 WorkspaceGitRefreshItem {
                     workspace_id: "one".into(),
@@ -316,6 +418,7 @@ mod tests {
                     cache_key_hint: None,
                 },
             ],
+            Vec::new(),
             &HashMap::new(),
             GitStatusRefreshDemand::ALL,
         );
@@ -362,8 +465,9 @@ mod tests {
             })
             .collect();
 
-        let output = refresh_workspace_git_statuses_with_cache_and_demand(
+        let output = refresh_git_statuses_with_cache_and_demand(
             items,
+            Vec::new(),
             &HashMap::from([(cache_key, cached)]),
             GitStatusRefreshDemand::ALL,
         );
@@ -372,8 +476,6 @@ mod tests {
         assert_eq!(output.results.len(), 2);
         assert_eq!(output.results[0].auto_label, "alpha");
         assert_eq!(output.results[1].auto_label, "beta");
-        assert_eq!(output.results[0].branch.as_deref(), Some("main"));
-        assert_eq!(output.results[1].branch.as_deref(), Some("main"));
     }
 
     #[test]
@@ -568,7 +670,11 @@ mod tests {
         .expect("restored Git metadata refresh completes");
 
         let workspace = &app.state.workspaces[0];
-        assert_eq!(workspace.cached_git_branch.as_deref(), Some("main"));
+        let root = workspace.branch_terminal_id(0).unwrap();
+        assert_eq!(
+            app.state.terminals[root].git_branch.as_deref(),
+            Some("main")
+        );
         assert_eq!(
             workspace.cached_auto_label,
             repo.file_name().unwrap().to_string_lossy()
@@ -773,6 +879,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
             results: Vec::new(),
+            terminal_results: Vec::new(),
             cache_updates: Vec::new(),
         });
 
@@ -785,6 +892,141 @@ mod tests {
             .git_refresh_deadline()
             .expect("refresh should be due once a workspace exists");
         assert!(deadline <= Instant::now());
+    }
+
+    fn init_repo(name: &str, branch: &str) -> PathBuf {
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-terminal-git-{name}-{}-{}",
+            std::process::id(),
+            crate::workspace::generate_workspace_id()
+        ));
+        std::fs::create_dir_all(repo.join(".git/objects")).unwrap();
+        std::fs::write(
+            repo.join(".git/HEAD"),
+            format!("ref: refs/heads/{branch}\n"),
+        )
+        .unwrap();
+        repo
+    }
+
+    fn focused_terminal(ws: &Workspace, tab_idx: usize) -> crate::terminal::TerminalId {
+        ws.branch_terminal_id(tab_idx).cloned().unwrap()
+    }
+
+    #[tokio::test]
+    async fn terminal_git_refresh_reads_the_focused_host_pane_of_every_tab() {
+        let mut app = test_app(&crate::config::Config::default());
+        let mut ws = Workspace::test_new("tabs");
+        let unfocused = ws.tabs[0].root_pane;
+        ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.test_add_tab(None);
+        ws.test_add_tab(None);
+        app.state.workspaces.push(ws);
+        app.state.ensure_test_terminals();
+        let ws = &app.state.workspaces[0];
+        let (first, second, remote) = (
+            focused_terminal(ws, 0),
+            focused_terminal(ws, 1),
+            focused_terminal(ws, 2),
+        );
+        let unfocused = ws.tabs[0].terminal_id(unfocused).cloned().unwrap();
+        let (mut runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_set_in_container(true);
+        app.terminal_runtimes.insert(remote, runtime);
+
+        let items = app.terminal_git_refresh_items(false, GitStatusRefreshDemand::ALL);
+
+        let ids: Vec<_> = items.iter().map(|item| item.terminal_id.clone()).collect();
+        assert_eq!(ids, vec![first, second]);
+        assert!(!ids.contains(&unfocused));
+    }
+
+    #[test]
+    fn terminal_git_refresh_skips_an_off_host_pane_waiting_for_its_shell() {
+        let mut app = test_app(&crate::config::Config::default());
+        app.state.workspaces.push(Workspace::test_new("restored"));
+        app.state.ensure_test_terminals();
+        let terminal_id = focused_terminal(&app.state.workspaces[0], 0);
+        let terminal = app.state.terminals.remove(&terminal_id).unwrap();
+        let ssh = crate::ssh_host::SshLaunch::new("prod".into(), None).expect("destination");
+        app.state
+            .terminals
+            .insert(terminal_id, terminal.with_ssh(ssh));
+
+        assert!(app
+            .terminal_git_refresh_items(false, GitStatusRefreshDemand::ALL)
+            .is_empty());
+    }
+
+    #[test]
+    fn terminal_git_refresh_is_skipped_without_a_branch_consumer() {
+        let mut app = test_app(&crate::config::Config::default());
+        app.state.workspaces.push(Workspace::test_new("one"));
+        app.state.ensure_test_terminals();
+
+        assert!(app
+            .terminal_git_refresh_items(false, GitStatusRefreshDemand::default())
+            .is_empty());
+    }
+
+    #[test]
+    fn terminal_git_refresh_reuses_the_cache_key_of_an_unchanged_cwd() {
+        let mut app = test_app(&crate::config::Config::default());
+        app.state.workspaces.push(Workspace::test_new("one"));
+        app.state.ensure_test_terminals();
+        let terminal_id = focused_terminal(&app.state.workspaces[0], 0);
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        let cwd = terminal.cwd.clone();
+        terminal.git_status_source = Some((cwd, PathBuf::from("/repo")));
+
+        let reused = app.terminal_git_refresh_items(false, GitStatusRefreshDemand::ALL);
+        let rediscovered = app.terminal_git_refresh_items(true, GitStatusRefreshDemand::ALL);
+
+        assert_eq!(reused[0].cache_key_hint, Some(PathBuf::from("/repo")));
+        assert_eq!(rediscovered[0].cache_key_hint, None);
+    }
+
+    #[test]
+    fn terminal_git_refresh_reports_the_branch_of_each_pane_cwd() {
+        let space_repo = init_repo("space", "main");
+        let tab_repo = init_repo("tab", "feature/tab");
+        let first = crate::terminal::TerminalId::alloc();
+        let second = crate::terminal::TerminalId::alloc();
+
+        let output = refresh_git_statuses_with_cache_and_demand(
+            vec![WorkspaceGitRefreshItem {
+                workspace_id: "one".into(),
+                resolved_identity_cwd: space_repo.clone(),
+                cache_key_hint: None,
+            }],
+            vec![
+                TerminalGitRefreshItem {
+                    terminal_id: first.clone(),
+                    cwd: space_repo.clone(),
+                    cache_key_hint: None,
+                },
+                TerminalGitRefreshItem {
+                    terminal_id: second.clone(),
+                    cwd: tab_repo.clone(),
+                    cache_key_hint: None,
+                },
+            ],
+            &HashMap::new(),
+            GitStatusRefreshDemand::ALL,
+        );
+        std::fs::remove_dir_all(&space_repo).unwrap();
+        std::fs::remove_dir_all(&tab_repo).unwrap();
+
+        assert_eq!(output.cache_updates.len(), 2);
+        let branches: Vec<_> = output
+            .terminal_results
+            .iter()
+            .map(|result| (result.terminal_id.clone(), result.branch.as_deref()))
+            .collect();
+        assert_eq!(
+            branches,
+            vec![(first, Some("main")), (second, Some("feature/tab"))]
+        );
     }
 
     fn test_app(config: &crate::config::Config) -> super::super::App {

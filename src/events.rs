@@ -282,6 +282,7 @@ pub enum AppEvent {
     /// Background git status refresh completed for workspaces.
     GitStatusRefreshed {
         results: Vec<WorkspaceGitStatus>,
+        terminal_results: Vec<crate::workspace::TerminalGitStatus>,
         cache_updates: Vec<(std::path::PathBuf, GitStatusCacheEntry)>,
     },
     /// Background validation of a saved membership after session restore.

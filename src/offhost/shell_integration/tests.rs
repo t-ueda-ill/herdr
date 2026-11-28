@@ -1232,3 +1232,151 @@ fn bash_before_4_4_sends_no_prompt_marks_and_still_reports_its_directory() {
     assert!(!out.contains("\x1b]133;"), "{out:?}");
     assert!(!osc7_paths(&out).is_empty(), "{out:?}");
 }
+
+/// Values carried by `herdr-git` branch reports, in order.
+fn branch_reports(output: &str) -> Vec<String> {
+    output
+        .split("\x1b]43737;herdr-git;v=1;")
+        .skip(1)
+        .filter_map(|rest| rest.split('\x07').next())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A repo with a nested directory, a linked worktree whose `.git` file
+/// points to its git dir by a relative path, a detached checkout, and a
+/// directory outside any repo.
+struct BranchFixture {
+    root: PathBuf,
+    home: PathBuf,
+    tmp: PathBuf,
+}
+
+impl BranchFixture {
+    fn new(name: &str) -> Self {
+        let root = scratch(name);
+        let home = root.join("home");
+        let tmp = root.join("tmp");
+        for dir in [
+            &home,
+            &tmp,
+            &root.join("repo/.git"),
+            &root.join("repo/sub dir"),
+            &root.join("repo/.git/worktrees/wt"),
+            &root.join("wt"),
+            &root.join("detached/.git"),
+            &root.join("plain"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(root.join("repo/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            root.join("repo/.git/worktrees/wt/HEAD"),
+            "ref: refs/heads/feature/wt",
+        )
+        .unwrap();
+        std::fs::write(root.join("wt/.git"), "gitdir: ../repo/.git/worktrees/wt\n").unwrap();
+        std::fs::write(
+            root.join("detached/.git/HEAD"),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        )
+        .unwrap();
+        Self { root, home, tmp }
+    }
+
+    fn run(&self, shell: &str, input: &str) -> String {
+        let posix = injected_integration_posix();
+        let fish = injected_integration_fish();
+        let (posix, fish) = if shell == "fish" {
+            ("", fish.as_str())
+        } else {
+            (posix.as_str(), "")
+        };
+        run_in_pty(
+            &[self.root.to_str().unwrap(), shell, "0", posix, fish],
+            &self.home,
+            &self.tmp,
+            input,
+        )
+    }
+}
+
+fn branch_report_test(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("branch-{shell}"));
+    let out = fixture.run(
+        shell,
+        "cd 'repo/sub dir'\ncd ../../wt\ncd ../detached\ncd ../plain\nexit",
+    );
+    let reports = branch_reports(&out);
+    let order: Vec<&str> =
+        reports
+            .iter()
+            .map(String::as_str)
+            .fold(Vec::new(), |mut seen, report| {
+                if seen.last() != Some(&report) {
+                    seen.push(report);
+                }
+                seen
+            });
+    // The start directory is outside every repo, so the first report is empty.
+    assert_eq!(order, ["", "main", "feature/wt", ""], "{out:?}");
+    assert!(
+        reports.iter().filter(|report| report.is_empty()).count() >= 2,
+        "detached and plain both report no branch: {out:?}"
+    );
+}
+
+#[test]
+fn bash_reports_the_branch_of_its_directory() {
+    branch_report_test("bash");
+}
+
+#[test]
+fn dash_reports_the_branch_of_its_directory() {
+    branch_report_test("dash");
+}
+
+#[test]
+fn zsh_reports_the_branch_of_its_directory() {
+    branch_report_test("zsh");
+}
+
+#[test]
+fn fish_reports_the_branch_of_its_directory() {
+    branch_report_test("fish");
+}
+
+/// A checkout made from the prompt changes `HEAD` without a `cd`.
+fn branch_follows_a_checkout_at_the_next_prompt(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("checkout-{shell}"));
+    let out = fixture.run(
+        shell,
+        "cd repo\nprintf 'ref: refs/heads/next\\n' > .git/HEAD\ntrue\nexit",
+    );
+    let reports = branch_reports(&out);
+    assert_eq!(reports.last().map(String::as_str), Some("next"), "{out:?}");
+    assert!(reports.iter().any(|report| report == "main"), "{out:?}");
+}
+
+#[test]
+fn bash_branch_follows_a_checkout_at_the_next_prompt() {
+    branch_follows_a_checkout_at_the_next_prompt("bash");
+}
+
+#[test]
+fn zsh_branch_follows_a_checkout_at_the_next_prompt() {
+    branch_follows_a_checkout_at_the_next_prompt("zsh");
+}
+
+#[test]
+fn fish_branch_follows_a_checkout_at_the_next_prompt() {
+    branch_follows_a_checkout_at_the_next_prompt("fish");
+}

@@ -173,6 +173,8 @@ pub(crate) struct ProcessBytesResult {
     pub terminal_bells: u16,
     pub clipboard_writes: Vec<Vec<u8>>,
     pub reported_cwd: Option<std::path::PathBuf>,
+    /// `Some(None)`: the shell reported that it is outside a branch.
+    pub reported_branch: Option<Option<String>>,
     pub terminal_responses: Vec<Bytes>,
 }
 
@@ -1476,6 +1478,7 @@ impl GhosttyPaneTerminal {
                 terminal_bells: 0,
                 clipboard_writes: Vec::new(),
                 reported_cwd: None,
+                reported_branch: None,
                 terminal_responses: Vec::new(),
             };
         };
@@ -1506,6 +1509,7 @@ impl GhosttyPaneTerminal {
             );
         }
         let terminal_title_changed = core.agent_osc_state.observe(bytes);
+        let reported_branch = core.agent_osc_state.take_reported_branch();
 
         core.kitty_keyboard.observe(bytes);
         let mut terminal_responses = Vec::new();
@@ -1594,6 +1598,7 @@ impl GhosttyPaneTerminal {
             terminal_bells,
             clipboard_writes,
             reported_cwd,
+            reported_branch,
             terminal_responses,
         }
     }
@@ -4272,6 +4277,21 @@ mod tests {
             latest.reported_cwd,
             Some(std::path::PathBuf::from("/tmp/iterm2"))
         );
+    }
+
+    #[test]
+    fn process_pty_bytes_returns_the_branch_report_once() {
+        let (tx, _rx) = mpsc::channel(4);
+        let pane_id = PaneId::from_raw(1);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 100).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+
+        let reported =
+            pane.process_pty_bytes(pane_id, 0, b"\x1b]43737;herdr-git;v=1;main\x07$ ", &tx);
+        let later = pane.process_pty_bytes(pane_id, 0, b"ls", &tx);
+
+        assert_eq!(reported.reported_branch, Some(Some("main".into())));
+        assert_eq!(later.reported_branch, None);
     }
 
     #[cfg(not(windows))]
