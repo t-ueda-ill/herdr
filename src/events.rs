@@ -276,7 +276,7 @@ pub enum AppEvent {
     /// A container or ssh shell reported a different branch; the runtime
     /// holds it. Why apart from the git refresh: that refresh runs only
     /// while the sidebar shows git tokens, and other views show the branch.
-    TerminalBranchReported,
+    TerminalBranchReported { pane_id: PaneId },
     TerminalCwdReported {
         pane_id: PaneId,
         cwd: std::path::PathBuf,

@@ -968,6 +968,7 @@ mod tests {
         let mut app = test_app(&config);
         app.state.workspaces.push(Workspace::test_new("remote"));
         app.state.ensure_test_terminals();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = focused_terminal(&app.state.workspaces[0], 0);
         let (mut runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
         runtime.test_set_in_ssh(true);
@@ -975,7 +976,7 @@ mod tests {
         app.terminal_runtimes.insert(terminal_id.clone(), runtime);
         let _ = app.render_dirty.take();
 
-        app.handle_internal_event(AppEvent::TerminalBranchReported);
+        app.handle_internal_event(AppEvent::TerminalBranchReported { pane_id });
 
         assert_eq!(
             app.state.terminals[&terminal_id].git_branch.as_deref(),
@@ -1002,7 +1003,10 @@ mod tests {
         runtime.test_set_reported_branch(Some("hidden-branch"));
         app.terminal_runtimes.insert(terminal_id.clone(), runtime);
 
-        let redraw = app.handle_internal_event_with_render_impact(AppEvent::TerminalBranchReported);
+        let redraw =
+            app.handle_internal_event_with_render_impact(AppEvent::TerminalBranchReported {
+                pane_id: unfocused,
+            });
 
         assert!(!redraw);
         assert_eq!(

@@ -1279,6 +1279,8 @@ impl BranchFixture {
             &root.join("upper.git/refs"),
             &root.join("repo/lookalike.git/objects"),
             &root.join("repo/lookalike.git/refs"),
+            &root.join("fifo-gitdir"),
+            &root.join("fifo"),
         ] {
             std::fs::create_dir_all(dir).unwrap();
         }
@@ -1323,6 +1325,14 @@ impl BranchFixture {
             )
             .unwrap();
         }
+        // A `.git` file pointing at a git dir whose HEAD is a FIFO: reading it
+        // would wait for a writer forever.
+        std::fs::write(root.join("fifo/.git"), "gitdir: ../fifo-gitdir\n").unwrap();
+        let status = Command::new("mkfifo")
+            .arg(root.join("fifo-gitdir/HEAD"))
+            .status()
+            .expect("mkfifo runs");
+        assert!(status.success());
         // Git reads section and key names without case, so this is bare.
         std::fs::write(root.join("upper.git/HEAD"), "ref: refs/heads/upper-bare\n").unwrap();
         std::fs::write(root.join("upper.git/config"), "[Core]\n\tBare = TRUE\n").unwrap();
@@ -1610,4 +1620,35 @@ fn dash_reports_the_branch_of_a_bare_repo() {
 #[test]
 fn fish_reports_the_branch_of_a_bare_repo() {
     bare_repo_test("fish");
+}
+
+fn fifo_head_test(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("fifo-{shell}"));
+    let out = fixture.run(shell, "cd fifo\nprintf 'prompt=%s\\n' back\nexit");
+
+    assert!(out.contains("prompt=back"), "the prompt came back: {out:?}");
+    assert_eq!(
+        branch_reports(&out).last().map(String::as_str),
+        Some(""),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn bash_prompt_survives_a_fifo_head() {
+    fifo_head_test("bash");
+}
+
+#[test]
+fn dash_prompt_survives_a_fifo_head() {
+    fifo_head_test("dash");
+}
+
+#[test]
+fn fish_prompt_survives_a_fifo_head() {
+    fifo_head_test("fish");
 }

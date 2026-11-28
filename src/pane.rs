@@ -2641,7 +2641,7 @@ fn publish_reported_branch(
     // Why the lock is held across the send: a failed send puts the previous
     // value back, so the next prompt's identical report counts as a change
     // and is sent again. `try_send` never blocks, so the PTY reader does not.
-    if let Err(err) = events.try_send(AppEvent::TerminalBranchReported) {
+    if let Err(err) = events.try_send(AppEvent::TerminalBranchReported { pane_id }) {
         *current = previous;
         warn!(
             pane = pane_id.raw(),
@@ -5176,7 +5176,7 @@ mod tests {
 
         let reported =
             claim_loop::next_matching(&mut rx, std::time::Duration::from_secs(8), |event| {
-                matches!(event, AppEvent::TerminalBranchReported)
+                matches!(event, AppEvent::TerminalBranchReported { .. })
             })
             .await;
 
@@ -5188,7 +5188,9 @@ mod tests {
     fn branch_report_that_could_not_be_announced_is_announced_again() {
         let (events, mut rx) = mpsc::channel(1);
         events
-            .try_send(AppEvent::TerminalBranchReported)
+            .try_send(AppEvent::TerminalBranchReported {
+                pane_id: PaneId::from_raw(9),
+            })
             .expect("fill the queue");
         let reported = Mutex::new(Some("old".to_string()));
         let pane_id = PaneId::from_raw(1);
@@ -5204,7 +5206,7 @@ mod tests {
         publish_reported_branch(pane_id, Some("new".into()), &reported, true, &events);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::TerminalBranchReported)
+            Ok(AppEvent::TerminalBranchReported { .. })
         ));
         assert_eq!(reported.lock().unwrap().as_deref(), Some("new"));
     }
@@ -5217,7 +5219,7 @@ mod tests {
 
         let reported =
             claim_loop::next_matching(&mut rx, std::time::Duration::from_millis(1500), |event| {
-                matches!(event, AppEvent::TerminalBranchReported)
+                matches!(event, AppEvent::TerminalBranchReported { .. })
             })
             .await;
 

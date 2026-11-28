@@ -1354,6 +1354,27 @@ fn is_trailing_token_wrapper(ch: char) -> bool {
 // Event handling
 // ---------------------------------------------------------------------------
 
+/// Returns true when the terminal's branch facts changed.
+fn sync_off_host_git_branch(
+    terminal: &mut crate::terminal::TerminalState,
+    runtime: Option<&crate::terminal::TerminalRuntime>,
+) -> bool {
+    if !crate::terminal::shell_files_off_host(
+        runtime.map(crate::terminal::TerminalRuntime::shell_runs_off_host),
+        terminal,
+    ) {
+        return false;
+    }
+    let branch = runtime.and_then(crate::terminal::TerminalRuntime::reported_branch);
+    if terminal.git_branch == branch && terminal.git_ahead_behind.is_none() {
+        return false;
+    }
+    terminal.git_branch = branch;
+    terminal.git_ahead_behind = None;
+    terminal.git_status_source = None;
+    true
+}
+
 impl AppState {
     pub fn apply_terminal_git_statuses(
         &mut self,
@@ -1397,12 +1418,13 @@ impl AppState {
         changed
     }
 
-    /// Copies each off-host shell's last branch report. Why every off-host
-    /// terminal and not only focused ones: a report costs one lock, and a
-    /// pane focused later must not show a branch from before it was focused.
-    /// Returns true only when a pane that can stand for a space changed:
-    /// a hidden pane's branch must not cost a redraw (focus moving to it
-    /// redraws anyway).
+    /// Copies each off-host shell's last branch report, for transitions no
+    /// report announces (a respawned or reconnected shell). Why every
+    /// off-host terminal and not only focused ones: a report costs one lock,
+    /// and a pane focused later must not show a branch from before it was
+    /// focused. Returns true only when a pane that can stand for a space
+    /// changed: a hidden pane's branch must not cost a redraw (focus moving
+    /// to it redraws anyway).
     pub fn sync_off_host_git_branches(
         &mut self,
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
@@ -1415,22 +1437,35 @@ impl AppState {
             .collect();
         let mut changed = false;
         for (terminal_id, terminal) in &mut self.terminals {
-            let runtime = terminal_runtimes.get(terminal_id);
-            if !crate::terminal::shell_files_off_host(
-                runtime.map(crate::terminal::TerminalRuntime::shell_runs_off_host),
-                terminal,
-            ) {
-                continue;
-            }
-            let branch = runtime.and_then(crate::terminal::TerminalRuntime::reported_branch);
-            if terminal.git_branch != branch || terminal.git_ahead_behind.is_some() {
-                terminal.git_branch = branch;
-                terminal.git_ahead_behind = None;
-                terminal.git_status_source = None;
+            if sync_off_host_git_branch(terminal, terminal_runtimes.get(terminal_id)) {
                 changed |= shown.contains(terminal_id);
             }
         }
         changed
+    }
+
+    /// Copies one pane's branch report. Why not the sweep above: a report
+    /// event per pane would make N reports cost N sweeps of every terminal.
+    pub fn sync_off_host_git_branch_of_pane(
+        &mut self,
+        pane_id: PaneId,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+    ) -> bool {
+        let Some((terminal_id, shown)) = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.tabs.iter())
+            .find_map(|tab| {
+                let terminal_id = tab.terminal_id(pane_id)?;
+                Some((terminal_id.clone(), tab.layout.focused() == pane_id))
+            })
+        else {
+            return false;
+        };
+        let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+            return false;
+        };
+        sync_off_host_git_branch(terminal, terminal_runtimes.get(&terminal_id)) && shown
     }
 
     pub fn apply_workspace_git_statuses(
@@ -1719,7 +1754,7 @@ impl AppState {
             AppEvent::ClipboardWrite { .. } => Vec::new(),
             // The App reads the report from the runtime; state alone has no
             // runtime to read it from.
-            AppEvent::TerminalBranchReported => Vec::new(),
+            AppEvent::TerminalBranchReported { .. } => Vec::new(),
             AppEvent::TerminalCwdReported {
                 pane_id,
                 cwd,
@@ -2908,6 +2943,25 @@ mod tests {
             state.terminals[&unfocused].git_branch.as_deref(),
             Some("hidden-branch")
         );
+    }
+
+    #[tokio::test]
+    async fn branch_report_syncs_only_the_pane_that_reported() {
+        let mut state = app_with_workspaces(&["reporter", "other"]);
+        let reporter_pane = state.workspaces[0].tabs[0].root_pane;
+        let reporter = root_terminal_id(&state, 0);
+        let other = root_terminal_id(&state, 1);
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        runtimes.insert(reporter.clone(), off_host_runtime(Some("reported")));
+        runtimes.insert(other.clone(), off_host_runtime(Some("not-yet-synced")));
+
+        assert!(state.sync_off_host_git_branch_of_pane(reporter_pane, &runtimes));
+
+        assert_eq!(
+            state.terminals[&reporter].git_branch.as_deref(),
+            Some("reported")
+        );
+        assert_eq!(state.terminals[&other].git_branch, None);
     }
 
     #[tokio::test]
