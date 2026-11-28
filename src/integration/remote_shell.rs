@@ -72,14 +72,15 @@ pub(crate) fn injected_cwd_integration_posix() -> String {
 /// keeps in `HEAD`, which no builtin can resolve.
 /// Why control characters are dropped here and not only by herdr: they reach
 /// the terminal with the report, before herdr can reject them.
-/// Why `-f` before every `read`: a FIFO in a repo would make `read` wait for
-/// a writer, and the prompt would never come back.
+/// Why `-f` and `-r` before every `read`: a FIFO in a repo would make `read`
+/// wait for a writer, and the prompt would never come back; an unreadable
+/// file would print the redirection error at every prompt.
 /// Why a bare repo is told by its layout and `core.bare`: it has no `.git`,
 /// and the host's discovery (`git/discovery.rs`) uses the same two checks, so
 /// both sides name the same repo. The config is read like the host reads it:
 /// the first `bare` in `[core]`, names without case, comments cut off.
 const POSIX_BRANCH_REPORT: &str = r##"__herdr_is_bare() {
-  [ -f "$1/HEAD" ] && [ -d "$1/objects" ] && [ -d "$1/refs" ] && [ -f "$1/config" ] || return 1
+  [ -f "$1/HEAD" ] && [ -d "$1/objects" ] && [ -d "$1/refs" ] && [ -f "$1/config" ] && [ -r "$1/config" ] || return 1
   __herdr_core=
   while IFS= read -r __herdr_line || [ -n "$__herdr_line" ]; do
     __herdr_line=${__herdr_line#"${__herdr_line%%[![:space:]]*}"}
@@ -138,7 +139,7 @@ __herdr_git_branch() {
     fi
     __herdr_dir=${__herdr_dir%/*}
   done
-  if [ -f "$__herdr_head" ]; then
+  if [ -f "$__herdr_head" ] && [ -r "$__herdr_head" ]; then
     __herdr_line=
     { IFS= read -r __herdr_line <"$__herdr_head"; } 2>/dev/null || :
     case $__herdr_line in
@@ -238,7 +239,7 @@ __herdr_osc7
 /// matches only itself.
 const FISH_BRANCH_REPORT: &str = r#"function __herdr_is_bare
     set -l dir $argv[1]
-    test -f "$dir/HEAD"; and test -d "$dir/objects"; and test -d "$dir/refs"; and test -f "$dir/config"; or return 1
+    test -f "$dir/HEAD"; and test -d "$dir/objects"; and test -d "$dir/refs"; and test -f "$dir/config"; and test -r "$dir/config"; or return 1
     set -l core
     while read -l line
         set line (string trim -- "$line")
@@ -290,7 +291,7 @@ function __herdr_git_branch --on-event fish_prompt
         set dir (string replace -r '/[^/]*$' '' -- "$dir")
     end
     set -l branch
-    if test -n "$head"; and test -f "$head"
+    if test -n "$head"; and test -f "$head"; and test -r "$head"
         read -l line <"$head"
         if test "$line" = 'ref: refs/heads/.invalid'
             set branch (command git symbolic-ref --short -q HEAD 2>/dev/null)

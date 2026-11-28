@@ -1762,8 +1762,11 @@ pub struct PaneRuntime {
     current_size: Cell<(u16, u16, u32, u32)>,
     child_pid: Arc<AtomicU32>,
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
-    /// The branch the off-host shell last reported for its directory.
-    reported_branch: Arc<Mutex<Option<String>>>,
+    /// The branch the off-host shell last reported for its directory. The
+    /// outer `None` means this shell has not reported yet, so its first
+    /// report always counts as a change, even one of no branch: the pane may
+    /// still show a branch from the shell before a respawn or reconnect.
+    reported_branch: Arc<Mutex<Option<Option<String>>>>,
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
     cwd_process_exited: Arc<AtomicBool>,
     child_wait_completed: Option<Arc<AtomicBool>>,
@@ -2624,17 +2627,17 @@ fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<App
 fn publish_reported_branch(
     pane_id: PaneId,
     branch: Option<String>,
-    reported_branch: &Mutex<Option<String>>,
+    reported_branch: &Mutex<Option<Option<String>>>,
     shell_off_host: bool,
     events: &mpsc::Sender<AppEvent>,
 ) {
     let Ok(mut current) = reported_branch.lock() else {
         return;
     };
-    if *current == branch {
+    if current.as_ref() == Some(&branch) {
         return;
     }
-    let previous = std::mem::replace(&mut *current, branch);
+    let previous = current.replace(branch);
     if !shell_off_host {
         return;
     }
@@ -3049,7 +3052,9 @@ impl PaneRuntime {
             Arc::new(Mutex::new(handoff_reported_cwd.filter(|cwd| {
                 usable_reported_cwd(cwd.clone(), shell_off_host).is_some()
             })));
-        let reported_branch = Arc::new(Mutex::new(handoff_reported_branch));
+        // Why a carried branch is kept but no branch is not: "no report yet"
+        // lets the shell's next report clear whatever the pane still shows.
+        let reported_branch = Arc::new(Mutex::new(handoff_reported_branch.map(Some)));
         let cwd_process_exited = Arc::new(AtomicBool::new(false));
         let kitty_keyboard_flags = Arc::new(AtomicU16::new(keyboard_protocol_flags));
         let content_seq = Arc::new(AtomicU64::new(0));
@@ -4638,7 +4643,7 @@ impl PaneRuntime {
         self.reported_branch
             .lock()
             .ok()
-            .and_then(|branch| branch.clone())
+            .and_then(|branch| branch.clone().flatten())
     }
 
     fn reported_cwd(&self) -> Option<std::path::PathBuf> {
@@ -4734,7 +4739,7 @@ impl PaneRuntime {
 
     pub(crate) fn test_set_reported_branch(&self, branch: Option<&str>) {
         if let Ok(mut reported) = self.reported_branch.lock() {
-            *reported = branch.map(str::to_owned);
+            *reported = Some(branch.map(str::to_owned));
         }
     }
 
@@ -5185,6 +5190,22 @@ mod tests {
     }
 
     #[test]
+    fn first_branch_report_of_a_new_shell_is_announced_even_without_a_branch() {
+        let (events, mut rx) = mpsc::channel(4);
+        let reported = Mutex::new(None);
+        let pane_id = PaneId::from_raw(1);
+
+        publish_reported_branch(pane_id, None, &reported, true, &events);
+        assert!(
+            matches!(rx.try_recv(), Ok(AppEvent::TerminalBranchReported { .. })),
+            "the previous shell's branch must be cleared"
+        );
+
+        publish_reported_branch(pane_id, None, &reported, true, &events);
+        assert!(rx.try_recv().is_err(), "an unchanged report stays quiet");
+    }
+
+    #[test]
     fn branch_report_that_could_not_be_announced_is_announced_again() {
         let (events, mut rx) = mpsc::channel(1);
         events
@@ -5192,13 +5213,13 @@ mod tests {
                 pane_id: PaneId::from_raw(9),
             })
             .expect("fill the queue");
-        let reported = Mutex::new(Some("old".to_string()));
+        let reported = Mutex::new(Some(Some("old".to_string())));
         let pane_id = PaneId::from_raw(1);
 
         publish_reported_branch(pane_id, Some("new".into()), &reported, true, &events);
         assert_eq!(
-            reported.lock().unwrap().as_deref(),
-            Some("old"),
+            *reported.lock().unwrap(),
+            Some(Some("old".to_string())),
             "a report the app never heard of is not kept"
         );
 
@@ -5208,7 +5229,7 @@ mod tests {
             rx.try_recv(),
             Ok(AppEvent::TerminalBranchReported { .. })
         ));
-        assert_eq!(reported.lock().unwrap().as_deref(), Some("new"));
+        assert_eq!(*reported.lock().unwrap(), Some(Some("new".to_string())));
     }
 
     #[cfg(unix)]

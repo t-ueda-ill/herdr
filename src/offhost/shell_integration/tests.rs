@@ -1691,3 +1691,56 @@ fn bash_leaves_a_top_level_symlink_unresolved() {
 fn dash_leaves_a_top_level_symlink_unresolved() {
     top_level_symlink_test("dash");
 }
+
+/// A config or HEAD this user may not read must not print an error at every
+/// prompt. Why not as root: root reads files whatever their mode.
+fn unreadable_metadata_test(shell: &str) {
+    if !installed(shell)
+        || Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|out| out.stdout == b"0\n")
+    {
+        eprintln!("skipping: {shell} is not installed or the test runs as root");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("unreadable-{shell}"));
+    let locked = fixture.root.join("locked.git");
+    for dir in ["objects", "refs"] {
+        std::fs::create_dir_all(locked.join(dir)).unwrap();
+    }
+    std::fs::write(locked.join("HEAD"), "ref: refs/heads/locked\n").unwrap();
+    std::fs::write(locked.join("config"), "[core]\n\tbare = true\n").unwrap();
+    let unreadable = std::os::unix::fs::PermissionsExt::from_mode(0o000);
+    std::fs::set_permissions(locked.join("config"), unreadable).unwrap();
+    std::fs::create_dir_all(fixture.root.join("locked-head/.git")).unwrap();
+    let head = fixture.root.join("locked-head/.git/HEAD");
+    std::fs::write(&head, "ref: refs/heads/hidden\n").unwrap();
+    std::fs::set_permissions(&head, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+
+    let out = fixture.run(shell, "cd locked.git\ntrue\ncd ../locked-head\ntrue\nexit");
+
+    for word in [
+        "Permission denied",
+        "permission denied",
+        "cannot open",
+        "can't open",
+    ] {
+        assert!(!out.contains(word), "{word}: {out:?}");
+    }
+}
+
+#[test]
+fn bash_stays_quiet_on_unreadable_git_metadata() {
+    unreadable_metadata_test("bash");
+}
+
+#[test]
+fn dash_stays_quiet_on_unreadable_git_metadata() {
+    unreadable_metadata_test("dash");
+}
+
+#[test]
+fn fish_stays_quiet_on_unreadable_git_metadata() {
+    unreadable_metadata_test("fish");
+}
