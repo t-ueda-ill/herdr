@@ -1628,6 +1628,15 @@ fn fifo_head_test(shell: &str) {
         return;
     }
     let fixture = BranchFixture::new(&format!("fifo-{shell}"));
+    // Why a plain fish prompt: fish's default prompt runs `git`, which reads
+    // the FIFO itself and would hang the prompt for a reason outside herdr.
+    let fish_config = fixture.home.join(".config/fish");
+    std::fs::create_dir_all(&fish_config).unwrap();
+    std::fs::write(
+        fish_config.join("config.fish"),
+        "function fish_prompt; printf '$ '; end\n",
+    )
+    .unwrap();
     let out = fixture.run(shell, "cd fifo\nprintf 'prompt=%s\\n' back\nexit");
 
     assert!(out.contains("prompt=back"), "the prompt came back: {out:?}");
@@ -1651,4 +1660,34 @@ fn dash_prompt_survives_a_fifo_head() {
 #[test]
 fn fish_prompt_survives_a_fifo_head() {
     fifo_head_test("fish");
+}
+
+/// A symlink right under `/` (macOS `/var` and `/tmp`, merged-usr `/bin`)
+/// is not resolved: above it is only the root, and the subshell would run at
+/// every prompt below it. A `pwd` function records each resolution.
+fn top_level_symlink_test(shell: &str) {
+    if !installed(shell) || !Path::new("/bin").is_symlink() {
+        eprintln!("skipping: {shell} is not installed or /bin is not a symlink");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("top-symlink-{shell}"));
+    let probe = r#"pwd() { printf 'resolved-%s\n' here >/dev/tty; command pwd "$@"; }"#;
+    let out = fixture.run(shell, &format!("{probe}\ncd /bin\ntrue\nexit"));
+    assert!(!out.contains("resolved-here"), "{out:?}");
+
+    let out = fixture.run(shell, &format!("{probe}\ncd link\nexit"));
+    assert!(
+        out.contains("resolved-here"),
+        "the probe sees a deeper symlink: {out:?}"
+    );
+}
+
+#[test]
+fn bash_leaves_a_top_level_symlink_unresolved() {
+    top_level_symlink_test("bash");
+}
+
+#[test]
+fn dash_leaves_a_top_level_symlink_unresolved() {
+    top_level_symlink_test("dash");
 }

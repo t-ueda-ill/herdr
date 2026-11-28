@@ -65,6 +65,9 @@ pub(crate) fn injected_cwd_integration_posix() -> String {
 /// parent of a symlinked directory is not the checkout it lives in. The
 /// subshell that resolves it runs only then; it bypasses the `cd` wrapper and
 /// sets `__herdr_resolving` so zsh's `chpwd` hook does not report its path.
+/// Why not a symlink right under `/` (macOS `/var` and `/tmp`, merged-usr
+/// `/bin`): only the root is above it, so resolving changes nothing that
+/// matters, while every prompt below it would start the subshell.
 /// Why `git` only for `.invalid`: that is the placeholder a reftable repo
 /// keeps in `HEAD`, which no builtin can resolve.
 /// Why control characters are dropped here and not only by herdr: they reach
@@ -130,7 +133,7 @@ __herdr_git_branch() {
       break
     fi
     [ -n "$__herdr_dir" ] || break
-    if [ -h "$__herdr_dir" ]; then
+    if [ -h "$__herdr_dir" ] && [ -n "${__herdr_dir%/*}" ]; then
       __herdr_dir=$(__herdr_resolving=1; command cd -P -- "$__herdr_dir" 2>/dev/null && pwd -P) || break
     fi
     __herdr_dir=${__herdr_dir%/*}
@@ -281,7 +284,7 @@ function __herdr_git_branch --on-event fish_prompt
             break
         end
         test -n "$dir"; or break
-        if test -L "$dir"
+        if test -L "$dir"; and string match -qr '^/[^/]+/' -- "$dir"
             set dir (builtin realpath -- "$dir" 2>/dev/null); or break
         end
         set dir (string replace -r '/[^/]*$' '' -- "$dir")
