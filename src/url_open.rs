@@ -58,7 +58,7 @@ pub(crate) fn run(opener: &UrlOpener, still_running_means_opened: Duration) -> A
         UrlOpener::Native { url } => {
             return match crate::platform::open_url_natively(url) {
                 Ok(()) => Attempt::Opened(None),
-                Err(err) => Attempt::Failed(format!("{}: {err}", opener.name())),
+                Err(err) => Attempt::Failed(format!("ShellExecuteW: {err}")),
             }
         }
         UrlOpener::Command {

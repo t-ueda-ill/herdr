@@ -26,8 +26,9 @@ impl UrlOpener {
         }
     }
 
-    /// The program's name, for messages and logs. Never the arguments: they
-    /// hold the URL, and a preview URL carries its token.
+    /// The program's name. Never the arguments: they hold the URL, and a
+    /// preview URL carries its token.
+    #[cfg(test)]
     pub(crate) fn name(&self) -> &str {
         match self {
             Self::Command { program, .. } => program,
@@ -72,12 +73,14 @@ pub(crate) fn browser_env_openers(value: &str, url: &str) -> Vec<UrlOpener> {
 
 // Why allowed on Windows: it opens URLs with ShellExecuteW, not commands.
 #[cfg_attr(windows, allow(dead_code))]
-/// `openers` without a later one that runs the same program as an earlier
-/// one, which would only fail the same way again.
-pub(crate) fn dedup_by_program(openers: Vec<UrlOpener>) -> Vec<UrlOpener> {
+/// `openers` without a later one identical to an earlier one (program,
+/// arguments, and exit-status policy), which would only fail the same way
+/// again. Why not by program alone: `open -a Browser URL` failing says
+/// nothing about plain `open URL`.
+pub(crate) fn dedup(openers: Vec<UrlOpener>) -> Vec<UrlOpener> {
     let mut kept: Vec<UrlOpener> = Vec::with_capacity(openers.len());
     for opener in openers {
-        if !kept.iter().any(|known| known.name() == opener.name()) {
+        if !kept.contains(&opener) {
             kept.push(opener);
         }
     }

@@ -960,19 +960,23 @@ async fn run_client_loop(
             }
             ClientLoopEvent::UrlOpened {
                 url,
-                preview,
+                origin,
                 result,
             } => match result {
-                Ok(()) => debug!(preview, "browser opened"),
+                Ok(()) => debug!(?origin, "browser opened"),
                 Err(reason) => {
                     // Why no URL in the log: a preview URL carries its token.
-                    warn!(%reason, preview, "could not open a browser");
+                    warn!(%reason, ?origin, "could not open a browser");
                     // Why copy: the URL is long and on a line that may be
                     // cut, and OSC 52 reaches this terminal's clipboard even
                     // over ssh.
                     let copied = crate::selection::write_osc52_bytes(url.as_bytes());
                     if let Some(shell) = state.shell.as_mut() {
-                        shell.url_open_failed(&url, preview, copied);
+                        let tab = match origin {
+                            url_launcher::UrlOrigin::Preview { tab } => tab,
+                            url_launcher::UrlOrigin::Link => None,
+                        };
+                        shell.url_open_failed(&url, tab, copied);
                         present_shell_repaint(&mut state);
                     }
                 }

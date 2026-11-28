@@ -703,7 +703,7 @@ pub(crate) fn url_openers(url: &str) -> Vec<super::UrlOpener> {
         .map(|value| super::browser_env_openers(&value, url))
         .unwrap_or_default();
     openers.push(super::UrlOpener::command("open", vec![url.to_owned()]));
-    super::dedup_by_program(openers)
+    super::dedup(openers)
 }
 
 pub fn read_clipboard_image() -> Option<ClipboardImage> {

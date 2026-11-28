@@ -125,12 +125,12 @@ pub(super) fn dispatch_client_shell_actions(
             }
             shell::ClientShellAction::OpenSafeWebUrl(url) => {
                 if crate::app::actions::safe_web_url(&url).is_some() {
-                    url_launcher.open(url, false);
+                    url_launcher.open(url, url_launcher::UrlOrigin::Link);
                 }
             }
-            shell::ClientShellAction::OpenPreviewUrl(url) => {
+            shell::ClientShellAction::OpenPreviewUrl { url, tab } => {
                 if crate::app::actions::safe_web_url(&url).is_some() {
-                    url_launcher.open(url, true);
+                    url_launcher.open(url, url_launcher::UrlOrigin::Preview { tab });
                 }
             }
             shell::ClientShellAction::ReplayMouse(events) => replay_mouse.extend(events),

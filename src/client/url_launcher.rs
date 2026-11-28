@@ -3,6 +3,16 @@
 
 use super::events::ClientLoopEvent;
 
+/// Where an open came from, which decides the command and where a failure
+/// is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UrlOrigin {
+    /// A link in a pane.
+    Link,
+    /// A preview, started from that files tab or (`None`) the picker.
+    Preview { tab: Option<u64> },
+}
+
 #[derive(Default)]
 pub(crate) struct UrlLauncher {
     events: Option<tokio::sync::mpsc::Sender<ClientLoopEvent>>,
@@ -24,15 +34,14 @@ impl UrlLauncher {
 
     /// Why a thread: each opener may take seconds to answer, and the loop
     /// must keep drawing meanwhile.
-    pub(crate) fn open(&self, url: String, preview: bool) {
+    pub(crate) fn open(&self, url: String, origin: UrlOrigin) {
         let Some(events) = self.events.clone() else {
             tracing::debug!("no client loop to report a browser open to");
             return;
         };
-        let command = if preview {
-            self.preview_command.clone()
-        } else {
-            Vec::new()
+        let command = match origin {
+            UrlOrigin::Preview { .. } => self.preview_command.clone(),
+            UrlOrigin::Link => Vec::new(),
         };
         let spawned = crate::thread_spawn::spawn_named("herdr-url-open", move || {
             let (result, child) = match crate::url_open::open(&url, &command) {
@@ -41,7 +50,7 @@ impl UrlLauncher {
             };
             let _ = events.blocking_send(ClientLoopEvent::UrlOpened {
                 url,
-                preview,
+                origin,
                 result,
             });
             // Reaps an opener that stays until its browser closes.

@@ -539,7 +539,7 @@ mod drop_paths;
 pub(crate) use drop_paths::{starts_with_windows_path, DropPathSyntax};
 mod url_openers;
 #[cfg(unix)]
-pub(crate) use url_openers::{browser_env_openers, dedup_by_program};
+pub(crate) use url_openers::{browser_env_openers, dedup};
 pub(crate) use url_openers::{command_with_url, UrlOpener};
 mod client_state;
 pub(crate) use client_state::{

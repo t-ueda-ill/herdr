@@ -325,10 +325,11 @@ impl ClientShellState {
                     // Why the root and not the entry's URL: the notice line is
                     // cut at the region's width, and a cut address is how a
                     // user ends up typing one without the token.
-                    tab.notice = format!("preview {}", preview_root_url(&preview.url));
-                    outcome
-                        .actions
-                        .push(ClientShellAction::OpenPreviewUrl(preview.url));
+                    tab.notice = preview_started_notice(&preview.url);
+                    outcome.actions.push(ClientShellAction::OpenPreviewUrl {
+                        url: preview.url,
+                        tab: Some(tab.id),
+                    });
                 }
                 Err(error) => tab.notice = error.message,
                 _ => tab.notice = "unexpected preview response".into(),
@@ -891,6 +892,11 @@ impl ClientShellState {
             self.workbench.clipboard = None;
         }
     }
+}
+
+/// The notice of a preview just started at `url`.
+pub(in crate::client::shell) fn preview_started_notice(url: &str) -> String {
+    format!("preview {}", preview_root_url(url))
 }
 
 /// `url` up to and including its first path segment, the preview's token:

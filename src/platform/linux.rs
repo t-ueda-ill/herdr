@@ -941,7 +941,7 @@ fn linux_url_openers(url: &str, wsl: bool, browser: Option<&str>) -> Vec<super::
         });
     }
     openers.push(super::UrlOpener::command("xdg-open", vec![url.to_owned()]));
-    super::dedup_by_program(openers)
+    super::dedup(openers)
 }
 
 pub fn read_clipboard_image() -> Option<ClipboardImage> {

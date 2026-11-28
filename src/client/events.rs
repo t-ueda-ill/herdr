@@ -44,7 +44,7 @@ pub(super) enum ClientLoopEvent {
     /// A browser open finished; `result` says why none opened.
     UrlOpened {
         url: String,
-        preview: bool,
+        origin: url_launcher::UrlOrigin,
         result: Result<(), String>,
     },
     Timer,

@@ -114,20 +114,24 @@ impl ClientShellState {
             return;
         }
         self.overlay = None;
-        outcome.actions.push(ClientShellAction::OpenPreviewUrl(url));
+        outcome
+            .actions
+            .push(ClientShellAction::OpenPreviewUrl { url, tab: None });
     }
 
     /// Says that no browser opened `url`, and whether the client copied it.
-    /// A preview started from the files region also shows the whole URL on
-    /// its notice line, where the user was looking.
-    pub(crate) fn url_open_failed(&mut self, url: &str, preview: bool, copied: bool) {
+    /// A preview started from a files tab also shows the whole URL on that
+    /// tab's notice line, where the user was looking, while the line still
+    /// shows that preview: a later notice is newer news and stays.
+    pub(crate) fn url_open_failed(&mut self, url: &str, tab: Option<u64>, copied: bool) {
         let message = if copied {
             "browser did not open; URL copied"
         } else {
             "browser did not open"
         };
-        if preview {
-            if let Some(tab) = self.investigation_mut() {
+        let started = super::investigation::preview_started_notice(url);
+        if let Some(tab) = tab.and_then(|id| self.workbench.tabs.iter_mut().find(|t| t.id == id)) {
+            if tab.notice == started {
                 tab.notice = format!("{message}: {url}");
             }
         }

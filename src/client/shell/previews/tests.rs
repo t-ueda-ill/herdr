@@ -154,7 +154,7 @@ fn enter_opens_the_selected_preview_in_the_browser_and_closes() {
     let outcome = key(&mut state, KeyCode::Enter);
     assert!(outcome.actions.iter().any(|action| matches!(
         action,
-        ClientShellAction::OpenPreviewUrl(url) if url == "http://127.0.0.1:40002/secret40002/"
+        ClientShellAction::OpenPreviewUrl { url, tab: None } if url == "http://127.0.0.1:40002/secret40002/"
     )));
     assert!(state.overlay.is_none());
 }
@@ -228,7 +228,7 @@ fn the_filter_narrows_by_root_place_or_port() {
     let outcome = key(&mut state, KeyCode::Enter);
     assert!(outcome.actions.iter().any(|action| matches!(
         action,
-        ClientShellAction::OpenPreviewUrl(url) if url.contains(":40002/")
+        ClientShellAction::OpenPreviewUrl { url, .. } if url.contains(":40002/")
     )));
 }
 
@@ -264,7 +264,7 @@ fn a_remote_server_keeps_the_picker_open_and_says_why() {
     assert!(!outcome
         .actions
         .iter()
-        .any(|action| matches!(action, ClientShellAction::OpenPreviewUrl(_))));
+        .any(|action| matches!(action, ClientShellAction::OpenPreviewUrl { .. })));
     let Some(ClientShellOverlay::Previews(previews)) = state.overlay.as_ref() else {
         panic!("the picker stays open");
     };

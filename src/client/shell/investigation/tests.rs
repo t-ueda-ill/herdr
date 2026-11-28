@@ -2742,7 +2742,7 @@ mod offhost {
         );
         assert!(actions.iter().any(|action| matches!(
             action,
-            ClientShellAction::OpenPreviewUrl(url)
+            ClientShellAction::OpenPreviewUrl { url, .. }
                 if url == "http://127.0.0.1:40123/t/a.txt"
         )));
         // The root keeps the token and fits the line; its listing leads on.
@@ -2752,12 +2752,34 @@ mod offhost {
         );
     }
 
+    /// Starts a preview of the selected file the way the menu does and
+    /// returns the files tab it came from.
+    fn started_preview(state: &mut ClientShellState) -> u64 {
+        with_selected_file(state);
+        let mut outcome = ClientShellInput::default();
+        state.investigation_menu_action(PREVIEW_IN_BROWSER, &mut outcome);
+        let id = requests(&outcome)[0].0.clone();
+        let (_, actions) = state.handle_endpoint_result(
+            "boot-1",
+            &id,
+            Ok(ResponseResult::PreviewStarted {
+                preview: preview_info(40123),
+            }),
+        );
+        let tab = state.investigation().unwrap().id;
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            ClientShellAction::OpenPreviewUrl { tab: Some(from), .. } if *from == tab
+        )));
+        tab
+    }
+
     #[test]
     fn a_preview_the_browser_did_not_open_says_so_with_the_whole_url() {
         let mut state = offhost_state();
-        with_selected_file(&mut state);
+        let tab = started_preview(&mut state);
 
-        state.url_open_failed("http://127.0.0.1:40123/t/a.txt", true, true);
+        state.url_open_failed("http://127.0.0.1:40123/t/a.txt", Some(tab), true);
 
         assert_eq!(
             state.investigation().unwrap().notice,
@@ -2770,12 +2792,27 @@ mod offhost {
     }
 
     #[test]
-    fn a_link_the_browser_did_not_open_leaves_the_files_notice_alone() {
+    fn a_late_failure_leaves_a_newer_notice_alone() {
         let mut state = offhost_state();
-        with_selected_file(&mut state);
+        let tab = started_preview(&mut state);
+        state.investigation_mut().unwrap().notice = "copied 1 path".into();
+
+        state.url_open_failed("http://127.0.0.1:40123/t/a.txt", Some(tab), true);
+
+        assert_eq!(state.investigation().unwrap().notice, "copied 1 path");
+        assert_eq!(
+            state.endpoint_error.as_deref(),
+            Some("browser did not open; URL copied")
+        );
+    }
+
+    #[test]
+    fn a_failure_from_the_previews_picker_or_a_link_leaves_the_files_notice_alone() {
+        let mut state = offhost_state();
+        started_preview(&mut state);
         let before = state.investigation().unwrap().notice.clone();
 
-        state.url_open_failed("https://example.test/", false, true);
+        state.url_open_failed("http://127.0.0.1:40123/t/a.txt", None, true);
 
         assert_eq!(state.investigation().unwrap().notice, before);
         assert_eq!(
@@ -2787,9 +2824,9 @@ mod offhost {
     #[test]
     fn a_url_that_could_not_be_copied_is_not_called_copied() {
         let mut state = offhost_state();
-        with_selected_file(&mut state);
+        let tab = started_preview(&mut state);
 
-        state.url_open_failed("http://127.0.0.1:40123/t/a.txt", true, false);
+        state.url_open_failed("http://127.0.0.1:40123/t/a.txt", Some(tab), false);
 
         assert_eq!(
             state.investigation().unwrap().notice,
@@ -2846,7 +2883,7 @@ mod offhost {
 
         assert!(!actions
             .iter()
-            .any(|action| matches!(action, ClientShellAction::OpenPreviewUrl(_))));
+            .any(|action| matches!(action, ClientShellAction::OpenPreviewUrl { .. })));
         assert_eq!(
             state.investigation().unwrap().notice,
             "/elsewhere is not under /work"

@@ -30,14 +30,21 @@ fn a_configured_command_takes_the_url_as_one_argument_wherever_it_names_it() {
 }
 
 #[test]
-fn a_program_already_tried_is_not_tried_again() {
-    let openers = dedup_by_program(vec![
+fn only_an_identical_attempt_is_dropped() {
+    let openers = dedup(vec![
+        UrlOpener::command("open", vec!["-a".into(), "Missing".into(), URL.into()]),
         UrlOpener::command("wslview", vec![URL.into()]),
-        UrlOpener::command("xdg-open", vec![URL.into()]),
-        UrlOpener::command("wslview", vec!["-x".into(), URL.into()]),
+        UrlOpener::command("open", vec![URL.into()]),
+        UrlOpener::command("wslview", vec![URL.into()]),
     ]);
-    let names: Vec<_> = openers.iter().map(UrlOpener::name).collect();
-    assert_eq!(names, ["wslview", "xdg-open"]);
+    assert_eq!(
+        openers,
+        vec![
+            UrlOpener::command("open", vec!["-a".into(), "Missing".into(), URL.into()]),
+            UrlOpener::command("wslview", vec![URL.into()]),
+            UrlOpener::command("open", vec![URL.into()]),
+        ]
+    );
 }
 
 #[test]
