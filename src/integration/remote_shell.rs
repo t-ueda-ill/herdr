@@ -61,6 +61,14 @@ pub(crate) fn injected_cwd_integration_posix() -> String {
 /// submodule point to their git dir that way, relative to the file.
 /// Why the report is sent at every prompt and not only on change: a nested
 /// shell may have reported its own branch in the meantime.
+/// Why the walk resolves a symlink before going up from it: the logical
+/// parent of a symlinked directory is not the checkout it lives in. The
+/// subshell that resolves it runs only then; it bypasses the `cd` wrapper and
+/// sets `__herdr_resolving` so zsh's `chpwd` hook does not report its path.
+/// Why `git` only for `.invalid`: that is the placeholder a reftable repo
+/// keeps in `HEAD`, which no builtin can resolve.
+/// Why control characters are dropped here and not only by herdr: they reach
+/// the terminal with the report, before herdr can reject them.
 const POSIX_BRANCH_REPORT: &str = r#"__herdr_git_branch() {
   __herdr_dir=$PWD __herdr_head= __herdr_branch=
   while :; do
@@ -78,15 +86,23 @@ const POSIX_BRANCH_REPORT: &str = r#"__herdr_git_branch() {
       break
     fi
     [ -n "$__herdr_dir" ] || break
+    if [ -h "$__herdr_dir" ]; then
+      __herdr_dir=$(__herdr_resolving=1; command cd -P -- "$__herdr_dir" 2>/dev/null && pwd -P) || break
+    fi
     __herdr_dir=${__herdr_dir%/*}
   done
   if [ -n "$__herdr_head" ]; then
     __herdr_line=
     { IFS= read -r __herdr_line <"$__herdr_head"; } 2>/dev/null || :
     case $__herdr_line in
+      "ref: refs/heads/.invalid")
+        __herdr_branch=$(command git symbolic-ref --short -q HEAD 2>/dev/null) || __herdr_branch= ;;
       "ref: refs/heads/"?*) __herdr_branch=${__herdr_line#ref: refs/heads/} ;;
     esac
   fi
+  case $__herdr_branch in
+    *[[:cntrl:]]*) __herdr_branch= ;;
+  esac
   if [ -n "${TMUX:-}" ]; then
     { printf '\033Ptmux;\033\033]43737;herdr-git;v=1;%s\007\033\\' "$__herdr_branch" >/dev/tty; } 2>/dev/null || :
   else
@@ -100,6 +116,7 @@ const POSIX_CWD_REPORT_HEAD: &str = r#"# herdr shell integration: reports the wo
 __herdr_host=${HOSTNAME:-}
 [ -n "$__herdr_host" ] || __herdr_host=$(hostname 2>/dev/null) || __herdr_host=
 __herdr_osc7() {
+  [ -z "${__herdr_resolving:-}" ] || return 0
   __herdr_rest=$PWD __herdr_path=
   while case $__herdr_rest in *"%"*) true ;; *) false ;; esac; do
     __herdr_path=$__herdr_path${__herdr_rest%%"%"*}%25
@@ -124,8 +141,18 @@ const POSIX_CWD_REPORT_HOOKS: &str = r#"if [ -n "${BASH_VERSION:-}" ]; then
 elif [ -n "${ZSH_VERSION:-}" ]; then
   eval 'precmd_functions+=(__herdr_osc7); chpwd_functions+=(__herdr_osc7)'
 else
-  # A prompt cannot call a function in dash and ash, so `cd` reports instead.
+  # A prompt cannot call a function in dash and ash, so `cd` reports
+  # instead, and `git` reports the branch a checkout leaves behind. The
+  # `git` wrapper is defined by `eval` at run time because an alias named
+  # `git` would rewrite `git() {` while this `if` is parsed, and it is
+  # skipped when an alias or the user's own function already owns the name.
   cd() { command cd "$@" || return; __herdr_osc7; }
+  if ! alias git >/dev/null 2>&1; then
+    case $(type git 2>/dev/null) in
+      *function*) ;;
+      *) eval 'git() { command git "$@"; __herdr_rc=$?; __herdr_git_branch; return "$__herdr_rc"; }' ;;
+    esac
+  fi
 fi
 __herdr_osc7
 "#;
@@ -160,6 +187,8 @@ __herdr_osc7
 /// Fish counterpart of [`POSIX_BRANCH_REPORT`], sent at every prompt.
 /// Why `test -r` before each `read`: fish prints its own error for a
 /// redirection from a missing file, which `2>/dev/null` does not silence.
+/// Why regexes and not `?` globs: fish 4 turns on `qmark-noglob`, where `?`
+/// matches only itself.
 const FISH_BRANCH_REPORT: &str = r#"function __herdr_git_branch --on-event fish_prompt
     isatty stdin; or return 0
     set -l dir $PWD
@@ -172,22 +201,30 @@ const FISH_BRANCH_REPORT: &str = r#"function __herdr_git_branch --on-event fish_
         if test -f "$dir/.git"
             set -l line
             test -r "$dir/.git"; and read -l line <"$dir/.git"
-            if string match -q 'gitdir: /*' -- "$line"
+            if string match -qr '^gitdir: /' -- "$line"
                 set head (string sub -s 9 -- "$line")/HEAD
-            else if string match -q 'gitdir: ?*' -- "$line"
+            else if string match -qr '^gitdir: .' -- "$line"
                 set head "$dir/"(string sub -s 9 -- "$line")/HEAD
             end
             break
         end
         test -n "$dir"; or break
+        if test -L "$dir"
+            set dir (builtin realpath -- "$dir" 2>/dev/null); or break
+        end
         set dir (string replace -r '/[^/]*$' '' -- "$dir")
     end
     set -l branch
     if test -n "$head"; and test -r "$head"
         read -l line <"$head"
-        if string match -q 'ref: refs/heads/?*' -- "$line"
+        if test "$line" = 'ref: refs/heads/.invalid'
+            set branch (command git symbolic-ref --short -q HEAD 2>/dev/null)
+        else if string match -qr '^ref: refs/heads/.' -- "$line"
             set branch (string sub -s 17 -- "$line")
         end
+    end
+    if string match -qr '[[:cntrl:]]' -- "$branch"
+        set branch
     end
     if set -q TMUX
         printf '\033Ptmux;\033\033]43737;herdr-git;v=1;%s\007\033\\' "$branch" >/dev/tty 2>/dev/null

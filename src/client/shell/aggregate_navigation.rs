@@ -331,7 +331,7 @@ pub(super) fn navigator_rows(
             for workspace in &snapshot.workspaces {
                 let workspace_matches = endpoint_query_matches
                     || text(&workspace.label)
-                    || workspace.branch.as_deref().is_some_and(text);
+                    || workspace.shown_branch().is_some_and(text);
                 let mut children = Vec::new();
                 let workspace_tabs = tabs_by_workspace
                     .get(workspace.workspace_id.as_str())
@@ -431,7 +431,7 @@ pub(super) fn navigator_rows(
                     endpoint_rows.push(ClientNavigatorRow {
                         depth: depth_offset,
                         label: workspace.label.clone(),
-                        meta: workspace.branch.clone().unwrap_or_default(),
+                        meta: workspace.shown_branch().unwrap_or_default().to_owned(),
                         detail: workspace.new_workspace_cwd.clone(),
                         agent: None,
                         status: None,

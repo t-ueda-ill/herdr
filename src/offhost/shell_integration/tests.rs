@@ -1266,6 +1266,11 @@ impl BranchFixture {
             &root.join("wt"),
             &root.join("detached/.git"),
             &root.join("plain"),
+            &root.join("repo/.git/objects"),
+            &root.join("repo/.git/refs/heads"),
+            &root.join("hostile/.git"),
+            &root.join("reftable/.git"),
+            &root.join("outer/.git"),
         ] {
             std::fs::create_dir_all(dir).unwrap();
         }
@@ -1281,6 +1286,22 @@ impl BranchFixture {
             "0123456789abcdef0123456789abcdef01234567\n",
         )
         .unwrap();
+        // A HEAD no git would write, carrying a terminal title sequence.
+        std::fs::write(
+            root.join("hostile/.git/HEAD"),
+            "ref: refs/heads/x\x1b]0;pwned\x07y\n",
+        )
+        .unwrap();
+        // What a reftable repo keeps on disk for older readers.
+        std::fs::write(
+            root.join("reftable/.git/HEAD"),
+            "ref: refs/heads/.invalid\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("outer/.git/HEAD"), "ref: refs/heads/outer\n").unwrap();
+        // `outer/plain` leads out of the outer checkout, `link` into the repo.
+        std::os::unix::fs::symlink(root.join("plain"), root.join("outer/plain")).unwrap();
+        std::os::unix::fs::symlink(root.join("repo/sub dir"), root.join("link")).unwrap();
         Self { root, home, tmp }
     }
 
@@ -1379,4 +1400,126 @@ fn zsh_branch_follows_a_checkout_at_the_next_prompt() {
 #[test]
 fn fish_branch_follows_a_checkout_at_the_next_prompt() {
     branch_follows_a_checkout_at_the_next_prompt("fish");
+}
+
+fn untrusted_head_test(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("untrusted-{shell}"));
+    let out = fixture.run(shell, "cd hostile\ncd ../reftable\nexit");
+
+    assert!(!out.contains("pwned"), "{out:?}");
+    assert!(
+        !branch_reports(&out)
+            .iter()
+            .any(|report| report.contains(".invalid")),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn bash_reports_no_branch_for_an_untrusted_or_reftable_head() {
+    untrusted_head_test("bash");
+}
+
+#[test]
+fn dash_reports_no_branch_for_an_untrusted_or_reftable_head() {
+    untrusted_head_test("dash");
+}
+
+#[test]
+fn fish_reports_no_branch_for_an_untrusted_or_reftable_head() {
+    untrusted_head_test("fish");
+}
+
+/// `link` points into the repo from outside it; `outer/plain` points out of
+/// a checkout. The branch follows where the directory really is.
+fn symlinked_directory_test(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("symlink-{shell}"));
+    let out = fixture.run(shell, "cd link\nexit");
+    assert_eq!(
+        osc7_paths(&out).last().map(String::as_str),
+        Some(format!("{}/link", fixture.root.display()).as_str()),
+        "resolving the symlink must not report the physical path: {out:?}"
+    );
+    let out = fixture.run(shell, "cd link\ncd ../outer/plain\nexit");
+    let reports = branch_reports(&out);
+
+    assert!(reports.iter().any(|report| report == "main"), "{out:?}");
+    assert_eq!(reports.last().map(String::as_str), Some(""), "{out:?}");
+    assert!(!reports.iter().any(|report| report == "outer"), "{out:?}");
+}
+
+#[test]
+fn bash_reports_the_branch_where_a_symlinked_directory_really_is() {
+    symlinked_directory_test("bash");
+}
+
+#[test]
+fn dash_reports_the_branch_where_a_symlinked_directory_really_is() {
+    symlinked_directory_test("dash");
+}
+
+#[test]
+fn fish_reports_the_branch_where_a_symlinked_directory_really_is() {
+    symlinked_directory_test("fish");
+}
+
+/// dash has no prompt hook, so the report rides on `git` itself.
+#[test]
+fn dash_branch_follows_a_checkout_made_with_git() {
+    if !installed("dash") || !installed("git") {
+        eprintln!("skipping: dash or git is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new("checkout-dash");
+    let out = fixture.run(
+        "dash",
+        "cd repo\ngit symbolic-ref HEAD refs/heads/next\nexit",
+    );
+
+    assert_eq!(
+        branch_reports(&out).last().map(String::as_str),
+        Some("next"),
+        "{out:?}"
+    );
+}
+
+/// An alias named like the `git` wrapper must not break the integration,
+/// which would lose the cwd report and every hook after it.
+fn git_alias_test(shell: &str, rc_file: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("alias-{shell}"));
+    std::fs::write(fixture.home.join(rc_file), "alias git='git --no-pager'\n").unwrap();
+    let out = fixture.run(shell, "cd repo\nexit");
+
+    assert!(!osc7_paths(&out).is_empty(), "{out:?}");
+    assert!(
+        branch_reports(&out).iter().any(|report| report == "main"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn bash_integration_survives_a_git_alias() {
+    git_alias_test("bash", ".bashrc");
+}
+
+#[test]
+fn dash_integration_survives_a_git_alias() {
+    git_alias_test("dash", ".shrc");
+}
+
+#[test]
+fn zsh_integration_survives_a_git_alias() {
+    git_alias_test("zsh", ".zshrc");
 }

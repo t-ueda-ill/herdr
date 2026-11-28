@@ -801,7 +801,7 @@ fn mobile_items(
             } else {
                 off_host.as_deref().unwrap_or(&workspace.label)
             };
-            let branch = workspace.branch.as_deref().unwrap_or("shell");
+            let branch = workspace.shown_branch().unwrap_or("shell");
             let detail_prefix = if entry.indented {
                 if entry.last_child {
                     "       "

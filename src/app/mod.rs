@@ -1240,23 +1240,22 @@ mod tests {
     fn git_status_event_marks_render_dirty_when_status_changes() {
         let mut app = test_app();
         app.state.workspaces.push(Workspace::test_new("one"));
-        app.state.ensure_test_terminals();
         let _ = app.render_dirty.take();
-        let terminal_id = app.state.workspaces[0]
-            .branch_terminal_id(0)
-            .unwrap()
-            .clone();
+        let workspace_id = app.state.workspaces[0].id.clone();
+        let resolved_identity_cwd = app.state.workspaces[0].resolved_identity_cwd().unwrap();
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
-            terminal_results: vec![crate::workspace::TerminalGitStatus {
-                terminal_id,
-                cwd: "/repo".into(),
-                status_cache_key: "/repo".into(),
+            results: vec![crate::workspace::WorkspaceGitStatus {
+                workspace_id,
+                resolved_identity_cwd: resolved_identity_cwd.clone(),
+                status_cache_key: resolved_identity_cwd,
                 demand: crate::workspace::GitStatusRefreshDemand::ALL,
-                branch: Some("main".into()),
-                ahead_behind: None,
+                auto_label: "one".into(),
+                branch: Some("render-dirty-test".into()),
+                ahead_behind: Some((1, 0)),
+                space: None,
             }],
+            terminal_results: Vec::new(),
             cache_updates: Vec::new(),
         });
 

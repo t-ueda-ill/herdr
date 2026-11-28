@@ -517,8 +517,6 @@ const OFFHOST_CLAIM_FIELD_MAX_BYTES: usize = 64;
 /// `herdr-git;v=1;<branch>`, where an empty branch means none.
 const OFFHOST_BRANCH_NAMESPACE: &[u8] = b"herdr-git";
 const OFFHOST_BRANCH_VERSION: &[u8] = b"v=1";
-/// Git caps a ref name at the file name limit of the platform, 255 bytes.
-const OFFHOST_BRANCH_MAX_BYTES: usize = 255;
 
 /// `Some(None)` reports that the shell is outside a branch.
 /// Why the branch is the rest of the payload and not one more `;` field:
@@ -532,9 +530,8 @@ fn parse_offhost_branch(payload: &[u8]) -> Option<Option<String>> {
     if branch.is_empty() {
         return Some(None);
     }
-    if branch.len() > OFFHOST_BRANCH_MAX_BYTES {
-        return None;
-    }
+    // Why no length cap here: a ref name is limited per path component,
+    // not in total, and `OscStreamCollector` already bounds the body.
     let text = std::str::from_utf8(branch).ok()?;
     (!text.chars().any(char::is_control)).then(|| Some(text.to_string()))
 }
@@ -1539,6 +1536,14 @@ mod tests {
     }
 
     #[test]
+    fn branch_report_accepts_a_name_longer_than_one_path_component() {
+        let mut t = AgentOscStateTracker::default();
+        let long = ["a".repeat(200), "b".repeat(200)].join("/");
+        t.observe(&branch_report(&long));
+        assert_eq!(t.take_reported_branch(), Some(Some(long)));
+    }
+
+    #[test]
     fn branch_report_keeps_only_the_latest_in_a_chunk() {
         let mut t = AgentOscStateTracker::default();
         let mut bytes = branch_report("old");
@@ -1550,7 +1555,9 @@ mod tests {
     #[test]
     fn unusable_branch_report_is_ignored() {
         let mut t = AgentOscStateTracker::default();
-        t.observe(&branch_report(&"a".repeat(OFFHOST_BRANCH_MAX_BYTES + 1)));
+        t.observe(&branch_report(
+            &"a".repeat(OscStreamCollector::MAX_BODY_BYTES),
+        ));
         t.observe(b"\x1b]43737;herdr-git;v=1;a\x01b\x07");
         t.observe(b"\x1b]43737;herdr-git;v=2;main\x07");
         t.observe(b"\x1b]43737;herdr-git;v=1\x07");

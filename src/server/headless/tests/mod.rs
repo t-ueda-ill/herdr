@@ -5188,6 +5188,7 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
     let cwd = workspace.identity_cwd.clone();
     workspace.cached_auto_label = "cached".into();
     workspace.cached_git_status_key = cwd.clone();
+    workspace.cached_git_branch = None;
     server.app.state.workspaces.push(workspace);
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
@@ -5197,6 +5198,8 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
             status_cache_key: cwd,
             demand: crate::workspace::GitStatusRefreshDemand::ALL,
             auto_label: "cached".into(),
+            branch: None,
+            ahead_behind: None,
             space: None,
         }],
         terminal_results: Vec::new(),
@@ -5261,40 +5264,54 @@ fn client_shell_branch_is_the_branch_of_the_tab_that_client_shows() {
         active_tab_ids: HashMap::from([(workspace_id, server.app.public_tab_id(0, 1).unwrap())]),
     };
 
+    server.app.state.workspaces[0].cached_git_branch = Some("identity".into());
+
     let default_view = crate::server::client_shell::snapshot(&server.app, "boot", 1, None, None);
     let second_tab_view =
         crate::server::client_shell::snapshot(&server.app, "boot", 1, None, Some(&location));
 
+    for view in [&default_view, &second_tab_view] {
+        assert_eq!(
+            view.workspaces[0].branch.as_deref(),
+            Some("identity"),
+            "worktree actions keep the space's checkout"
+        );
+    }
     assert_eq!(
-        default_view.workspaces[0].branch.as_deref(),
+        default_view.workspaces[0].shown_branch(),
         Some("space-branch")
     );
-    assert_eq!(default_view.workspaces[0].git_ahead_behind, None);
+    assert_eq!(default_view.workspaces[0].shown_git_ahead_behind(), None);
     assert_eq!(
-        second_tab_view.workspaces[0].branch.as_deref(),
+        second_tab_view.workspaces[0].shown_branch(),
         Some("tab-branch")
     );
-    assert_eq!(second_tab_view.workspaces[0].git_ahead_behind, Some((1, 2)));
+    assert_eq!(
+        second_tab_view.workspaces[0].shown_git_ahead_behind(),
+        Some((1, 2))
+    );
 }
 
 #[test]
 fn changed_git_refresh_requests_headless_render() {
     let mut server = test_headless_server();
     let workspace = crate::workspace::Workspace::test_new("one");
-    let terminal_id = workspace.branch_terminal_id(0).unwrap().clone();
+    let workspace_id = workspace.id.clone();
+    let cwd = workspace.identity_cwd.clone();
     server.app.state.workspaces.push(workspace);
-    server.app.state.ensure_test_terminals();
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
-        results: Vec::new(),
-        terminal_results: vec![crate::workspace::TerminalGitStatus {
-            terminal_id,
-            cwd: "/repo".into(),
-            status_cache_key: "/repo".into(),
+        results: vec![crate::workspace::WorkspaceGitStatus {
+            workspace_id,
+            resolved_identity_cwd: cwd.clone(),
+            status_cache_key: cwd,
             demand: crate::workspace::GitStatusRefreshDemand::ALL,
-            branch: Some("main".into()),
+            auto_label: "one".into(),
+            branch: Some("changed".into()),
             ahead_behind: None,
+            space: None,
         }],
+        terminal_results: Vec::new(),
         cache_updates: Vec::new(),
     });
 

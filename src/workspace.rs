@@ -45,6 +45,10 @@ pub struct WorkspaceGitStatus {
     pub status_cache_key: PathBuf,
     pub demand: GitStatusRefreshDemand,
     pub auto_label: String,
+    /// Branch of the space's identity checkout, the repo worktree actions
+    /// use. The branch a client shows comes from [`TerminalGitStatus`].
+    pub branch: Option<String>,
+    pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
 }
 
@@ -115,6 +119,8 @@ impl WorkspaceGitStatusSnapshot {
             status_cache_key,
             demand,
             auto_label,
+            branch: self.branch,
+            ahead_behind: self.ahead_behind,
             space: self.space,
         }
     }
@@ -205,6 +211,10 @@ pub struct Workspace {
     pub(crate) cached_auto_label: String,
     /// Cache key for periodic Git status associated with `cached_identity_cwd`.
     pub(crate) cached_git_status_key: PathBuf,
+    /// Cached current git branch for the workspace repo.
+    pub(crate) cached_git_branch: Option<String>,
+    /// Cached ahead/behind counts for the workspace repo's current branch upstream.
+    pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
     /// Cached derived Git repo metadata for worktree actions and status display.
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     /// Explicit Herdr-managed worktree grouping provenance.
@@ -271,6 +281,8 @@ impl Workspace {
             cached_identity_cwd: identity_cwd.clone(),
             cached_auto_label,
             cached_git_status_key,
+            cached_git_branch: git_branch(&identity_cwd),
+            cached_git_ahead_behind: None,
             cached_git_space,
             worktree_space: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
@@ -390,6 +402,8 @@ impl Workspace {
                 cached_identity_cwd: initial_cwd.clone(),
                 cached_auto_label,
                 cached_git_status_key,
+                cached_git_branch: git_branch(&initial_cwd),
+                cached_git_ahead_behind: None,
                 cached_git_space,
                 worktree_space: None,
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
@@ -1061,6 +1075,14 @@ impl Workspace {
         }
     }
 
+    pub fn branch(&self) -> Option<String> {
+        self.cached_git_branch.clone()
+    }
+
+    pub fn git_ahead_behind(&self) -> Option<(usize, usize)> {
+        self.cached_git_ahead_behind
+    }
+
     /// The terminal whose branch stands for the space while `tab_idx` is
     /// the tab on screen: the focused pane of that tab.
     pub(crate) fn branch_terminal_id(&self, tab_idx: usize) -> Option<&TerminalId> {
@@ -1189,6 +1211,8 @@ impl Workspace {
             cached_identity_cwd: identity_cwd.clone(),
             cached_auto_label: fallback_label_from_cwd(&identity_cwd),
             cached_git_status_key: identity_cwd.clone(),
+            cached_git_branch: git_branch(&identity_cwd),
+            cached_git_ahead_behind: None,
             cached_git_space: None,
             worktree_space: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),

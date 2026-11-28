@@ -476,6 +476,8 @@ mod tests {
         assert_eq!(output.results.len(), 2);
         assert_eq!(output.results[0].auto_label, "alpha");
         assert_eq!(output.results[1].auto_label, "beta");
+        assert_eq!(output.results[0].branch.as_deref(), Some("main"));
+        assert_eq!(output.results[1].branch.as_deref(), Some("main"));
     }
 
     #[test]
@@ -670,6 +672,7 @@ mod tests {
         .expect("restored Git metadata refresh completes");
 
         let workspace = &app.state.workspaces[0];
+        assert_eq!(workspace.cached_git_branch.as_deref(), Some("main"));
         let root = workspace.branch_terminal_id(0).unwrap();
         assert_eq!(
             app.state.terminals[root].git_branch.as_deref(),

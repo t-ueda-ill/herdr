@@ -693,9 +693,9 @@ pub(in crate::client::shell) fn workspace_rows(
         config,
         crate::ui::SpaceTokenContext {
             workspace: label,
-            branch: workspace.branch.as_deref(),
+            branch: workspace.shown_branch(),
             state_text: status_text(status),
-            ahead_behind: workspace.git_ahead_behind,
+            ahead_behind: workspace.shown_git_ahead_behind(),
             tokens: &token_values,
             suppress_git_details: indented,
         },
