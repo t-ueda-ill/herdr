@@ -2619,18 +2619,6 @@ fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<App
     }
 }
 
-/// Returns true when the stored branch changed.
-fn store_reported_branch(reported_branch: &Mutex<Option<String>>, branch: Option<String>) -> bool {
-    let Ok(mut current) = reported_branch.lock() else {
-        return false;
-    };
-    if *current == branch {
-        return false;
-    }
-    *current = branch;
-    true
-}
-
 /// Only an off-host shell's report is announced: a host pane's branch is
 /// read from this host, and its shell may be one a user set up by hand.
 fn publish_reported_branch(
@@ -2640,10 +2628,21 @@ fn publish_reported_branch(
     shell_off_host: bool,
     events: &mpsc::Sender<AppEvent>,
 ) {
-    if !store_reported_branch(reported_branch, branch) || !shell_off_host {
+    let Ok(mut current) = reported_branch.lock() else {
+        return;
+    };
+    if *current == branch {
         return;
     }
+    let previous = std::mem::replace(&mut *current, branch);
+    if !shell_off_host {
+        return;
+    }
+    // Why the lock is held across the send: a failed send puts the previous
+    // value back, so the next prompt's identical report counts as a change
+    // and is sent again. `try_send` never blocks, so the PTY reader does not.
     if let Err(err) = events.try_send(AppEvent::TerminalBranchReported) {
+        *current = previous;
         warn!(
             pane = pane_id.raw(),
             err = %err,
@@ -4734,7 +4733,9 @@ impl PaneRuntime {
     }
 
     pub(crate) fn test_set_reported_branch(&self, branch: Option<&str>) {
-        store_reported_branch(&self.reported_branch, branch.map(str::to_owned));
+        if let Ok(mut reported) = self.reported_branch.lock() {
+            *reported = branch.map(str::to_owned);
+        }
     }
 
     #[cfg(unix)]
@@ -5181,6 +5182,31 @@ mod tests {
 
         assert!(reported.is_some(), "the app is told without a git refresh");
         assert_eq!(runtime.reported_branch().as_deref(), Some("feature/x"));
+    }
+
+    #[test]
+    fn branch_report_that_could_not_be_announced_is_announced_again() {
+        let (events, mut rx) = mpsc::channel(1);
+        events
+            .try_send(AppEvent::TerminalBranchReported)
+            .expect("fill the queue");
+        let reported = Mutex::new(Some("old".to_string()));
+        let pane_id = PaneId::from_raw(1);
+
+        publish_reported_branch(pane_id, Some("new".into()), &reported, true, &events);
+        assert_eq!(
+            reported.lock().unwrap().as_deref(),
+            Some("old"),
+            "a report the app never heard of is not kept"
+        );
+
+        rx.try_recv().expect("drain the queue");
+        publish_reported_branch(pane_id, Some("new".into()), &reported, true, &events);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::TerminalBranchReported)
+        ));
+        assert_eq!(reported.lock().unwrap().as_deref(), Some("new"));
     }
 
     #[cfg(unix)]

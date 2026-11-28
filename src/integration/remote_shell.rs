@@ -71,12 +71,38 @@ pub(crate) fn injected_cwd_integration_posix() -> String {
 /// the terminal with the report, before herdr can reject them.
 /// Why a bare repo is told by its layout and `core.bare`: it has no `.git`,
 /// and the host's discovery (`git/discovery.rs`) uses the same two checks, so
-/// both sides name the same repo.
-const POSIX_BRANCH_REPORT: &str = r#"__herdr_is_bare() {
+/// both sides name the same repo. The config is read like the host reads it:
+/// the first `bare` in `[core]`, names without case, comments cut off.
+const POSIX_BRANCH_REPORT: &str = r##"__herdr_is_bare() {
   [ -f "$1/HEAD" ] && [ -d "$1/objects" ] && [ -d "$1/refs" ] && [ -r "$1/config" ] || return 1
+  __herdr_core=
   while IFS= read -r __herdr_line || [ -n "$__herdr_line" ]; do
+    __herdr_line=${__herdr_line#"${__herdr_line%%[![:space:]]*}"}
     case $__herdr_line in
-      *bare*=*true*) return 0 ;;
+      ""|"#"*|";"*) continue ;;
+      "["*)
+        case $__herdr_line in
+          [[][Cc][Oo][Rr][Ee][]]*) __herdr_core=1 ;;
+          *) __herdr_core= ;;
+        esac
+        continue ;;
+      *=*) ;;
+      *) continue ;;
+    esac
+    [ -n "$__herdr_core" ] || continue
+    __herdr_key=${__herdr_line%%=*}
+    __herdr_key=${__herdr_key%"${__herdr_key##*[![:space:]]}"}
+    case $__herdr_key in
+      [Bb][Aa][Rr][Ee]) ;;
+      *) continue ;;
+    esac
+    __herdr_value=${__herdr_line#*=}
+    __herdr_value=${__herdr_value%%[#;]*}
+    __herdr_value=${__herdr_value#"${__herdr_value%%[![:space:]]*}"}
+    __herdr_value=${__herdr_value%"${__herdr_value##*[![:space:]]}"}
+    case $__herdr_value in
+      [Tt][Rr][Uu][Ee]) return 0 ;;
+      *) return 1 ;;
     esac
   done <"$1/config"
   return 1
@@ -126,7 +152,7 @@ __herdr_git_branch() {
   fi
   return 0
 }
-"#;
+"##;
 
 const POSIX_CWD_REPORT_HEAD: &str = r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
 __herdr_host=${HOSTNAME:-}
@@ -205,7 +231,31 @@ __herdr_osc7
 /// redirection from a missing file, which `2>/dev/null` does not silence.
 /// Why regexes and not `?` globs: fish 4 turns on `qmark-noglob`, where `?`
 /// matches only itself.
-const FISH_BRANCH_REPORT: &str = r#"function __herdr_git_branch --on-event fish_prompt
+const FISH_BRANCH_REPORT: &str = r#"function __herdr_is_bare
+    set -l dir $argv[1]
+    test -f "$dir/HEAD"; and test -d "$dir/objects"; and test -d "$dir/refs"; and test -r "$dir/config"; or return 1
+    set -l core
+    while read -l line
+        set line (string trim -- "$line")
+        if test -z "$line"; or string match -qr '^[#;]' -- "$line"
+            continue
+        end
+        if string match -qr '^\[' -- "$line"
+            set core
+            string match -qir '^\[core\]' -- "$line"; and set core 1
+            continue
+        end
+        test -n "$core"; or continue
+        string match -qr '=' -- "$line"; or continue
+        set -l parts (string split -m 1 '=' -- "$line")
+        string match -qi 'bare' -- (string trim -- "$parts[1]"); or continue
+        set -l value (string trim -- (string replace -r '[#;].*$' '' -- "$parts[2]"))
+        string match -qi 'true' -- "$value"
+        return
+    end <"$dir/config"
+    return 1
+end
+function __herdr_git_branch --on-event fish_prompt
     isatty stdin; or return 0
     set -l dir $PWD
     set -l head
@@ -224,11 +274,9 @@ const FISH_BRANCH_REPORT: &str = r#"function __herdr_git_branch --on-event fish_
             end
             break
         end
-        if test -f "$dir/HEAD"; and test -d "$dir/objects"; and test -d "$dir/refs"; and test -r "$dir/config"
-            if string match -qr 'bare.*=.*true' <"$dir/config"
-                set head "$dir/HEAD"
-                break
-            end
+        if __herdr_is_bare "$dir"
+            set head "$dir/HEAD"
+            break
         end
         test -n "$dir"; or break
         if test -L "$dir"

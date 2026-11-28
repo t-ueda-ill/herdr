@@ -985,6 +985,32 @@ mod tests {
         assert!(!app.git_refresh_in_flight);
     }
 
+    #[tokio::test]
+    async fn off_host_branch_report_of_an_unfocused_pane_costs_no_redraw() {
+        let mut app = test_app(&crate::config::Config::default());
+        let mut ws = Workspace::test_new("remote");
+        let unfocused = ws.tabs[0].root_pane;
+        ws.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces.push(ws);
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0].tabs[0]
+            .terminal_id(unfocused)
+            .cloned()
+            .unwrap();
+        let (mut runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_set_in_ssh(true);
+        runtime.test_set_reported_branch(Some("hidden-branch"));
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+
+        let redraw = app.handle_internal_event_with_render_impact(AppEvent::TerminalBranchReported);
+
+        assert!(!redraw);
+        assert_eq!(
+            app.state.terminals[&terminal_id].git_branch.as_deref(),
+            Some("hidden-branch")
+        );
+    }
+
     #[test]
     fn terminal_git_refresh_is_skipped_without_a_branch_consumer() {
         let mut app = test_app(&crate::config::Config::default());

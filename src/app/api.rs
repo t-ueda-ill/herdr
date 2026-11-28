@@ -89,6 +89,7 @@ impl App {
                 self.handle_ssh_hosts_finished(*result);
                 false
             }
+            AppEvent::TerminalBranchReported => self.sync_reported_branches(),
             ev @ AppEvent::TerminalBell { .. } => {
                 self.handle_internal_event(ev);
                 false
@@ -123,6 +124,19 @@ impl App {
             .state
             .apply_terminal_git_statuses(&self.terminal_runtimes, terminal_results);
         changed |= self
+            .state
+            .sync_off_host_git_branches(&self.terminal_runtimes);
+        if changed {
+            self.render_dirty.request_generic();
+            self.render_notify.notify_one();
+        }
+        changed
+    }
+
+    /// Returns true only when a pane that can stand for a space changed, so
+    /// a hidden pane's report costs no redraw on either event path.
+    fn sync_reported_branches(&mut self) -> bool {
+        let changed = self
             .state
             .sync_off_host_git_branches(&self.terminal_runtimes);
         if changed {
@@ -456,13 +470,7 @@ impl App {
                 None
             };
         if let AppEvent::TerminalBranchReported = ev {
-            if self
-                .state
-                .sync_off_host_git_branches(&self.terminal_runtimes)
-            {
-                self.render_dirty.request_generic();
-                self.render_notify.notify_one();
-            }
+            self.sync_reported_branches();
             return Vec::new();
         }
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });

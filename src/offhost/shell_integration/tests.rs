@@ -1275,6 +1275,10 @@ impl BranchFixture {
             &root.join("bare.git/refs"),
             &root.join("repo/nested.git/objects"),
             &root.join("repo/nested.git/refs"),
+            &root.join("upper.git/objects"),
+            &root.join("upper.git/refs"),
+            &root.join("repo/lookalike.git/objects"),
+            &root.join("repo/lookalike.git/refs"),
         ] {
             std::fs::create_dir_all(dir).unwrap();
         }
@@ -1319,6 +1323,20 @@ impl BranchFixture {
             )
             .unwrap();
         }
+        // Git reads section and key names without case, so this is bare.
+        std::fs::write(root.join("upper.git/HEAD"), "ref: refs/heads/upper-bare\n").unwrap();
+        std::fs::write(root.join("upper.git/config"), "[Core]\n\tBare = TRUE\n").unwrap();
+        // Not bare: `true` only in a comment and in another section.
+        std::fs::write(
+            root.join("repo/lookalike.git/HEAD"),
+            "ref: refs/heads/lookalike\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("repo/lookalike.git/config"),
+            "[core]\n\tbare = false # true for bare repositories\n[other]\n\tbare = true\n",
+        )
+        .unwrap();
         // `outer/plain` leads out of the outer checkout, `link` into the repo.
         std::os::unix::fs::symlink(root.join("plain"), root.join("outer/plain")).unwrap();
         std::os::unix::fs::symlink(root.join("repo/sub dir"), root.join("link")).unwrap();
@@ -1563,6 +1581,19 @@ fn bare_repo_test(shell: &str) {
         reports.last().map(String::as_str),
         Some("nested-bare"),
         "{out:?}"
+    );
+
+    let out = fixture.run(shell, "cd upper.git\ncd ../repo/lookalike.git\nexit");
+    let reports = branch_reports(&out);
+
+    assert!(
+        reports.iter().any(|report| report == "upper-bare"),
+        "{out:?}"
+    );
+    assert_eq!(
+        reports.last().map(String::as_str),
+        Some("main"),
+        "a lookalike is part of the checkout around it: {out:?}"
     );
 }
 
