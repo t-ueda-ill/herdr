@@ -289,6 +289,31 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_branch_is_the_shown_pane_branch_not_the_space_checkout() {
+        let s = with_pane("repo", false, None, Some("dev_host"), None);
+        let mut ws = s.workspaces[0].clone();
+        ws.branch = Some("space-checkout".into());
+        ws.pane_git = Some(crate::protocol::ClientShellPaneGit {
+            branch: Some("remote-branch".into()),
+            ahead_behind: None,
+        });
+
+        let text = format!(
+            "{:?}",
+            crate::client::shell::sidebar::workspace_rows(
+                &SpaceLabels::new(&s),
+                &ws,
+                AgentStatus::Idle,
+                false,
+                &crate::config::SpacesSidebarConfig::default(),
+            )
+        );
+
+        assert!(text.contains("remote-branch"), "{text}");
+        assert!(!text.contains("space-checkout"), "{text}");
+    }
+
+    #[test]
     fn sidebar_rows_carry_the_prefixed_label() {
         let s = with_pane("dev_host", true, None, Some("dev_host"), Some("/home/u"));
         let rows = crate::client::shell::sidebar::workspace_rows(

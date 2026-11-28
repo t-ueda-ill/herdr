@@ -321,6 +321,46 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_from_an_older_server_shows_the_space_branch() {
+        let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-snapshot-v1.json"
+        )))
+        .unwrap();
+        let workspace = &mut snapshot.workspaces[0];
+        workspace.branch = Some("space".into());
+        workspace.git_ahead_behind = Some((1, 0));
+
+        assert_eq!(workspace.pane_git, None);
+        assert_eq!(workspace.shown_branch(), Some("space"));
+        assert_eq!(workspace.shown_git_ahead_behind(), Some((1, 0)));
+    }
+
+    #[test]
+    fn shown_branch_is_the_pane_branch_even_when_the_pane_has_none() {
+        let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-snapshot-v1.json"
+        )))
+        .unwrap();
+        let workspace = &mut snapshot.workspaces[0];
+        workspace.branch = Some("space".into());
+        workspace.pane_git = Some(crate::protocol::ClientShellPaneGit {
+            branch: Some("pane".into()),
+            ahead_behind: Some((0, 2)),
+        });
+        assert_eq!(workspace.shown_branch(), Some("pane"));
+        assert_eq!(workspace.shown_git_ahead_behind(), Some((0, 2)));
+
+        workspace.pane_git = Some(crate::protocol::ClientShellPaneGit {
+            branch: None,
+            ahead_behind: None,
+        });
+        assert_eq!(workspace.shown_branch(), None);
+        assert_eq!(workspace.shown_git_ahead_behind(), None);
+    }
+
+    #[test]
     fn snapshot_message_uses_named_json_control() {
         let snapshot = snapshot();
         let ServerMessage::EndpointControl { kind, data } = snapshot_message(&snapshot).unwrap()

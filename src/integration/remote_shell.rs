@@ -44,11 +44,127 @@ impl RemoteShell {
 /// carried raw, which avoids an external command per prompt.
 /// Why `eval` for the array forms: dash parses the whole body, and `name=(...)`
 /// is a syntax error there even in a branch that never runs.
+///
+/// The same hooks report the branch of the directory (see
+/// [`POSIX_BRANCH_REPORT`]), so a checkout shows at the next prompt.
 pub(crate) fn injected_cwd_integration_posix() -> String {
-    r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
+    format!("{POSIX_CWD_REPORT_HEAD}{POSIX_BRANCH_REPORT}{POSIX_CWD_REPORT_HOOKS}")
+}
+
+/// Reports `herdr-git;v=1;<branch>` on the agent OSC: the branch `HEAD`
+/// names, or nothing when the directory is outside a repo or `HEAD` is
+/// detached, which is what the host shows for a host directory.
+///
+/// Why only builtins (`[`, `read`, parameter expansion): it runs at every
+/// prompt, and a `git` process per prompt would slow every command on a
+/// busy host. Why a `.git` file is followed: a linked worktree and a
+/// submodule point to their git dir that way, relative to the file.
+/// Why the report is sent at every prompt and not only on change: a nested
+/// shell may have reported its own branch in the meantime.
+/// Why the walk resolves a symlink before going up from it: the logical
+/// parent of a symlinked directory is not the checkout it lives in. The
+/// subshell that resolves it runs only then; it bypasses the `cd` wrapper and
+/// sets `__herdr_resolving` so zsh's `chpwd` hook does not report its path.
+/// Why not a symlink right under `/` (macOS `/var` and `/tmp`, merged-usr
+/// `/bin`): only the root is above it, so resolving changes nothing that
+/// matters, while every prompt below it would start the subshell.
+/// Why `git` only for `.invalid`: that is the placeholder a reftable repo
+/// keeps in `HEAD`, which no builtin can resolve.
+/// Why control characters are dropped here and not only by herdr: they reach
+/// the terminal with the report, before herdr can reject them.
+/// Why `-f` and `-r` before every `read`: a FIFO in a repo would make `read`
+/// wait for a writer, and the prompt would never come back; an unreadable
+/// file would print the redirection error at every prompt.
+/// Why a bare repo is told by its layout and `core.bare`: it has no `.git`,
+/// and the host's discovery (`git/discovery.rs`) uses the same two checks, so
+/// both sides name the same repo. The config is read like the host reads it:
+/// the first `bare` in `[core]`, names without case, comments cut off.
+const POSIX_BRANCH_REPORT: &str = r##"__herdr_is_bare() {
+  [ -f "$1/HEAD" ] && [ -d "$1/objects" ] && [ -d "$1/refs" ] && [ -f "$1/config" ] && [ -r "$1/config" ] || return 1
+  __herdr_core=
+  while IFS= read -r __herdr_line || [ -n "$__herdr_line" ]; do
+    __herdr_line=${__herdr_line#"${__herdr_line%%[![:space:]]*}"}
+    case $__herdr_line in
+      ""|"#"*|";"*) continue ;;
+      "["*)
+        case $__herdr_line in
+          [[][Cc][Oo][Rr][Ee][]]*) __herdr_core=1 ;;
+          *) __herdr_core= ;;
+        esac
+        continue ;;
+      *=*) ;;
+      *) continue ;;
+    esac
+    [ -n "$__herdr_core" ] || continue
+    __herdr_key=${__herdr_line%%=*}
+    __herdr_key=${__herdr_key%"${__herdr_key##*[![:space:]]}"}
+    case $__herdr_key in
+      [Bb][Aa][Rr][Ee]) ;;
+      *) continue ;;
+    esac
+    __herdr_value=${__herdr_line#*=}
+    __herdr_value=${__herdr_value%%[#;]*}
+    __herdr_value=${__herdr_value#"${__herdr_value%%[![:space:]]*}"}
+    __herdr_value=${__herdr_value%"${__herdr_value##*[![:space:]]}"}
+    case $__herdr_value in
+      [Tt][Rr][Uu][Ee]) return 0 ;;
+      *) return 1 ;;
+    esac
+  done <"$1/config"
+  return 1
+}
+__herdr_git_branch() {
+  __herdr_dir=$PWD __herdr_head= __herdr_branch=
+  while :; do
+    if [ -f "$__herdr_dir/.git/HEAD" ]; then
+      __herdr_head=$__herdr_dir/.git/HEAD
+      break
+    fi
+    if [ -f "$__herdr_dir/.git" ]; then
+      __herdr_line=
+      { IFS= read -r __herdr_line <"$__herdr_dir/.git"; } 2>/dev/null || :
+      case $__herdr_line in
+        "gitdir: /"*) __herdr_head=${__herdr_line#gitdir: }/HEAD ;;
+        "gitdir: "?*) __herdr_head=$__herdr_dir/${__herdr_line#gitdir: }/HEAD ;;
+      esac
+      break
+    fi
+    if __herdr_is_bare "$__herdr_dir"; then
+      __herdr_head=$__herdr_dir/HEAD
+      break
+    fi
+    [ -n "$__herdr_dir" ] || break
+    if [ -h "$__herdr_dir" ] && [ -n "${__herdr_dir%/*}" ]; then
+      __herdr_dir=$(__herdr_resolving=1; command cd -P -- "$__herdr_dir" 2>/dev/null && pwd -P) || break
+    fi
+    __herdr_dir=${__herdr_dir%/*}
+  done
+  if [ -f "$__herdr_head" ] && [ -r "$__herdr_head" ]; then
+    __herdr_line=
+    { IFS= read -r __herdr_line <"$__herdr_head"; } 2>/dev/null || :
+    case $__herdr_line in
+      "ref: refs/heads/.invalid")
+        __herdr_branch=$(command git symbolic-ref --short -q HEAD 2>/dev/null) || __herdr_branch= ;;
+      "ref: refs/heads/"?*) __herdr_branch=${__herdr_line#ref: refs/heads/} ;;
+    esac
+  fi
+  case $__herdr_branch in
+    *[[:cntrl:]]*) __herdr_branch= ;;
+  esac
+  if [ -n "${TMUX:-}" ]; then
+    { printf '\033Ptmux;\033\033]43737;herdr-git;v=1;%s\007\033\\' "$__herdr_branch" >/dev/tty; } 2>/dev/null || :
+  else
+    { printf '\033]43737;herdr-git;v=1;%s\007' "$__herdr_branch" >/dev/tty; } 2>/dev/null || :
+  fi
+  return 0
+}
+"##;
+
+const POSIX_CWD_REPORT_HEAD: &str = r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
 __herdr_host=${HOSTNAME:-}
 [ -n "$__herdr_host" ] || __herdr_host=$(hostname 2>/dev/null) || __herdr_host=
 __herdr_osc7() {
+  [ -z "${__herdr_resolving:-}" ] || return 0
   __herdr_rest=$PWD __herdr_path=
   while case $__herdr_rest in *"%"*) true ;; *) false ;; esac; do
     __herdr_path=$__herdr_path${__herdr_rest%%"%"*}%25
@@ -60,9 +176,12 @@ __herdr_osc7() {
   else
     { printf '\033]7;file://%s%s\007' "$__herdr_host" "$__herdr_path" >/dev/tty; } 2>/dev/null || :
   fi
+  __herdr_git_branch
   return 0
 }
-if [ -n "${BASH_VERSION:-}" ]; then
+"#;
+
+const POSIX_CWD_REPORT_HOOKS: &str = r#"if [ -n "${BASH_VERSION:-}" ]; then
   case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
     "declare -a"*) eval 'PROMPT_COMMAND=(__herdr_osc7 "${PROMPT_COMMAND[@]}")' ;;
     *) PROMPT_COMMAND="__herdr_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
@@ -70,20 +189,31 @@ if [ -n "${BASH_VERSION:-}" ]; then
 elif [ -n "${ZSH_VERSION:-}" ]; then
   eval 'precmd_functions+=(__herdr_osc7); chpwd_functions+=(__herdr_osc7)'
 else
-  # A prompt cannot call a function in dash and ash, so `cd` reports instead.
+  # A prompt cannot call a function in dash and ash, so `cd` reports
+  # instead, and `git` reports the branch a checkout leaves behind. The
+  # `git` wrapper is defined by `eval` at run time because an alias named
+  # `git` would rewrite `git() {` while this `if` is parsed, and it is
+  # skipped when an alias or the user's own function already owns the name.
   cd() { command cd "$@" || return; __herdr_osc7; }
+  if ! alias git >/dev/null 2>&1; then
+    case $(type git 2>/dev/null) in
+      *function*) ;;
+      *) eval 'git() { command git "$@"; __herdr_rc=$?; __herdr_git_branch; return "$__herdr_rc"; }' ;;
+    esac
+  fi
 fi
 __herdr_osc7
-"#
-    .to_owned()
-}
+"#;
 
 /// Fish counterpart of [`injected_cwd_integration_posix`]. The host is read
 /// once, and the path is encoded with `string` so no process starts per `cd`.
 /// Why `$HOSTNAME` before fish's own `$hostname`: the POSIX body prefers it,
 /// and both bodies must name the same host for one machine.
 pub(crate) fn injected_cwd_integration_fish() -> String {
-    r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
+    format!("{FISH_CWD_REPORT}{FISH_BRANCH_REPORT}")
+}
+
+const FISH_CWD_REPORT: &str = r#"# herdr shell integration: reports the working directory to the herdr in front of this shell.
 if test -n "$HOSTNAME"
     set -g __herdr_host $HOSTNAME
 else
@@ -100,9 +230,86 @@ function __herdr_osc7 --on-variable PWD
     return 0
 end
 __herdr_osc7
-"#
-    .to_owned()
-}
+"#;
+
+/// Fish counterpart of [`POSIX_BRANCH_REPORT`], sent at every prompt.
+/// Why `test -r` before each `read`: fish prints its own error for a
+/// redirection from a missing file, which `2>/dev/null` does not silence.
+/// Why regexes and not `?` globs: fish 4 turns on `qmark-noglob`, where `?`
+/// matches only itself.
+const FISH_BRANCH_REPORT: &str = r#"function __herdr_is_bare
+    set -l dir $argv[1]
+    test -f "$dir/HEAD"; and test -d "$dir/objects"; and test -d "$dir/refs"; and test -f "$dir/config"; and test -r "$dir/config"; or return 1
+    set -l core
+    while read -l line
+        set line (string trim -- "$line")
+        if test -z "$line"; or string match -qr '^[#;]' -- "$line"
+            continue
+        end
+        if string match -qr '^\[' -- "$line"
+            set core
+            string match -qir '^\[core\]' -- "$line"; and set core 1
+            continue
+        end
+        test -n "$core"; or continue
+        string match -qr '=' -- "$line"; or continue
+        set -l parts (string split -m 1 '=' -- "$line")
+        string match -qi 'bare' -- (string trim -- "$parts[1]"); or continue
+        set -l value (string trim -- (string replace -r '[#;].*$' '' -- "$parts[2]"))
+        string match -qi 'true' -- "$value"
+        return
+    end <"$dir/config"
+    return 1
+end
+function __herdr_git_branch --on-event fish_prompt
+    isatty stdin; or return 0
+    set -l dir $PWD
+    set -l head
+    while true
+        if test -f "$dir/.git/HEAD"
+            set head "$dir/.git/HEAD"
+            break
+        end
+        if test -f "$dir/.git"
+            set -l line
+            test -r "$dir/.git"; and read -l line <"$dir/.git"
+            if string match -qr '^gitdir: /' -- "$line"
+                set head (string sub -s 9 -- "$line")/HEAD
+            else if string match -qr '^gitdir: .' -- "$line"
+                set head "$dir/"(string sub -s 9 -- "$line")/HEAD
+            end
+            break
+        end
+        if __herdr_is_bare "$dir"
+            set head "$dir/HEAD"
+            break
+        end
+        test -n "$dir"; or break
+        if test -L "$dir"; and string match -qr '^/[^/]+/' -- "$dir"
+            set dir (builtin realpath -- "$dir" 2>/dev/null); or break
+        end
+        set dir (string replace -r '/[^/]*$' '' -- "$dir")
+    end
+    set -l branch
+    if test -n "$head"; and test -f "$head"; and test -r "$head"
+        read -l line <"$head"
+        if test "$line" = 'ref: refs/heads/.invalid'
+            set branch (command git symbolic-ref --short -q HEAD 2>/dev/null)
+        else if string match -qr '^ref: refs/heads/.' -- "$line"
+            set branch (string sub -s 17 -- "$line")
+        end
+    end
+    if string match -qr '[[:cntrl:]]' -- "$branch"
+        set branch
+    end
+    if set -q TMUX
+        printf '\033Ptmux;\033\033]43737;herdr-git;v=1;%s\007\033\\' "$branch" >/dev/tty 2>/dev/null
+    else
+        printf '\033]43737;herdr-git;v=1;%s\007' "$branch" >/dev/tty 2>/dev/null
+    end
+    return 0
+end
+"#;
 
 /// Marks every prompt and the start of every command's output with OSC 133,
 /// so the herdr in front of the shell can move and copy by command. Shared by

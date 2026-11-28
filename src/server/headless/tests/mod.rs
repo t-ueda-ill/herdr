@@ -5202,6 +5202,7 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
             ahead_behind: None,
             space: None,
         }],
+        terminal_results: Vec::new(),
         cache_updates: Vec::new(),
     });
 
@@ -5242,6 +5243,56 @@ fn failed_startup_git_refresh_retries_without_clients() {
 }
 
 #[test]
+fn client_shell_branch_is_the_branch_of_the_tab_that_client_shows() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("tabs");
+    workspace.test_add_tab(None);
+    server.app.state.workspaces.push(workspace);
+    server.app.state.ensure_test_terminals();
+    for (tab_idx, branch) in [(0, "space-branch"), (1, "tab-branch")] {
+        let terminal_id = server.app.state.workspaces[0]
+            .branch_terminal_id(tab_idx)
+            .unwrap()
+            .clone();
+        let terminal = server.app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.git_branch = Some(branch.into());
+        terminal.git_ahead_behind = (tab_idx == 1).then_some((1, 2));
+    }
+    let workspace_id = server.app.public_workspace_id(0);
+    let location = crate::server::clients::ClientShellLocation {
+        focused_workspace_id: Some(workspace_id.clone()),
+        active_tab_ids: HashMap::from([(workspace_id, server.app.public_tab_id(0, 1).unwrap())]),
+    };
+
+    server.app.state.workspaces[0].cached_git_branch = Some("identity".into());
+
+    let default_view = crate::server::client_shell::snapshot(&server.app, "boot", 1, None, None);
+    let second_tab_view =
+        crate::server::client_shell::snapshot(&server.app, "boot", 1, None, Some(&location));
+
+    for view in [&default_view, &second_tab_view] {
+        assert_eq!(
+            view.workspaces[0].branch.as_deref(),
+            Some("identity"),
+            "worktree actions keep the space's checkout"
+        );
+    }
+    assert_eq!(
+        default_view.workspaces[0].shown_branch(),
+        Some("space-branch")
+    );
+    assert_eq!(default_view.workspaces[0].shown_git_ahead_behind(), None);
+    assert_eq!(
+        second_tab_view.workspaces[0].shown_branch(),
+        Some("tab-branch")
+    );
+    assert_eq!(
+        second_tab_view.workspaces[0].shown_git_ahead_behind(),
+        Some((1, 2))
+    );
+}
+
+#[test]
 fn changed_git_refresh_requests_headless_render() {
     let mut server = test_headless_server();
     let workspace = crate::workspace::Workspace::test_new("one");
@@ -5260,6 +5311,7 @@ fn changed_git_refresh_requests_headless_render() {
             ahead_behind: None,
             space: None,
         }],
+        terminal_results: Vec::new(),
         cache_updates: Vec::new(),
     });
 

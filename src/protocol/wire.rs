@@ -1049,6 +1049,37 @@ pub struct ClientShellWorkspace {
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
+    /// Branch facts of the pane this client shows for the space: the focused
+    /// pane of its tab on screen. `branch` and `git_ahead_behind` stay those
+    /// of the space's identity checkout, which worktree actions act on.
+    /// Older servers leave it out; clients then show `branch`.
+    /// Why not `skip_serializing_if`: this struct also rides the legacy
+    /// bincode snapshot, which cannot skip fields.
+    #[serde(default)]
+    pub pane_git: Option<ClientShellPaneGit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellPaneGit {
+    pub branch: Option<String>,
+    pub ahead_behind: Option<(usize, usize)>,
+}
+
+impl ClientShellWorkspace {
+    /// The branch to show for the space.
+    pub fn shown_branch(&self) -> Option<&str> {
+        match &self.pane_git {
+            Some(pane_git) => pane_git.branch.as_deref(),
+            None => self.branch.as_deref(),
+        }
+    }
+
+    pub fn shown_git_ahead_behind(&self) -> Option<(usize, usize)> {
+        match &self.pane_git {
+            Some(pane_git) => pane_git.ahead_behind,
+            None => self.git_ahead_behind,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2878,6 +2909,7 @@ mod tests {
                 worktree: None,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
+                pane_git: None,
             }],
             tabs: vec![ClientShellTab {
                 tab_id: "w1:t1".into(),

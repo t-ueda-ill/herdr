@@ -1232,3 +1232,515 @@ fn bash_before_4_4_sends_no_prompt_marks_and_still_reports_its_directory() {
     assert!(!out.contains("\x1b]133;"), "{out:?}");
     assert!(!osc7_paths(&out).is_empty(), "{out:?}");
 }
+
+/// Values carried by `herdr-git` branch reports, in order.
+fn branch_reports(output: &str) -> Vec<String> {
+    output
+        .split("\x1b]43737;herdr-git;v=1;")
+        .skip(1)
+        .filter_map(|rest| rest.split('\x07').next())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A repo with a nested directory, a linked worktree whose `.git` file
+/// points to its git dir by a relative path, a detached checkout, and a
+/// directory outside any repo.
+struct BranchFixture {
+    root: PathBuf,
+    home: PathBuf,
+    tmp: PathBuf,
+}
+
+impl BranchFixture {
+    fn new(name: &str) -> Self {
+        let root = scratch(name);
+        let home = root.join("home");
+        let tmp = root.join("tmp");
+        for dir in [
+            &home,
+            &tmp,
+            &root.join("repo/.git"),
+            &root.join("repo/sub dir"),
+            &root.join("repo/.git/worktrees/wt"),
+            &root.join("wt"),
+            &root.join("detached/.git"),
+            &root.join("plain"),
+            &root.join("repo/.git/objects"),
+            &root.join("repo/.git/refs/heads"),
+            &root.join("hostile/.git"),
+            &root.join("reftable/.git"),
+            &root.join("outer/.git"),
+            &root.join("bare.git/objects"),
+            &root.join("bare.git/refs"),
+            &root.join("repo/nested.git/objects"),
+            &root.join("repo/nested.git/refs"),
+            &root.join("upper.git/objects"),
+            &root.join("upper.git/refs"),
+            &root.join("repo/lookalike.git/objects"),
+            &root.join("repo/lookalike.git/refs"),
+            &root.join("fifo-gitdir"),
+            &root.join("fifo"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(root.join("repo/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            root.join("repo/.git/worktrees/wt/HEAD"),
+            "ref: refs/heads/feature/wt",
+        )
+        .unwrap();
+        std::fs::write(root.join("wt/.git"), "gitdir: ../repo/.git/worktrees/wt\n").unwrap();
+        std::fs::write(
+            root.join("detached/.git/HEAD"),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        )
+        .unwrap();
+        // A HEAD no git would write, carrying a terminal title sequence.
+        std::fs::write(
+            root.join("hostile/.git/HEAD"),
+            "ref: refs/heads/x\x1b]0;pwned\x07y\n",
+        )
+        .unwrap();
+        // What a reftable repo keeps on disk for older readers.
+        std::fs::write(
+            root.join("reftable/.git/HEAD"),
+            "ref: refs/heads/.invalid\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("outer/.git/HEAD"), "ref: refs/heads/outer\n").unwrap();
+        // Bare repos: one on its own, one inside the `repo` checkout.
+        for (dir, branch) in [
+            ("bare.git", "bare-branch"),
+            ("repo/nested.git", "nested-bare"),
+        ] {
+            std::fs::write(
+                root.join(dir).join("HEAD"),
+                format!("ref: refs/heads/{branch}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                root.join(dir).join("config"),
+                "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+            )
+            .unwrap();
+        }
+        // A `.git` file pointing at a git dir whose HEAD is a FIFO: reading it
+        // would wait for a writer forever.
+        std::fs::write(root.join("fifo/.git"), "gitdir: ../fifo-gitdir\n").unwrap();
+        let status = Command::new("mkfifo")
+            .arg(root.join("fifo-gitdir/HEAD"))
+            .status()
+            .expect("mkfifo runs");
+        assert!(status.success());
+        // Git reads section and key names without case, so this is bare.
+        std::fs::write(root.join("upper.git/HEAD"), "ref: refs/heads/upper-bare\n").unwrap();
+        std::fs::write(root.join("upper.git/config"), "[Core]\n\tBare = TRUE\n").unwrap();
+        // Not bare: `true` only in a comment and in another section.
+        std::fs::write(
+            root.join("repo/lookalike.git/HEAD"),
+            "ref: refs/heads/lookalike\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("repo/lookalike.git/config"),
+            "[core]\n\tbare = false # true for bare repositories\n[other]\n\tbare = true\n",
+        )
+        .unwrap();
+        // `outer/plain` leads out of the outer checkout, `link` into the repo.
+        std::os::unix::fs::symlink(root.join("plain"), root.join("outer/plain")).unwrap();
+        std::os::unix::fs::symlink(root.join("repo/sub dir"), root.join("link")).unwrap();
+        Self { root, home, tmp }
+    }
+
+    fn run(&self, shell: &str, input: &str) -> String {
+        let posix = injected_integration_posix();
+        let fish = injected_integration_fish();
+        let (posix, fish) = if shell == "fish" {
+            ("", fish.as_str())
+        } else {
+            (posix.as_str(), "")
+        };
+        run_in_pty(
+            &[self.root.to_str().unwrap(), shell, "0", posix, fish],
+            &self.home,
+            &self.tmp,
+            input,
+        )
+    }
+}
+
+fn branch_report_test(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("branch-{shell}"));
+    let out = fixture.run(
+        shell,
+        "cd 'repo/sub dir'\ncd ../../wt\ncd ../detached\ncd ../plain\nexit",
+    );
+    let reports = branch_reports(&out);
+    let order: Vec<&str> =
+        reports
+            .iter()
+            .map(String::as_str)
+            .fold(Vec::new(), |mut seen, report| {
+                if seen.last() != Some(&report) {
+                    seen.push(report);
+                }
+                seen
+            });
+    // The start directory is outside every repo, so the first report is empty.
+    assert_eq!(order, ["", "main", "feature/wt", ""], "{out:?}");
+    assert!(
+        reports.iter().filter(|report| report.is_empty()).count() >= 2,
+        "detached and plain both report no branch: {out:?}"
+    );
+}
+
+#[test]
+fn bash_reports_the_branch_of_its_directory() {
+    branch_report_test("bash");
+}
+
+#[test]
+fn dash_reports_the_branch_of_its_directory() {
+    branch_report_test("dash");
+}
+
+#[test]
+fn zsh_reports_the_branch_of_its_directory() {
+    branch_report_test("zsh");
+}
+
+#[test]
+fn fish_reports_the_branch_of_its_directory() {
+    branch_report_test("fish");
+}
+
+/// A checkout made from the prompt changes `HEAD` without a `cd`.
+fn branch_follows_a_checkout_at_the_next_prompt(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("checkout-{shell}"));
+    let out = fixture.run(
+        shell,
+        "cd repo\nprintf 'ref: refs/heads/next\\n' > .git/HEAD\ntrue\nexit",
+    );
+    let reports = branch_reports(&out);
+    assert_eq!(reports.last().map(String::as_str), Some("next"), "{out:?}");
+    assert!(reports.iter().any(|report| report == "main"), "{out:?}");
+}
+
+#[test]
+fn bash_branch_follows_a_checkout_at_the_next_prompt() {
+    branch_follows_a_checkout_at_the_next_prompt("bash");
+}
+
+#[test]
+fn zsh_branch_follows_a_checkout_at_the_next_prompt() {
+    branch_follows_a_checkout_at_the_next_prompt("zsh");
+}
+
+#[test]
+fn fish_branch_follows_a_checkout_at_the_next_prompt() {
+    branch_follows_a_checkout_at_the_next_prompt("fish");
+}
+
+fn untrusted_head_test(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("untrusted-{shell}"));
+    let out = fixture.run(shell, "cd hostile\ncd ../reftable\nexit");
+
+    assert!(!out.contains("pwned"), "{out:?}");
+    assert!(
+        !branch_reports(&out)
+            .iter()
+            .any(|report| report.contains(".invalid")),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn bash_reports_no_branch_for_an_untrusted_or_reftable_head() {
+    untrusted_head_test("bash");
+}
+
+#[test]
+fn dash_reports_no_branch_for_an_untrusted_or_reftable_head() {
+    untrusted_head_test("dash");
+}
+
+#[test]
+fn fish_reports_no_branch_for_an_untrusted_or_reftable_head() {
+    untrusted_head_test("fish");
+}
+
+/// `link` points into the repo from outside it; `outer/plain` points out of
+/// a checkout. The branch follows where the directory really is.
+fn symlinked_directory_test(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("symlink-{shell}"));
+    let out = fixture.run(shell, "cd link\nexit");
+    assert_eq!(
+        osc7_paths(&out).last().map(String::as_str),
+        Some(format!("{}/link", fixture.root.display()).as_str()),
+        "resolving the symlink must not report the physical path: {out:?}"
+    );
+    let out = fixture.run(shell, "cd link\ncd ../outer/plain\nexit");
+    let reports = branch_reports(&out);
+
+    assert!(reports.iter().any(|report| report == "main"), "{out:?}");
+    assert_eq!(reports.last().map(String::as_str), Some(""), "{out:?}");
+    assert!(!reports.iter().any(|report| report == "outer"), "{out:?}");
+}
+
+#[test]
+fn bash_reports_the_branch_where_a_symlinked_directory_really_is() {
+    symlinked_directory_test("bash");
+}
+
+#[test]
+fn dash_reports_the_branch_where_a_symlinked_directory_really_is() {
+    symlinked_directory_test("dash");
+}
+
+#[test]
+fn fish_reports_the_branch_where_a_symlinked_directory_really_is() {
+    symlinked_directory_test("fish");
+}
+
+/// dash has no prompt hook, so the report rides on `git` itself.
+#[test]
+fn dash_branch_follows_a_checkout_made_with_git() {
+    if !installed("dash") || !installed("git") {
+        eprintln!("skipping: dash or git is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new("checkout-dash");
+    let out = fixture.run(
+        "dash",
+        "cd repo\ngit symbolic-ref HEAD refs/heads/next\nexit",
+    );
+
+    assert_eq!(
+        branch_reports(&out).last().map(String::as_str),
+        Some("next"),
+        "{out:?}"
+    );
+}
+
+/// An alias named like the `git` wrapper must not break the integration,
+/// which would lose the cwd report and every hook after it.
+fn git_alias_test(shell: &str, rc_file: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("alias-{shell}"));
+    std::fs::write(fixture.home.join(rc_file), "alias git='git --no-pager'\n").unwrap();
+    let out = fixture.run(shell, "cd repo\nexit");
+
+    assert!(!osc7_paths(&out).is_empty(), "{out:?}");
+    assert!(
+        branch_reports(&out).iter().any(|report| report == "main"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn bash_integration_survives_a_git_alias() {
+    git_alias_test("bash", ".bashrc");
+}
+
+#[test]
+fn dash_integration_survives_a_git_alias() {
+    git_alias_test("dash", ".shrc");
+}
+
+#[test]
+fn zsh_integration_survives_a_git_alias() {
+    git_alias_test("zsh", ".zshrc");
+}
+
+/// A bare repo has no `.git`; its own `HEAD` names the branch, even when the
+/// bare repo sits inside another checkout.
+fn bare_repo_test(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("bare-{shell}"));
+    let out = fixture.run(shell, "cd bare.git\ncd ../repo/nested.git\nexit");
+    let reports = branch_reports(&out);
+
+    assert!(
+        reports.iter().any(|report| report == "bare-branch"),
+        "{out:?}"
+    );
+    assert_eq!(
+        reports.last().map(String::as_str),
+        Some("nested-bare"),
+        "{out:?}"
+    );
+
+    let out = fixture.run(shell, "cd upper.git\ncd ../repo/lookalike.git\nexit");
+    let reports = branch_reports(&out);
+
+    assert!(
+        reports.iter().any(|report| report == "upper-bare"),
+        "{out:?}"
+    );
+    assert_eq!(
+        reports.last().map(String::as_str),
+        Some("main"),
+        "a lookalike is part of the checkout around it: {out:?}"
+    );
+}
+
+#[test]
+fn bash_reports_the_branch_of_a_bare_repo() {
+    bare_repo_test("bash");
+}
+
+#[test]
+fn dash_reports_the_branch_of_a_bare_repo() {
+    bare_repo_test("dash");
+}
+
+#[test]
+fn fish_reports_the_branch_of_a_bare_repo() {
+    bare_repo_test("fish");
+}
+
+fn fifo_head_test(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("fifo-{shell}"));
+    // Why a plain fish prompt: fish's default prompt runs `git`, which reads
+    // the FIFO itself and would hang the prompt for a reason outside herdr.
+    let fish_config = fixture.home.join(".config/fish");
+    std::fs::create_dir_all(&fish_config).unwrap();
+    std::fs::write(
+        fish_config.join("config.fish"),
+        "function fish_prompt; printf '$ '; end\n",
+    )
+    .unwrap();
+    let out = fixture.run(shell, "cd fifo\nprintf 'prompt=%s\\n' back\nexit");
+
+    assert!(out.contains("prompt=back"), "the prompt came back: {out:?}");
+    assert_eq!(
+        branch_reports(&out).last().map(String::as_str),
+        Some(""),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn bash_prompt_survives_a_fifo_head() {
+    fifo_head_test("bash");
+}
+
+#[test]
+fn dash_prompt_survives_a_fifo_head() {
+    fifo_head_test("dash");
+}
+
+#[test]
+fn fish_prompt_survives_a_fifo_head() {
+    fifo_head_test("fish");
+}
+
+/// A symlink right under `/` (macOS `/var` and `/tmp`, merged-usr `/bin`)
+/// is not resolved: above it is only the root, and the subshell would run at
+/// every prompt below it. A `pwd` function records each resolution.
+fn top_level_symlink_test(shell: &str) {
+    if !installed(shell) || !Path::new("/bin").is_symlink() {
+        eprintln!("skipping: {shell} is not installed or /bin is not a symlink");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("top-symlink-{shell}"));
+    let probe = r#"pwd() { printf 'resolved-%s\n' here >/dev/tty; command pwd "$@"; }"#;
+    let out = fixture.run(shell, &format!("{probe}\ncd /bin\ntrue\nexit"));
+    assert!(!out.contains("resolved-here"), "{out:?}");
+
+    let out = fixture.run(shell, &format!("{probe}\ncd link\nexit"));
+    assert!(
+        out.contains("resolved-here"),
+        "the probe sees a deeper symlink: {out:?}"
+    );
+}
+
+#[test]
+fn bash_leaves_a_top_level_symlink_unresolved() {
+    top_level_symlink_test("bash");
+}
+
+#[test]
+fn dash_leaves_a_top_level_symlink_unresolved() {
+    top_level_symlink_test("dash");
+}
+
+/// A config or HEAD this user may not read must not print an error at every
+/// prompt. Why not as root: root reads files whatever their mode.
+fn unreadable_metadata_test(shell: &str) {
+    if !installed(shell)
+        || Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|out| out.stdout == b"0\n")
+    {
+        eprintln!("skipping: {shell} is not installed or the test runs as root");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("unreadable-{shell}"));
+    let locked = fixture.root.join("locked.git");
+    for dir in ["objects", "refs"] {
+        std::fs::create_dir_all(locked.join(dir)).unwrap();
+    }
+    std::fs::write(locked.join("HEAD"), "ref: refs/heads/locked\n").unwrap();
+    std::fs::write(locked.join("config"), "[core]\n\tbare = true\n").unwrap();
+    let unreadable = std::os::unix::fs::PermissionsExt::from_mode(0o000);
+    std::fs::set_permissions(locked.join("config"), unreadable).unwrap();
+    std::fs::create_dir_all(fixture.root.join("locked-head/.git")).unwrap();
+    let head = fixture.root.join("locked-head/.git/HEAD");
+    std::fs::write(&head, "ref: refs/heads/hidden\n").unwrap();
+    std::fs::set_permissions(&head, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+
+    let out = fixture.run(shell, "cd locked.git\ntrue\ncd ../locked-head\ntrue\nexit");
+
+    for word in [
+        "Permission denied",
+        "permission denied",
+        "cannot open",
+        "can't open",
+    ] {
+        assert!(!out.contains(word), "{word}: {out:?}");
+    }
+}
+
+#[test]
+fn bash_stays_quiet_on_unreadable_git_metadata() {
+    unreadable_metadata_test("bash");
+}
+
+#[test]
+fn dash_stays_quiet_on_unreadable_git_metadata() {
+    unreadable_metadata_test("dash");
+}
+
+#[test]
+fn fish_stays_quiet_on_unreadable_git_metadata() {
+    unreadable_metadata_test("fish");
+}

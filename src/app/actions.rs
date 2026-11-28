@@ -11,7 +11,7 @@ use crate::layout::PaneId;
 #[cfg(test)]
 use crate::layout::{find_in_direction, NavDirection};
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
-use crate::workspace::WorkspaceGitStatus;
+use crate::workspace::{TerminalGitStatus, WorkspaceGitStatus};
 
 use super::api_helpers::pane_agent_status;
 use super::state::{
@@ -1354,7 +1354,120 @@ fn is_trailing_token_wrapper(ch: char) -> bool {
 // Event handling
 // ---------------------------------------------------------------------------
 
+/// Returns true when the terminal's branch facts changed.
+fn sync_off_host_git_branch(
+    terminal: &mut crate::terminal::TerminalState,
+    runtime: Option<&crate::terminal::TerminalRuntime>,
+) -> bool {
+    if !crate::terminal::shell_files_off_host(
+        runtime.map(crate::terminal::TerminalRuntime::shell_runs_off_host),
+        terminal,
+    ) {
+        return false;
+    }
+    let branch = runtime.and_then(crate::terminal::TerminalRuntime::reported_branch);
+    if terminal.git_branch == branch && terminal.git_ahead_behind.is_none() {
+        return false;
+    }
+    terminal.git_branch = branch;
+    terminal.git_ahead_behind = None;
+    terminal.git_status_source = None;
+    true
+}
+
 impl AppState {
+    pub fn apply_terminal_git_statuses(
+        &mut self,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+        results: Vec<TerminalGitStatus>,
+    ) -> bool {
+        let mut changed = false;
+        for result in results {
+            let Some(terminal) = self.terminals.get_mut(&result.terminal_id) else {
+                continue;
+            };
+            // An off-host shell's branch comes from its own report; the host
+            // directory this result read is where the shell was launched.
+            let runtime = terminal_runtimes.get(&result.terminal_id);
+            if crate::terminal::shell_files_off_host(
+                runtime.map(crate::terminal::TerminalRuntime::shell_runs_off_host),
+                terminal,
+            ) {
+                continue;
+            }
+            // A cd while the worker ran makes this the previous checkout's
+            // branch; the next refresh reads the new cwd.
+            let current_cwd = crate::terminal::inherited_cwd(
+                false,
+                runtime.and_then(crate::terminal::TerminalRuntime::cwd),
+                Some(terminal.cwd.clone()),
+            );
+            if current_cwd.as_ref() != Some(&result.cwd) {
+                continue;
+            }
+            terminal.git_status_source = Some((result.cwd, result.status_cache_key));
+            if result.demand.branch && terminal.git_branch != result.branch {
+                terminal.git_branch = result.branch;
+                changed = true;
+            }
+            if result.demand.ahead_behind && terminal.git_ahead_behind != result.ahead_behind {
+                terminal.git_ahead_behind = result.ahead_behind;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Copies each off-host shell's last branch report, for transitions no
+    /// report announces (a respawned or reconnected shell). Why every
+    /// off-host terminal and not only focused ones: a report costs one lock,
+    /// and a pane focused later must not show a branch from before it was
+    /// focused. Returns true only when a pane that can stand for a space
+    /// changed: a hidden pane's branch must not cost a redraw (focus moving
+    /// to it redraws anyway).
+    pub fn sync_off_host_git_branches(
+        &mut self,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+    ) -> bool {
+        let shown: std::collections::HashSet<crate::terminal::TerminalId> = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.tabs.iter())
+            .filter_map(|tab| tab.terminal_id(tab.layout.focused()).cloned())
+            .collect();
+        let mut changed = false;
+        for (terminal_id, terminal) in &mut self.terminals {
+            if sync_off_host_git_branch(terminal, terminal_runtimes.get(terminal_id)) {
+                changed |= shown.contains(terminal_id);
+            }
+        }
+        changed
+    }
+
+    /// Copies one pane's branch report. Why not the sweep above: a report
+    /// event per pane would make N reports cost N sweeps of every terminal.
+    pub fn sync_off_host_git_branch_of_pane(
+        &mut self,
+        pane_id: PaneId,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+    ) -> bool {
+        let Some((terminal_id, shown)) = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.tabs.iter())
+            .find_map(|tab| {
+                let terminal_id = tab.terminal_id(pane_id)?;
+                Some((terminal_id.clone(), tab.layout.focused() == pane_id))
+            })
+        else {
+            return false;
+        };
+        let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+            return false;
+        };
+        sync_off_host_git_branch(terminal, terminal_runtimes.get(&terminal_id)) && shown
+    }
+
     pub fn apply_workspace_git_statuses(
         &mut self,
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
@@ -1639,6 +1752,9 @@ impl AppState {
             // foreground client; they never touch AppState. Kept for AppEvent exhaustiveness.
             AppEvent::TerminalBell { .. } => Vec::new(),
             AppEvent::ClipboardWrite { .. } => Vec::new(),
+            // The App reads the report from the runtime; state alone has no
+            // runtime to read it from.
+            AppEvent::TerminalBranchReported { .. } => Vec::new(),
             AppEvent::TerminalCwdReported {
                 pane_id,
                 cwd,
@@ -1667,9 +1783,11 @@ impl AppState {
             }
             AppEvent::GitStatusRefreshed {
                 results,
+                terminal_results,
                 cache_updates,
             } => {
                 let _ = results;
+                let _ = terminal_results;
                 let _ = cache_updates;
                 Vec::new()
             }
@@ -2617,6 +2735,246 @@ mod tests {
             None
         );
         assert_eq!(selected_url("open file:///tmp/report", "file"), None);
+    }
+
+    fn root_terminal_id(state: &AppState, ws_idx: usize) -> crate::terminal::TerminalId {
+        let tab = &state.workspaces[ws_idx].tabs[0];
+        tab.terminal_id(tab.root_pane).cloned().unwrap()
+    }
+
+    /// A result read at the terminal's current cwd.
+    fn terminal_git_status_for(
+        state: &AppState,
+        terminal_id: crate::terminal::TerminalId,
+        demand: crate::workspace::GitStatusRefreshDemand,
+    ) -> crate::workspace::TerminalGitStatus {
+        let cwd = state.terminals[&terminal_id].cwd.clone();
+        crate::workspace::TerminalGitStatus {
+            terminal_id,
+            cwd: cwd.clone(),
+            status_cache_key: cwd,
+            demand,
+            branch: Some("main".into()),
+            ahead_behind: Some((2, 1)),
+        }
+    }
+
+    fn off_host_runtime(branch: Option<&str>) -> crate::terminal::TerminalRuntime {
+        let (mut runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_set_in_ssh(true);
+        runtime.test_set_reported_branch(branch);
+        runtime
+    }
+
+    #[test]
+    fn terminal_git_status_sets_the_branch_of_its_pane() {
+        let mut state = app_with_workspaces(&["one"]);
+        let terminal_id = root_terminal_id(&state, 0);
+
+        let changed = state.apply_terminal_git_statuses(
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            vec![terminal_git_status_for(
+                &state,
+                terminal_id.clone(),
+                crate::workspace::GitStatusRefreshDemand::ALL,
+            )],
+        );
+
+        assert!(changed);
+        let terminal = &state.terminals[&terminal_id];
+        assert_eq!(terminal.git_branch.as_deref(), Some("main"));
+        assert_eq!(terminal.git_ahead_behind, Some((2, 1)));
+    }
+
+    #[test]
+    fn terminal_git_status_leaves_facts_that_were_not_requested() {
+        let mut state = app_with_workspaces(&["one"]);
+        let terminal_id = root_terminal_id(&state, 0);
+        let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.git_branch = Some("old".into());
+        terminal.git_ahead_behind = Some((1, 0));
+
+        let changed = state.apply_terminal_git_statuses(
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            vec![terminal_git_status_for(
+                &state,
+                terminal_id.clone(),
+                crate::workspace::GitStatusRefreshDemand::default(),
+            )],
+        );
+
+        assert!(!changed);
+        let terminal = &state.terminals[&terminal_id];
+        assert_eq!(terminal.git_branch.as_deref(), Some("old"));
+        assert_eq!(terminal.git_ahead_behind, Some((1, 0)));
+    }
+
+    #[test]
+    fn terminal_git_status_clears_a_branch_that_is_gone() {
+        let mut state = app_with_workspaces(&["one"]);
+        let terminal_id = root_terminal_id(&state, 0);
+        let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.git_branch = Some("main".into());
+        terminal.git_ahead_behind = Some((1, 2));
+        let mut status = terminal_git_status_for(
+            &state,
+            terminal_id.clone(),
+            crate::workspace::GitStatusRefreshDemand::ALL,
+        );
+        status.branch = None;
+        status.ahead_behind = None;
+
+        let changed = state.apply_terminal_git_statuses(
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            vec![status],
+        );
+
+        assert!(changed);
+        assert_eq!(state.terminals[&terminal_id].git_branch, None);
+        assert_eq!(state.terminals[&terminal_id].git_ahead_behind, None);
+    }
+
+    #[test]
+    fn terminal_git_status_read_before_a_cd_is_dropped() {
+        let mut state = app_with_workspaces(&["one"]);
+        let terminal_id = root_terminal_id(&state, 0);
+        let mut status = terminal_git_status_for(
+            &state,
+            terminal_id.clone(),
+            crate::workspace::GitStatusRefreshDemand::ALL,
+        );
+        status.cwd = "/previous/checkout".into();
+
+        let changed = state.apply_terminal_git_statuses(
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            vec![status],
+        );
+
+        assert!(!changed);
+        assert_eq!(state.terminals[&terminal_id].git_branch, None);
+        assert_eq!(state.terminals[&terminal_id].git_status_source, None);
+    }
+
+    #[tokio::test]
+    async fn host_git_status_is_dropped_once_the_pane_runs_off_host() {
+        let mut state = app_with_workspaces(&["one"]);
+        let terminal_id = root_terminal_id(&state, 0);
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        runtimes.insert(terminal_id.clone(), off_host_runtime(None));
+
+        state.apply_terminal_git_statuses(
+            &runtimes,
+            vec![terminal_git_status_for(
+                &state,
+                terminal_id.clone(),
+                crate::workspace::GitStatusRefreshDemand::ALL,
+            )],
+        );
+
+        assert_eq!(state.terminals[&terminal_id].git_branch, None);
+    }
+
+    #[tokio::test]
+    async fn off_host_pane_shows_the_branch_its_shell_reported() {
+        let mut state = app_with_workspaces(&["remote", "host"]);
+        let remote = root_terminal_id(&state, 0);
+        let host = root_terminal_id(&state, 1);
+        state.terminals.get_mut(&remote).unwrap().git_ahead_behind = Some((3, 0));
+        state.terminals.get_mut(&host).unwrap().git_branch = Some("host-branch".into());
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        runtimes.insert(remote.clone(), off_host_runtime(Some("remote-branch")));
+
+        assert!(state.sync_off_host_git_branches(&runtimes));
+        assert!(!state.sync_off_host_git_branches(&runtimes));
+
+        assert_eq!(
+            state.terminals[&remote].git_branch.as_deref(),
+            Some("remote-branch")
+        );
+        assert_eq!(state.terminals[&remote].git_ahead_behind, None);
+        assert_eq!(
+            state.terminals[&host].git_branch.as_deref(),
+            Some("host-branch")
+        );
+    }
+
+    #[test]
+    fn off_host_pane_waiting_for_its_shell_shows_no_host_branch() {
+        let mut state = app_with_workspaces(&["restored"]);
+        let terminal_id = root_terminal_id(&state, 0);
+        let terminal = state.terminals.remove(&terminal_id).unwrap();
+        let ssh = crate::ssh_host::SshLaunch::new("prod".into(), None).expect("destination");
+        let mut terminal = terminal.with_ssh(ssh);
+        terminal.git_branch = Some("inherited".into());
+        state.terminals.insert(terminal_id.clone(), terminal);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        state.apply_terminal_git_statuses(
+            &runtimes,
+            vec![terminal_git_status_for(
+                &state,
+                terminal_id.clone(),
+                crate::workspace::GitStatusRefreshDemand::ALL,
+            )],
+        );
+        assert_eq!(
+            state.terminals[&terminal_id].git_branch.as_deref(),
+            Some("inherited"),
+            "a host result never lands on it"
+        );
+
+        state.sync_off_host_git_branches(&runtimes);
+        assert_eq!(state.terminals[&terminal_id].git_branch, None);
+    }
+
+    #[tokio::test]
+    async fn off_host_report_of_an_unfocused_pane_is_kept_without_a_redraw() {
+        let mut state = app_with_workspaces(&["remote"]);
+        let unfocused = state.workspaces[0].tabs[0].root_pane;
+        state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        state.ensure_test_terminals();
+        let tab = &state.workspaces[0].tabs[0];
+        let unfocused = tab.terminal_id(unfocused).cloned().unwrap();
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        runtimes.insert(unfocused.clone(), off_host_runtime(Some("hidden-branch")));
+
+        assert!(!state.sync_off_host_git_branches(&runtimes));
+        assert_eq!(
+            state.terminals[&unfocused].git_branch.as_deref(),
+            Some("hidden-branch")
+        );
+    }
+
+    #[tokio::test]
+    async fn branch_report_syncs_only_the_pane_that_reported() {
+        let mut state = app_with_workspaces(&["reporter", "other"]);
+        let reporter_pane = state.workspaces[0].tabs[0].root_pane;
+        let reporter = root_terminal_id(&state, 0);
+        let other = root_terminal_id(&state, 1);
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        runtimes.insert(reporter.clone(), off_host_runtime(Some("reported")));
+        runtimes.insert(other.clone(), off_host_runtime(Some("not-yet-synced")));
+
+        assert!(state.sync_off_host_git_branch_of_pane(reporter_pane, &runtimes));
+
+        assert_eq!(
+            state.terminals[&reporter].git_branch.as_deref(),
+            Some("reported")
+        );
+        assert_eq!(state.terminals[&other].git_branch, None);
+    }
+
+    #[tokio::test]
+    async fn off_host_pane_without_a_report_shows_no_branch() {
+        let mut state = app_with_workspaces(&["remote"]);
+        let remote = root_terminal_id(&state, 0);
+        state.terminals.get_mut(&remote).unwrap().git_branch = Some("inherited".into());
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        runtimes.insert(remote.clone(), off_host_runtime(None));
+
+        state.sync_off_host_git_branches(&runtimes);
+
+        assert_eq!(state.terminals[&remote].git_branch, None);
     }
 
     #[test]

@@ -49,8 +49,9 @@ impl App {
         match ev {
             AppEvent::GitStatusRefreshed {
                 results,
+                terminal_results,
                 cache_updates,
-            } => self.handle_git_status_refreshed(results, cache_updates),
+            } => self.handle_git_status_refreshed(results, terminal_results, cache_updates),
             AppEvent::TabBarCommandFinished {
                 generation,
                 segment_index,
@@ -88,6 +89,7 @@ impl App {
                 self.handle_ssh_hosts_finished(*result);
                 false
             }
+            AppEvent::TerminalBranchReported { pane_id } => self.sync_reported_branch(pane_id),
             ev @ AppEvent::TerminalBell { .. } => {
                 self.handle_internal_event(ev);
                 false
@@ -102,6 +104,7 @@ impl App {
     fn handle_git_status_refreshed(
         &mut self,
         results: Vec<crate::workspace::WorkspaceGitStatus>,
+        terminal_results: Vec<crate::workspace::TerminalGitStatus>,
         cache_updates: Vec<(std::path::PathBuf, crate::workspace::GitStatusCacheEntry)>,
     ) -> bool {
         self.git_refresh_in_flight = false;
@@ -114,9 +117,28 @@ impl App {
         } else {
             self.last_git_remote_status_refresh = Instant::now();
         }
-        let changed = self
+        let mut changed = self
             .state
             .apply_workspace_git_statuses(&self.terminal_runtimes, results);
+        changed |= self
+            .state
+            .apply_terminal_git_statuses(&self.terminal_runtimes, terminal_results);
+        changed |= self
+            .state
+            .sync_off_host_git_branches(&self.terminal_runtimes);
+        if changed {
+            self.render_dirty.request_generic();
+            self.render_notify.notify_one();
+        }
+        changed
+    }
+
+    /// Returns true only when a pane that can stand for a space changed, so
+    /// a hidden pane's report costs no redraw on either event path.
+    fn sync_reported_branch(&mut self, pane_id: crate::layout::PaneId) -> bool {
+        let changed = self
+            .state
+            .sync_off_host_git_branch_of_pane(pane_id, &self.terminal_runtimes);
         if changed {
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
@@ -167,10 +189,11 @@ impl App {
 
         if let AppEvent::GitStatusRefreshed {
             results,
+            terminal_results,
             cache_updates,
         } = ev
         {
-            self.handle_git_status_refreshed(results, cache_updates);
+            self.handle_git_status_refreshed(results, terminal_results, cache_updates);
             return Vec::new();
         }
 
@@ -446,6 +469,10 @@ impl App {
             } else {
                 None
             };
+        if let AppEvent::TerminalBranchReported { pane_id } = ev {
+            self.sync_reported_branch(pane_id);
+            return Vec::new();
+        }
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
         let previous_toast = self.state.toast.clone();
         let mut pane_updates = self.state.handle_app_event(ev);

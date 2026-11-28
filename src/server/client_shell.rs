@@ -120,6 +120,11 @@ pub(super) fn snapshot_with_completions(
                     .and_then(|(tab_workspace_index, tab_index)| {
                         (tab_workspace_index == workspace_index).then_some(tab_index)
                     });
+            // The shown branch follows the tab this client shows, not the
+            // space's first tab, so each tab can sit in its own checkout.
+            let branch_terminal = state
+                .branch_terminal_id(active_tab_index.unwrap_or(state.active_tab))
+                .and_then(|terminal_id| app.state.terminals.get(terminal_id));
             protocol::ClientShellWorkspace {
                 focused: focused_workspace_id.as_deref() == Some(workspace_id.as_str()),
                 workspace_id,
@@ -142,6 +147,10 @@ pub(super) fn snapshot_with_completions(
                         is_linked_worktree: worktree.is_linked_worktree,
                     }),
                 agent_status: workspace.agent_status,
+                pane_git: Some(protocol::ClientShellPaneGit {
+                    branch: branch_terminal.and_then(|terminal| terminal.git_branch.clone()),
+                    ahead_behind: branch_terminal.and_then(|terminal| terminal.git_ahead_behind),
+                }),
             }
         })
         .collect();

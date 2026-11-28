@@ -1180,6 +1180,7 @@ mod tests {
 
         let changed = app.handle_internal_event_with_render_impact(AppEvent::GitStatusRefreshed {
             results: Vec::new(),
+            terminal_results: Vec::new(),
             cache_updates: Vec::new(),
         });
 
@@ -1227,6 +1228,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
             results: Vec::new(),
+            terminal_results: Vec::new(),
             cache_updates: Vec::new(),
         });
 
@@ -1253,6 +1255,7 @@ mod tests {
                 ahead_behind: Some((1, 0)),
                 space: None,
             }],
+            terminal_results: Vec::new(),
             cache_updates: Vec::new(),
         });
 
@@ -1400,6 +1403,7 @@ mod tests {
         app.event_tx
             .try_send(AppEvent::GitStatusRefreshed {
                 results: Vec::new(),
+                terminal_results: Vec::new(),
                 cache_updates: Vec::new(),
             })
             .unwrap();

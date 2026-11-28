@@ -665,6 +665,10 @@ impl TerminalRuntime {
         self.0.shell_runs_off_host()
     }
 
+    pub fn reported_branch(&self) -> Option<String> {
+        self.0.reported_branch()
+    }
+
     pub(crate) fn current_size(&self) -> (u16, u16) {
         self.0.current_size()
     }
@@ -686,6 +690,10 @@ impl TerminalRuntime {
 
     pub(crate) fn test_set_reported_cwd(&self, cwd: std::path::PathBuf) {
         self.0.test_set_reported_cwd(cwd);
+    }
+
+    pub(crate) fn test_set_reported_branch(&self, branch: Option<&str>) {
+        self.0.test_set_reported_branch(branch);
     }
 
     #[cfg(unix)]
