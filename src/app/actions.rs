@@ -1717,6 +1717,9 @@ impl AppState {
             // foreground client; they never touch AppState. Kept for AppEvent exhaustiveness.
             AppEvent::TerminalBell { .. } => Vec::new(),
             AppEvent::ClipboardWrite { .. } => Vec::new(),
+            // The App reads the report from the runtime; state alone has no
+            // runtime to read it from.
+            AppEvent::TerminalBranchReported => Vec::new(),
             AppEvent::TerminalCwdReported {
                 pane_id,
                 cwd,

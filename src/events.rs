@@ -273,6 +273,10 @@ pub enum AppEvent {
     ClipboardWrite { content: Vec<u8> },
     /// A pane child reported its shell current directory through terminal
     /// metadata such as OSC 7.
+    /// A container or ssh shell reported a different branch; the runtime
+    /// holds it. Why apart from the git refresh: that refresh runs only
+    /// while the sidebar shows git tokens, and other views show the branch.
+    TerminalBranchReported,
     TerminalCwdReported {
         pane_id: PaneId,
         cwd: std::path::PathBuf,

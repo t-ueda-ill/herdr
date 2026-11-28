@@ -961,6 +961,30 @@ mod tests {
             .is_empty());
     }
 
+    #[tokio::test]
+    async fn off_host_branch_report_is_shown_without_a_git_refresh() {
+        let mut config = crate::config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        let mut app = test_app(&config);
+        app.state.workspaces.push(Workspace::test_new("remote"));
+        app.state.ensure_test_terminals();
+        let terminal_id = focused_terminal(&app.state.workspaces[0], 0);
+        let (mut runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_set_in_ssh(true);
+        runtime.test_set_reported_branch(Some("remote-branch"));
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        let _ = app.render_dirty.take();
+
+        app.handle_internal_event(AppEvent::TerminalBranchReported);
+
+        assert_eq!(
+            app.state.terminals[&terminal_id].git_branch.as_deref(),
+            Some("remote-branch")
+        );
+        assert!(app.render_dirty.is_pending());
+        assert!(!app.git_refresh_in_flight);
+    }
+
     #[test]
     fn terminal_git_refresh_is_skipped_without_a_branch_consumer() {
         let mut app = test_app(&crate::config::Config::default());

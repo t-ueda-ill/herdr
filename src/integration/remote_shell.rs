@@ -69,7 +69,19 @@ pub(crate) fn injected_cwd_integration_posix() -> String {
 /// keeps in `HEAD`, which no builtin can resolve.
 /// Why control characters are dropped here and not only by herdr: they reach
 /// the terminal with the report, before herdr can reject them.
-const POSIX_BRANCH_REPORT: &str = r#"__herdr_git_branch() {
+/// Why a bare repo is told by its layout and `core.bare`: it has no `.git`,
+/// and the host's discovery (`git/discovery.rs`) uses the same two checks, so
+/// both sides name the same repo.
+const POSIX_BRANCH_REPORT: &str = r#"__herdr_is_bare() {
+  [ -f "$1/HEAD" ] && [ -d "$1/objects" ] && [ -d "$1/refs" ] && [ -r "$1/config" ] || return 1
+  while IFS= read -r __herdr_line || [ -n "$__herdr_line" ]; do
+    case $__herdr_line in
+      *bare*=*true*) return 0 ;;
+    esac
+  done <"$1/config"
+  return 1
+}
+__herdr_git_branch() {
   __herdr_dir=$PWD __herdr_head= __herdr_branch=
   while :; do
     if [ -f "$__herdr_dir/.git/HEAD" ]; then
@@ -83,6 +95,10 @@ const POSIX_BRANCH_REPORT: &str = r#"__herdr_git_branch() {
         "gitdir: /"*) __herdr_head=${__herdr_line#gitdir: }/HEAD ;;
         "gitdir: "?*) __herdr_head=$__herdr_dir/${__herdr_line#gitdir: }/HEAD ;;
       esac
+      break
+    fi
+    if __herdr_is_bare "$__herdr_dir"; then
+      __herdr_head=$__herdr_dir/HEAD
       break
     fi
     [ -n "$__herdr_dir" ] || break
@@ -207,6 +223,12 @@ const FISH_BRANCH_REPORT: &str = r#"function __herdr_git_branch --on-event fish_
                 set head "$dir/"(string sub -s 9 -- "$line")/HEAD
             end
             break
+        end
+        if test -f "$dir/HEAD"; and test -d "$dir/objects"; and test -d "$dir/refs"; and test -r "$dir/config"
+            if string match -qr 'bare.*=.*true' <"$dir/config"
+                set head "$dir/HEAD"
+                break
+            end
         end
         test -n "$dir"; or break
         if test -L "$dir"

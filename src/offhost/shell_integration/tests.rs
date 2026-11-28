@@ -1271,6 +1271,10 @@ impl BranchFixture {
             &root.join("hostile/.git"),
             &root.join("reftable/.git"),
             &root.join("outer/.git"),
+            &root.join("bare.git/objects"),
+            &root.join("bare.git/refs"),
+            &root.join("repo/nested.git/objects"),
+            &root.join("repo/nested.git/refs"),
         ] {
             std::fs::create_dir_all(dir).unwrap();
         }
@@ -1299,6 +1303,22 @@ impl BranchFixture {
         )
         .unwrap();
         std::fs::write(root.join("outer/.git/HEAD"), "ref: refs/heads/outer\n").unwrap();
+        // Bare repos: one on its own, one inside the `repo` checkout.
+        for (dir, branch) in [
+            ("bare.git", "bare-branch"),
+            ("repo/nested.git", "nested-bare"),
+        ] {
+            std::fs::write(
+                root.join(dir).join("HEAD"),
+                format!("ref: refs/heads/{branch}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                root.join(dir).join("config"),
+                "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+            )
+            .unwrap();
+        }
         // `outer/plain` leads out of the outer checkout, `link` into the repo.
         std::os::unix::fs::symlink(root.join("plain"), root.join("outer/plain")).unwrap();
         std::os::unix::fs::symlink(root.join("repo/sub dir"), root.join("link")).unwrap();
@@ -1522,4 +1542,41 @@ fn dash_integration_survives_a_git_alias() {
 #[test]
 fn zsh_integration_survives_a_git_alias() {
     git_alias_test("zsh", ".zshrc");
+}
+
+/// A bare repo has no `.git`; its own `HEAD` names the branch, even when the
+/// bare repo sits inside another checkout.
+fn bare_repo_test(shell: &str) {
+    if !installed(shell) {
+        eprintln!("skipping: {shell} is not installed");
+        return;
+    }
+    let fixture = BranchFixture::new(&format!("bare-{shell}"));
+    let out = fixture.run(shell, "cd bare.git\ncd ../repo/nested.git\nexit");
+    let reports = branch_reports(&out);
+
+    assert!(
+        reports.iter().any(|report| report == "bare-branch"),
+        "{out:?}"
+    );
+    assert_eq!(
+        reports.last().map(String::as_str),
+        Some("nested-bare"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn bash_reports_the_branch_of_a_bare_repo() {
+    bare_repo_test("bash");
+}
+
+#[test]
+fn dash_reports_the_branch_of_a_bare_repo() {
+    bare_repo_test("dash");
+}
+
+#[test]
+fn fish_reports_the_branch_of_a_bare_repo() {
+    bare_repo_test("fish");
 }

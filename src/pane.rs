@@ -2619,9 +2619,36 @@ fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<App
     }
 }
 
-fn store_reported_branch(reported_branch: &Mutex<Option<String>>, branch: Option<String>) {
-    if let Ok(mut current) = reported_branch.lock() {
-        *current = branch;
+/// Returns true when the stored branch changed.
+fn store_reported_branch(reported_branch: &Mutex<Option<String>>, branch: Option<String>) -> bool {
+    let Ok(mut current) = reported_branch.lock() else {
+        return false;
+    };
+    if *current == branch {
+        return false;
+    }
+    *current = branch;
+    true
+}
+
+/// Only an off-host shell's report is announced: a host pane's branch is
+/// read from this host, and its shell may be one a user set up by hand.
+fn publish_reported_branch(
+    pane_id: PaneId,
+    branch: Option<String>,
+    reported_branch: &Mutex<Option<String>>,
+    shell_off_host: bool,
+    events: &mpsc::Sender<AppEvent>,
+) {
+    if !store_reported_branch(reported_branch, branch) || !shell_off_host {
+        return;
+    }
+    if let Err(err) = events.try_send(AppEvent::TerminalBranchReported) {
+        warn!(
+            pane = pane_id.raw(),
+            err = %err,
+            "failed to send terminal branch report"
+        );
     }
 }
 
@@ -3093,7 +3120,13 @@ impl PaneRuntime {
                     publish_reported_cwd(pane_id, cwd, &reported_cwd, shell_off_host, &read_events);
                 }
                 if let Some(branch) = result.reported_branch.clone() {
-                    store_reported_branch(&reported_branch, branch);
+                    publish_reported_branch(
+                        pane_id,
+                        branch,
+                        &reported_branch,
+                        shell_off_host,
+                        &read_events,
+                    );
                 }
                 for content in result.clipboard_writes {
                     if let Err(err) = read_events.try_send(AppEvent::ClipboardWrite { content }) {
@@ -3338,7 +3371,13 @@ impl PaneRuntime {
                     publish_reported_cwd(pane_id, cwd, &reported_cwd, shell_off_host, &events);
                 }
                 if let Some(branch) = result.reported_branch.clone() {
-                    store_reported_branch(&reported_branch, branch);
+                    publish_reported_branch(
+                        pane_id,
+                        branch,
+                        &reported_branch,
+                        shell_off_host,
+                        &events,
+                    );
                 }
                 for content in result.clipboard_writes {
                     if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
@@ -5132,14 +5171,31 @@ mod tests {
     #[tokio::test]
     async fn branch_reported_by_the_shell_is_kept_on_the_runtime() {
         let script = r"printf '\033]43737;herdr-git;v=1;feature/x\007'; exec sleep 30";
-        let (runtime, _rx) = claim_loop::spawn(script, true);
+        let (runtime, mut rx) = claim_loop::spawn(script, true);
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        while runtime.reported_branch().is_none() && std::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
+        let reported =
+            claim_loop::next_matching(&mut rx, std::time::Duration::from_secs(8), |event| {
+                matches!(event, AppEvent::TerminalBranchReported)
+            })
+            .await;
 
+        assert!(reported.is_some(), "the app is told without a git refresh");
         assert_eq!(runtime.reported_branch().as_deref(), Some("feature/x"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn branch_report_from_a_host_shell_is_not_announced() {
+        let script = r"printf '\033]43737;herdr-git;v=1;feature/x\007'; exec sleep 30";
+        let (_runtime, mut rx) = claim_loop::spawn(script, false);
+
+        let reported =
+            claim_loop::next_matching(&mut rx, std::time::Duration::from_millis(1500), |event| {
+                matches!(event, AppEvent::TerminalBranchReported)
+            })
+            .await;
+
+        assert!(reported.is_none());
     }
 
     #[cfg(unix)]

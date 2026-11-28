@@ -455,6 +455,16 @@ impl App {
             } else {
                 None
             };
+        if let AppEvent::TerminalBranchReported = ev {
+            if self
+                .state
+                .sync_off_host_git_branches(&self.terminal_runtimes)
+            {
+                self.render_dirty.request_generic();
+                self.render_notify.notify_one();
+            }
+            return Vec::new();
+        }
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
         let previous_toast = self.state.toast.clone();
         let mut pane_updates = self.state.handle_app_event(ev);
