@@ -322,10 +322,14 @@ impl ClientShellState {
             }
             FileRequest::Preview { .. } => match result {
                 Ok(ResponseResult::PreviewStarted { preview }) => {
-                    tab.notice = format!("preview at http://127.0.0.1:{}", preview.port);
-                    outcome
-                        .actions
-                        .push(ClientShellAction::OpenSafeWebUrl(preview.url));
+                    // Why the root and not the entry's URL: the notice line is
+                    // cut at the region's width, and a cut address is how a
+                    // user ends up typing one without the token.
+                    tab.notice = preview_started_notice(&preview.url);
+                    outcome.actions.push(ClientShellAction::OpenPreviewUrl {
+                        url: preview.url,
+                        tab: Some(tab.id),
+                    });
                 }
                 Err(error) => tab.notice = error.message,
                 _ => tab.notice = "unexpected preview response".into(),
@@ -887,5 +891,25 @@ impl ClientShellState {
         {
             self.workbench.clipboard = None;
         }
+    }
+}
+
+/// The notice of a preview just started at `url`.
+pub(in crate::client::shell) fn preview_started_notice(url: &str) -> String {
+    format!("preview {}", preview_root_url(url))
+}
+
+/// `url` up to and including its first path segment, the preview's token:
+/// the address of the preview root.
+pub(super) fn preview_root_url(url: &str) -> &str {
+    let Some(after_scheme) = url.find("://").map(|index| index + 3) else {
+        return url;
+    };
+    let Some(host_end) = url[after_scheme..].find('/').map(|i| after_scheme + i) else {
+        return url;
+    };
+    match url[host_end + 1..].find('/') {
+        Some(token_end) => &url[..host_end + 1 + token_end + 1],
+        None => url,
     }
 }

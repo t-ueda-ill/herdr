@@ -41,6 +41,12 @@ pub(super) enum ClientLoopEvent {
         /// latest target have the same identity after restoration.
         force: bool,
     },
+    /// A browser open finished; `result` says why none opened.
+    UrlOpened {
+        url: String,
+        origin: url_launcher::UrlOrigin,
+        result: Result<(), String>,
+    },
     Timer,
 }
 

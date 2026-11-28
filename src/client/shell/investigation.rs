@@ -18,6 +18,7 @@ pub(super) use model::*;
 pub(super) use placement::{
     lenient, FilesDock, FilesPlacement, FilesPresentation, SavedFilesPlacement,
 };
+pub(super) use requests::preview_started_notice;
 
 impl ClientShellState {
     pub(crate) fn investigation_active(&self) -> bool {

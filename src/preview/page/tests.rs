@@ -93,3 +93,56 @@ fn a_message_page_escapes_its_text() {
     let html = message_page("Not found", "no <file>");
     assert!(html.contains("no &lt;file&gt;"));
 }
+
+#[test]
+fn a_listing_links_folders_first_relative_to_the_folder_and_escapes_names() {
+    use crate::preview::source::{DirEntry, Listing};
+    let entry = |name: &str, folder| DirEntry {
+        name: name.to_owned(),
+        folder,
+    };
+    let listing = Listing {
+        entries: vec![
+            entry("b.md", false),
+            entry("a<b>.txt", false),
+            entry("x:y", false),
+            entry("sub", true),
+        ],
+        truncated: false,
+    };
+    let html = listing_page("docs/", &listing);
+    assert!(html.contains("<title>/docs/</title>"));
+    assert!(html.contains(r#"href="../""#));
+    let sub = html.find(r#"href="./sub/""#).unwrap();
+    let a = html.find(r#"href="./a%3Cb%3E.txt""#).unwrap();
+    let b = html.find(r#"href="./b.md""#).unwrap();
+    assert!(sub < a && a < b, "{html}");
+    // Why `./` and encoding: `x:y` alone would read as a URL scheme.
+    assert!(html.contains(r#"href="./x%3Ay""#));
+    assert!(html.contains("a&lt;b&gt;.txt"));
+    assert!(!html.contains("<b>"));
+    assert!(html.contains(RELOAD_TAG));
+}
+
+#[test]
+fn the_root_listing_has_no_parent_link_and_a_cut_listing_says_so() {
+    use crate::preview::source::Listing;
+    let html = listing_page(
+        "",
+        &Listing {
+            entries: Vec::new(),
+            truncated: true,
+        },
+    );
+    assert!(html.contains("<title>/</title>"));
+    assert!(!html.contains(r#"href="../""#));
+    assert!(html.contains("More entries"));
+}
+
+#[test]
+fn the_page_without_the_token_says_how_to_get_the_full_address() {
+    let html = token_missing_page();
+    assert!(html.contains("herdr preview list"));
+    assert!(html.contains("previews"));
+    assert!(!html.contains("closed"));
+}

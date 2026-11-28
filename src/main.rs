@@ -73,6 +73,7 @@ mod transfer;
 mod ui;
 mod update;
 mod upload;
+mod url_open;
 mod workspace;
 mod worktree;
 

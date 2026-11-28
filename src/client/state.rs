@@ -82,7 +82,7 @@ pub(super) struct ClientState {
     /// Downloads from the file workbench: the transfer and its writer thread.
     pub(super) downloads: download::runtime::DownloadRuntime,
     pub(super) draw_host_cursor: bool,
-    pub(super) detached_process_children: Vec<std::process::Child>,
+    pub(super) url_launcher: url_launcher::UrlLauncher,
     pub(super) shell: Option<shell::ClientShellState>,
 }
 
@@ -143,7 +143,7 @@ impl ClientState {
             presentation_frozen: false,
             deferred_local_activation: None,
             draw_host_cursor: false,
-            detached_process_children: Vec::new(),
+            url_launcher: url_launcher::UrlLauncher::default(),
             uploads: upload::runtime::UploadRuntime::new(upload::UploadSettings::from_config(
                 &crate::config::Config::default(),
             )),

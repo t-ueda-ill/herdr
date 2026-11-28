@@ -1600,7 +1600,7 @@ fn notification_click_on_remote_source_supersedes_a_handoff() {
         &mut commands,
         &mut endpoints,
         Some(&mut shell),
-        &mut Vec::new(),
+        &crate::client::url_launcher::UrlLauncher::default(),
         &mut scheduled,
     )
     .unwrap();
@@ -1947,7 +1947,7 @@ fn a_go_to_read_goes_to_a_server_that_is_not_active() {
         &mut commands,
         &mut endpoints,
         Some(&mut shell),
-        &mut Vec::new(),
+        &crate::client::url_launcher::UrlLauncher::default(),
         &mut scheduled,
     )
     .unwrap();

@@ -277,3 +277,96 @@ fn garbage_before_the_marker_is_skipped_and_unknown_output_fails() {
     bad.extend_from_slice(b"what\0");
     assert!(matches!(parse_read(&bad), Err(ReadError::Failed(_))));
 }
+
+fn names(listing: &Listing) -> Vec<(String, bool)> {
+    listing
+        .entries
+        .iter()
+        .map(|entry| (entry.name.clone(), entry.folder))
+        .collect()
+}
+
+#[test]
+fn a_folder_lists_its_files_and_folders_with_hidden_ones() {
+    let root = TempDir::new("list");
+    root.file("docs/a b.md", b"x");
+    root.file("docs/.hidden", b"x");
+    root.file("docs/sub/inner.txt", b"x");
+    for (name, source) in sources(root.path()) {
+        for relative in ["docs", "docs/"] {
+            let listing = source.list(relative).unwrap();
+            let mut found = names(&listing);
+            found.sort();
+            assert_eq!(
+                found,
+                vec![
+                    (".hidden".to_owned(), false),
+                    ("a b.md".to_owned(), false),
+                    ("sub".to_owned(), true),
+                ],
+                "{name} {relative}"
+            );
+            assert!(!listing.truncated, "{name}");
+        }
+        let top = names(&source.list("").unwrap());
+        assert_eq!(top, vec![("docs".to_owned(), true)], "{name}");
+    }
+}
+
+#[test]
+fn an_empty_folder_lists_nothing_and_a_missing_one_or_a_file_is_not_found() {
+    let root = TempDir::new("list-kinds");
+    root.file("a.md", b"x");
+    std::fs::create_dir_all(root.path().join("empty")).unwrap();
+    for (name, source) in sources(root.path()) {
+        assert!(source.list("empty/").unwrap().entries.is_empty(), "{name}");
+        assert_eq!(source.list("nope/"), Err(ReadError::NotFound), "{name}");
+        assert_eq!(source.list("a.md"), Err(ReadError::NotFound), "{name}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_folder_outside_the_root_is_not_listed() {
+    let outside = TempDir::new("list-outside");
+    outside.file("secret.txt", b"secret");
+    let root = TempDir::new("list-links");
+    std::os::unix::fs::symlink(outside.path(), root.path().join("away")).unwrap();
+    for (name, source) in sources(root.path()) {
+        assert_eq!(source.list("away/"), Err(ReadError::Forbidden), "{name}");
+        assert_eq!(
+            names(&source.list("").unwrap()),
+            vec![("away".to_owned(), true)],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_long_listing_stops_at_the_limit_and_says_so() {
+    let root = TempDir::new("list-limit");
+    for index in 0..=LIST_LIMIT {
+        root.file(&format!("f{index}"), b"");
+    }
+    for (name, source) in sources(root.path()) {
+        let listing = source.list("").unwrap();
+        assert_eq!(listing.entries.len(), LIST_LIMIT, "{name}");
+        assert!(listing.truncated, "{name}");
+    }
+}
+
+#[test]
+fn listing_output_keeps_names_with_newlines_and_reports_refusals() {
+    let mut output = b"noise".to_vec();
+    output.extend_from_slice(MARKER);
+    output.extend_from_slice(b"list\0d\0two\nlines\0f\0b.md\0more\0");
+    let listing = parse_list(&output).unwrap();
+    assert_eq!(
+        names(&listing),
+        vec![("two\nlines".to_owned(), true), ("b.md".to_owned(), false)]
+    );
+    assert!(listing.truncated);
+    let mut refused = MARKER.to_vec();
+    refused.extend_from_slice(b"escape\0");
+    assert_eq!(parse_list(&refused), Err(ReadError::Forbidden));
+}

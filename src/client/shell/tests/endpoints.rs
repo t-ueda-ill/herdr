@@ -136,7 +136,7 @@ fn workspace_navigation_waits_for_the_target_presentation_fence() {
             &mut commands,
             &mut endpoints,
             Some(&mut state),
-            &mut Vec::new(),
+            &crate::client::url_launcher::UrlLauncher::default(),
             &mut scheduled,
         )
         .unwrap();

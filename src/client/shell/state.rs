@@ -286,6 +286,13 @@ pub(crate) enum ClientShellAction {
     },
     ClipboardWrite(Vec<u8>),
     OpenSafeWebUrl(String),
+    /// A preview's URL, opened with `[preview] open_command` when set.
+    /// `tab` is the files tab that started it, whose notice a failure may
+    /// update; `None` from the previews picker.
+    OpenPreviewUrl {
+        url: String,
+        tab: Option<u64>,
+    },
     ActivateEndpoint {
         endpoint_id: ClientEndpointId,
         target: Option<ClientEndpointFocusTarget>,

@@ -272,12 +272,9 @@ pub fn clipboard_text_matches(_bytes: &[u8]) -> Option<bool> {
     None
 }
 
-/// Unsupported platform stub.
-pub fn open_url(_url: &str) -> std::io::Result<Option<std::process::Child>> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "opening URLs is not supported on this platform",
-    ))
+/// Unsupported platform stub: no way to open a URL.
+pub(crate) fn url_openers(_url: &str) -> Vec<super::UrlOpener> {
+    Vec::new()
 }
 
 /// Unsupported platform stub.

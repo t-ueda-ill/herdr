@@ -723,6 +723,8 @@ impl App {
         };
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
+        app.previews
+            .set_directory_listing(config.preview.directory_listing);
         app.refresh_restored_workspace_git_metadata();
         app.start_pending_offhost_connects();
         Ok(app)
@@ -999,6 +1001,11 @@ impl App {
             if !self.persist_pane_history {
                 crate::persist::clear_history();
             }
+        }
+
+        if !invalid_section("preview") {
+            self.previews
+                .set_directory_listing(config.preview.directory_listing);
         }
 
         if !invalid_section("server") {
@@ -1883,6 +1890,22 @@ mod tests {
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn reloading_the_config_switches_folder_listing_for_running_previews() {
+        let mut app = test_app();
+        let listing = app.previews.listing();
+        assert!(listing.enabled());
+        let mut config = Config::default();
+        config.preview.directory_listing = false;
+        let report = app.apply_live_config(&config, &[], &[], false);
+        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
+        assert!(!listing.enabled());
+
+        config.preview.directory_listing = true;
+        app.apply_live_config(&config, &[], &["preview".into()], false);
+        assert!(!listing.enabled(), "an invalid [preview] keeps the setting");
     }
 
     #[test]

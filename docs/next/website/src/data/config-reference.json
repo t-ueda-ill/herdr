@@ -1613,6 +1613,24 @@
       ]
     },
     {
+      "id": "preview",
+      "title": "Browser previews",
+      "keys": [
+        {
+          "key": "preview.directory_listing",
+          "type": "boolean",
+          "default": "true",
+          "description": "List the files and folders of a folder that has no `index.html`, with links that keep the preview token. `false` answers such a folder with the page that waits for its `index.html`. A config reload applies it to running previews."
+        },
+        {
+          "key": "preview.open_command",
+          "type": "list of strings",
+          "default": "[]",
+          "description": "Program and arguments that open a preview in a browser, run without a shell. An argument `{url}` is replaced by the address; without one, the address is added last. Empty tries `$BROWSER`, then the platform opener (`wslview`, `explorer.exe`, then `xdg-open` under WSL). Previews only; the TUI reads it when it starts."
+        }
+      ]
+    },
+    {
       "id": "advanced",
       "title": "Advanced",
       "keys": [

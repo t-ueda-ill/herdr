@@ -20,10 +20,33 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const KEEPALIVE: Duration = Duration::from_secs(15);
 const STOP_POLL: Duration = Duration::from_millis(100);
 
+/// Whether a folder without an `index.html` is listed. Shared by every
+/// preview so a configuration reload reaches the running ones too.
+#[derive(Clone, Debug)]
+pub(crate) struct ListingSwitch(Arc<AtomicBool>);
+
+impl ListingSwitch {
+    pub(crate) fn new(enabled: bool) -> Self {
+        Self(Arc::new(AtomicBool::new(enabled)))
+    }
+
+    pub(crate) fn set(&self, enabled: bool) {
+        self.0.store(enabled, Ordering::Relaxed);
+    }
+
+    pub(crate) fn enabled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 struct Shared {
     source: Box<dyn FileSource>,
     port: u16,
     token: String,
+    listing: ListingSwitch,
+    /// Set once a request without the token was logged, so a browser
+    /// retrying a stale address cannot flood the log.
+    refusal_logged: AtomicBool,
     watch_every: Duration,
     /// Bumped each time the watcher sees a change.
     generation: Mutex<u64>,
@@ -64,9 +87,13 @@ pub(crate) struct PreviewServer {
 }
 
 impl PreviewServer {
-    pub(crate) fn start(source: Box<dyn FileSource>, watch_every: Duration) -> io::Result<Self> {
+    pub(crate) fn start(
+        source: Box<dyn FileSource>,
+        watch_every: Duration,
+        listing: ListingSwitch,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
-        Self::start_on(listener, source, watch_every)
+        Self::start_on(listener, source, watch_every, listing)
     }
 
     /// Serves on a listener the caller bound.
@@ -74,6 +101,7 @@ impl PreviewServer {
         listener: TcpListener,
         source: Box<dyn FileSource>,
         watch_every: Duration,
+        listing: ListingSwitch,
     ) -> io::Result<Self> {
         let port = listener.local_addr()?.port();
         // Why own the server before any thread starts: if a later spawn
@@ -84,6 +112,8 @@ impl PreviewServer {
                 source,
                 port,
                 token: new_token(),
+                listing,
+                refusal_logged: AtomicBool::new(false),
                 watch_every,
                 generation: Mutex::new(0),
                 changed: Condvar::new(),
@@ -333,11 +363,17 @@ fn respond(request: &Request, shared: &Shared) -> Response {
     let prefix = format!("/{}", shared.token);
     let path = match route::access(request, &shared.token) {
         Access::Denied => {
-            return Response::message(
+            if !shared.refusal_logged.swap(true, Ordering::Relaxed) {
+                tracing::info!(
+                    port = shared.port,
+                    "preview refused a request without its token"
+                );
+            }
+            return Response::new(
                 403,
-                "Preview closed to this browser",
-                "Open the preview again from herdr.",
-            )
+                "text/html; charset=utf-8",
+                page::token_missing_page().into_bytes(),
+            );
         }
         // Why redirect the bare token: relative links need the trailing slash.
         Access::Token { path } if path.is_empty() => {
@@ -372,6 +408,11 @@ fn respond(request: &Request, shared: &Shared) -> Response {
     let file = route::file_to_serve(&relative);
     shared.remember(&file);
     let location = Location { prefix, path };
+    if file != relative && shared.listing.enabled() {
+        if let Some(response) = listing(shared, request, &relative, &file, &location) {
+            return response;
+        }
+    }
     let page = route::wants_page(request);
     if page {
         if let Some(format) = route::format_of(&file) {
@@ -458,6 +499,46 @@ fn whole_file(
             response
         }
         Err(error) => read_failure(shared, error, location, file, page),
+    }
+}
+
+/// The folder's listing when it has no index, or `None` to serve the index.
+/// Why probe the index first: a folder with one is a site, not a listing.
+fn listing(
+    shared: &Shared,
+    request: &Request,
+    relative: &str,
+    index: &str,
+    location: &Location,
+) -> Option<Response> {
+    match shared.source.read(index, Window::Probe) {
+        Err(ReadError::NotFound) => {}
+        _ => return None,
+    }
+    match shared.source.list(relative) {
+        // Why the folder itself is not watched: the watcher reloads every open
+        // page of the preview, and a folder that gains files, such as one of
+        // reports, would reload the report being read. The index stays
+        // watched, so the page turns into the site once one appears.
+        Ok(listing) => {
+            let mut response = Response::new(
+                200,
+                "text/html; charset=utf-8",
+                page::listing_page(relative, &listing).into_bytes(),
+            );
+            let host = request.header("host").unwrap_or_default();
+            response
+                .headers
+                .push(("Content-Security-Policy", page::viewer_policy(host)));
+            Some(response)
+        }
+        Err(error) => Some(read_failure(
+            shared,
+            error,
+            location,
+            index,
+            route::wants_page(request),
+        )),
     }
 }
 

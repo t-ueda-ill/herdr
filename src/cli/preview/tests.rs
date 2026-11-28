@@ -80,7 +80,7 @@ fn the_list_names_where_each_folder_lives() {
             root: "/home/me/site".into(),
             location: None,
             port: 40123,
-            url: String::new(),
+            url: "http://127.0.0.1:40123/t1/".into(),
         },
         PreviewInfo {
             preview_id: "preview-2".into(),
@@ -91,14 +91,14 @@ fn the_list_names_where_each_folder_lives() {
                 container: Some("web".into()),
             }),
             port: 40124,
-            url: String::new(),
+            url: "http://127.0.0.1:40124/t2/".into(),
         },
     ];
     assert_eq!(
         format_previews(&previews),
-        "id         port   place          root\n\
-         preview-1  40123  this host      /home/me/site\n\
-         preview-2  40124  web on coding  /srv\n"
+        "id         port   place          root           url\n\
+         preview-1  40123  this host      /home/me/site  http://127.0.0.1:40123/t1/\n\
+         preview-2  40124  web on coding  /srv           http://127.0.0.1:40124/t2/\n"
     );
     assert_eq!(format_previews(&[]), "No previews running.\n");
 }
